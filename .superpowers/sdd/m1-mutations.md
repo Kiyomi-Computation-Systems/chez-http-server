@@ -50,3 +50,18 @@ Reverted; `make test` green afterwards: seven suites, 65 expected passes
 (corpus-inventory 7, flag-pins 8, headers 9, integration 5, limits 19,
 records 14, trace-lane 3), exit 0. The release lane (`CORPUS=full`) is green at
 9,394 runs, 0 mismatches.
+
+## M1.3 — libhtp's streams, and the first provenance failure
+
+| # | suite | mutation | observed |
+|---|-------|----------|----------|
+| M1.3 | `tests/test-libhtp.sps` | corrupt one sha256 in `test/vendor/libhtp/PROVENANCE` — flip the LICENSE hash's first hex digit (8→9) | suite exited 3; `PROVENANCE-ERROR libhtp: LICENSE: expected sha256 97c9… but computed 87c9…`. The first `provenance-failure` (status 3) ever raised in this repository — §4 flagged status 3 as an untested branch of the harness until this slice |
+
+The mutation is on the manifest, the thing under test: a checksum that no longer
+matches the bytes it certifies, not the test's own oracle. The three FIPS-180-4
+sha256 vectors and the 103-entry manifest-parse assertion ran first (4 passes),
+then `verify-provenance!` aborted the suite — a provenance failure ends the run
+rather than recording a recoverable assertion, which is why it is a bare call
+outside any `test-*` form (a raise inside a SRFI-64 form is swallowed into `#f`,
+`(testing)`'s documented footgun). Reverted (the hash restored); `make test`
+green afterwards: eight suites, 76 expected passes, exit 0.

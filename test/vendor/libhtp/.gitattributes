@@ -1,0 +1,3 @@
+# Vendored corpus: exact upstream bytes, verified by sha256 (decision 0007).
+# Never normalize line endings, or the checksums break on a fresh checkout.
+* -text
