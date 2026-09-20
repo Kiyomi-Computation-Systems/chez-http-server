@@ -1,5 +1,7 @@
 # Chez Scheme HTTP/1 Server Architecture
 
+> **Status (2026-09-19):** background design write-up, kept as the layering reference. Two names are historical: the parser called `chez-http1` here shipped as **chez-httparse** (v0.2.0), and `chez-byte-machine` shipped as **byte-machine** (v0.6.0); both are complete for this project's purposes. What is actually built, and in what order, is in [`2026-09-19-chez-http-server-project-brief.md`](2026-09-19-chez-http-server-project-brief.md); the asynchrony model this document leaves open is settled in [`2026-09-19-async-model-options.md`](2026-09-19-async-model-options.md) and decisions 0002–0003.
+
 ## Goal
 
 Build a small, composable HTTP/1.x server stack for Chez Scheme with clear separation between:

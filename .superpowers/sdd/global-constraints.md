@@ -1,0 +1,16 @@
+## Global Constraints
+
+Every task brief in this project is bound by the following. They are the house rules the sibling projects (`chez-libuv`, `chez-httparse`, `uriparse`, `byte-machine`) enforce, restated in chez-http-server's spellings.
+
+- Toolchain floors: Chez Scheme 10.4.1 (the full system, threaded build; Petite is rejected), libuv 1.44.0 or later in the 1.x series through chez-libuv's own acquisition paths, CMake 3.26 where CMake is used. Measured here 2026-09-19 on Darwin arm64: Chez 10.4.1 `tarm64osx`, libuv 1.52.1, CMake 4.3.3.
+- Dependencies are pinned checkouts by gitlink at release tags: chez-libuv at commit 529ea57 (v0.5.0 plus the unreleased `uv-write*!`; `main` is at 83e0184 with #21's `uv-tcp-keepalive!` and reuseport flag, not needed before v0.1; move to v0.6.0 when tagged), chez-httparse at the v0.4.0 tag (1cddba8: `(httparse decisions)` and `(httparse methods)` since v0.3.0, the `parser-finish!` fixes for #33/#42 and the #34/#36 documentation in v0.4.0; it pins byte-machine v0.6.0), uriparse v0.2.0. A pin moves alone, on its own commit, with a fingerprint or byte-identity check. No other dependencies without a decision record.
+- Pure libraries under `src/http-server/` import `(rnrs)`, `(byte-machine runtime)`, `(generated httparse-message)`, `(httparse modes)`, `(uri ...)` and this project's own pure libraries, and nothing else; an import-audit lane asserts it. `(libuv ...)` and `(chezscheme)` appear only under `src/http-server/private/`, the test harness and the Makefile.
+- Every `.sls` and `.sps` carries a `#!r6rs` line. Libraries contain their own code; no shared include bodies. Exported procedures carry a Typed-Racket-style signature comment.
+- Exit-status vocabulary for Scheme lanes: 0 pass, 1 assertion failure(s), 2 harness/configuration/registration error (includes empty selection), 3 provenance failure. Empty selection is failure at every layer.
+- Every `tests/test-*.sps` ends with its own `(exit ...)`; SRFI-64 sets no process status. Assertions compare against a value only success can produce, never `#f`, never bare truthiness.
+- A test is finished when it has been watched to fail: the named mutation breaks the asserted property and nothing else, is recorded in the milestone's mutation log, and is reverted. A survivor is a missing test, a scope statement, or the finding itself, and which one is measured.
+- Numbers in a test come from an oracle (a fixture, a measured libuv fact, an RFC vector), never from running the code under test. A refusal to render an unreproducible value is an outcome, not a crash.
+- Socket tests bind `127.0.0.1:0`, run clients on the same loop, and cap by iteration count, never wall-clock. Timeout tests drive `(tick now)` with a fake clock.
+- Every count that enters a record is re-measured on the tree at the time of writing, dated and platform-stamped; do not carry numbers forward by arithmetic.
+- Conventional Commits. Run `make test` before every commit; fix failures first. CI is Linux only.
+- Prefer a check to a comment: a load-bearing invariant becomes a make target, a test, or an assertion (`connection-close!` is the only `uv-close!` caller; handler-facing libraries export no `uv-*` name; the pure libraries import no libuv).
