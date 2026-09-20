@@ -19,3 +19,9 @@ nginx, Go's `net/http` and h2o serve one request per connection at a time and ne
 
 - No response-ordering queue is exercised in v1; memory per connection is one request.
 - `pending-input` and the pause protocol are pinned by tests at every chunk size (M2), including byte-machine's need for one more feed after a pause on the last body byte.
+
+## Amendment (2026-09-20)
+
+The limits field named `max-pipeline` in decision 2 above shipped in M0 as
+`pipeline-cap` (environment override `CHEZ_HTTP_PIPELINE_CAP`). The decision is
+unchanged. ADR-0005's amendment records the full set of M0 limits-naming changes.
