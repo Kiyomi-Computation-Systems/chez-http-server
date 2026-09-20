@@ -1,0 +1,10 @@
+baseline: main thread sleeps 1 ms at a time (Scheme sleep)
+  worker elapsed 26 ms; collections during: 34
+test: main thread blocks in (uv-run loop 'once) with only a 300 ms repeating timer armed
+  worker elapsed 10266 ms; collections during: 34
+  timer fired 35 times while waiting
+test 2: same but the loop's timer fires every 1 ms
+  worker elapsed 93 ms; collections during: 35
+  timer fired 70 times while waiting
+done
+exit=0

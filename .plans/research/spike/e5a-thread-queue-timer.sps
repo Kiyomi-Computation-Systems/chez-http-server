@@ -1,0 +1,45 @@
+;; E5a: a fork-thread worker sleeps/computes and pushes a result onto a
+;; mutex-protected queue; the loop thread polls from a 1 ms repeating timer and
+;; writes the result to a TCP peer, which reads it back.
+(import (rnrs) (only (chezscheme) fork-thread make-mutex with-mutex sleep make-time get-thread-id) (libuv) (spike common))
+(define loop (make-uv-loop))
+(define q '()) (define m (make-mutex))
+(define t0 (now-ms))
+(define worker-pushed-at #f)
+(define worker-thread-id #f)
+(define (compute) (let lp ((i 0) (acc 0)) (if (= i 1000000) acc (lp (+ i 1) (+ acc i)))))
+(fork-thread (lambda ()
+  (set! worker-thread-id (get-thread-id))
+  (sleep (make-time 'time-duration 50000000 0))       ; 50 ms
+  (let ((r (compute)))
+    (with-mutex m
+      (set! q (cons (string->utf8 (string-append "result=" (number->string r))) q))
+      (set! worker-pushed-at (- (now-ms) t0))))))
+(define server (make-uv-tcp loop))
+(uv-tcp-bind! server "127.0.0.1" 0)
+(define port (uv-tcp-getsockname-port server))
+(define peer #f)
+(define poll-timer (make-uv-timer loop))
+(define polls 0)
+(uv-listen! server 128 (lambda (err)
+  (set! peer (uv-accept! server))
+  (uv-read-start! peer (lambda (bv s e) #f) (lambda () #f) (lambda (err) #f))
+  (uv-timer-start! poll-timer
+    (lambda (tm)
+      (set! polls (+ polls 1))
+      (let ((item (with-mutex m (and (pair? q) (let ((x (car q))) (set! q (cdr q)) x)))))
+        (when item
+          (say "loop thread " (get-thread-id) ": got item after " polls " polls at +" (- (now-ms) t0) "ms (worker " worker-thread-id " pushed at +" worker-pushed-at "ms); uv-write! to peer")
+          (uv-timer-stop! poll-timer)
+          (uv-write! peer item (lambda (err) (say "loop: write complete err=" err)
+                                              (uv-shutdown! peer (lambda (err) (uv-close! peer))))))))
+    1 1)))
+(define client (make-uv-tcp loop))
+(uv-tcp-connect! client "127.0.0.1" port (lambda (err)
+  (uv-read-start! client
+    (lambda (bv s e) (say "client: received \"" (utf8->string (let ((o (make-bytevector (- e s)))) (bytevector-copy! bv s o 0 (- e s)) o)) "\""))
+    (lambda () (say "client: eof") (uv-close! client) (uv-close! server) (uv-close! poll-timer))
+    (lambda (err) (uv-close! client)))))
+(say "top: uv-run -> " (guarded "uv-run" (lambda () (uv-run loop 'default))))
+(say "top: teardown -> " (guarded "teardown" (lambda () (uv-loop-teardown! loop) 'ok)))
+(say "top: done")

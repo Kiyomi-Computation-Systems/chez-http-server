@@ -1,0 +1,15 @@
+slice 1 expired; uv-run ran 1 timer callback(s); resuming engine
+slice 2 expired; uv-run ran 1 timer callback(s); resuming engine
+slice 3 expired; uv-run ran 1 timer callback(s); resuming engine
+slice 100 expired; uv-run ran 0 timer callback(s); resuming engine
+slice 200 expired; uv-run ran 0 timer callback(s); resuming engine
+slice 300 expired; uv-run ran 0 timer callback(s); resuming engine
+slice 400 expired; uv-run ran 0 timer callback(s); resuming engine
+slice 500 expired; uv-run ran 0 timer callback(s); resuming engine
+slice 600 expired; uv-run ran 0 timer callback(s); resuming engine
+engine complete; ticks-left=4970 values=((handler-done 30 149998500000))
+result=((handler-done 30 149998500000)) slices=600 timer callbacks total=15
+final uv-run -> #f
+teardown -> ok
+done
+exit=0

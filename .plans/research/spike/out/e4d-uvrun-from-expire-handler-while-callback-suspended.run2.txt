@@ -1,0 +1,16 @@
+engine: calling (uv-run loop 'once) from inside the slice
+expire #1: cb-entered=1 cb-finished=0; nested (uv-run loop 'nowait) -> #t; t2-fired=0; resuming
+expire #2: cb-entered=1 cb-finished=0; nested (uv-run loop 'nowait) -> #t; t2-fired=0; resuming
+expire #3: cb-entered=1 cb-finished=0; nested (uv-run loop 'nowait) -> #t; t2-fired=0; resuming
+expire #50: cb-entered=1 cb-finished=0; nested (uv-run loop 'nowait) -> #t; t2-fired=0; resuming
+expire #100: cb-entered=1 cb-finished=0; nested (uv-run loop 'nowait) -> #t; t2-fired=1; resuming
+expire #150: cb-entered=1 cb-finished=0; nested (uv-run loop 'nowait) -> #t; t2-fired=2; resuming
+expire #200: cb-entered=1 cb-finished=0; nested (uv-run loop 'nowait) -> #t; t2-fired=3; resuming
+t1 callback: finished normally (entered=1 finished=1)
+engine: uv-run returned #t
+result=((engine-done #t)) slices=200 cb-entered=1 cb-finished=1 t2-fired=3
+loop-alive? #f
+uv-run after -> #f
+teardown -> ok
+done
+exit=0

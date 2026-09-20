@@ -1,0 +1,10 @@
+#!r6rs
+(import (rnrs) (libuv) (only (chezscheme) threaded? machine-type scheme-version))
+(display (list 'chez (scheme-version) 'machine (machine-type) 'threaded (threaded?) 'uv (uv-version))) (newline)
+(define loop (make-uv-loop))
+(define t (make-uv-timer loop))
+(define n 0)
+(uv-timer-start! t (lambda (tm) (set! n (+ n 1)) (when (= n 3) (uv-timer-stop! tm) (uv-close! tm))) 0 1)
+(uv-run loop 'default)
+(uv-loop-teardown! loop)
+(display (list 'timer-fires n)) (newline)

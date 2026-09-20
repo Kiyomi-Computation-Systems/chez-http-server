@@ -1,0 +1,35 @@
+client: connected err=#f
+client: write done err=#f
+server: on-connection err=#f
+server: on-data 4 bytes; calling (uv-run loop 'nowait) from inside the callback
+on-data/uv-run | kinds: (&uv-invalid-argument)
+on-data/uv-run | display-condition: Exception occurred with condition components:
+  0. &uv-invalid-argument
+      who: uv-run
+      reason: loop-running
+on-data/uv-run | uv-invalid-argument? #t( who= uv-run  reason= loop-running)
+server: uv-run inside on-data -> raised
+server: also trying (uv-run loop 'once) and 'default from inside on-data
+on-data/once | kinds: (&uv-invalid-argument)
+on-data/once | display-condition: Exception occurred with condition components:
+  0. &uv-invalid-argument
+      who: uv-run
+      reason: loop-running
+server: once -> raised
+on-data/default | kinds: (&uv-invalid-argument)
+on-data/default | display-condition: Exception occurred with condition components:
+  0. &uv-invalid-argument
+      who: uv-run
+      reason: loop-running
+server: default -> raised
+on-data/teardown | kinds: (&uv-invalid-argument)
+on-data/teardown | display-condition: Exception occurred with condition components:
+  0. &uv-invalid-argument
+      who: uv-loop-teardown!
+      reason: loop-running
+server: and uv-loop-teardown! from inside on-data -> raised
+top: uv-run -> #f
+top: teardown -> ok
+top: result = raised
+top: done
+exit=0

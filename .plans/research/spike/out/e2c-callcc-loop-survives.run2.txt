@@ -1,0 +1,12 @@
+A: call/cc returned first-time
+B: invoking saved
+A: call/cc returned from-B
+uv-run#1 | kinds: (&assertion &format &message &irritants &continuation)
+uv-run#1 | display-condition: Exception: attempt to return to stale foreign context
+top: uv-run #1 -> raised
+top: live handles: 2 states: (open open)
+C: new timer fired after the trap
+top: uv-run #2 -> #f
+top: teardown -> ok
+top: done
+exit=0

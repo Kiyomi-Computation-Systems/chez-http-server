@@ -1,0 +1,9 @@
+per-callback cost, 256 idle handles, 5000000 callbacks per trial
+  plain: 5000255 callbacks in 963 ms = 192 ns per callback
+  safe : 5000255 callbacks in 1248 ms = 249 ns per callback
+  plain: 5000255 callbacks in 945 ms = 188 ns per callback
+  safe : 5000255 callbacks in 1243 ms = 248 ns per callback
+  plain: 5000255 callbacks in 942 ms = 188 ns per callback
+  safe : 5000255 callbacks in 1224 ms = 244 ns per callback
+done
+exit=0

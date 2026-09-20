@@ -1,0 +1,8 @@
+loop thread 0: peer accepted and published to the worker
+on-complete ran on thread 0 err=#f
+client: received "from-worker" at +36ms; worker-outcome=(uv-write!-returned on-thread 1 at 36)
+top: uv-run -> #f
+top: worker-outcome=(uv-write!-returned on-thread 1 at 36)
+top: teardown -> ok
+top: done
+exit=0

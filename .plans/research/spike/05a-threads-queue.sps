@@ -1,0 +1,62 @@
+;; E5a: a fork-thread worker computes and pushes onto a mutex-protected queue;
+;; the loop thread polls it from a 1 ms repeating timer and writes the result
+;; to a TCP peer on the same loop; the peer's on-data confirms delivery.
+(import (rnrs) (libuv)
+        (only (chezscheme) printf fork-thread make-mutex with-mutex sleep make-time
+              display-condition real-time get-thread-id))
+(define (log! fmt . args) (apply printf fmt args) (flush-output-port (current-output-port)))
+(define (show e) (call-with-string-output-port (lambda (p) (display-condition e p))))
+(define (span->bv bv s e) (let ((o (make-bytevector (- e s)))) (bytevector-copy! bv s o 0 (- e s)) o))
+(define q '())
+(define qm (make-mutex))
+(define (q-push! x) (with-mutex qm (set! q (append q (list x)))))
+(define (q-pop!) (with-mutex qm (if (null? q) #f (let ((x (car q))) (set! q (cdr q)) x))))
+(define (busy n) (let f ((i 0) (acc 0)) (if (< i n) (f (+ i 1) (+ acc i)) acc)))
+(define loop (make-uv-loop))
+(define server (make-uv-tcp loop))
+(uv-tcp-bind! server "127.0.0.1" 0)
+(define port (uv-tcp-getsockname-port server))
+(define received '())
+(define peer #f)
+(uv-listen! server 128
+  (lambda (err)
+    (unless err
+      (set! peer (uv-accept! server))
+      (uv-read-start! peer
+        (lambda (bv s e) (set! received (cons (utf8->string (span->bv bv s e)) received))
+          (log! "loop thread ~a: peer on-data got ~s\n" (get-thread-id) (car received))
+          (when (= (length received) 3)
+            (uv-close! peer) (uv-close! client) (uv-close! server) (uv-close! poll)))
+        (lambda () (log! "peer eof\n"))
+        (lambda (e) (log! "peer error ~a\n" (show e)))))))
+(define client (make-uv-tcp loop))
+(uv-tcp-connect! client "127.0.0.1" port (lambda (e) (log! "client connected err=~s\n" e)))
+(define polls 0)
+(define writes 0)
+(define poll (make-uv-timer loop))
+(uv-timer-start! poll
+  (lambda (t)
+    (set! polls (+ polls 1))
+    (let drain ()
+      (let ((item (q-pop!)))
+        (when item
+          (set! writes (+ writes 1))
+          (uv-write! client (string->utf8 item) (lambda (e) #f))
+          (drain)))))
+  1 1)
+(define t0 (real-time))
+(log! "main thread id ~a; forking worker\n" (get-thread-id))
+(fork-thread
+  (lambda ()
+    (log! "worker thread id ~a: started\n" (get-thread-id))
+    (sleep (make-time 'time-duration 30000000 0))
+    (q-push! (format "r1:busy=~a" (busy 2000000)))
+    ;; allocation-heavy work: GC requests must be honoured while main is in uv_run
+    (q-push! (format "r2:alloc-len=~a" (length (let f ((i 0) (acc '())) (if (< i 2000000) (f (+ i 1) (cons i acc)) acc)))))
+    (sleep (make-time 'time-duration 20000000 0))
+    (q-push! "r3:final")
+    (log! "worker: done pushing\n")))
+(define rc (guard (e (#t (log! "uv-run RAISED: ~a\n" (show e)) 'raised)) (uv-run loop 'default)))
+(log! "uv-run returned ~s after ~a ms; polls ~a writes ~a received ~s\n" rc (- (real-time) t0) polls writes (reverse received))
+(guard (e (#t (log! "teardown RAISED: ~a\n" (show e)))) (uv-loop-teardown! loop))
+(log! "teardown done; loop-open? ~s\n" (uv-loop-open? loop))

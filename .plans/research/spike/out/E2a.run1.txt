@@ -1,0 +1,12 @@
+control: call/cc returned first
+control: call/cc returned second
+t1: fired (entry #1); capturing call/cc
+t1: call/cc returned first-time; returning normally to libuv
+t2: fired; invoking stashed k with 'from-t2 (unguarded inside t2)
+t1: call/cc returned from-t2; returning normally to libuv
+run-1: uv-run RAISED: Exception: attempt to return to stale foreign context
+run-1: uv-run returned raised; deferred-errors: ()
+t3: fired -- the loop is still dispatching; closing all three timers
+run-2 (does the loop survive?): uv-run returned #f; deferred-errors: ()
+teardown done; loop-open? #f; t1-entries 1
+exit=0
