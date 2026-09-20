@@ -2468,6 +2468,121 @@ About 60 ns per callback for the reactivate/deactivate pair.
 
 **Reading.** At three or four callbacks per request that is ~0.2 us against the parser's 1.86 us per request (judge-performance figure): a line in the performance baseline when the pin moves past chez-libuv's Stage 1, not a design input. The spike's 13 us per `uv-run 'once` turn (E3b) is unaffected in kind.
 
+### E5g: E5c and E5e re-run against chez-libuv v0.6.0, where `uv_run` is `__collect_safe`
+
+Added 2026-09-19 (night), after chez-libuv tagged v0.6.0 (ad4c1e9: #19 via its PR #25, #20 via PR #26). The question is E5c's with the fix in the pin: does a worker thread that allocates heavily still stall while the loop thread blocks in `uv-run`? Method unchanged from E5c (the `'once` wait loop, a 300 ms then a 1 ms timer) and E5e (one `(uv-run loop 'default)`), same worker (3,000,000 ten-element vectors), run under `CHEZSCHEMELIBDIRS=~/github/chez-libuv/src:~/github/chez-libuv/build/scheme-libs` after `make build` in the checkout. `uv_run` is now `(foreign-procedure __collect_safe "uv_run" (uptr int) int)` (native.sls:261) and thirteen of the fourteen trampolines carry the attribute (`walk` alone stays plain, native.sls:734).
+
+`e5g-gc-stall-at-v060.sps`:
+
+```scheme
+;; E5g (2026-09-19, night): E5c and E5e re-run, method unchanged, against chez-libuv
+;; v0.6.0 (ad4c1e9), where uv_run and the trampolines it invokes are __collect_safe
+;; (#19, PR #25). Same worker as E5c/E5e (3,000,000 ten-element vectors). Expected
+;; now: the worker's elapsed stays at the Scheme-sleep baseline whatever the loop
+;; thread is doing, in 'once with a 300 ms or 1 ms timer and in one 'default run.
+(import (rnrs) (only (chezscheme) fork-thread make-mutex with-mutex sleep make-time collections) (libuv) (spike common))
+(define m (make-mutex))
+(define (nap ms) (sleep (make-time 'time-duration (* ms 1000000) 0)))
+(define (allocate!) (let lp ((i 0) (keep '())) (if (= i 3000000) (length keep) (lp (+ i 1) (if (= 0 (mod i 100000)) (cons (make-vector 10) keep) (begin (make-vector 10) keep))))))
+(define (run-worker main-wait)
+  (let ((done #f) (elapsed #f) (c0 (collections)))
+    (fork-thread (lambda () (let ((t0 (now-ms))) (allocate!) (with-mutex m (set! elapsed (- (now-ms) t0)) (set! done #t)))))
+    (let wait () (unless (with-mutex m done) (main-wait) (wait)))
+    (say "  worker elapsed " elapsed " ms; collections during: " (- (collections) c0))
+    elapsed))
+(say "libuv " (uv-version) "; baseline: main thread sleeps 1 ms at a time (Scheme sleep)")
+(run-worker (lambda () (nap 1)))
+(say "E5c/1: main thread blocks in (uv-run loop 'once) with only a 300 ms repeating timer armed")
+(define loop (make-uv-loop))
+(define t (make-uv-timer loop))
+(define fires 0)
+(uv-timer-start! t (lambda (tm) (set! fires (+ fires 1))) 300 300)
+(run-worker (lambda () (uv-run loop 'once)))
+(say "  timer fired " fires " times while waiting")
+(say "E5c/2: same but the loop's timer fires every 1 ms")
+(uv-timer-stop! t)
+(uv-timer-start! t (lambda (tm) (set! fires (+ fires 1))) 1 1)
+(set! fires 0)
+(run-worker (lambda () (uv-run loop 'once)))
+(say "  timer fired " fires " times while waiting")
+(uv-close! t)
+(uv-run loop 'default)
+(uv-loop-teardown! loop)
+(define (trial period-ms)
+  (let* ((loop (make-uv-loop)) (t (make-uv-timer loop)) (done #f) (elapsed #f) (fires 0) (c0 (collections)))
+    (uv-timer-start! t (lambda (tm) (set! fires (+ fires 1)) (when (with-mutex m done) (uv-close! t))) period-ms period-ms)
+    (fork-thread (lambda () (sleep (make-time 'time-duration 20000000 0)) (let ((t0 (now-ms))) (allocate!) (with-mutex m (set! elapsed (- (now-ms) t0)) (set! done #t)))))
+    (uv-run loop 'default)
+    (uv-loop-teardown! loop)
+    (say "  period " period-ms " ms: worker elapsed " elapsed " ms; collections " (- (collections) c0) "; timer fired " fires " times")))
+(say "E5e: loop thread in one (uv-run loop 'default); binding dispatch path only")
+(trial 300)
+(trial 1)
+(say "done")
+```
+
+Output, run 1 (`out/e5g-gc-stall-at-v060.run1.txt`):
+
+```
+libuv 1.52.1; baseline: main thread sleeps 1 ms at a time (Scheme sleep)
+  worker elapsed 24 ms; collections during: 34
+E5c/1: main thread blocks in (uv-run loop 'once) with only a 300 ms repeating timer armed
+  worker elapsed 23 ms; collections during: 34
+  timer fired 1 times while waiting
+E5c/2: same but the loop's timer fires every 1 ms
+  worker elapsed 35 ms; collections during: 35
+  timer fired 30 times while waiting
+E5e: loop thread in one (uv-run loop 'default); binding dispatch path only
+  period 300 ms: worker elapsed 27 ms; collections 34; timer fired 1 times
+  period 1 ms: worker elapsed 29 ms; collections 34; timer fired 44 times
+done
+exit=0
+```
+
+Run 2 (`out/e5g-gc-stall-at-v060.run2.txt`):
+
+```
+libuv 1.52.1; baseline: main thread sleeps 1 ms at a time (Scheme sleep)
+  worker elapsed 24 ms; collections during: 34
+E5c/1: main thread blocks in (uv-run loop 'once) with only a 300 ms repeating timer armed
+  worker elapsed 24 ms; collections during: 34
+  timer fired 1 times while waiting
+E5c/2: same but the loop's timer fires every 1 ms
+  worker elapsed 51 ms; collections during: 35
+  timer fired 45 times while waiting
+E5e: loop thread in one (uv-run loop 'default); binding dispatch path only
+  period 300 ms: worker elapsed 33 ms; collections 34; timer fired 1 times
+  period 1 ms: worker elapsed 50 ms; collections 34; timer fired 64 times
+done
+exit=0
+```
+
+Observed, worker elapsed in ms, with the E5c/E5e figures at the old pin 529ea57 for the same case:
+
+| case | v0.6.0 run 1 | run 2 | at 529ea57 |
+|---|---|---|---|
+| Scheme-sleep baseline | 24 | 24 | 26-29 |
+| `'once`, 300 ms timer | 23 | 24 | 10266-10272 (E5c) |
+| `'once`, 1 ms timer | 35 | 51 | 91-93 (E5c) |
+| one `'default`, 300 ms timer | 27 | 33 | 10223-10240 (E5e) |
+| one `'default`, 1 ms timer | 29 | 50 | 44-92 (E5e) |
+
+E5b re-run unchanged at the same pin (`out/e5b-thread-direct-uv-write.v060.run1.txt`; run 2 differs only in the millisecond stamp, 28):
+
+```
+loop thread 0: peer accepted and published to the worker
+loop: giving up after 2 s; worker-outcome=((raised (&uv-wrong-thread)) on-thread 1 at 30)
+top: uv-run -> #f
+top: worker-outcome=((raised (&uv-wrong-thread)) on-thread 1 at 30)
+top: teardown -> ok
+top: done
+exit=0
+```
+
+At 529ea57 the same run printed `client: received "from-worker" at +36ms; worker-outcome=(uv-write!-returned on-thread 1 at 36)`: the worker's write went through and the bytes arrived, with the registry written from the wrong thread (E5b2 showed the corruption).
+
+**Reading.** With `uv_run` collect-safe the loop thread is deactivated for the blocking poll and no longer holds the collect interlock, so the worker's collections proceed whatever the loop thread is doing: 23-33 ms against 10.2 s, in `'once` and in one `'default` alike, and the E5c/E5e distinction between a 300 ms and a 1 ms timer disappears. The 1 ms-timer cases sit a few ms above baseline because each fire reactivates the loop thread, which then takes part in every rendezvous the worker triggers; that is the cost E5f measured per callback, now seen from the worker's side. E5b's silent cross-thread write is a named `&uv-wrong-thread` refusal raised before any registry mutation (#20). A raise inside a callback still comes out of the collect-safe `uv-run` as `&uv-callback-error` carrying the raised object, and the loop stays usable (`smoke-v060-tcp.sps`, quoted in the SDD ledger), so the store-and-reraise oracle decision 0003 item 4 relies on holds at this pin. Conclusions 5, 6 and 8 carry the update.
+
 ### E6: (uv-run loop 'nowait) from inside an on-data callback -- the exact refusal
 
 Loopback TCP pair; the server's `on-data` calls `uv-run` in all three modes and `uv-loop-teardown!`.
@@ -2614,20 +2729,20 @@ exit=0
 
 `(uv-invalid-argument? e)` = `#t`, `(uv-invalid-argument-who e)` = `uv-run`, `(uv-invalid-argument-reason e)` = `loop-running`; the compound condition has exactly one simple condition (`kinds: (&uv-invalid-argument)`), no `&message`, no `&who` (the `who` is the condition's own field, `conditions.sls:67-70`). Identical for `'nowait`, `'once` and `'default`. `uv-loop-teardown!` from a callback raises the same type with `who: uv-loop-teardown!`. Raised synchronously at the call site inside the callback, so the callback's own `guard` catches it and the loop continues (the outer `uv-run` returned `#f` normally, teardown `ok`). Source: loop.sls:55-56 and 124-125.
 
-## Conclusions (measured facts, scope: Chez 10.4.1 threaded tarm64osx, libuv 1.52.1 via chez-libuv v0.5.0, macOS 26.6.2 arm64)
+## Conclusions (measured facts, scope: Chez 10.4.1 threaded tarm64osx, libuv 1.52.1 via chez-libuv v0.5.0 at 529ea57, macOS 26.6.2 arm64; E5g and the E5b re-run are at chez-libuv v0.6.0)
 
 1. **A continuation captured inside a chez-libuv callback cannot be returned through after that callback has returned.** With full `call/cc` the callback body resumes (E2a/E2b) and Chez raises `attempt to return to stale foreign context` at the moment the trampoline returns to C. With `call/1cc` the body does not even resume: Chez raises `attempt to invoke shot one-shot continuation` in the target context (recorded by `dispatch-guarded` as a pending callback error) and then the stale-context trap (E1a/E1b). In both cases the trap is a bare `&assertion` that escapes `uv-run` unwrapped, because it fires after `dispatch-guarded` has returned. The process does not crash, the loop can be run again (E2c), and teardown closes the loop.
 2. **The captured continuation includes `uv-run` and the rest of the top-level program**, so invoking it re-runs the top-level code that follows `uv-run` (E1b/E2b printed the post-`uv-run` line twice; the unguarded first E1b version looped forever). Any design that stores a callback-captured continuation must never invoke it -- there is no way to make it valid.
 3. **The two-level loop works and is cheap** (E3/E3b): coroutines started from top level, `await!` capturing with only Scheme frames underneath, callbacks that only enqueue wakeups, and a scheduler that alternates the ready queue with `(uv-run loop 'once)`. Timer and TCP `on-data` / write-completion wakeups through three nested Scheme frames, and a second coroutine interleaving, all worked with no continuation errors. Cost: ~30-36 ns per pure suspend/resume (1e6 cycles in 30-36 ms; `call/1cc` and `call/cc` indistinguishable), and ~13 us per cycle when each cycle includes a 0 ms timer and one `uv-run 'once` (10,000 cycles in 131-138 ms wall, 17-20 ms CPU).
 4. **Engines work as handlers driven from a top-level scheduler** (E4a: 600 slices, resumed correctly after `uv-run 'once`/`'nowait`). Calling `uv-run` from inside a slice is fine when expiry happens in Scheme (E4b). **Expiry inside a callback does not stale the foreign frame** -- the callback body was sliced 200 times and then returned normally (E4c) -- but it leaves `uv_run`'s C frames suspended on the C stack, and it **clears chez-libuv's `loop-running` flag via `dynamic-wind`**, so a nested `uv-run` from the expire handler is accepted and actually re-enters libuv's `uv_run` (E4d: 200 nested runs, callbacks of another timer dispatched during them, no crash in 2/2 runs). The binding's re-entry refusal is therefore defeated by engine expiry; a design that uses engines must guarantee that no callback ever runs inside an engine slice, or re-guard `uv-run` itself.
-5. **Thread hand-off through a mutex-protected queue drained by a loop-thread timer works** (E5a). **Calling `uv-write!` from another thread does not**: one call succeeded twice by luck (E5b); 2000 concurrent calls produced a hang with lost data and a gtimeout kill, `invalid memory reference` faults inside `uv-run`, and corruption of chez-libuv's registry visible at teardown (`0 is not of type #<record type registry-entry>`) across four runs (E5b2).
-6. **A loop thread blocked in `uv-run` freezes collection for every other Scheme thread** because `uv_run` is bound without `__collect_safe` (native.sls:242): a worker's 27 ms allocation loop took 10.27 s with a 300 ms poll timeout and 92 ms with a 1 ms poll (E5c). Corrected 2026-09-19 (evening), E5d/E5e: **the 1 ms poll is not a workaround.** Chez services another thread's collect request only at a trap check (`$event`), and firing the collector does not shorten the 1000-tick budget; the timer helped in E5c only because chez-libuv's per-callback dispatch path spends that budget, which a bare FFI callback does not (chez-libuv's own T2b: 448 ms, no help; E5d: 0 calls per tick 439-447 ms, 300 calls 29-32 ms, 1000 calls 9-19 ms; an uncontended mutex per tick 437-438 ms). The binding must adopt `__collect_safe` (chez-libuv #19, planned as Stage 1 of its threading arc); no timer substitutes.
+5. **Thread hand-off through a mutex-protected queue drained by a loop-thread timer works** (E5a). **Calling `uv-write!` from another thread does not**: one call succeeded twice by luck (E5b); 2000 concurrent calls produced a hang with lost data and a gtimeout kill, `invalid memory reference` faults inside `uv-run`, and corruption of chez-libuv's registry visible at teardown (`0 is not of type #<record type registry-entry>`) across four runs (E5b2). At chez-libuv v0.6.0 the same E5b call is a named `&uv-wrong-thread` refusal raised before any registry mutation (#20; `out/e5b-thread-direct-uv-write.v060.run{1,2}.txt`, E5g).
+6. **A loop thread blocked in `uv-run` freezes collection for every other Scheme thread** because `uv_run` is bound without `__collect_safe` (native.sls:242): a worker's 27 ms allocation loop took 10.27 s with a 300 ms poll timeout and 92 ms with a 1 ms poll (E5c). Corrected 2026-09-19 (evening), E5d/E5e: **the 1 ms poll is not a workaround.** Chez services another thread's collect request only at a trap check (`$event`), and firing the collector does not shorten the 1000-tick budget; the timer helped in E5c only because chez-libuv's per-callback dispatch path spends that budget, which a bare FFI callback does not (chez-libuv's own T2b: 448 ms, no help; E5d: 0 calls per tick 439-447 ms, 300 calls 29-32 ms, 1000 calls 9-19 ms; an uncontended mutex per tick 437-438 ms). The binding adopted `__collect_safe` in v0.6.0 (chez-libuv #19, PR #25; native.sls:261), and E5g re-runs E5c/E5e at that pin: the worker takes 23-33 ms in every configuration. No timer ever substituted.
 7. **The re-entry refusal is exact and synchronous** (E6): `&uv-invalid-argument` with `who = uv-run`, `reason = loop-running`, identical for all three run modes, raised at the call site inside the callback and catchable there; `uv-loop-teardown!` from a callback raises the same with `who = uv-loop-teardown!`.
-8. **`__collect_safe` on `uv_run` and the callables costs about 60 ns per callback single-threaded** (E5f: 177-192 ns plain vs 235-249 ns safe per `uv_idle` callback, the poll amortized over 256 handles, 5,000,000 callbacks per trial).
+8. **`__collect_safe` on `uv_run` and the callables costs about 60 ns per callback single-threaded** (E5f: 177-192 ns plain vs 235-249 ns safe per `uv_idle` callback, the poll amortized over 256 handles, 5,000,000 callbacks per trial). In the pin since chez-libuv v0.6.0.
 
 ## Files
 
 - Scripts: `/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/spike/*.sps`, helper `/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/spike/spike/common.sls`, runner `/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/spike/run.sh`
 - Raw outputs: `/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/spike/out/*.runN.txt` (each ends with `exit=<gtimeout status>`)
-- The scratchpad paths above are where the spike was written; the same files now live in this repository under `.plans/research/spike/` (scripts, `spike/common.sls`, `run.sh`, `out/`). E5d-E5f (added 2026-09-19, evening) were written there directly: `e5d-ticker-needs-trap-ticks.sps`, `e5e-gc-stall-uvrun-default.sps`, `e5f-collect-safe-callback-cost.sps`, outputs `out/<name>.run{1,2}.txt`. The Chez 10.4.1 sources E5d cites were fetched from github.com/cisco/ChezScheme at tag v10.4.1 (c/schsig.c, c/thread.c, c/types.h, s/cmacros.ss, s/library.ss, s/prims.ss).
+- The scratchpad paths above are where the spike was written; the same files now live in this repository under `.plans/research/spike/` (scripts, `spike/common.sls`, `run.sh`, `out/`). E5d-E5f (added 2026-09-19, evening) were written there directly: `e5d-ticker-needs-trap-ticks.sps`, `e5e-gc-stall-uvrun-default.sps`, `e5f-collect-safe-callback-cost.sps`, outputs `out/<name>.run{1,2}.txt`; E5g (2026-09-19, night) likewise: `e5g-gc-stall-at-v060.sps` and the E5b re-run `out/e5b-thread-direct-uv-write.v060.run{1,2}.txt`, both against chez-libuv v0.6.0. The Chez 10.4.1 sources E5d cites were fetched from github.com/cisco/ChezScheme at tag v10.4.1 (c/schsig.c, c/thread.c, c/types.h, s/cmacros.ss, s/library.ss, s/prims.ss).
 - Fetched documents: `/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/csug-foreign.html`, `csug-foreign.txt`, `libuv-loop.html`, `libuv-threading.html`, `libuv-design.html`

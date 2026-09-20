@@ -1,0 +1,7 @@
+loop thread 0: peer accepted and published to the worker
+loop: giving up after 2 s; worker-outcome=((raised (&uv-wrong-thread)) on-thread 1 at 28)
+top: uv-run -> #f
+top: worker-outcome=((raised (&uv-wrong-thread)) on-thread 1 at 28)
+top: teardown -> ok
+top: done
+exit=0

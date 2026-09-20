@@ -1,0 +1,13 @@
+libuv 1.52.1; baseline: main thread sleeps 1 ms at a time (Scheme sleep)
+  worker elapsed 24 ms; collections during: 34
+E5c/1: main thread blocks in (uv-run loop 'once) with only a 300 ms repeating timer armed
+  worker elapsed 23 ms; collections during: 34
+  timer fired 1 times while waiting
+E5c/2: same but the loop's timer fires every 1 ms
+  worker elapsed 35 ms; collections during: 35
+  timer fired 30 times while waiting
+E5e: loop thread in one (uv-run loop 'default); binding dispatch path only
+  period 300 ms: worker elapsed 27 ms; collections 34; timer fired 1 times
+  period 1 ms: worker elapsed 29 ms; collections 34; timer fired 44 times
+done
+exit=0

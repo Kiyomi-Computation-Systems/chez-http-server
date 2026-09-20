@@ -20,7 +20,7 @@ Measured consequence on this machine (Chez 10.4.1 threaded, libuv 1.52.1, macOS 
 | E4a–E4d | Chez engines as handlers | work from a top-level scheduler; but expiry inside a callback leaves `uv_run`'s C frames suspended and clears chez-libuv's `loop-running` flag via `dynamic-wind`, so a nested `uv-run` is accepted and re-enters libuv (200 nested runs, no crash, invariant defeated) |
 | E5a | worker thread → mutex-protected queue → loop-thread 1 ms timer → `uv-write!` | works |
 | E5b/E5b2 | worker thread calls `uv-write!` directly | one call succeeded by luck; 2000 concurrent calls: hang with lost data, `invalid memory reference` in `uv-run`, registry corruption at teardown |
-| E5c | worker allocates while the loop blocks in `uv-run` | 27 ms of work took 10.27 s with a 300 ms poll; `uv_run` is bound without `__collect_safe` (chez-libuv #19). The 92 ms seen with a 1 ms poll is not a workaround (E5d/E5e) |
+| E5c | worker allocates while the loop blocks in `uv-run` | 27 ms of work took 10.27 s with a 300 ms poll; `uv_run` is bound without `__collect_safe` (chez-libuv #19). The 92 ms seen with a 1 ms poll is not a workaround (E5d/E5e). Gone at chez-libuv v0.6.0: 23-33 ms in every configuration (E5g) |
 | E5d | chez-libuv's threading-spike harness (raw FFI, plain `uv_run`, 1 ms ticker) with one knob: what the loop thread runs per tick | the ticker opens GC windows only when the loop thread executes a few hundred procedure calls per tick: 0 calls 439–447 ms, 100 calls 82–85, 300 calls 29–32, 1000+ calls 9–20; an uncontended mutex per tick 437–438; `(sleep 0)` 9–12; `__collect_safe` 6–10. Chez services a collect request only at `$event`, and firing the collector does not shorten the 1000-tick trap budget |
 | E5e | E5c's worker with the loop thread never leaving `uv-run 'default` | 1 ms timer 44–92 ms, 300 ms timer 10.2 s: chez-libuv's dispatch path alone reaches `$event`, which is why E5c saw 3× and chez-libuv's T2b saw 75× |
 | E5f | plain vs `__collect_safe` per callback, single-threaded, poll amortized over 256 idle handles | 177–192 ns vs 235–249 ns per callback, about 60 ns for the reactivate/deactivate pair |
@@ -35,7 +35,7 @@ Two judges reran the promise proposal's disciplined variant (capture in callback
 | `cps-callbacks` | connection layer and handlers in continuation-passing style over the binding's own callbacks; six ~10-line combinators | smallest surface, no continuation question, 2.7 KB/request measured, a working loopback server in the proposal's own spike | handler ergonomics: nested lambdas, no dynamic extent across an await, exactly-once `k` discipline unchecked by the language (an arity slip stopped the whole loop via store-and-reraise) |
 | `two-level-coroutines` | scheduler at top level; callbacks enqueue; one coroutine per connection on `call/1cc`; direct-style handlers | direct-style `await`; application code never runs under a C frame so store-and-reraise is unreachable; 24 ns per switch, 3.4–5.6 KiB per parked coroutine measured | connection semantics live in coroutine control flow, so the corpus replay needs the scheduler; 10k idle connections carry parked stacks |
 | `engines` | handlers as Chez engines, slices interleaved with `uv-run 'nowait` | preemption of CPU-hog handlers | E4c/E4d hazards; every expiry inside `parser-feed!` poisons the parser (judge J1: 28/28); preemption is not a v1 requirement |
-| `threads-mailbox` | handlers on a thread pool, loop thread owns handles | only route to multi-core within one process | needs `uv_async` and `__collect_safe` that do not exist yet (E5b2, E5c; planned upstream on 2026-09-19 as chez-libuv's threading arc, #19 then #20); nondeterministic tests |
+| `threads-mailbox` | handlers on a thread pool, loop thread owns handles | only route to multi-core within one process | needed `uv_async` and `__collect_safe` (E5b2, E5c), both shipped in chez-libuv v0.6.0 the same night (#19, #20; E5g and `smoke-v060-async` verify them); nondeterministic tests |
 | `promise-combinators` | then/catch/all/race over callbacks, optional `await` sugar | ergonomic composition without a scheduler | Tier 1 `await` captures under a C frame (see above); 4.1 KiB per suspended await |
 | `sans-io-state-machine` | `conn-step : State × Event → State × [Action]`; parser callbacks are events answered synchronously; effects run-to-completion | the whole llhttp corpus and every semantics table run with no sockets (13/13 checks in its spike); zero timers and zero continuations per connection | naive prototype allocated 6.8 KB/request; handler asynchrony is closures unless a shell adds coroutines |
 
@@ -62,7 +62,7 @@ Judges' totals over six criteria (max 90): two-level 78, CPS 77, sans-I/O 72, pr
 3. **Handlers** = plain procedures. One that returns a response is done. One that calls `await` is created and resumed only from the scheduler's drain, never inside a callback (phase assertion R1/R2); resume cells fulfilled from libuv callbacks are the only bridge, and they are one-shot (R4). The measured 3.4 KiB per parked coroutine is paid only while a handler is actually parked.
 4. **Run-to-completion.** Parser callbacks run `conn-step` and nothing else, because byte-machine refuses re-entrant feeds and poisons a parser whose callback escapes; every other action is queued and executed after the outermost dispatch returns. Nothing that can raise runs inside a parser callback, and nothing the application writes runs under a C frame.
 
-Rejected for v1, with the evidence that rejects them: engines (E4c/E4d, J1), OS-thread handlers (E5b2, E5c, no `uv_async`), callback-captured `await` (E1/E2 and the escape-only discipline). The threads route stays open as chez-libuv #19 and #20, planned upstream on 2026-09-19 as Stage 1 and 2 of one arc; until Stage 1 lands no timer trick substitutes for `__collect_safe` (E5d/E5e).
+Rejected for v1, with the evidence that rejects them: engines (E4c/E4d, J1), OS-thread handlers (E5b2, E5c, no `uv_async`), callback-captured `await` (E1/E2 and the escape-only discipline). The threads route stays open: chez-libuv #19 and #20 landed in v0.6.0 the same night (E5g: the GC stall is gone; E5b re-run: a wrong-thread verb is a named refusal), so the route is admissible from that pin and still not taken for v1; no timer trick ever substituted for `__collect_safe` (E5d/E5e).
 
 ## What each layer of the hybrid is tested by
 
@@ -106,7 +106,7 @@ The verbs a handler sees export no `uv-*` name; `make test` carries an `rg` gate
 |---|---|---|
 | suspend/resume on the two-level scheduler | 24–36 ns | spike E3b; two-level M2 |
 | one scheduler turn with a 0 ms timer and `uv-run 'once` | ~13 µs | spike E3b |
-| `__collect_safe` reactivate/deactivate per callback, single-threaded (after chez-libuv #19) | ~60 ns (177–192 ns plain, 235–249 ns safe) | spike E5f |
+| `__collect_safe` reactivate/deactivate per callback, single-threaded (in the pin since chez-libuv v0.6.0) | ~60 ns (177–192 ns plain, 235–249 ns safe) | spike E5f |
 | parked coroutine, resident | 3.4–5.6 KiB | two-level M3 |
 | naive pure core, per request | 6,832 B | sans-I/O §12.1 |
 | CPS core, per request | 2,672 B | CPS proposal |

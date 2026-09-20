@@ -3,7 +3,7 @@
 Date: 2026-09-19
 Status: accepted for M0 — decisions 0001–0008 record what was settled
 Consumers: applications written in Chez; the first is a plaintext/JSON service shaped like the TechEmpower `plaintext`/`json` tests
-Dependencies (all Kiyomi, all local checkouts; pins as of 2026-09-19 night): `chez-libuv` v0.5.0 plus commit 529ea57, `chez-httparse` v0.4.0, `uriparse` v0.3.0, `byte-machine` v0.6.0
+Dependencies (all Kiyomi, all local checkouts; pins as of 2026-09-19 night): `chez-libuv` v0.6.0, `chez-httparse` v0.4.0, `uriparse` v0.3.0, `byte-machine` v0.6.0
 Research behind this brief: [`.plans/research/`](research/README.md) — 61 agent reports, a live control-flow spike, and the verified corpus catalogue
 
 ## Goal
@@ -22,7 +22,7 @@ A small, composable HTTP/1.1 origin server in R6RS Scheme for Chez, built by com
               └───┬──────────────┬──────────┘
                   │              │
         (generated httparse-message)   (libuv)          (uri collect) for the request-target
-        chez-httparse v0.2.0           chez-libuv v0.5.0
+        chez-httparse v0.4.0           chez-libuv v0.6.0
                   │
         (byte-machine runtime) v0.6.0
 ```
@@ -39,7 +39,7 @@ Each of these is a decision record; the one-line form is here so the brief reads
 4. **Bounded, nginx-style defaults; one tick timer and a timing wheel per loop** (decision 0005). Header read 60 s, idle 75 s, body inactivity 60 s, header bytes 16 KiB → 431, header count 100, target 8 KiB → 414, bodies stream unbounded, pipeline cap 1. Every limit is overridable from the environment.
 5. **HTTP/1.0 is supported; an h2c preface is answered 505 and closed; upgrades hand off through one hook** (decision 0006).
 6. **Corpora are vendored as data with provenance** (decision 0007): llhttp reached through chez-httparse's harness, libhtp's 102 connection streams first, the rest by tier.
-7. **Twelve upstream asks were filed and tackled first** (decision 0008): chez-httparse #32–#36 (plus #42, split from #33), chez-libuv #18–#21, uriparse #9–#11. Ten of the twelve have landed (eleven of the fourteen counting #42 and the later uriparse #18): all of chez-httparse's in v0.3.0 and v0.4.0, all of uriparse's in v0.2.0 and v0.3.0, chez-libuv #18 and #21 on `main`. Only chez-libuv #19 and #20 remain, both planned upstream and needed only by a future worker pool; v1 needs no workaround for either. The one workaround v1 still carries is accepting uriparse's per-request allocation on validated targets (filed as uriparse #18).
+7. **Twelve upstream asks were filed and tackled first** (decision 0008): chez-httparse #32–#36 (plus #42, split from #33), chez-libuv #18–#21, uriparse #9–#11. All twelve have landed (thirteen of the fourteen counting #42 and the later uriparse #18): chez-httparse's in v0.3.0 and v0.4.0, uriparse's in v0.2.0 and v0.3.0, chez-libuv's in v0.6.0, every pin at a release tag. The one workaround v1 still carries is accepting uriparse's per-request allocation on validated targets (filed as uriparse #18).
 
 ## Why this is its own repository, and where it stops
 
@@ -56,7 +56,7 @@ How does Scheme interact with libuv's asynchrony? Six proposals were written ind
 - A continuation captured inside a libuv callback cannot be resumed after the callback returns. Chez raises `attempt to return to stale foreign context`, a bare `&assertion` that escapes `uv-run` unwrapped (spike E1a/b, E2a/b, run twice each).
 - A scheduler that resumes coroutines only from Scheme frames and lets callbacks merely enqueue works, at ~30 ns per suspend/resume and ~13 µs per `uv-run 'once` turn (spike E3/E3b).
 - Engine expiry inside a callback clears chez-libuv's `loop-running` flag through `dynamic-wind` and lets a nested `uv-run` re-enter libuv (spike E4c/E4d); every expiry inside `parser-feed!` poisons the parser (judge experiment J1).
-- A worker thread touching a loop handle corrupts the registry (spike E5b2); a loop thread blocked in `uv-run` freezes GC for other threads because `uv_run` is bound without `__collect_safe` (spike E5c, now chez-libuv #19; the 1 ms timer that seemed to mask it is not a workaround, spike E5d/E5e).
+- A worker thread touching a loop handle corrupted the registry (spike E5b2) and a loop thread blocked in `uv-run` froze GC for other threads (spike E5c; the 1 ms timer that seemed to mask it is not a workaround, spike E5d/E5e). Both are gone at chez-libuv v0.6.0, the pin: the touch is a named `&uv-wrong-thread` refusal and the stall is at baseline (spike E5g and the E5b re-run). What remains is the ~60 ns per callback the conversion costs (spike E5f), a line in M0's baseline.
 
 The three judges disagreed on the ranking of the single proposals and agreed on the hybrid: sans-I/O core, direct-callback shell, coroutines only for handlers that await.
 
@@ -78,7 +78,7 @@ Each milestone exits on a measured count in the ledger, dated and platform-stamp
 
 ### Upstream first — the twelve asks
 
-Before M0, work the filed issues in the order the milestones need them. **chez-httparse: all landed and tagged the same day.** v0.3.0 carries #32 (`(httparse decisions)`: F-* constants, `should-keep-alive?`, `message-needs-eof?`) and #35 (`(httparse methods)`); v0.4.0 carries #33 (`parser-finish!` fires `on-message-complete` for a close-delimited body), #42 (an unsafe finish is llhttp's `invalid-eof-state`, split from #33), #34 (`parser-result-next` and the two upgrade hand-off channels, documented in `docs/api.org`) and #36 (the 501-vs-400 split by `parser-error-node-name`, documented; the code stays one per llhttp number). **uriparse: all landed and tagged the same day.** #9 (`uri-parse-authority-form` and its strict variant) and #10 (host grammar, so CR/SP in a host is `invalid-reg-name`) in v0.2.0; #11 (`uri-collector-reset!`: one collector per connection on the streaming path; `uri-parse-validate` still builds its own, so M2's validated forms keep the accept-the-allocation workaround until uriparse #18 exports validation over a parse result) in v0.3.0, which also states that `uri-parse-validate` is audited recognizer-equivalent to RFC 3986 Appendix A per mode (recognition only; `uri-parse` stays lenient by design). **chez-libuv:** #18 (`uv-write*!`, one request over a list of bytevectors or spans) landed on `main` at 529ea57 and #21 (`uv-tcp-keepalive!` and a reuseport bind flag; post-v0.1) at 83e0184, both untagged; #19/#20 are planned upstream as Stage 1 and 2 of a threading arc, prerequisites only for a future worker pool. Each open ask has a recorded workaround, so no milestone blocks on any of them. M0 pins chez-httparse at the v0.4.0 tag, uriparse at the v0.3.0 tag and chez-libuv at commit 529ea57 until a v0.6.0 tag exists.
+Before M0, work the filed issues in the order the milestones need them. **chez-httparse: all landed and tagged the same day.** v0.3.0 carries #32 (`(httparse decisions)`: F-* constants, `should-keep-alive?`, `message-needs-eof?`) and #35 (`(httparse methods)`); v0.4.0 carries #33 (`parser-finish!` fires `on-message-complete` for a close-delimited body), #42 (an unsafe finish is llhttp's `invalid-eof-state`, split from #33), #34 (`parser-result-next` and the two upgrade hand-off channels, documented in `docs/api.org`) and #36 (the 501-vs-400 split by `parser-error-node-name`, documented; the code stays one per llhttp number). **uriparse: all landed and tagged the same day.** #9 (`uri-parse-authority-form` and its strict variant) and #10 (host grammar, so CR/SP in a host is `invalid-reg-name`) in v0.2.0; #11 (`uri-collector-reset!`: one collector per connection on the streaming path; `uri-parse-validate` still builds its own, so M2's validated forms keep the accept-the-allocation workaround until uriparse #18 exports validation over a parse result) in v0.3.0, which also states that `uri-parse-validate` is audited recognizer-equivalent to RFC 3986 Appendix A per mode (recognition only; `uri-parse` stays lenient by design). **chez-libuv: all landed and tagged the same day** in v0.6.0: #18 (`uv-write*!`, one request over a list of bytevectors or spans), #21 (`uv-tcp-keepalive!` and a reuseport bind flag, Linux/BSD-only; post-v0.1), #19 (`uv_run` and its trampolines `__collect_safe`: a blocked loop thread no longer freezes other threads' GC, spike E5g) and #20 (`(libuv async)` and enforced loop-thread affinity, `&uv-wrong-thread`), the last two prerequisites only for a future worker pool. Each open ask has a recorded workaround, so no milestone blocks on any of them. M0 pins chez-httparse at the v0.4.0 tag, uriparse at the v0.3.0 tag and chez-libuv at the v0.6.0 tag.
 
 ### M0 — the skeleton and the pure records
 
