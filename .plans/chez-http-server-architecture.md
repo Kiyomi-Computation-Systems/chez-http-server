@@ -1,6 +1,10 @@
 # Chez Scheme HTTP/1 Server Architecture
 
-> **Status (2026-09-19):** background design write-up, kept as the layering reference. Two names are historical: the parser called `chez-http1` here shipped as **chez-httparse** (v0.2.0), and `chez-byte-machine` shipped as **byte-machine** (v0.6.0); both are complete for this project's purposes. What is actually built, and in what order, is in [`2026-09-19-chez-http-server-project-brief.md`](2026-09-19-chez-http-server-project-brief.md); the asynchrony model this document leaves open is settled in [`2026-09-19-async-model-options.md`](2026-09-19-async-model-options.md) and decisions 0002–0003.
+> **Status (2026-09-20): partly superseded; kept as background.** Sections 5–15 — everything about the server layer — are superseded by [`2026-09-20-chez-http-server-design.md`](2026-09-20-chez-http-server-design.md), which is this project's design document (SDD rung 2). Read that instead for the module layout, the connection state machine, the condition hierarchy, buffer ownership and the testing strategy. Sections 1–4 are kept as background on the three layers that now live in their own repositories.
+>
+> Three parts of this document are known to be **wrong** at the current pins, and the design document states the corrected rule with a file:line: §8's "the write queue must retain references to buffers until `libuv` reports that the write operation has completed" (chez-libuv copies every write payload into request-owned foreign memory at the call), §9's "parser callbacks may refer directly to regions of a libuv read buffer" (the binding copies each delivery out into a fresh Scheme bytevector), and §12's error model, which is a four-bucket sketch rather than a hierarchy.
+>
+> **Two names here are historical:** the parser called `chez-http1` shipped as **chez-httparse** (pinned at v0.4.0), and `chez-byte-machine` shipped as **byte-machine** (v0.6.0). Never use the old names in new work (decision 0001 item 5). What is actually built, and in what order, is in [`2026-09-19-chez-http-server-project-brief.md`](2026-09-19-chez-http-server-project-brief.md); the asynchrony model this document leaves open is settled in [`2026-09-19-async-model-options.md`](2026-09-19-async-model-options.md) and decisions 0002–0003.
 
 ## Goal
 
