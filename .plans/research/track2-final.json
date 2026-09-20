@@ -1,0 +1,709 @@
+{
+ "designs": [
+  {
+   "key": "cps-callbacks",
+   "name": "Pure callback / CPS (Node-style)",
+   "summary": "Write the connection layer and handler API directly in continuation-passing style over chez-libuv's existing callback shapes: every async step takes k : (err value) -> unspecified and calls it exactly once from a later libuv callback; no continuations captured, no threads, no engines. Six ~10-line combinators (cps-guard, once, cps-bind, cps-seq, cps-each, cps-while, cps-all) are the entire runtime support. The driver pauses the parser at on-message-complete so `consumed` marks message boundaries (measured: consumed=28 for a 28-byte GET, second message at offset 56), parses ahead up to a cap, and uses uv-read-stop!/uv-read-start! plus stored continuations for backpressure. Two spikes ran today: a socket-less CPS core replaying a POST body at every chunk size 1..60 with identical body and coalesced event stream, and a loopback CPS HTTP/1.1 server serving 200 pipelined requests in order (199x200 + 1x500 from a deliberate handler raise), awaiting uv-getaddrinfo! inside a handler, triggering one uv-read-stop! at cap=4, and closing exactly once. Strongest properties: zero dependence on the continuation-across-foreign-callable question, smallest surface over the binding (which is already CPS), trivially pure core (conn-step : State Event -> State x Commands), ~2.7 KB allocated per request in the core. Weakest: handler ergonomics (nested lambdas, no dynamic extent across awaits, continuation arity/exactly-once unchecked by the language \u2014 an arity slip in the spike stopped the whole loop via store-and-reraise). Full proposal with citations and verbatim outputs at the report path.",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/async-cps-callbacks.md",
+   "chez_assumptions": [
+    "NOT relied upon: invoking a continuation captured inside a foreign-callable after that callable returned. CPS never captures one. CSUG foreign.html \u00a74.4: 'A foreign context becomes stale after a normal return to the context or after a return to some other foreign context beneath it on the control stack' and the system is 'trapping attempts to return to stale foreign contexts'; 'the C stack pointer is not automatically restored to its base value when a continuation is used on the Scheme side to perform a nonlocal exit'. Whether a continuation captured in one callable can be resumed from another is exactly the stale-context question the live spike measures; this proposal is correct either way.",
+    "Relied upon: a guard established inside a foreign-callable that catches without escaping is safe. chez-libuv's own dispatch-guarded (handles.sls:302-304) depends on it and passes its suites; cps-guard is the same construct one level up.",
+    "Relied upon: allocation and GC inside a foreign-callable are ordinary (test-echo.sps calls (collect) inside every callback per design spec S11).",
+    "Relied upon: callbacks run only on the loop thread, one at a time; uv-run refuses re-entry from a callback (loop.sls:55-56); libuv's threadpool never runs Scheme (api.md DNS). Hence no mutex around connection state and no use of the unsynchronised handle registry from other threads. threads.html: foreign-created threads 'must call Sactivate_thread ... before touching any Scheme data' \u2014 not exercised.",
+    "Relied upon: Chez's segmented stack tolerates the pump's synchronous recursion, which is bounded by the pipelining cap anyway.",
+    "Assumed, unmeasured in isolation: a pending-step closure costs a few dozen bytes; bounded by the measured 2672 B/request.",
+    "Not used: call/1cc ('A one-shot continuation should not be returned to multiple times'), engines, fork-thread."
+   ],
+   "risks": [
+    "Continuation arity and exactly-once are unchecked by the language: an arity slip (k err) vs (lambda (err v)) in the spike stopped the whole loop via store-and-reraise; a forgotten k hangs silently (only response-timeout catches it); `once` catches double calls at runtime only.",
+    "The pyramid: sequential awaits plus a streaming loop become nested lambdas or a monadic cps-seq/cps-bind pipeline; readable but foreign to most Scheme programmers; macro sugar (async-let*) helps but adds a second sub-language.",
+    "Dynamic extent does not survive a step: parameterize, with-exception-handler, dynamic-wind, current-output-port redirection do not span an await; request-scoped context must be explicit in the request record.",
+    "Stack traces stop at the trampoline; cps-guard must annotate conditions with request id and step name by hand.",
+    "Every boundary needs cps-guard; a handler passing its own lambda straight to uv-getaddrinfo! is unguarded unless it goes through an http-await proxy \u2014 one missed guard stops service for all connections.",
+    "Synchronous completion re-entrancy: a step that calls k before returning runs the rest of the pipeline inside the caller's frame; state mutated after the call sees the future (rule: never assume code after a step call runs before k).",
+    "Recursion in the pump (feed -> pump -> feed) is bounded only by the pipelining cap; a cap misconfigured to thousands would deepen the stack on a delivery full of tiny requests.",
+    "httparse does not export the F-* flag integers (grammar.sls:301-306); the server must restate llhttp's constants and pin them with a test (inherited by every proposal).",
+    "Byte-machine zero-width step after a pause on the last body byte: the driver must feed once more even with an empty range or the message never completes (runtime.sls:1144-1148); the first spike hung on it.",
+    "Where CPS is simply worse than a coroutine per connection: handler authoring ergonomics (the four points above). Where it is better: no dependence on the continuation-across-C question, zero per-request control-state cost, smallest surface over a binding that is already CPS, trivially pure core, no scheduler to test. If the live spike proves captured continuations resumable across callables, an await layer can be built on top of this driver later without changing it; the reverse is not true."
+   ]
+  },
+  {
+   "key": "two-level-coroutines",
+   "name": "Two-level loop with coroutines on one-shot continuations",
+   "summary": "A Scheme scheduler owns the top level: each turn it resumes every runnable coroutine to its next suspension point, then calls (uv-run loop 'once) \u2014 which blocks in the OS poll until libuv has something to deliver \u2014 and repeats ('nowait only when a coroutine yield!ed for fairness). libuv callbacks never run user code: each pushes an event onto a per-connection inbox or fulfils a one-shot resume cell and returns. Coroutines are call/1cc-based and every continuation is captured and invoked only in frames the scheduler entered, never inside a foreign-callable, so the open question about invoking callable-captured continuations is sidestepped by construction (checked at runtime by a scheduler 'phase' assertion). One coroutine per connection owns the parser, the inbox, the outstanding-write counters and the ordered response stream, and runs handlers in arrival order on its own stack (v2: per-request coroutines behind an ordering gate with max-pipeline-depth). Handlers are direct-style (request-read!, response-write!, await, with-deadline). Measured on this machine today: the scheduler blocked in uv-run for 402 of 402 ms across 6 uv-run calls with no busy loop; a yield/resume pair costs 24 ns and ~7 bytes (359 ns from 200 frames deep); a parked coroutine costs 3.4\u20135.6 KiB resident at 10k; callback-pause at on-message-complete gives an exact pipelining boundary via parser-result-consumed (51 then 47 bytes) and feeding after a Connection: close message errors with 'closed-connection; a guard inside a coroutine catches a raise that occurs after suspend/resume and an uncaught coroutine raise lands in the scheduler's plain Scheme guard. Consequence: application code can never trigger chez-libuv's store-and-reraise loop stop, because it never runs under a C frame. Full document: research/async-two-level-coroutines.md.",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/async-two-level-coroutines.md",
+   "chez_assumptions": [
+    "A1 (structural, spike-independent): a continuation captured in a Scheme frame entered from the scheduler may be invoked after intervening uv-run foreign-procedure calls have returned normally \u2014 CSUG foreign.html \u00a74.4: 'until some return to a foreign context is actually performed, all return points remain valid', and a foreign context is a C->Scheme call, none of which exists between the scheduler and any captured k; exercised 6 times in spike/two-level.sps without incident.",
+    "A2 (the open question, deliberately NOT depended on): whether a continuation captured inside a foreign-callable may be invoked after that callable returned. CSUG \u00a74.4 says Chez traps 'attempts to return to stale foreign contexts', so the expected outcome is a trapped error rather than corruption; this proposal never captures inside a callable (rules R1/R2, checked by the scheduler 'phase' assertion), so it is correct whichever way the live spike lands. If the spike shows it is safe, resuming coroutines directly from callbacks would be simpler than this design.",
+    "A3: one-shot promotion is transparent \u2014 if code inside a handler obtains a call/cc continuation while a coroutine is active (R6RS guard reraise, SRFI generators), the active call/1cc continuations are promoted to multishot (CSUG control.html \u00a76.3), which is correct; measured cost difference 24 vs 29 ns, so nothing depends on staying one-shot.",
+    "A4: dynamic-wind winders run on every suspend/resume (measured in=2 out=2 for one park), so parameterize across an await is correct but re-executed; documented as an avoid-in-hot-handlers rule.",
+    "A5: no non-local exit ever crosses a C frame in this design, so CSUG \u00a74.4's 'C stack pointer is not automatically restored' caveat does not apply; &uv-callback-error, if ever raised, is raised after uv-run returned normally.",
+    "A6: single OS thread; uv-run bound plain; __collect_safe unused (chez-libuv spike FINDINGS 'deliberately untested: __collect_safe x callback re-entry'); the handle registry is an unsynchronised eqv-hashtable (handles.sls:218).",
+    "A7: call/1cc capture/resume cost scales with the live stack segment (CSUG \u00a76.3 cites 'Representing control in the presence of one-shot continuations'), consistent with 24 ns shallow vs 359 ns at 200 frames \u2014 handlers should await at modest depth.",
+    "A8: a coroutine must never return normally into the scheduler's already-used one-shot continuation; it must end by jumping to the scheduler's CURRENT k \u2014 violating this crashed both spikes ('Exception in +: go is not a number') and is rule R3."
+   ],
+   "risks": [
+    "Discipline that must be policed at runtime, not compile time: safety rests on callbacks never running user code or capturing continuations (R1/R2) and parser callbacks never awaiting (R5); a violation surfaces as a fatal &uv-callback-error. The plain callback model has no such rule to break.",
+    "Memory: 3.4-5.6 KiB resident per parked coroutine (measured at 10k) vs ~200 B of closures in the callback model \u2014 ~35-56 MB extra at 10k connections, and those stack segments are scanned by major GCs (unmeasured under load). Smaller than the read buffer at any size >= 8 KiB, but real.",
+    "One extra hop per delivery (~24 ns switch + a cons + queue ops) and one more uv-run iteration boundary before user code sees an event \u2014 negligible against a syscall, strictly more than the callback model.",
+    "No cross-thread wakeup: uv_async is not bound by chez-libuv, so nothing can wake a scheduler blocked in uv-run 'once from another OS thread; off-loop CPU work is impossible in v1. Mitigation: request uv_async as a fourteenth locked trampoline under ADR-0008's rule.",
+    "No preemption: a CPU-bound handler starves every connection and with-deadline cannot interrupt it; engines were rejected because engine-block would capture inside parser-feed! and poison the parser. The callback model has the same property, so this is not worse, just not better.",
+    "Debugging unfamiliarity: a parked coroutine's stack is a heap object; backtraces show only its own segment.",
+    "v1 executes handlers sequentially per connection, so one slow pipelined request delays the rest; v2's per-request coroutines fix that at the cost of an ordering gate and max-pipeline-depth.",
+    "Reliance on callback-pause at three points (headers-complete, body-data, message-complete): the corpus records pauses for 24 fixtures and the spike confirmed the two needed here, but the pause path is less exercised upstream than the straight path.",
+    "The 16 KiB read-buffer recommendation was measured by chez-libuv discarding deliveries (api.md:164-171 'a consumer that retains deliveries ... was not measured'); this server retains deliveries in the inbox, so the object-count/GC cost is open.",
+    "If the live spike shows callable-captured continuations are safe to invoke later, the obvious alternative (resume coroutines directly from callbacks) needs less machinery and has lower latency; this proposal's remaining advantages are determinism (application code can never cause chez-libuv's store-and-reraise loop stop) and independence from an implementation property CSUG documents only obliquely."
+   ]
+  },
+  {
+   "key": "engines",
+   "name": "Chez engines for cooperative time-slicing",
+   "summary": "One engine per connection; every libuv callback is a pure event recorder (push an inbox chunk / set a flag / store a completion) that wakes the connection by a run-queue push, never by invoking a continuation; the scheduler runs engine slices in batches at the top level of the loop thread and polls with uv-run 'nowait when tasks are runnable and 'once when none are. The parser is pulled inside the engine, so parsing, handler, and response writing are all preemptible and the layer is a function from an inbox of bytevectors to writes. Measured on this machine (Chez 10.4.1): engines cannot nest (\"cannot nest engines\"), a blocked engine retains ~650-800 B, a block/resume round trip costs ~25 B / ~0.5 us, a tight loop is preempted at its tick limit but a C call is not, dynamic-wind thunks run at every slice boundary, and an idle uv-run 'nowait costs ~13 us (so slices must be batched per poll). A working spike ran a CPU hog, timer awaits, and a uv-getaddrinfo! await under this scheduler against real chez-libuv and tore down cleanly.",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/async-engines.md",
+   "chez_assumptions": [
+    "A1 (NOT relied upon; stated as required): whether a continuation captured inside a foreign-callable may be invoked after that callable returned is treated as unknown. CSUG foreign.html \u00a74.4: 'A foreign context becomes stale after a normal return to the context or after a return to some other foreign context beneath it on the control stack.' This design captures continuations only in engine code that runs outside every callback, so it needs nothing from the live spike.",
+    "A2 (measured, Chez 10.4.1): engines cannot nest \u2014 'Exception in engine: cannot nest engines'. The scheduler is the sole engine invoker; handlers and libraries they call must not use engines.",
+    "A3 (CSUG control.html \u00a76.4, quoted): 'Do not use the timer interrupt (see set-timer) and engines at the same time, since engines are implemented in terms of the timer.' No set-timer/timer-interrupt-handler anywhere in server or handlers; libuv timers are C and unaffected.",
+    "A4 (CSUG system.html Interrupts, quoted; measured): interrupts are 'supported via a counter that is decremented approximately once for each call to a nonleaf procedure' \u2014 a foreign call is not preemptible (usleep(20000) x2 completed inside a 10-tick engine with 7 ticks left; a loop of usleep(0) calls was preempted).",
+    "A5 (measured): dynamic-wind after-thunks run when an engine blocks and before-thunks run on resume ((in out) after block, (in out in out) after completion); parameterize is unwound at block and restored at resume. Handlers pay wind/unwind at every slice boundary.",
+    "A6 (measured): a raise inside an engine propagates to the engine's invoker and consumes the engine; new engines work afterwards; a guard inside the engine keeps it alive \u2014 hence guards live inside run-handler! and at run-slice!.",
+    "A7 (measured once, not documented): engine-block from a nested Scheme call works; call/1cc captured before a block and invoked after resume worked here but handlers are told not to rely on it.",
+    "A8 (assumed): engine/timer-interrupt state is per-thread and the loop runs on exactly one thread; chez-libuv's handle registry is unsynchronised and no Scheme runs on libuv worker threads (api.md DNS section).",
+    "A9 (measured): (collect) inside an engine and 10k allocation-heavy engines leave engine accounting intact.",
+    "A10 (CSUG \u00a76.4, quoted): tick-to-time mapping is unspecified ('Your mileage may vary'), so slice-ticks is a benchmarked config knob, not a constant."
+   ],
+   "risks": [
+    "Worse than a pure callback/CPS connection state machine for trivial handlers: engines add a scheduler and a ~13 us poll to amortise while buying nothing until a handler blocks or hogs.",
+    "Worse than one-shot coroutines (call/1cc yield-at-await) if handlers are trusted: same direct-style API without the nesting restriction, dynamic-wind churn, or timer-interrupt coupling; engines only win when preemption is a requirement.",
+    "The no-nesting restriction is a user-facing footgun: any handler or library using engines fails at runtime (contained as a 500, not fixable by the server).",
+    "Poll latency vs throughput tension in batch-max/slice-ticks must be settled by benchmark; too small wastes 13 us per slice, too large delays accepts and reads under saturation.",
+    "dynamic-wind/parameterize costs are invisible to handler authors and scale with slice frequency (request-context parameters and loggers pay twice per slice).",
+    "Foreign calls are not preemptible: a slow C routine or blocking libc call stalls the loop like in every single-threaded design, and the tick count can mislead (7 ticks left after 40 ms).",
+    "Preemption can land mid parser-feed! (parser lifecycle 'busy); correct only while nothing outside the engine touches that parser \u2014 a future timer-side parser inspection would break it; guarded by a test, not a comment.",
+    "Parked-engine size grows with handler stack depth (652 -> 804 B at 30 frames); bounded in practice, unbounded in principle.",
+    "The A1 unknown is avoided rather than answered: if the live spike shows callback-captured continuations are safe, designs resuming handlers directly in on-data skip a queue hop and a slice that this design keeps for determinism (~1 us).",
+    "Windows (deferred): uv-stream-write-queue-size semantics invert, so the gauge threshold must be per-platform or disabled.",
+    "Wheel resolution of 1 s makes deadlines fire up to one tick late; sub-second deadlines need a smaller configurable tick.",
+    "The 64 KiB read-buffer default (625 MiB at 10k) is the largest number in the design; 16 KiB is proposed but is a tradeoff chez-libuv deliberately left to consumers.",
+    "The feasibility spike exercised timers and DNS but not TCP reads/writes under the scheduler; the read/write backpressure paths are designed from the API contract and test-echo.sps, not yet measured end to end."
+   ]
+  },
+  {
+   "key": "threads-mailbox",
+   "name": "OS-thread worker pool for handlers, single loop thread for I/O, mutex/condition mailboxes",
+   "summary": "One loop thread (main) owns uv-run, every handle, the unsynchronised registry, the connection table, the timing wheel AND every parser; N = cores worker threads (fork-thread) run handlers on fully materialised request records and send commands (respond/start/write/end/read-more/close/loop-call) back through a loop-owned inbox. Parser stays on the loop thread because a full 25-callback parse costs 1.86 us/request (spike E) versus 3.9 us for a mailbox round trip (spike C), and because backpressure decisions (read-stop, callback-pause) happen inside parser callbacks and must run on the loop thread; body spans are handed to workers as (bv from to) of the fresh per-delivery bytevector with no second copy. Decisive measurement: with the loop thread blocked in chez-libuv's plain (non-__collect_safe) uv-run and nothing due, a worker that merely allocates stalls until the loop returns to Scheme \u2014 3005 ms in spike A \u2014 because Chez's collector rendezvous cannot complete while a thread is active in C (CSUG 4.9). Tier 1 (works today): a repeating heartbeat timer (1 ms while busy, 50 ms idle) that both drains the inbox and bounds the GC stall; cost ~1% idle CPU, 573 us mean handoff. Tier 2 (recommended upstream chez-libuv v0.6 prerequisite): bind uv_async (14th locked trampoline 'async', (uptr)->void) as the one any-thread verb, and re-bind uv_run __collect_safe with all trampolines __collect_safe; spike B shows this works on raw libuv (2000/2000 fires exact under (collect), close delivered, uv_loop_close=0) and cuts the worker stall from 3001 ms to 1 ms; spike D shows uv_async_send from a Scheme worker gives 13 us mean handoff at ~0.1% idle CPU. Thread-per-request is rejected on measured cost: ~244-250 KiB RSS and ~800 KiB Scheme-heap allocation per forked thread (spike C). Strictly one in-flight request per connection gives response ordering; max-pipeline enforced by callback-pause at on-message-begin; process-wide cap via a job-queue limit answered 503 by the loop thread. Full report with every command, output and quotation: /private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/async-threads-mailbox.md",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/async-threads-mailbox.md",
+   "chez_assumptions": [
+    "A1 (measured): Chez 10.4.1 here is a threaded build \u2014 (threaded?) => #t, machine-type tarm64osx, collect-trip-bytes 8388608.",
+    "A2 (CSUG 4.9, measured in spike A): a thread active inside a plain foreign-procedure call (uv_run blocked in kqueue) prevents every other thread from collecting; a worker's allocation stalled 3005 ms until the loop thread's next callback. The design therefore needs either a heartbeat timer or a __collect_safe uv_run.",
+    "A3 (CSUG 4.2/4.3, measured in spike B on raw libuv, darwin/arm64 only): uv_run bound __collect_safe with every callable bound __collect_safe re-enters correctly under GC pressure (2000/2000 fires, close delivered, uv_loop_close 0) and removes the stall (1 ms vs 3001 ms). NOT yet in chez-libuv; FINDINGS.md names it as the untested gap; Linux must be re-measured in CI before tier 2 ships.",
+    "A4 (CSUG ch.15, 4.9): fork-thread threads start active; record field mutators, set-car!, vector-set! are thread-safe but hashtables are not; the design nevertheless reads/writes every shared field only under with-mutex and waits only with condition-wait + timeout (returns #f on timeout). Chez documents primitive thread-safety, not a memory model for unsynchronised set! visibility, so unsynchronised sharing is forbidden by rule.",
+    "A5 (CSUG 15.1): thread-join waits for completion; there is NO thread cancel in Chez, so a wedged handler permanently loses a pool slot; engines are built on the timer interrupt (CSUG 6.4) and are not used to bound handlers in v1.",
+    "A6 (assumption, not relied on): whether a continuation captured inside a foreign-callable may be invoked after that callable returned is left to the separate live spike; this design captures no continuation inside any libuv callback and workers block with condition-wait, so it is insensitive to that result either way. CSUG 4.4 states continuations may throw through mixed Scheme/foreign frames, but ADR-0008/FINDINGS Q2 show escapes leave invisible cleanup obligations, which is a second reason not to use them.",
+    "A7 (measured, spike D): uv_async_send called through a plain foreign-procedure from a fork-thread'd Scheme worker wakes a loop blocked in a __collect_safe uv_run; libuv coalesces sends, so the inbox is drained to empty per wake. uv_stop from another thread neither wakes the poll nor is thread-safe (observed); never called off the loop thread.",
+    "A8 (measured, spike C): an idle forked thread costs ~244-250 KiB RSS and ~800 KiB Scheme-heap allocation; a mutex/condition round trip is ~3.9 us. Pool, not thread-per-request.",
+    "A9 (ADR-0009, handles.sls:405): on-data's bytevector is fresh per delivery and never mutated afterwards, so (bv from to) triples may be shared with a worker without copying; the parser's span callbacks index that same bytevector because the loop thread feeds it directly.",
+    "A10 (CSUG 15.8): thread parameters are inherited by value at fork; per-worker state uses make-thread-parameter; thread-preserve-ownership! is available as a parallel-collection hint for workers (unmeasured)."
+   ],
+   "risks": [
+    "Needs an upstream chez-libuv change to be good: without uv_async and a __collect_safe uv_run the loop must poll (latency >= heartbeat period, ~1% idle CPU) and every worker's GC waits on that poll. The raw-libuv spikes show the change is small and works on darwin/arm64, but it is a v0.6 slice with its own ADR (14th trampoline, first any-thread verb, __collect_safe re-binding of uv_run and all thirteen trampolines, the frozen thirteen-name test literals widened and watched to fail) and it has not been measured on Linux.",
+    "Simply worse than the single-threaded loop for cheap or I/O-bound handlers: two mailbox hops (~4 us) plus a wake per request, and stop-the-world GC across N+1 threads. The angle only pays when handlers burn CPU or call blocking foreign code; with an unknown workload the single-thread design is the safer default (the build order keeps HTTP_WORKERS=0 as an inline-handler fallback).",
+    "Stop-the-world GC across threads means parallel handlers scale sublinearly if they allocate heavily; not measured under load.",
+    "Unkillable handlers: Chez has no thread cancel; the 'handler timeout aborts the connection and marks the request aborted so the worker unwinds at its next blocking call, but a spinning or foreign-blocked handler holds its slot forever (lost-workers metric only).",
+    "Blocked writers wedge the pool: a worker parked in response-write! behind a slow client holds a slot; max-blocked-writers aborts connections to protect the pool, a worse client experience than a single-threaded server that parks nothing.",
+    "Nondeterministic tests for the pool/inbox/wakeup half; mitigated by injecting wake!, iteration caps, sentinel symbols and a fake thunk-runner loop, but the mutation lane for this half is harder to make go red by name.",
+    "Memory-model discipline is by rule, not by the language: every shared field must be touched only under with-mutex; a reviewer lint is proposed but a slip would be a silent race.",
+    "Per-connection memory is dominated by the 64 KiB foreign read buffer, identical for every angle; the proposal sets 16 KiB by default from api.md's measurements, which is a bulk-upload throughput tradeoff not measured here.",
+    "uv-stream-write-queue-size has opposite semantics on Windows (api.md), so it is used only as a signal; Windows is deferred anyway.",
+    "The spike measurements are single-machine (macOS arm64, 8 cores); the GC-interlock behaviour is documented Chez semantics but the magnitudes (3.9 us hop, 13 us async handoff, 250 KiB/thread) should be re-measured on the Linux CI host before they are used as thresholds."
+   ]
+  },
+  {
+   "key": "promise-combinators",
+   "name": "Promise/future combinators over callbacks, with optional one-shot-continuation await",
+   "summary": "Two tiers. Tier 0: a ~200-line promise library (then/catch/finally/all/race/any, cooperative cancellation, timeouts on a per-server timer wheel) whose reactions are queued on a microtask FIFO drained by `with-step` inside the libuv callback that settled them, before control returns to C; no threads, engines, uv_async, or scheduler beyond that FIFO, and no Chez assumption beyond what chez-libuv already makes. The whole connection driver (functional core emitting actions with opaque settle/reject tags; imperative shell mapping libuv callbacks to events and actions to verbs/promises) is written in Tier 0. Tier 1: `spawn`/`await` built on `call/1cc` captured inside a libuv callback and resumed from a later one, under one rule: every suspension and completion escapes to the *dynamically current* callback root and never returns normally into the frames of the callback that captured it (CSUG foreign.html stale-foreign-context rule). Measured today: 1000 capture-in-A/resume-in-B rounds with a collect each, loop ran dry, teardown clean; ~120-150 ns per suspend/resume; the negative case (raise after resume with no library catch-all) reaches the stale dispatch-guarded guard and Chez traps it as a plain condition `attempt to return to stale foreign context` escaping uv-run, while the stored error was still delivered on the next uv-run and the loop survived. Read-side backpressure is parser pause (measured: `consumed` includes the delivered span; re-feed from `consumed` after `parser-resume!`) plus uv-read-stop!, gated by whether a `body-read!` promise is pending; write-side is a per-connection outstanding-bytes/requests count with high/low water and the write-queue gauge as supplemental signal, expressed as `sink-write!` promise resolution; response ordering under pipelining is a per-response `ready` promise. Errors: handler raises become rejections (never reach dispatch-guarded); parser/policy errors map to 4xx+close; transport errors reject all pending tags; only driver bugs reach store-and-reraise. Testable without sockets by replaying the llhttp corpus through the core at every chunk size and asserting chunk-invariance of request records and action streams. Report: /private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/async-promise-combinators.md",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/async-promise-combinators.md",
+   "chez_assumptions": [
+    "A1: A one-shot continuation captured inside a foreign-callable body may be invoked after that callable returned to C, provided the resumed computation never returns normally to the stale foreign context and leaves by invoking another continuation (CSUG foreign.html: 'Programs that use continuations more generally also function properly as long as they never actually return to a stale foreign context, even if control logically moves past stale foreign contexts via invocation of continuations'). My own measurement today (1000 A->B rounds with collect, tarm64osx) is consistent; the separate live spike is authoritative; if it fails, Tier 1 (await) is dropped and the then-form driver is unchanged.",
+    "A2: Returning to a stale foreign context is trapped as a raise of an ordinary condition, not undefined behaviour (CSUG: 'Scheme handles this interaction in a general manner by trapping attempts to return to stale foreign contexts'; observed message 'attempt to return to stale foreign context', loop survived, teardown ok).",
+    "A3: The exception-handler stack ($current-handler-stack, a parameter) and dynamic-wind winders travel with a captured continuation and are reinstated on resume (observed: the capturing callback's dispatch-guarded guard caught a post-resume raise). Hence the library's catch-all must be the innermost handler around every resumed body.",
+    "A4: call/1cc per CSUG control.html: 'A one-shot continuation should not be returned to multiple times, either by invoking the continuation or returning normally from procedure more than once' and it is promoted to multishot if call/cc runs while it is active; Chez guard expands to call/cc (s/exceptions.ss), so guard inside a coroutine promotes the root (measured cost negligible). Handler code that re-enters a resumed body via its own call/cc is unsupported ('attempt to invoke shot one-shot continuation').",
+    "A5: Single loop thread; the promise library, microtask FIFO, wheel and chez-libuv's registry are single-thread by construction (CSUG threads.html: destructive operators are thread safe only on distinct objects); DNS completions arrive on the loop thread (docs/api.md).",
+    "A6: Memory retained by a suspended coroutine is its stack segment from the capturing callback's entry to the await point; segment size and Chez's segment allocation policy were not measured, and bytes-allocated may not count them.",
+    "A7: Engines are not used (CSUG: engines are implemented with the timer interrupt) and an engine block inside a foreign-callable would be a stale-context return by another name.",
+    "A8: uv-run's dynamic-wind thunks (loop.sls:60-63, set-loop-running!) are idempotent, so resuming across separate uv-run calls in a 'once-driven test harness is harmless; the driver must add no non-idempotent dynamic-wind or parameterize around a step."
+   ],
+   "risks": [
+    "The microtask FIFO is a scheduler in miniature; the 'no scheduler' claim is only honest about threads/engines/timeslicing. It is required for parser re-entrancy safety, so it cannot be removed.",
+    "Tier 1 (await) rests entirely on assumption A1; if the live spike fails, the ergonomic advantage shrinks to then-chains, which read worse in Scheme than in JS. The design survives (all four sketches have then forms) but the pitch does not.",
+    "Stale-foreign-context traps are one escaped raise away: any path letting a condition reach the capturing callback's dispatch-guarded guard reproduces the measured failure. The catch-all must be library-owned and innermost; user code capturing full continuations inside handlers is a trap. Plain callbacks cannot have this bug class.",
+    "Swallowed errors: a rejection with no reaction is silent by default; the unhandled-rejection-hook fires only at drain end and can report spuriously when a reaction is attached in a later step (JS has the same wart). Callbacks make the error path explicit at every site.",
+    "One promise record per write on the hot path (~28 B, ~20 ns measured) plus a reaction closure; a callback design allocates the closure anyway, so the delta is small but nonzero.",
+    "Cancellation is cosmetic for writes (uv_write cannot be cancelled once submitted, ADR-0018); only DNS has a real cancel via uv-cancel!.",
+    "Debuggability: a resumed coroutine's continuation chain contains frames of a long-finished callback; inspector output is confusing. Then-chains have the opposite problem (no chain).",
+    "Memory of suspended coroutines at 10k connections is unmeasured (A6).",
+    "dynamic-wind/parameterize around a step is a contributor footgun: values are silently wrong after a resume across uv-run calls.",
+    "Windows: the write-queue gauge inverts meaning (kernel-accepted overlapped sends), so queue-high-water needs per-platform calibration; Windows is deferred anyway (ADR-0004).",
+    "Where the obvious alternative is simply better: a server whose handlers are all synchronous gains nothing and pays the FIFO, the rejection-reporting wart and the per-write promise; CPU-bound handlers are helped by no angle without preemption, and threads cannot touch the loop because uv_async is not bound.",
+    "The measured bytes-allocated for continuation cycles (13-28 B) is implausibly low and should not be quoted as the cost of a suspension until segment allocation is accounted for."
+   ]
+  },
+  {
+   "key": "sans-io-state-machine",
+   "name": "Sans-I/O connection state machine with an action interpreter",
+   "summary": "The HTTP connection is a pure function conn-step : State x Event -> State x [Action]. Events are everything the world tells a connection (bytes-arrived, eof, read-error, write-completed, tick, the 25 chez-httparse callbacks as parser-event, the parser-feed! result as parser-result, handler-responded/handler-body-chunk/body-credit/handler-failed, shutdown-requested); actions are everything it asks for (reply-parser, feed-parser, resume-parser, write, read-stop, read-start, call-handler, deliver-body, notify-producer, arm-deadline, shutdown, close, log). The shell is a ~120-line interpreter: libuv callbacks build events; parser callbacks build parser-events synchronously inside parser-feed! and return the step's reply-parser action (continue/pause/skip-body/(fail code)); all other actions are queued and executed only after the outermost dispatch returns (run-to-completion), which is forced by byte-machine's non-re-entrant, escape-poisoning parser and chez-libuv's refusal of uv-run re-entry. A runnable prototype in the scratchpad runs the SAME core (a) under a socket-free fake loop: 13/13 checks including identical wire bytes at every chunk size 1..135 for the llhttp pipelining fixture, LIFO handler responses written in request order, a pipeline cap that pauses the parser+stops reads then resumes+feeds the retained remainder+restarts reads, Connection: close then more data (second request never fed; the parser's closed-connection error at offset 47 ignored), HTTP/1.0, handler raise -> 500, parser error -> 400+close, EOF with a request in flight; and (b) under a real chez-libuv loop over loopback: four pipelined requests, handlers answering 4,3,2,1 via uv timers and uv-getaddrinfo!, wire order 1,2,3,4, Connection: close honoured, connection table empty. Measured allocation: 6,832 B/request naive pure core, 14,054 B/request core+adapter+parser+fake shell. Zero continuations, zero threads, zero timer handles per connection (one per-loop tick + timing wheel; uv_timer_t measured 152 B). Full report with commands, verbatim outputs and file:line citations at the report_path.",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/async-sans-io-state-machine.md",
+   "chez_assumptions": [
+    "A1: every chez-libuv callback (tcp, timer, DNS completion, signal) runs on the loop thread inside uv-run (quickstart: 'Callbacks run here and nowhere else'; api.md DNS: 'completions are delivered on the loop thread like every other callback'), so connection cells need no locks and respond is loop-thread-only.",
+    "A2: this design captures NO continuation inside any foreign-callable; whether a continuation captured inside a foreign-callable may be invoked after that callable returned is therefore NOT load-bearing. CSUG 10 \u00a74.4 (quoted in the report): Chez 'trapping attempts to return to stale foreign contexts rather than by restricting the use of continuations directly'; 'A foreign context becomes stale after a normal return to the context'; 'programs that use continuations exclusively for nonlocal exits never attempt to return to a stale foreign context'. My reading is that such a re-entry is trapped as an error rather than silently corrupting; the separate live spike measures it and the design works under either outcome.",
+    "A3: guard/raise inside a callback is an ordinary nonlocal exit within one foreign context and is safe (CSUG \u00a74.4: 'Nonlocal exits themselves are no problem and are implemented by the C library function longjmp or the equivalent'); used in every executor arm and by chez-libuv's own dispatch-guarded.",
+    "A4: call/1cc is not used; if a coroutine layer were added on top, CSUG \u00a76.3 applies: 'A one-shot continuation should not be returned to multiple times' and it is 'promoted' to multishot if call/cc captures while it is active.",
+    "A5: engines are not used and would conflict with any set-timer use (CSUG \u00a76.4: 'Do not use the timer interrupt (see set-timer) and engines at the same time, since engines are implemented in terms of the timer').",
+    "A6: libuv threadpool workers never run Scheme (api.md DNS: 'pure C; no Scheme ever runs off the loop thread'), so no Sactivate_thread question arises; threaded build assumed only so fork-thread remains available to a future uv_async bridge (CSUG foreign.html: threads not created by fork-thread 'must ... be activated before it can access Scheme data').",
+    "A7: dynamic-wind is R6RS dynamic-wind (CSUG control.html), which is what byte-machine relies on to poison a parser after a callback escape (runtime.sls:1021-1057); hence no executor ever runs inside a parser callback.",
+    "A8: parser-feed!/parser-finish!/parser-resume! are non-re-entrant (byte-machine runtime.sls:998, :1343, :1612 'reentrancy' arms), hence the run-to-completion action queue.",
+    "A9: (sstats-bytes (statistics)) is cumulative allocation (used for the per-request numbers); bytes-allocated is not (went negative across a GC in the first attempt).",
+    "A10: uv-now (cached once per loop iteration) is adequate for deadline arithmetic at tick granularity.",
+    "A11: chez-libuv's on-data bytevector is fresh per delivery and never reused by the binding (ADR-0009), so retaining it as pending-input across callbacks is safe; if a future zero-copy borrowed-span variant ships, pending-input must copy."
+   ],
+   "risks": [
+    "Indirection tax: every effect is a datum interpreted elsewhere and the synchronous-reply vs deferred-effect split adds decision points; the prototype hit exactly such a bug (Connection: close decided at response arrival instead of write time), caught by the loopback test.",
+    "The interpreter (executor) is not covered by the socket-free tests; it needs loopback tests and is kept tiny and contract-tested (same action stream -> same wire bytes in both shells).",
+    "Streaming bodies cost two conn-step round trips per chunk versus writing directly from the producer; negligible at 64 KiB chunks, not at 1 KiB.",
+    "pending-input retains the whole delivery bytevector (up to read-buffer-size) per paused connection until resume, potentially doubling the read-buffer footprint for paused connections; copying the remainder is a tunable.",
+    "Pausing inside on-body-data (credit-based upload path) relies on the resume point after a SPAN pause being exactly `to`; corpus covers 24 requested pauses at every chunk size and a body-then-pause fixture, but this exact site must be pinned by a connection-layer test before it is relied on; fallback is pausing at chunk/message boundaries with one buffered span.",
+    "Handler ergonomics are callback-style with no await; engine/continuation-based proposals will read better in handlers. Coroutines can be layered on top later, but if the live spike shows re-entry after a foreign-callable returns is not allowed, that layer needs fork-thread + uv_async (not bound).",
+    "Cross-thread handlers unsupported: no uv_async binding and an unsynchronised handle registry; bridges are a future (libuv async) module (one more trampoline type under ADR-0008's rule) or a queue polled from the tick.",
+    "Naive purity is allocation-heavy (6,832 B/request measured); the fix (linear mutable accumulator) makes the core pure by contract rather than by construction and needs review discipline.",
+    "Wide event alphabet (17 event kinds x ~8 phases) is more code than the equivalent callbacks; unknown-event arms are assertion-violations that must never be reachable in production because a raise inside a parser callback poisons the parser.",
+    "Shared tick makes timeouts +/- tick-ms; exact per-connection timers cost 152 B + a callback each (switchable in the shell only).",
+    "Data-after-close is a server policy layered over a strict parser; enabling the lenient data-after-close flag would silently change behaviour (kept strict, tested at chunk=1).",
+    "Where the obvious alternative (direct callbacks mutating a connection record as in test-echo.sps) is simply better: fewer lines, one fewer layer, no reply/effect split, no interpreter contract to test. Where it is worse: every connection-semantics test needs a socket or a hand-built fake handle, and pause/resume, cap, backpressure and timeout logic interleave with libuv verbs inside callbacks, which is exactly where test-echo.sps needed its own finishing flag and uv-handle-open? guard."
+   ]
+  }
+ ],
+ "spike": {
+  "csug_quote": "From https://cisco.github.io/ChezScheme/csug10.0/foreign.html, Section 4.4 \"Continuations and Foreign Calls\" (verbatim): \"foreign-callable and foreign-procedure allow arbitrary nesting of foreign and Scheme calls. Because other languages do not support the fully general first-class continuations of Scheme, the interaction between continuations and nested calls among Scheme and foreign procedures is problematic. Chez Scheme handles this interaction in a general manner by trapping attempts to return to stale foreign contexts rather than by restricting the use of continuations directly. A foreign context is a foreign frame and return point corresponding to a particular call from a foreign language, e.g., C, into Scheme. A foreign context becomes stale after a normal return to the context or after a return to some other foreign context beneath it on the control stack. As a result of this treatment, Scheme continuations may be used to throw control either upwards or downwards logically through any mix of Scheme and foreign frames. Furthermore, until some return to a foreign context is actually performed, all return points remain valid. In particular, this means that programs that use continuations exclusively for nonlocal exits never attempt to return to a stale foreign context. (Nonlocal exits themselves are no problem and are implemented by the C library function longjmp or the equivalent.) Programs that use continuations more generally also function properly as long as they never actually return to a stale foreign context, even if control logically moves past stale foreign contexts via invocation of continuations. One implication of this mechanism is that the C stack pointer is not automatically restored to its base value when a continuation is used on the Scheme side to perform a nonlocal exit. If the program continues to run after the nonlocal exit, any further build-up of the C stack will add to the existing build up, which might result in a C stack overflow.\" Section 4.3 (verbatim): \"Mixed use of foreign-callable and foreign-procedure may result in nesting of foreign and Scheme calls, and this results in some interesting considerations when continuations are involved, directly or indirectly (as via the default exception handler). See Section 4.4 for a discussion of the interaction between foreign calls and continuations.\" On threads (verbatim): \"The __collect_safe convention for a callable activates a calling thread if the thread is not already activated, and the thread's activation state is reverted when the callable returns.\" and \"Since active threads operating in C code prevent the storage management system from garbage collecting, a thread should be deactivated via Sdeactivate_thread or through a foreign-procedure __collect_safe declaration whenever the thread may spend a significant amount of time in C code. This is especially important whenever the thread calls a C library function, like read, that may block indefinitely.\" The chapter contains 0 occurrences of \"engine\" and 0 of \"dynamic-wind\" (measured by text search of the fetched page).",
+  "conclusions": [
+   "Scope of every item: Chez Scheme 10.4.1 threaded (tarm64osx), libuv 1.52.1 via chez-libuv v0.5.0, macOS 26.6.2 arm64, measured 2026-09-19.",
+   "A continuation captured inside a chez-libuv callback is unusable once that callback has returned: with call/cc the callback body resumes and Chez raises 'attempt to return to stale foreign context' when the trampoline returns to C (E2a/E2b); with call/1cc the body does not resume and Chez raises 'attempt to invoke shot one-shot continuation' (recorded by dispatch-guarded as a pending callback error) followed by the stale-context trap (E1a/E1b). The trap is a bare &assertion that escapes uv-run without &uv-callback-error wrapping because it fires after dispatch-guarded has returned; the process does not crash, a subsequent uv-run works (E2c), and teardown closes the loop.",
+   "A callback-captured continuation contains uv-run and the rest of the top-level program: invoking it re-runs everything after uv-run (E1b/E2b printed the post-uv-run line twice; the unguarded E1b looped forever). There is no way to make such a continuation valid; designs must never store-and-invoke them.",
+   "The two-level loop works with zero continuation errors: coroutines started from top level, await! capturing with only Scheme frames beneath, callbacks that only enqueue wakeups, a scheduler alternating the ready queue with (uv-run loop 'once); timer, TCP on-data and write-completion wakeups through three nested Scheme frames, and an interleaved second coroutine all verified (E3). Cost: ~30-36 ns per pure suspend/resume (1e6 cycles in 30-36 ms; call/1cc and call/cc indistinguishable, E3b) and ~13 us per cycle when each cycle includes a 0 ms timer plus one uv-run 'once (10,000 cycles: 131-138 ms wall, 17-20 ms CPU).",
+   "Engines work as handlers driven from a top-level scheduler and resume correctly after uv-run (E4a); uv-run inside a slice is fine when expiry happens in Scheme (E4b); expiry inside a callback does not stale the foreign frame and the callback completes across 200 resumptions (E4c). However, engine expiry exits uv-run's dynamic-wind, clearing chez-libuv's loop-running flag, so the binding then accepts a nested uv-run that genuinely re-enters libuv's uv_run while the outer one is suspended on the C stack (E4d, 200 nested runs dispatching another timer's callbacks, no crash in 2/2 runs). The re-entry refusal is not a safety net for engine designs; an engine-based design must guarantee no callback ever runs inside a slice.",
+   "Cross-thread hand-off via a mutex-protected queue drained by a loop-thread 1 ms timer works (E5a). Calling uv-write! from a non-loop thread corrupts the binding: a single call happened to work twice (E5b), but 2000 concurrent calls produced, across 4 runs, a hang with lost data (gtimeout kill, exit 124), 'invalid memory reference' faults inside uv-run, and registry corruption at teardown ('0 is not of type #<record type registry-entry>') (E5b2). uv_async is not bound, so the polling timer is currently the only wake-up path.",
+   "Because uv_run is bound without __collect_safe (native.sls:242), a loop thread blocked in uv-run stalls every other Scheme thread at its next collection until the loop thread re-enters Scheme: a worker's 27 ms allocation loop took 10.27 s under a 300 ms poll timeout and 92 ms under a 1 ms timer (E5c). Thread-offload designs need a short-period timer armed, or the binding needs __collect_safe on uv_run and its callables.",
+   "The plain re-entry refusal is exact and synchronous (E6): &uv-invalid-argument, who=uv-run, reason=loop-running, identical for 'nowait/'once/'default, catchable inside the callback with the loop continuing; uv-loop-teardown! from a callback raises the same with who=uv-loop-teardown!.",
+   "CSUG foreign.html (csug10.0) says nothing about engines or dynamic-wind in relation to foreign-callable (0 text matches each); its only guidance is the Section 4.4 stale-foreign-context rule and the __collect_safe/thread-activation material, both quoted verbatim in the report."
+  ],
+  "experiments": [
+   {
+    "name": "E1a: call/1cc captured in timer A callback, invoked from timer B callback",
+    "exit_code": 0,
+    "verdict": "A's body did not resume; 'attempt to invoke shot one-shot continuation' was recorded as a pending callback error, then 'attempt to return to stale foreign context' escaped uv-run unwrapped; no crash, no hang, teardown closed the loop then re-raised the stored error. Byte-identical across 2 runs."
+   },
+   {
+    "name": "E1b: call/1cc captured in a callback, invoked from top level after uv-run returned",
+    "exit_code": 0,
+    "verdict": "Same two errors as E1a; the post-uv-run top-level line printed twice, proving the continuation carries the rest of the top-level program. An earlier unguarded version re-invoked itself forever (>64 MB output) and had to be capped. Byte-identical across 2 runs."
+   },
+   {
+    "name": "E2a: full call/cc captured in timer A callback, invoked from timer B callback",
+    "exit_code": 0,
+    "verdict": "A's body resumed inside B's dispatch; the trap fired when A's trampoline returned to C; bare &assertion escaped uv-run (after dispatch-guarded returned); teardown ok. Byte-identical across 2 runs. E2b (top-level invocation) and E2c (loop re-run after trap: new timer fired, uv-run #f, teardown ok) behaved consistently."
+   },
+   {
+    "name": "E3: two-level loop coroutines (timer + TCP on-data wakeups, nested frames, interleaved coroutine, 10k cycles)",
+    "exit_code": 0,
+    "verdict": "Works with no continuation errors: handler received hello/world through handle-connection!>recv-message!>recv!>await!, echoed via awaited uv-write!, ticker interleaved 4 sleeps. 10,000 pure cycles 0-2 ms; 10,000 timer+uv-run-once cycles 131-138 ms wall / 17-20 ms CPU. E3b: 1e6 cycles in 30-36 ms => ~33 ns per suspend/resume, call/1cc and call/cc indistinguishable. 2 runs differ only in timings."
+   },
+   {
+    "name": "E4a/E4b/E4c/E4d: engines as handlers; uv-run inside a slice; expiry inside a callback; nested uv-run while callback suspended",
+    "exit_code": 0,
+    "verdict": "E4a: 600 slices, engine resumed correctly after uv-run 'once ran timer callbacks (correct sum). E4b: 300 uv-run 'nowait calls from inside slices, fine. E4c: expiry inside a callback's foreign frame, callback body sliced 200 times then returned normally, no stale-context error. E4d: expiry inside a callback clears chez-libuv's loop-running flag (dynamic-wind after thunk), so a nested uv-run from the expire handler is NOT refused and re-enters libuv's uv_run while the outer one is suspended; it dispatched another timer's callback 3 times; no crash in 2/2 runs but this is a libuv-documented forbidden re-entry. All byte-identical or timing-only differences across 2 runs."
+   },
+   {
+    "name": "E5a: worker thread -> mutex queue -> 1 ms loop-thread timer -> uv-write! to TCP peer",
+    "exit_code": 0,
+    "verdict": "Delivered intact; write completion ran on the loop thread; 0-1 ms hand-off latency. 2 runs differ only in timings (43/47 polls). E5c (same file family, e5c-gc-stall-while-blocked-in-uv-run.sps): a worker's 27 ms allocation loop took 10.27 s while the loop thread blocked in uv-run with a 300 ms timer (34 GCs each waiting for the loop thread to leave C; uv_run is bound without __collect_safe at native.sls:242), 92 ms with a 1 ms timer."
+   },
+   {
+    "name": "E5b2 (NEGATIVE): worker thread calls uv-write! directly on the loop thread's handle, 2000 concurrent writes each side",
+    "exit_code": 124,
+    "verdict": "Undefined behaviour manifested in 4/4 runs, three different ways: hang with lost data and gtimeout kill; memory fault caught inside uv-run; corruption of chez-libuv's unsynchronised registry visible at teardown. (E5b, a single cross-thread uv-write!, happened to work in 2/2 runs -- not evidence of safety.)"
+   },
+   {
+    "name": "E6: (uv-run loop 'nowait) from inside an on-data callback",
+    "exit_code": 0,
+    "verdict": "Exact refusal: a single-component &uv-invalid-argument with who=uv-run, reason=loop-running (loop.sls:55-56), identical for all three modes, raised synchronously at the call site so the callback's own guard catches it and the loop continues. Byte-identical across 2 runs."
+   }
+  ],
+  "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/spike-control-flow.md"
+ },
+ "judges": [
+  {
+   "lens": "correctness",
+   "ranking": [
+    "two-level-coroutines",
+    "sans-io-state-machine",
+    "cps-callbacks",
+    "promise-combinators",
+    "engines",
+    "threads-mailbox"
+   ],
+   "hybrid": "Yes, a hybrid beats every single proposal on this lens: the sans-I/O conn-step core (State x Event -> State x [Action], parser inside via the feed-parser/reply-parser split with run-to-completion) as the connection layer, driven by the two-level scheduler as its shell, with handlers as coroutines started from the scheduler. libuv callbacks only enqueue bytes-arrived/eof/read-error/write-completed/tick into a per-connection inbox and mark it runnable; each scheduler turn drains inboxes through conn-step and executes actions; (uv-run loop 'once) when nothing is runnable; the call-handler action spawns a call/1cc coroutine from a scheduler frame (spike E3's shape) whose direct-style verbs (respond!, sink-write!, body-read!, await, with-deadline) are nothing but events into the core. Result: no application code and no parser callback ever runs under a C frame, so store-and-reraise is reachable only by ten library-owned closures and the E1/E2 question is moot; the socket-free corpus lane (every fixture at every chunk size, LIFO handlers, cap, close, fake-clock timeouts) and the measured head/ready ordering invariant carry over unchanged; handlers get await without the promise Tier 1 stale-context hazard. Take the promise proposal's M1 pause-in-on-body-data protocol (consumed includes the delivered span; re-feed from consumed after parser-resume!) to pin sans-I/O's risk 5, and keep the threads proposal's uv_async/__collect_safe work as an upstream chez-libuv ask for later cross-thread offload, not a v1 dependency. Reject for v1: engines (J1 parser poisoning at every mid-feed preemption), OS-thread handlers (E5b2, E5c, unbound uv_async), callback-captured await (bare &assertion abandoning uv_run C frames on one escaped raise). Required fixes carried in: fulfil! must check state='parked and a cell-parked coroutine must record its cell so inbox wakes and cell fulfilments are mutually exclusive (two-level sketch double-resume hazard); the interpreter's depth counter must wrap drain!, not only parser-feed!; handler deadlines are delivered at the next park (no preemption, same as every non-engine design). The alternative hybrid in the task (callbacks at the connection layer, coroutines only in handlers) is strictly weaker: parser callbacks would still run under C frames and handler coroutines could only be resumed safely if the connection layer also enqueued, at which point it is the two-level shell anyway.",
+   "fatal": [
+    {
+     "key": "two-level-coroutines",
+     "fatal_flaw": "none"
+    },
+    {
+     "key": "sans-io-state-machine",
+     "fatal_flaw": "none"
+    },
+    {
+     "key": "cps-callbacks",
+     "fatal_flaw": "none"
+    },
+    {
+     "key": "promise-combinators",
+     "fatal_flaw": "none: Tier 1 (await) is hazardous but not refuted; I reran its spike and the escape-to-current-root discipline survives 1000 capture-in-A/resume-in-B rounds with a collect each"
+    },
+    {
+     "key": "engines",
+     "fatal_flaw": "none strictly, but my experiment J1 (run twice, byte-identical) shows that every engine expiry inside parser-feed! marks the parser 'poisoned' via byte-machine's dynamic-wind after-thunk (runtime.sls:1057): 28/28 expiries observed lifecycle poisoned, callbacks in the resumed feed observed (busy poisoned), a feed between slices raised &byte-machine-contract, and an engine abandoned mid-feed left the parser permanently poisoned. The feed completes correctly only because byte-machine's completion arm overwrites the lifecycle afterwards - an implementation accident of a dependency, not a contract. The repair (with-interrupts-disabled around parser-feed!) deletes the proposal's headline benefit of preemptible parsing."
+    },
+    {
+     "key": "threads-mailbox",
+     "fatal_flaw": "none strictly; it is correct only with an unbound uv_async plus a __collect_safe re-binding of uv_run and all thirteen trampolines (FINDINGS.md's 'deliberately untested' gap, measured only on darwin/arm64), and by memory-model discipline the language cannot check"
+    }
+   ],
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/judge-correctness.md"
+  },
+  {
+   "lens": "testability",
+   "ranking": [
+    "sans-io-state-machine",
+    "two-level-coroutines",
+    "cps-callbacks",
+    "promise-combinators",
+    "engines",
+    "threads-mailbox"
+   ],
+   "hybrid": "Yes, a hybrid beats every single proposal on this lens: the sans-I/O core (conn-step : State x Event -> State x [Action], the 25 parser callbacks as events, reply-parser as the one synchronous action, run-to-completion for all other effects) as the ONLY home of connection semantics, shipped first behind a direct-callback libuv shell (the already-prototyped libuv-shell.sps / CPS-driver shape, with the CPS proposal's allocation discipline to bring 6.8 KB/request down toward 2.7 KB), then re-hosted under a two-level scheduler shell where libuv callbacks only enqueue inbox events and one coroutine per connection runs the same dispatch! loop, so the call-handler action runs handlers in direct style with await/request-read!/response-write! via resume cells and a guard that survives a park (M5). No continuation is ever captured under a C frame (live spike E3 is exactly this shape), so the Tier 1 question is never asked. One contract test gates all shells: the same scripted event stream through the fake shell, the direct shell and the coroutine shell must yield identical wire bytes and action traces. Excluded: promise Tier 1 continuations captured inside callables (unrefuted but one escaped raise from a trap the binding cannot wrap), engines (preemption not required; E4c/E4d hazards unpinnable), OS-thread handlers (nondeterministic tests; gated on an unshipped chez-libuv uv_async + __collect_safe change, to be kept as a future ADR). Versus sans-I/O alone it gains direct-style handlers at zero loss of core testability; versus two-level alone it moves connection semantics out of coroutine control flow into a table replayable at every chunk size with no scheduler; versus CPS it replaces the unchecked exactly-once k discipline with ordinary returns; versus promise it needs no A1 and no silent-rejection oracle. TDD slices: M0 pure records + F-* flag pin test; M1 conn-step tables (cap, ordering, close-after, keep-alive from flags read in on-headers-complete, deadlines with fake now, read-start conjuncts singly); M2 adapter + fake shell + llhttp corpus at every chunk size via corpus-parse-file/corpus-scan-sizes 'full/corpus-chunk-bounds/trace-recorder-bindings/trace-compare with a ratchet manifest, pinning the on-body-data pause site; M3 direct libuv shell + loopback + contract test; M4 scheduler with injectable poll!, phase assertion, one-shot fulfil!, no libuv in its tests; M5 coroutine shell over the same core, handler await, contract test extended; M6 timing wheel, limits, 408/413/414/431 mapping, server-step shutdown table; M7 the architecture \u00a714 socket list with iteration caps, never wall-clock.",
+   "fatal": [
+    {
+     "key": "sans-io-state-machine",
+     "fatal_flaw": "none"
+    },
+    {
+     "key": "two-level-coroutines",
+     "fatal_flaw": "none"
+    },
+    {
+     "key": "cps-callbacks",
+     "fatal_flaw": "none"
+    },
+    {
+     "key": "promise-combinators",
+     "fatal_flaw": "none for Tier 0; Tier 1 (await) is NOT refuted by the live spike but is fragile: E1a/E2a tested resume-then-return-normally, which this design forbids; its disciplined M2 (1000 capture-in-A/resume-in-B rounds) re-ran clean today, while M3 shows one escaped raise produces a bare 'attempt to return to stale foreign context' that escapes uv-run unwrapped by &uv-callback-error; suspended-segment memory at 10k is unmeasured (A6)"
+    },
+    {
+     "key": "engines",
+     "fatal_flaw": "none strictly; but the live spike's E4c/E4d hazards (engine expiry under a foreign callable leaves uv_run's C frames suspended and clears chez-libuv's loop-running flag, so a nested uv-run is accepted and re-enters libuv) are unpinnable by any check from Scheme, and 'cannot nest engines' plus set-timer coupling are footguns no test can bound"
+    },
+    {
+     "key": "threads-mailbox",
+     "fatal_flaw": "none refuted (it measured the GC interlock itself and never relies on the continuation question); disqualifying for this lens: the load-bearing half (pool, inbox, wakeup) is admitted to be nondeterministic, its memory-model rule is enforced by a reviewer lint rather than a check, unkillable handlers cannot be bounded by any test, and Tier 2 is gated on an unshipped chez-libuv change measured on darwin/arm64 only"
+    }
+   ],
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/judge-testability.md"
+  },
+  {
+   "lens": "performance-operability",
+   "ranking": [
+    "cps-callbacks",
+    "two-level-coroutines",
+    "sans-io-state-machine",
+    "engines",
+    "promise-combinators",
+    "threads-mailbox"
+   ],
+   "hybrid": "Yes, a hybrid beats every single proposal under this lens, and it is not a compromise: CPS section 13, two-level section 16 and sans-io section 1 already converge on the same pure core (conn-step : State Event -> State x Actions) and differ only in the shell's control flow. Recommended: (1) CORE = the sans-I/O conn-step with its reply-parser-vs-deferred-effect split, run-to-completion action queue and pure server-step for shutdown, but with the CPS core's allocation discipline (linear mutable request accumulator, retained (bv from to) spans from the fresh delivery, interned lower-cased header names, one shared 25-entry binding list per server) under an acceptance gate of <= 3 KiB/request on the CPS spike's workload (CPS measured 2672 B, sans-io naive 6832 B); this keeps the state-record observability, socket-free corpus replay at every chunk size, table-tested shutdown and TLS-as-another-layer. (2) CONNECTION SHELL = direct callbacks (CPS shape), no per-connection coroutine: parse inside on-data with parse-ahead to max-pipeline, callback-pause at on-message-complete for exact boundaries and in on-body-data for the one-slot body mailbox, guarded uv-read-stop!/uv-read-start!, one on-write-done closure per connection carrying sizes in a FIFO, one tick timer + timing wheel per loop, 16 KiB read buffer; idle keep-alive connections then cost ~2 KiB of Scheme and synchronous handlers pay zero scheduler cost. (3) HANDLERS = the two-level scheduler used only for handlers that await: http-server-run! is the two-level turn (drain-ready! then uv-run 'once/'nowait, free when no coroutine exists); a handler dispatched from the call-handler action that returns a response is done (CPS path); one that calls spawn/await is created and resumed only from the scheduler drain, never inside a callback (R1/R2 phase assertion), so awaiting application code can never trigger store-and-reraise and no continuation is ever captured under a C frame; resume cells fulfilled from libuv callbacks are the only bridge; the measured 3.4 KiB per parked coroutine is paid only while a handler is actually parked, not per connection. (4) Do NOT take engines' preemption (J1 parser poisoning at slice boundaries, missing uv-run re-guard per E4b/E4d, set-timer conflict) unless a benchmark shows CPU-hog handlers are a real workload; do NOT take promise Tier 1 (4.1 KiB per suspended await, unwrapped escape from uv-run one raise away); do NOT take threads until chez-libuv binds uv_async and rebinds uv_run __collect_safe, after which a worker pool for CPU-bound handlers can sit behind the same command inbox. (5) Operability gates in make test: rg gate that handler-facing libraries export no uv-* names, the phase assertion, a double-close test asserting exactly one on-close, a mutation row removing the guard that must go red, and a pin test for the unexported httparse flag bits (F-CONNECTION-CLOSE = 2). Versus CPS alone: awaiting handlers get direct style and cannot stop the loop. Versus two-level alone: 10k idle connections carry no 35 MB of parked stack segments and no extra hop per delivery. Versus sans-io alone: the 2.5x allocation and per-chunk streaming round trips go away while the pure core and its tests stay.",
+   "fatal": [
+    {
+     "key": "cps-callbacks",
+     "fatal_flaw": "none"
+    },
+    {
+     "key": "two-level-coroutines",
+     "fatal_flaw": "none"
+    },
+    {
+     "key": "engines",
+     "fatal_flaw": "none (but three sharp edges must be closed: J1 shows a slice expiring inside parser-feed! marks the parser 'poisoned at every expiry and an abandoned mid-feed engine poisons it permanently; spike E4b/E4d show the binding does not refuse uv-run inside a slice and expiry inside a callback defeats the loop-running guard, and the proposal adds no re-guard; 'cannot nest engines' and the CSUG set-timer prohibition forbid any handler library using engines or the timer interrupt)"
+    },
+    {
+     "key": "threads-mailbox",
+     "fatal_flaw": "As a v1 primary architecture: it is only good after an upstream chez-libuv change that does not exist. With uv_run bound plain (native.sls:242) a worker's allocation stalls until the loop returns to Scheme (spike E5c: 10.27 s vs 27 ms; its own spike A: 3005 ms), so Tier 1 must run a 1 ms heartbeat that imposes a measured 573 us mean / 2.4 ms max response-latency floor and 1% idle CPU; Tier 2 (uv_async 14th trampoline + __collect_safe rebinding of uv_run and all thirteen trampolines) is a chez-libuv v0.6 slice unmeasured on Linux. Independently, a fixed pool of N=cores workers cannot serve 10k concurrent connections whose handlers park on slow clients: max-blocked-writers aborts connections to protect the pool, and Chez has no thread cancel so a wedged handler loses a slot forever and can hang thread-join at shutdown."
+    },
+    {
+     "key": "promise-combinators",
+     "fatal_flaw": "none for Tier 0. Tier 1 (await on callback-captured call/1cc) is NOT refuted: my rerun of its await-timer.sps ran 1000 capture-in-A/resume-in-B rounds dry 2/2 under the escape discipline, so spike conclusion 2 ('no way to make it valid') overstates E1a/E2a, which only tested normal return. But its failure mode (any raise reaching the capturing callback's stale dispatch-guarded) is a bare &assertion escaping uv-run that abandons the rest of that loop iteration's callbacks, reachable from handler code one uncaught raise away."
+    },
+    {
+     "key": "sans-io-state-machine",
+     "fatal_flaw": "none"
+    }
+   ],
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/judge-performance-operability.md"
+  }
+ ],
+ "servers": [
+  {
+   "name": "h11 (python-hyper/h11)",
+   "license": "MIT (LICENSE.txt confirmed at raw.githubusercontent.com/python-hyper/h11/master/LICENSE.txt)",
+   "lessons": [
+    "Model chez-http-server's connection layer as h11 does: two role-local state automata plus small orthogonal flags (keep-alive, 100-continue-waiting, pending-switch-proposals), joined by explicit event-triggered and state-triggered transition tables (_state.py:196-246) -- this is the missing connection-lifetime layer above chez-httparse's per-message parser state.",
+    "Copy the keep-alive latch rule (HTTP/1.0->close, Connection:close->close, one-way latch) almost verbatim, and use it to decide when to stop calling parser-feed! -- this directly resolves the measured chez-httparse close-then-second-message 'error result: after a close-marked message completes, the connection layer must stop feeding rather than expect more input.",
+    "Server-side pipelining needs only a pause flag, not a response-reorder queue: stop parsing (don't call parser-feed! again) once the current message is done and bytes remain buffered, resume after the response is fully sent -- FIFO ordering falls out for free. Use chez-httparse's reported consumed byte count to find the pipelining boundary.",
+    "Put ALL backpressure (both read-side pause/resume and write-side throttling) in the imperative shell around uv-read-stop!/uv-read-start! and uv-stream-write-queue-size, keeping the parser/state-machine core a pure function of bytes<->events with zero I/O awareness -- exactly h11's split, and a natural fit given chez-libuv's own no-bounded-write-queue design (ADR-0018).",
+    "Only a head-of-message incomplete-buffer cap (h11: 16 KiB -> 431) belongs in the connection core; ALL timeouts (header, body, idle-keepalive, lingering-close-drain) must live in the imperative shell via make-uv-timer, since h11 supplies zero timeout logic and zero default numbers for them -- we must choose our own timeout defaults, we cannot copy h11's (it has none).",
+    "Track Expect:100-continue as a single boolean outside the formal state machine, cleared on any response or on the client streaming the body anyway -- cheap to add and avoids a handler deadlocking against a client that stopped waiting.",
+    "Model CONNECT and Upgrade through one shared pending-proposal/status-code-driven-acceptance code path (101 for Upgrade, 2xx for CONNECT), with 'switch pending' taking priority over 'must close' when both fire together, and hand back unconsumed buffered bytes (h11's trailing_data) to whatever owns the connection after the handoff.",
+    "Copy framing precedence exactly, especially two subtle cases likely to be gotten wrong: (a) duplicate-but-IDENTICAL Content-Length values are valid, only a differing duplicate is an error; (b) a second Transfer-Encoding header or a non-chunked T-E value maps to 501 specifically, not to a generic 400 bucket -- our error-mapping table needs this as its own case.",
+    "Carry a suggested status code as DATA on parse/policy error conditions (mirroring error_status_hint), and keep 'write the response, then decide to close' as a separate, later, explicit action in the imperative shell -- never let raising the condition itself trigger a response or a close. Also preserve h11's asymmetry that a peer protocol violation must NOT by itself prevent us from still sending a real error response back.",
+    "Flag the half-close gap explicitly in the architecture doc: h11/RFC7230 6.6's lingering-close protocol needs a TCP half-close (shutdown-write-only) primitive, and chez-libuv's uv-close! is a whole-handle close with no uv_shutdown binding mentioned as available -- this needs either a documented deviation or a chez-libuv extension, decided consciously rather than by default.",
+    "Adopt h11's no-handler-API stance as an architecture decision: the connection-semantics module should expose an h11-like event stream (new-request/header-data/body-data/message-complete/connection-closed, plus the send-side mirror), with a strictly separate module deciding how those events become calls into Scheme handler code -- keeping the two independently testable, as h11's own test-file split proves out.",
+    "Plan from day one for a live differential test harness for the connection layer (drive chez-http-server against a real second HTTP/1.1 implementation over a real socket, e.g. curl or Python's http.client/h11-as-client), mirroring test_against_stdlib_http.py and chez-httparse's own llhttp differential discipline -- this is currently a gap in the empty target repo."
+   ],
+   "limits": "Exactly one real limit: DEFAULT_MAX_INCOMPLETE_EVENT_SIZE = 16*1024 (16 KiB) (_connection.py:69, constructor default at :170) -- caps only the buffered-but-not-yet-parseable request/status-line+headers prefix, not body size; enforced in next_event() (_connection.py:484-490), raising RemoteProtocolError(error_status_hint=431) when exceeded. Comment cites precedents: node.js 80KiB, Tomcat 8KiB, IIS 16KiB, Apache ~8KiB/line (_connection.py:64-68). Secondary sanity bound: CONTENT_LENGTH_MAX_DIGITS = 20 (_headers.py:15), rejecting absurd Content-Length numerals (default 400). No limit on header count, URI length, body size, or number of pipelined requests buffered.",
+   "timeouts": "h11 has ZERO built-in timeouts of any kind -- it is sans-I/O and has no clock/timer. There is no header-read timeout, body-read timeout, idle-connection timeout, or keep-alive timeout anywhere in the source (confirmed by full read of all core files). test_408_request_timeout (tests/test_connection.py:990-994) does NOT test a timeout mechanism; it only proves the server state machine legally permits spontaneously sending Response(status_code=408) from IDLE with no prior Request seen (SERVER: IDLE -> Response -> SEND_BODY, _state.py:208-210) -- detecting that a timeout occurred is entirely external/embedder responsibility, per docs/api.rst:282-286.",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/server-h11.md"
+  },
+  {
+   "name": "hyper HTTP/1 server connection-semantics extraction",
+   "license": "MIT (Cargo.toml: name = \"hyper\", version = \"1.11.1\", license = \"MIT\")",
+   "lessons": [
+    "Separate the read-buffer-for-headers cap from the write-buffer/backpressure cap - hyper conflates both into one max_buf_size (~408KiB default) which is convenient but couples two independent concerns; given chez-libuv fixes the read buffer at 64KiB/connection and has no bounded write queue at all (ADR-0018), pick two independently-tunable numbers instead.",
+    "Model read/write halves as two small closed state machines (Reading: Init/Continue/Body/KeepAlive/Closed; Writing: Init/Body/KeepAlive/Closed) plus a tri-state keep-alive flag (Idle/Busy/Disabled), and only advance to 'ready for next request' when BOTH sides simultaneously reach their KeepAlive sentinel (conn.rs:1093-1112) - a clean 5+4+3-state pattern that answers 'is it safe to read the next head' without scattered booleans.",
+    "Copy the close-delimited-forces-close rule verbatim: make 'the response used close-delimited framing' a property the ENCODER exposes, and check it at every site that finalizes a write, not just in the keep-alive decision function, or it's easy to miss a call site and leak a non-reusable connection back into a keep-alive state.",
+    "Defer the automatic 100-continue write until the handler has actually expressed interest in the request body (polled it), not merely 'when Expect:100-continue and a body arrive' - replicate hyper's exact test (expect_continue_waits_for_body_poll) to prove a handler that never touches the body never causes a 100-continue to hit the wire.",
+    "Express body backpressure in both directions as 'stop pumping the transport', not 'buffer unboundedly': read direction should stop re-arming/continuing libuv reads (or logically not consume the parse buffer) while our request-body consumer's slot is full (hyper's is capacity-exactly-1); write direction should stop pulling more frames from the response body producer once our own outstanding-write-bytes counter (tracked ourselves, per ADR-0018) crosses a chosen watermark, resuming via uv-stream-write-queue-size the way the project brief already prescribes.",
+    "Never call the platform close/shutdown primitive while bytes are still buffered for write - assert this explicitly and write hyper's two exact regression tests (flush-before-yield, no-shutdown-while-buffered) against our own dispatch loop once it exists, since both were subtle interleavings easy to reintroduce when an 'early exit/yield' fast path gets added later. Additionally, unlike hyper (which never owns a raw closeable handle with a double-close hazard and therefore needs no guard), we MUST add an explicit single-owner close-once guard at the boundary between our connection state machine and chez-libuv's uv-close!, since a second uv-close! silently discards the on-close callback (ADR-0007) - this is a gap hyper's design doesn't have to solve and offers no pattern for.",
+    "Treat clean EOF with no partially-read request as ordinary teardown (not an error) for a server, but EOF with a partial request in flight as an error - a single boolean ('do we have a partially-consumed request') implements this asymmetry cleanly and avoids noisy error logging for the common 'client done with a keep-alive connection' case.",
+    "Reject Transfer-Encoding + Content-Length together outright (400 + close) rather than copying hyper's more lenient 'TE wins, CL dropped, just force close' - hyper's own in-code comment admits the strict RFC7230 reading is 'MUST respond 400 and close'; given request smuggling risk and no backward-compat burden, be stricter than hyper here.",
+    "Decide explicitly, and document, what we auto-generate on error versus hyper's minimal set (only 400/414/431 auto-generated; 408 and 500 are NEVER auto-sent by hyper, connections are simply dropped) - if chez-http-server wants to be friendlier (auto-408 on header timeout, auto-500 on an uncaught handler condition), that is a deliberate, documented deviation from the reference, not something to inherit silently by omission.",
+    "Build the first cut of chez-http-server's dispatcher as strictly one-request-in-flight-per-connection, exactly like hyper - pipelining support should mean read-ahead-plus-flush-batching only, never concurrent handler execution on one connection; treat true per-connection request concurrency as a separate, harder feature to consider later, not something to bolt onto the basic loop from day one."
+   ],
+   "limits": "All defaults, with file:line, tabulated in report \u00a77. Headline numbers: INIT_BUFFER_SIZE=8192B (io.rs:15); MINIMUM_MAX_BUFFER_SIZE=8192B floor for Builder::max_buf_size, panics below it (io.rs:18, http1.rs:381-387); DEFAULT_MAX_BUFFER_SIZE=8192+4096*100=417792B (~408KiB, io.rs:23) - shared ceiling for BOTH header-parse read buffer (exceeding => Error::TooLarge=>431) AND response write buffer backpressure; MAX_BUF_LIST_BUFFERS=16 distinct queued Bufs before forced flush (io.rs:30); MAX_WRITEV_BUFS=64 iovecs per writev syscall (io.rs:281); DEFAULT_MAX_HEADERS=100 header slots, Builder::max_headers overridable, exceeding => 431 (role.rs:31); MAX_URI_LEN=65534B (u16::MAX-1), exceeding => 414 URI Too Long (role.rs:34, test http_11_uri_too_long tests_server.rs:1188-1203); CHUNKED_EXTENSIONS_LIMIT=16384B whole-body total (decode.rs:20); TRAILER_LIMIT=16384B whole-body total, marked TODO to become configurable (decode.rs:25); poll_loop fairness cap = 16 pipelined iterations per wakeup before yield (dispatch.rs:172), not a wall-clock limit. No max-request-body-size limit, no response-write timeout, no idle-connection timeout beyond what header_read_timeout incidentally provides between messages - all left to the application. Full table: report \u00a77.",
+   "timeouts": "Only ONE built-in timeout exists in hyper's H1 server layer: h1_header_read_timeout, default 30 seconds (Dur::Default(Some(Duration::from_secs(30))), http1.rs:250), and it is INERT unless the caller also supplies a Timer via Builder::timer() (no timer configured => effectively unbounded header-read wait, confirmed by http1.rs doc: \"Requires a Timer ... Panics if configured without a Timer\" only fires when set; otherwise it's simply never armed since Time::Empty is the default, http1.rs:74,244). It resets per message and, because it's the ONLY timer, also functions as the de facto idle-keep-alive timeout between pipelined/successive messages on the same connection - proven by test name+body header_read_timeout_as_idle_timeout (tests_server.rs:1656-1697), which is literally testing that the next request's header-read clock (not a separate idle timer) kills a quiet keep-alive connection. On timeout: poll_read_head returns Error::new_header_timeout() directly (conn.rs:260-265) WITHOUT going through the parse-error/on_error->auto-response path - so a header-read timeout closes the socket with NO bytes written (no 408 response). There is no request-body-read timeout, no response-write timeout, and no distinct post-handshake idle timeout in this crate; all are left to the application (e.g., race the handler future or wrap the body against an external timer). Full detail: report \u00a77, \u00a711.",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/server-hyper.md"
+  },
+  {
+   "name": "Go net/http server (server.go, transfer.go, request.go)",
+   "license": "BSD-3-Clause (\"Copyright 2009 The Go Authors. All rights reserved.\")",
+   "lessons": [
+    "Serialize strictly one request per connection (read, handle, write, then read next) rather than building any pipelining/reordering layer \u2014 this also naturally avoids chez-httparse's measured close-marked-message-then-error quirk, since you'd never feed a second message after a close-marked one anyway.",
+    "Default to unlimited body/idle read/write timeouts like Go does, but bound header size by default (Go's only non-zero timeout-adjacent default) \u2014 and document the unlimited defaults loudly given they're a known Go production footgun (slowloris-class risk).",
+    "Centralize Content-Length/Transfer-Encoding precedence in one pure function shared by request and response paths, mirroring fixLength's precedence order (TE beats CL; differing duplicate CLs are a hard error; identical duplicates dedupe; 1xx/204/304/HEAD force zero-length) \u2014 a natural fit for the functional-core mandate.",
+    "Reject non-'chunked' or multi-valued Transfer-Encoding strictly and map it to 501 (never 400), and never echo the rejected value back into the response body (XSS hardening Go applies deliberately).",
+    "Body-size limiting should be an explicit, composable opt-in (MaxBytesReader-equivalent) rather than parser/connection-layer behavior, but consider giving chez-http-server a default cap (with a real 413) since we lack Go's mature ecosystem of handler-level conventions yet.",
+    "Default to half-duplex request/response handling (don't start writing the response before the request body is consumed or explicitly abandoned) to avoid the Issue-15527-class deadlock, with a bounded drain-then-close fallback around ~256KiB matching maxPostHandlerReadBytes.",
+    "Reserve a lingering half-close-then-delay-then-close specifically for the two 'we unilaterally stopped reading a body the client might still be sending' scenarios (header-too-large, body-limit-hit); use an immediate close everywhere else. Note chez-libuv v0.5 has no uv_shutdown/half-close binding, so this may need either a chez-libuv feature addition or a pragmatic Go-style flat-sleep-then-full-close substitute.",
+    "Only propagate connection-cancellation from genuine on-error/EOF callbacks, never from 'more bytes arrived early on this connection' \u2014 directly avoids the pipelining/CloseNotify false-positive Go fixed in 1.11 and regression-tests.",
+    "Treat Go's negative-space findings (no 408, no server-side ExpectContinueTimeout, no built-in CONNECT/Upgrade handling) as legitimate design choices worth recording as our own ADRs, not gaps to silently fill.",
+    "Port TestServerValidatesHostHeader's full case table and the TestUnsupportedTransferEncodingsReturn501 / TestInvalidChunkedBodies / TestCloseNotifierPipelined tests early as our highest-value conformance regression tests, since each encodes a previously real-world-debated bug (Go issues 3595, 11549, 12027, 12785, 14940, 15527, 16490, 22682, 23921, 31753, 36381 are all cited in the source comments)."
+   ],
+   "limits": "DefaultMaxHeaderBytes=1<<20 (1 MiB, server.go:939); DefaultMaxHeaderValueCount=500 (server.go:944); initialReadLimitSize=maxHeaderBytes+4096 'bufio slop' (server.go:960-962); maxPostHandlerReadBytes=256<<10=262144 (server.go:1164); bufferBeforeChunkingSize=2048 (server.go:342); conn.bufw size=4096 (server.go:2036); copyBufPoolSize=32768 (server.go:876); rstAvoidanceDelay=500ms (server.go:1806); shutdownPollIntervalMax=500ms (server.go:3227). Body size itself is uncapped by default at the connection layer (opt-in via MaxBytesReader).",
+   "timeouts": "Server.ReadTimeout, ReadHeaderTimeout (falls back to ReadTimeout), WriteTimeout, and IdleTimeout (falls back to ReadTimeout) all default to 0 = unlimited (server.go:3062-3091,3745-3757) \u2014 only header-size/value-count have non-zero defaults. TLS handshake timeout is derived as the min of any positive ReadHeaderTimeout/ReadTimeout/WriteTimeout, else unlimited (server.go:964-984). No 408 status and no server-side ExpectContinueTimeout exist (confirmed absent by grep).",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/server-go-net-http.md"
+  },
+  {
+   "name": "Node.js http.Server (llhttp-based)",
+   "license": "MIT-style permission notice (Joyent copyright) in every core file header; Node.js project overall is MIT licensed.",
+   "lessons": [
+    "Compute keep-alive once, inside the message-complete callback, from parser flags read at that moment (version + connection-close/keep-alive flags + does-framing-need-EOF); never re-read parser flags later since chez-httparse resets them between pipelined messages.",
+    "Model pipelining as two decoupled queues: an incoming[] queue the parser keeps filling regardless of response state, and an outgoing[] FIFO where only one response is ever attached to the connection's write side at a time; advance it only when the current response's write-completion (uv-write! callback) fires, not when its handler returns.",
+    "Track outstanding queued-response bytes ourselves at the connection level and call uv-read-stop! when they cross a threshold, uv-read-start! again once they drain back down -- this is the direct answer to chez-libuv having no bounded write queue in the binding.",
+    "Make every framework-synthesized error response Connection-close, and never attempt to write one once any response bytes have already gone out for that request -- check for already-sent headers before ever trying a synthetic error write.",
+    "Collapse all definitely-unparseable requests into one generic 400 rather than trying to distinguish 501 vs 505 vs 400 from parser error codes; reserve distinct codes (431, 413, 408) for cases with genuinely different client-actionable meaning.",
+    "Implement maxRequestsPerSocket as a graceful two-step wind-down (advertise Connection: close on the last allowed response, then 503 the next one) rather than an abrupt mid-limit disconnect.",
+    "Treat Expect:100-continue handling and keep-alive-reuse eligibility as needing a SINGLE source-of-truth state transition, not two independently-triggered listeners racing each other -- Node's own historical bug here (test-http-expect-continue-reuse-race.js) is exactly the failure mode to avoid.",
+    "Expose close as three separately callable operations -- close-gracefully (stop accepting, only reap idle), close-idle-only, and close-all-forcefully -- rather than one shutdown verb with a flag.",
+    "Make the on-close callback the single unconditional cleanup point for a connection: abort every still-pending request/response object there, regardless of which error path led to the close, mirroring chez-libuv's rule that a server must own every close initiation.",
+    "Plan upgrade/CONNECT as two sub-cases from the start: request-already-complete (hand over the raw connection immediately) vs request-body-still-streaming (need a wrapper that defers raw post-body bytes until chez-httparse's on-headers-complete/skip-body plus body-completion has actually finished).",
+    "Default behavior for an unrecognized Upgrade: header with no registered interest should be 'treat as a normal request', not 'reject' -- only CONNECT and an accepted-but-unhandled Upgrade should hard-close.",
+    "Maintain two membership views of live connections -- 'idle, never mid-message' and 'active, currently mid-message' -- as cheaply updatable sets, to make an idle-only close operation O(idle-count) instead of a full scan."
+   ],
+   "limits": "maxHeaderSize / http.maxHeaderSize / --max-http-header-size: default 16384 bytes (16 KiB) total header bytes (src/node_options.h:186; doc/api/http.md:4009-4021); overflow -> HPE_HEADER_OVERFLOW -> 431. server.maxHeadersCount: default 1000 header pairs (2000 field+value slots internally, MAX_HEADER_PAIRS in lib/_http_common.js:53); overflow -> HPE_HEADER_OVERFLOW -> 431 (counted in C++ TrackHeaderPair, src/node_http_parser.cc:1042-1067). Chunk-extension size cap: hardcoded 16384 bytes, NOT configurable (kMaxChunkExtensionsSize, src/node_http_parser.cc:86); overflow -> HPE_CHUNK_EXTENSIONS_OVERFLOW -> 413. server.maxRequestsPerSocket: default 0 (no limit); when reached, response gets forced Connection: close; a request arriving after the limit gets 503 plus a 'dropRequest' event.",
+   "timeouts": "server.requestTimeout: default 300000 ms (5 min), governs the entire request receive window (lib/_http_server.js:555-561). server.headersTimeout: default min(60000, requestTimeout) ms, must be <= requestTimeout or ERR_OUT_OF_RANGE is thrown at construction (lines 563-573). server.keepAliveTimeout: default 65000 ms in this pinned commit (lines 575-581) -- NOTE this pinned commit's doc has a REPLACEME changelog entry raising the default from 5000ms to 65000ms, meaning 65000ms is an UNRELEASED change on Node main as of this fetch; all currently-released Node versions default to 5000 ms. Flag this explicitly when citing. server.keepAliveTimeoutBuffer: default 1000 ms, added on top of keepAliveTimeout when arming the post-response socket timer (actual socket timeout = keepAliveTimeout + keepAliveTimeoutBuffer). server.connectionsCheckingInterval: default 30000 ms, sweep interval for expiring headers/request-timeout connections via an unref'd setInterval. server.timeout (idle-socket timeout covering all traffic): default 0 (disabled). Every timeout, once fired, maps to the same 408 Request Timeout + Connection: close canned response via socketOnError, sharing the same code path as parse errors.",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/server-node-http.md"
+  },
+  {
+   "name": "h2o",
+   "license": "MIT (per copyright/permission header in lib/http1.c and lib/common/socket.c)",
+   "lessons": [
+    "Single-request-in-flight per connection is sufficient for correct pipelining -- no response-reordering queue needed; just don't restart uv-read-start! for request N+1 until request N's response uv-write! has completed.",
+    "Backpressure on both directions should be 'one fragment outstanding, stop reading/writing until explicitly acknowledged', not a byte-counted queue -- matches chez-libuv's own no-bounded-write-queue design (ADR-0018) and gives us a natural place to enforce a single-write-in-flight-per-connection discipline the way h2o asserts sock->_cb.write==NULL.",
+    "Copy h2o's Content-Length-vs-Transfer-Encoding precedence rule (TE wins when both present) but do NOT copy its silent acceptance of duplicate/conflicting Content-Length headers or of the CL+TE combination -- reject both per RFC 9112 6.3's stricter guidance, since h2o's own code has a known smuggling gap here.",
+    "The 'steal the socket, hand back a byte-offset into what's already buffered' pattern (h2o_http1_upgrade / on_upgrade_complete) is the right shape for our own Upgrade/CONNECT hand-off given chez-libuv's explicit, non-GC-driven uv-close! model.",
+    "Add an explicit chunk-framing-overhead DoS guard (h2o borrows this from picohttpparser: >=100KiB overhead AND payload <25% of bytes read) at our connection layer -- passing llhttp conformance fixtures proves correctness, not abuse-resistance, and nothing in the PROJECT CONTEXT suggests chez-httparse already has this.",
+    "h2o deliberately never sends 408/431/501/505 -- idle/header timeouts just close the TCP connection silently, oversized headers get 400 not 431, and there's no HTTP-version validation. This is a legitimate security-conscious default but a genuine gap, not an oversight; decide consciously whether chez-http-server matches h2o's terse silence or sends informative status lines, and if we do add them, still always close afterward the way h2o closes on every single one of its own error paths.",
+    "100-continue should be sent eagerly/unconditionally in origin-server mode with no handler-pre-approval hook for v1 -- this is h2o's real, shipped simplification and RFC 7231 5.1.1 explicitly permits it.",
+    "No lingering close is a real, named gap in h2o (an explicit TODO in its source), not something to copy blindly -- chez-libuv's explicit uv-close! model gives us a natural place to add a proper drain/lingering-close policy h2o itself lacks; make this an explicit ADR either way.",
+    "Graceful shutdown works best as two independent, composable mechanisms: (a) a lazily-checked flag that forces Connection:close on the NEXT parsed request per connection so in-flight work always completes, and (b) a separately-invoked sweep that force-closes only genuinely IDLE connections (nothing buffered) without waiting out their full idle timeout.",
+    "Track a three-state IDLE/ACTIVE/SHUTDOWN tag per connection from the start (cheap, and it's what makes both graceful shutdown and future idle-connection metrics tractable) rather than retrofitting it later.",
+    "h2o's HTTP/1 keep-alive idle timeout and header-read timeout are the SAME 10s value by default (req_timeout reused for both) -- decide explicitly whether chez-http-server wants a distinct, likely longer, idle-between-requests timeout rather than silently inheriting a single value for both purposes."
+   ],
+   "limits": "H2O_DEFAULT_MAX_REQUEST_ENTITY_SIZE=1GiB (1024*1024*1024, h2o.h:74) body cap (413). H2O_MAX_HEADERS=100 (include/h2o/header.h:37) max header fields. H2O_MAX_REQLEN=8192+4096*100=417792 bytes / ~408KiB (include/h2o/header.h:45) max request-line+headers size (exceeding while incomplete -> 400, NOT 431). H2O_SOCKET_INITIAL_INPUT_BUFFER_SIZE=4096 bytes (include/h2o/socket.h:105) min per-socket buffer. H2O_PULL_SENDVEC_MAX_SIZE=65536 bytes (include/h2o/socket.h:82) max flattenable pull-vector for TLS. h2o_evloop_socket_max_read_size=1MiB per readable event (evloop.c.h:115). h2o_evloop_socket_max_write_size=1MiB per-event-loop-iteration fairness cap, not per-syscall (evloop.c.h:116,420-428). picohttpparser chunk-overhead DoS guard: reject if total framing overhead >=100KiB AND payload <25% of bytes read (picohttpparser.c:691-696). H2O_DEFAULT_MAX_DELEGATIONS/_MAX_REPROCESSES=5/5 (h2o.h:75-76, request-reprocessing loops, not connection-layer).",
+   "timeouts": "H2O_DEFAULT_HTTP1_REQ_TIMEOUT=10000ms/10s (h2o.h:79-80, config.c:184) -- time to receive a complete request line+headers; also reused (unchanged) as the idle-between-requests timeout on a keep-alive connection since resume_request_read/reqread_start arm it identically (http1.c:566-569,831-838) -- h2o has no separate/longer HTTP/1 idle-keepalive timeout. H2O_DEFAULT_HTTP1_REQ_IO_TIMEOUT=5000ms/5s (h2o.h:81-82, config.c:185) -- re-armed on every read or write-progress event during body read or response write (http1.c:790,845,872,1111); verified end-to-end by t/40http1-timeouts.t against a deliberately slow-writing upstream. H2O_DEFAULT_HANDSHAKE_TIMEOUT=10000ms/10s (h2o.h:77-78, config.c:183) -- TLS handshake, precedes http1 accept. Both HTTP/1 timeouts fire into on_timeout (http1.c:804-815) which SILENTLY CLOSES the TCP connection with no response bytes sent (no 408 is ever emitted -- see error_to_response_mapping).",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/server-h2o.md"
+  },
+  {
+   "name": "nginx",
+   "license": "2-clause BSD (nginx's own license, distinct from our target's BSD-3-Clause)",
+   "lessons": [
+    "Keepalive must be a 3-layer decision (version+Connection-token default, post-routing config vetoes, framing-forced veto when body length is unknown and can't be chunked) -- read chez-httparse's F-CONNECTION-* flags inside the header-parse callback per its own documented reset-zeroing warning.",
+    "Pipelining must be structurally serial (never concurrent request processing on one connection), which sidesteps response-ordering entirely and matches chez-libuv's single-callback-per-loop-thread model; combined with chez-httparse's measured 'data after close' error, our connection layer -- not the parser -- must stop feeding further requests once a message is close-marked.",
+    "Use a posted-work/re-entry pattern instead of direct recursion when immediately continuing to a pipelined next request, to bound stack depth on long pipelines.",
+    "Backpressure in both directions should mean 'stop touching the transport, let the reactor resume us' -- map directly onto chez-libuv's uv-read-stop!/uv-read-start! for request-body reads and uv-stream-write-queue-size polling for response writes, never an unbounded internal buffer.",
+    "Adopt independent per-phase idle timeouts (header-read, body-read, send, keepalive-idle, keepalive-total-age, keepalive-request-count) with real numeric defaults from day one, not a single global deadline -- gives much better diagnostics and chez-libuv timers are cheap.",
+    "Enforce the close-delimited-response rule (unknown-length body + no chunking => must close) as an automatic side effect of the framing/response-header layer, never something a handler has to remember to request.",
+    "Decide explicitly on 431 vs nginx's legacy 400-for-header-too-large -- nginx is a historical-accident precedent here, not a spec-conformance one; prefer real 431.",
+    "Model lingering close as an explicit small state machine (open->draining->closing->closed) with half-close (FIN via shutdown-write) before final close, nested idle/wall-clock timers, and exactly one uv-close! initiation per handle -- critical given chez-libuv's ADR-0007 rule that a second uv-close! on a closing handle silently discards its callback.",
+    "Route the 100-continue response through the normal backpressure-aware write path rather than nginx's unchecked blocking send() shortcut; latch expect-tested state before any size-based pre-rejection so we never invite a body we're about to reject.",
+    "Classify request headers explicitly into 'reject duplicates' (Host, Content-Length, Transfer-Encoding, Expect, conditional-request headers, Authorization) vs 'duplicates allowed' (Connection, Cookie, Accept-Encoding, User-Agent) rather than picking one blanket policy.",
+    "Design Upgrade/CONNECT as an explicit out-of-band connection-mode transition (stop HTTP framing, become raw relay) separate from the keepalive/pipelining state machine, not a degenerate case woven into it.",
+    "Actively manage idle-connection memory: chez-libuv commits a 64KiB foreign read buffer per uv-read-start!, far larger than nginx's ~1KB idle footprint, so consider uv-read-stop! between keepalive requests (trading a syscall for memory) as a deliberate, probably ADR-worthy design decision.",
+    "Offer an explicit body-read opt-in (a post-handler continuation invoked once the app asks for the body) rather than eager pre-read, mirroring both nginx's ngx_http_read_client_request_body and chez-httparse's callback shape, while keeping a lower-level streaming mode available for proxy-style use cases."
+   ],
+   "limits": "client_header_timeout=60000ms; client_header_buffer_size=1024B; large_client_header_buffers=4x8192B (must be >= connection_pool_size); max_headers=1000; ignore_invalid_headers=on; request_pool_size=4096B; client_max_body_size=1MB; client_body_buffer_size=2*ngx_pagesize (platform-dependent, a portability wart to avoid copying); client_body_timeout=60000ms; send_timeout=60000ms; keepalive_time=3600000ms (1hr total connection-age cap, independent of idle activity); keepalive_timeout=75000ms (idle-between-requests); keepalive_requests=1000; lingering_close=on (conditional, see close protocol); lingering_time=30000ms (wall-clock drain budget); lingering_timeout=5000ms (idle timer during drain, re-armed, clamped to remaining lingering_time); sendfile_max_chunk=2MB; postpone_output=1460B; NGX_HTTP_LINGERING_BUFFER_SIZE=4096B (hardcoded drain buffer). All defaults verified against ngx_conf_merge_*_value calls in ngx_http_core_module.c with line citations in the report.",
+   "timeouts": "See limits field -- nginx uses independent PER-PHASE idle timers (header read, body read, send) rather than one global request deadline, each re-armed on every partial-progress event rather than being a fixed total-duration budget. 408 Request Timeout fires specifically from rev->timedout while reading the request line or headers (client_header_timeout); body-read timeout/error instead surfaces as a generic 400 in the code path read. Lingering close nests a short idle timer (lingering_timeout, 5s default) inside a longer wall-clock budget (lingering_time, 30s default).",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/server-nginx.md"
+  },
+  {
+   "name": "Warp (yesodweb/wai)",
+   "license": "MIT (per repo LICENSE); note wai/warp specifically, not chez-http-server's own BSD-3-Clause",
+   "lessons": [
+    "Copy the keep-alive truth table (checkReqConnectionHeader + needsChunked + isKeepAlive) and its test-as-truth-table shape (ConnectionSpec.hs) directly \u2014 it's small, exhaustive, and normative.",
+    "Warp's single-thread-per-connection blocking-IO model gives it backpressure and pipelining-ordering 'for free'; since we're event-loop/callback-driven via chez-libuv (not one-thread-per-connection), we must design an EXPLICIT pull gate for request-body delivery (only feed parser/deliver-to-handler bytes the handler has asked for, buffering the rest, honoring uv-read-stop!/uv-read-start! as our backpressure verbs since libuv has no bounded write queue per ADR-0018) and an explicit backpressure watch on uv-stream-write-queue-size for response streaming, since we don't get blocking-syscall backpressure for free the way Warp does.",
+    "For timer economy: copy the CLASSIC pre-rewrite Warp design (tag warp-3.2.28, System.TimeManager.hs) not current master's design \u2014 a single shared uv-timer (one FFI timer handle for the WHOLE SERVER) sweeping a plain registry of lightweight per-connection cells with an Active/Inactive/Paused/Canceled state, where tickle/pause/resume are O(1) mutations with zero FFI/timer-heap interaction. This directly sidesteps chez-libuv's one-make-uv-timer-per-connection cost. Accept the tradeoff: firing resolution is 1x-2x the sweep interval, not a precise per-connection deadline.",
+    "Copy the pause-timeout-around-I/O-only discipline exactly (Warp: T.pause before calling the handler, T.resume around each body-pull and each response-write, T.tickle on completion) \u2014 this is backend-agnostic and composes with whatever concrete timer primitive we choose.",
+    "We should be STRICTER than Warp on framing-ambiguity/smuggling: reject duplicate conflicting Content-Length and reject Content-Length+Transfer-Encoding-chunked together rather than silently last-value-wins like Warp's indexRequestHeader fold; chez-httparse/llhttp conformance likely already buys us this if we don't discard the strictness at our connection layer above the parser.",
+    "Do not silently coerce unrecognized HTTP major/minor versions the way Warp's httpVersion does (RequestHeader.hs:109-116, defaults anything unrecognized to HTTP/1.0) \u2014 decide explicitly whether to reject with 505 or otherwise, and make sure chez-httparse's own version validation isn't discarded by our connection layer.",
+    "Send 431 for oversized headers ourselves (a genuine RFC 6585 fit) rather than copy Warp's own inconsistency of resolving its OverLargeHeader exception to 400 despite Settings.hs's doc comment implying 431 \u2014 this is a confirmed doc/behavior mismatch in Warp itself, not something to emulate.",
+    "Copy the asymmetric close policy: protocol/parse-level errors always close the connection (we no longer trust our position in the byte stream); a well-formed-request-but-handler-threw error MAY keep-alive if we choose (Warp does, via a returned persistence flag threaded through the error-response path).",
+    "Copy the 'count the resource at acquisition, not at consumer-thread-start' lesson from Warp's graceful-shutdown accept-race fix (increment the open-connection counter in the accept loop itself, before forking/dispatching) \u2014 directly relevant to any accept-then-enqueue-then-process design we build over libuv's on-connection callback.",
+    "Keep Upgrade/CONNECT entirely out of the connection-core's vocabulary: expose one primitive equivalent to responseRaw (hand the handler raw send/recv and let it fully own the bytes from then on, unconditionally forcing non-keep-alive/non-return-to-loop), and let application code decide when to invoke it. Do not build any Upgrade-header or CONNECT-method-aware logic into chez-http-server's core loop.",
+    "Body-size limiting is a conscious omission in Warp (no hard cap on requestBody consumption, only a bounded UNREAD-body drain budget on keep-alive reuse) \u2014 decide explicitly whether chez-http-server enforces a hard body-size cap at the connection layer (recommended, given we're not blocking-IO-backpressure-protected the way Warp is) rather than silently omitting it the way Warp does.",
+    "When porting any numeric default/limit, copy the LITERAL constant and verify it against test behavior, not the adjacent doc comment \u2014 settingsMaxBuilderResponseBufferSize's doc says '1 MiB' but the actual value is ~1.05 GB, a confirmed 1000x doc/code mismatch caught only by reading the literal directly."
+   ],
+   "limits": "settingsMaxTotalHeaderLength=50*1024=51200 bytes (throws OverLargeHeader, incrementally enforced in Request.hs's `push`); settingsMaximumBodyFlush=Just 8192 bytes (keep-alive unread-body drain cap, Nothing=unbounded); settingsMaxBuilderResponseBufferSize=1049000000 bytes (~1.05GB \u2014 doc comment at Settings.hs:181-194 wrongly says \"1 MiB\", a confirmed doc/value mismatch, copy the literal not the prose); settingsSlowlorisSize=2048 bytes (recv chunks smaller than this do not tickle the idle timer \u2014 anti-Slowloris floor); hardcoded (not Settings fields) recv buffer pool min/max 2048/16384 bytes and initial write buffer 16384 bytes (Run.hs:76-77). No independent max-request/body-size cap exists at all \u2014 PayloadTooLarge(413)/RequestHeaderFieldsTooLarge(431) exception constructors exist in Types.hs/Settings.hs's mapping but are NEVER actually thrown anywhere in the fetched tree (confirmed by grep across warp/recv/time-manager/wai and HTTP2 files) \u2014 they're dead code paths only reachable if a library consumer throws them itself; Warp's own oversized-header enforcement (OverLargeHeader) actually resolves to 400, not 431, despite the doc comment implying 431.",
+   "timeouts": "settingsTimeout=30 seconds (single shared idle-timeout per connection, guards header read + active body read + response write, converted to microseconds and fed to the timeout manager at Run.hs:299-306; NOT wall-clock-since-connect, paused around app computation via T.pause/T.resume bracketing at every I/O boundary, see report \u00a712). settingsGracefulShutdownTimeout=Nothing (unbounded wait for open-connection counter to hit 0 during shutdown; STM retry-based, no polling). settingsGracefulCloseTimeout1=0 ms for HTTP/1.x (0 = plain immediate close(), NOT lingering-close by default) vs settingsGracefulCloseTimeout2=2000 ms for HTTP/2 (gracefulClose: sends FIN via shutdown(SHUT_WR), reads-and-discards until peer FIN or this timeout, then closes regardless). Timeout manager design: current master delegates entirely to GHC's own per-capability TimerManager (time-manager/System/TimeManager.hs, NOT portable/relevant to us, analogous to \"just use libuv's timer heap directly per connection\"). The design actually relevant to the task's \"one thread, tickle-able handle\" framing is the PRE-rewrite implementation still readable at tag warp-3.2.28 (commit d487668804d7a71606d137df3c6d3d1cc359660b): a single Control.Reaper thread sweeping a plain list of {IORef action, IORef state<Active|Inactive|Paused|Canceled>} handles once every `timeout` interval; tickle/resume/pause/cancel are all O(1) lock-free IORef writes with ZERO interaction with any timer/heap structure \u2014 this is the timer-economy pattern directly transferable to our single-uv-timer-sweeping-a-hashtable design, sidestepping one-uv-timer-per-connection entirely. Firing resolution is between 1x and 2x the timeout interval (a handle must be tickled at least once per sweep, not have a precise per-tickle deadline).",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/server-warp.md"
+  },
+  {
+   "name": "Racket web-server (racket/web-server)",
+   "license": "MIT/Apache-2.0 dual license (Racket standard package license)",
+   "lessons": [
+    "Copy the keep-alive rule (HTTP/1.1 persistent by default, HTTP/1.0 non-persistent by default, Connection:close forces non-persistent either way) but tokenize the Connection header on commas rather than substring-matching close the way Racket does.",
+    "Make 'unterminated body + persistent connection' structurally unreachable in the response writer, as Racket does by forcing chunked framing whenever Content-Length is unknown and the connection isn't already closing.",
+    "Reject (400) requests with both Transfer-Encoding:chunked and a Content-Length, or duplicate Content-Length values, rather than silently preferring the first header the way Racket's reference does -- this is a real, traced request-smuggling-shaped gap in the implementation, not a pattern to imitate. Also reject/normalize non-exact Transfer-Encoding values instead of silently falling back to non-chunked.",
+    "Bake 1xx/204/304 body suppression into the transport-level response writer itself; Racket leaves this entirely to application authors with no framework guard at all.",
+    "Design our own parse/limit-violation-to-HTTP-status mapping (400/408/413/431/505) as a deliberate improvement -- Racket's reference maps every protocol error and every uncaught handler exception to the same outcome: silently killing the connection with no response. Do keep its idea of a pure-logging exception classifier (ECONNRESET/EPIPE/already-closed-port/EOF-at-next-pipelined-request = expected, don't log) as a reusable list.",
+    "Reuse the single-timer-manager-thread design (one thread owns all deadlines, blocks on one alarm event plus a message inbox) mapped onto chez-libuv's per-connection uv-timer handles, and reuse its exact five-point reset schedule: on accept, on request data arrival, before the handler runs, after the handler returns a response, and on every outbound chunk/progress event.",
+    "Do not rely on an unbounded pipe for the chunked-response producer/drainer split the way Racket does (backpressure there only arrives indirectly once the real-socket write blocks); since chez-libuv has no bounded write queue either (ADR-0018) and only exposes uv-stream-write-queue-size as a congestion signal, our chunked writer must poll/track that explicitly rather than assume Racket's synchronous-port-write backpressure chain.",
+    "On a mid-chunked-stream handler error, close the connection abruptly and deliberately withhold the terminating 0\\r\\n\\r\\n chunk, exactly as Racket does (citing racket/web-server#93) -- this correctly signals an incomplete response instead of a false success.",
+    "Copy the two-call graceful-shutdown state machine (first call: stop accepting, wait up to a grace period, then force; second call, or no grace period configured: immediate force) -- but note Racket has no lingering-close/half-close protocol to copy; that would need to be designed fresh.",
+    "Copy the request?->response? handler shape with a response record split into immediately-decided status/headers data plus a single deferred body-writer closure, adapted from the raw connection?/request?->any dispatcher signature.",
+    "Copy the test-suite architecture wholesale: fixture-file-per-edge-case parser unit tests, a buffered-pipe harness for asserting exact on-the-wire chunk bytes in response-writer tests, and a real-socket e2e suite per behavior (head, graceful-shutdown, max-concurrent, read-write/slow-loris, etc.) built on a shared (get-port,get-stop) harness -- the slow-loris read-timeout test in particular is the best concrete template for validating our own request-read-timeout.",
+    "Consciously decide about, rather than silently inherit, the gaps found: no Expect:100-continue, no Upgrade/CONNECT/WebSocket support in the transport, no HTTP trailers on chunked bodies, and strictly one-request-in-flight-per-connection pipelining (chez-httparse's consumed-byte-count-per-parser-feed! already gives us room to do more here if desired)."
+   ],
+   "limits": "All from safety-limits.rkt:70-87 (make-safety-limits defaults; make-unlimited-safety-limits sets nearly everything to +inf.0 and is what the low-level read-request uses if #:safety-limits is omitted -- documented by Racket's own maintainers as leaving applications vulnerable, request.rkt:40-50). max-concurrent=10000; max-waiting=511 (tcp-listen backlog); request-read-timeout=60s; max-request-line-length=8192B; max-request-headers=100; max-request-header-length=8192B; max-request-body-length=1MiB (applies to both Content-Length and running chunked total); max-form-data-fields=100; max-form-data-field-length=8KiB; max-form-data-files=100; max-form-data-file-length=10MiB; form-data-file-memory-threshold=1MiB; max-form-data-parts=200 (computed = fields+files); max-form-data-header-length=8KiB; response-timeout=60s (budget for handler to return a response object); response-send-timeout=60s (rolling per-chunk budget while streaming out, reset every chunk/file-range-progress event); shutdown-grace-period=#f (disabled by default -- immediate hard stop unless explicitly configured).",
+   "timeouts": "Single dedicated timer-manager thread per server (private/timer.rkt:29-82): owns a hash of live timers, computes one nearest deadline, sync's on an alarm-evt for it plus a thread-receive-evt inbox for add/remove/reset messages from other threads -- all timer mutation happens via messages to this one thread, no locks. Reset points, per the file's own design-comment (timer.rkt:6-19): start on connection accept; reset when request data comes in; reset before the handler runs; reset after the handler hands back a response; reset on every chunk of data sent to the client. Each connection additionally gets a forced-kill timer referenced via a weak box (connection-manager.rkt:58-80) so a pending timer can't keep an already-handled connection alive.",
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/server-scheme-world.md"
+  }
+ ],
+ "gaps": [
+  {
+   "library": "chez-libuv",
+   "missing": [
+    {
+     "need": "Vectored/try writes",
+     "status": "missing",
+     "fix": "Server must concatenate status-line+headers(+small first body chunk) into one bytevector before calling uv-write!, and batch small streamed chunks rather than writing every small span separately. Upstream: propose uv-writev! (list of bytevectors/spans -> one uv_write call with nbufs>1), mirroring uv-write!'s existing shape; the reserved name uv-write*! in the project context suggests this was anticipated."
+    },
+    {
+     "need": "TCP keepalive, SO_REUSEPORT, multi-loop/multi-process scaling",
+     "status": "missing",
+     "fix": "Server-side workaround: pre-fork multi-process model -- bind+listen once, fork N worker processes, each calls make-uv-loop fresh post-fork (fork duplicates the listening fd, no SO_REUSEPORT needed). Upstream proposals: (1) uv-tcp-keepalive! : uv-tcp boolean [exact-nonnegative-integer] -> unspecified, mirroring uv-tcp-nodelay!'s shape (small, additive); (2) a flags argument on uv-tcp-bind! or a uv-tcp-bind-reuseport! wrapping SO_REUSEPORT/UV_TCP_REUSEPORT, pending confirmation this is supported by the pinned libuv 1.52.1."
+    },
+    {
+     "need": "Thread-safety facts (the registry) and absence of uv_async",
+     "status": "missing",
+     "fix": "Same pre-fork multi-process workaround as item 13. Upstream (larger change than items 5/13): bind uv_async_init/uv_async_send as uv-async/uv-async-send!, plus replace or lock the process-global registry (per-loop registries, or a mutex-guarded hashtable) -- this touches the core GC-root/ADR-0007/ADR-0008 design and was explicitly flagged in the v0.1 spike as needing its own re-opened investigation, not a quick patch."
+    }
+   ],
+   "open_questions": [
+    "The chez-libuv v0.5 design doc's citation of unix/stream.c:454,464 for libuv's own UV_ECANCELED-flush-on-close behavior was not independently re-verified against actual libuv 1.52.1 C source in this sandbox (Homebrew ships only headers + the compiled dylib, no unix/stream.c); the binding's own observable behavior around it WAS measured directly (test-tcp.sps run today) and is sufficient for design purposes, but a reader wanting the underlying libuv-internals claim independently re-derived would need the real libuv source tree.",
+    "Item 13's proposed SO_REUSEPORT/UV_TCP_REUSEPORT upstream change needs confirmation of which libuv version introduced portable REUSEPORT support, and whether the project's pinned libuv 1.52.1 actually supports it, before filing as a real ADR/PR against chez-libuv -- this task only established that chez-libuv's binding does not currently expose it."
+   ],
+   "refuted": [
+    {
+     "need": "Thread-safety facts (the registry) and absence of uv_async",
+     "citation_verified": false,
+     "status_agreed": true,
+     "correction": "Overall status (missing) is correct and well-supported by the registry citations, but one evidence clause is factually wrong: re-running 'rg -i \"uv_async|uv-async\"' (excluding vendor/build/tests-tmp) finds it only in spike/FINDINGS.md:72 (a probe-results table row) and spike/probe.c:38 (a probe macro invocation) -- NOT in libuv-shim.h at all. src/libuv-shim.h contains zero occurrences of 'async' in any case; its 'single-threaded diagnostics' comment at line 20 is about the debug allocation counters, unrelated to uv_async. The spike/FINDINGS.md:366-369 quote is verified verbatim and real, but it does not itself contain the string uv_async -- it's a separate, topically-related citation about uv_run re-entrancy/ADR-0008 scope, bundled in under the same claim as if it were what the uv_async grep surfaced. The underlying conclusion (uv_async unbound, v0.1 deliberately single-threaded) remains true."
+    }
+   ],
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/gap-chez-libuv.md"
+  },
+  {
+   "library": "chez-httparse",
+   "missing": [
+    {
+     "need": "A way to decide keep-alive vs close (llhttp's should_keep_alive) from the connection layer",
+     "status": "partial",
+     "fix": "Workaround: replicate the algorithm inside on-message-complete (verified safe -- flags not yet reset there). Proposed upstream change: export httparse-should-keep-alive? : Parser -> Boolean from (httparse modes) or a new module."
+    },
+    {
+     "need": "Body framing for a message with neither Content-Length nor Transfer-Encoding (request=no body, response=read-to-EOF) and the EOF completion signal",
+     "status": "partial",
+     "fix": "Workaround: treat parser-finish!'s 'finished status as the completion signal specifically for this framing case, in addition to on-message-complete for every other case. Proposed upstream change: either make parser-finish! invoke on-message-complete for FINISH-SAFE-WITH-CB (matching llhttp's real semantics and the field's own name), or explicitly document the asymmetry in docs/api.org's Lifecycle section, plus add a test exercising it."
+    },
+    {
+     "need": "Pause/resume mechanics: which callbacks may pause, what parser-result-consumed/next report at a pause, and the correct resume+re-feed idiom",
+     "status": "partial",
+     "fix": "Workaround: use parser-result-next (already exported, just undocumented in chez-httparse's own docs) exactly as drive.sls does. Proposed upstream change: add parser-result-next to docs/api.org's result table plus a worked pause/resume/re-feed example."
+    },
+    {
+     "need": "Upgrade/CONNECT pause reasons, what bytes are left unconsumed, and how the server takes over the raw stream",
+     "status": "partial",
+     "fix": "Workaround: check both parser-result-pause (code paused-upgrade) and parser-result-error (code paused-h2-upgrade) when deciding whether to hand off the socket. Proposed upstream change: document this channel split explicitly, and/or export a unified httparse-upgrade-reason helper that checks both."
+    },
+    {
+     "need": "Header size/count limits enforced by the parser",
+     "status": "missing",
+     "fix": "Workaround: count bytes in the span callbacks and fail out via callback-pause/make-callback-failure past budget. No upstream change needed -- this is correct layering per the library's own design."
+    },
+    {
+     "need": "The method field's values and where the method-number<->name table lives",
+     "status": "partial",
+     "fix": "Workaround: hand-copy httparse-method-numbers (small, stable, llhttp-sourced) into chez-http-server, or import (httparse grammar) accepting the layering violation. Proposed upstream change: extract httparse-method-names/httparse-method-numbers plus a number->name reverse lookup into a new pure, runtime-safe (httparse methods) module mirroring (httparse modes)'s own stated design rationale (modes.sls:1-15)."
+    }
+   ],
+   "open_questions": [
+    "Is the CONNECT-request-with-explicit-skip-body combination (ahc-upgrade-skip-body, grammar.sls:1996) something chez-http-server will ever exercise? Upstream's own comment disclaims corpus coverage for it (grammar.sls:1993) and this analysis did not independently probe it.",
+    "Should chez-http-server rely on parser-state-name('start vs 'closed) as a stopgap keep-alive signal until/unless upstream exports a should-keep-alive? procedure, or is replicating the small algorithm inside on-message-complete (using only documented parser-field-ref fields) preferred for forward-compatibility? Both are verified working today; the report recommends the latter as more robust to upstream refactors.",
+    "For the h2c PRI/Upgrade preface (item 7), does chez-http-server intend to support HTTP/2 prior-knowledge at all in its first milestones, or should that error simply be treated as an ordinary 400 for now (accepting the mis-classification) until HTTP/2 is in scope?",
+    "Is it worth filing the six proposed upstream changes (see report's Summary section) as issues/ADRs against chez-httparse now, before chez-http-server's connection layer is implemented, so the workarounds documented here can be replaced by supported API as it lands?"
+   ],
+   "refuted": [
+    {
+     "need": "Error code/reason identity, and a mapping from parser errors to HTTP response status codes",
+     "citation_verified": false,
+     "status_agreed": true,
+     "correction": "Two numeric miscounts in the evidence. (1) 'src/httparse/grammar.sls:778-942 (message grammar, 41 declarations)' -- actual count in that exact range is 55 (verified via grep -c and a full manual listing; none of the 55 hits are in comments; this also equals the whole file's total, confirming the range itself is correct, just not the count). (2) 'the generated 61-entry errs vector ... src/generated/httparse-message.sls:4' -- actual count via regex extraction of every #(symbol \"reason\") entry on that line is 63, not 61. Neither miscount changes the item's substance -- the error inventory is real, llhttp-sourced, and the invalid-transfer-encoding/request-invalid-te granularity gap is correctly identified (request-invalid-te confirmed exactly at grammar.sls:880-881, parser-error-domain confirmed exactly at runtime.sls:302-303) -- but '41' should read '55' and '61' should read '63' if this evidence is carried forward."
+    },
+    {
+     "need": "The method field's values and where the method-number<->name table lives",
+     "citation_verified": false,
+     "status_agreed": true,
+     "correction": "The citation 'confirmed ... from the doc's own worked example, docs/api.org:142-146' is fabricated. That line range is entirely about URL userinfo/@-sign parsing and contains no mention of methods or method numbers. A full-file search (grep -n \"PATCH\\|method=28\\|method=3\\b\" docs/api.org) returns zero hits, and grep -n \"method\" docs/api.org shows only three mentions total (the callback-list row at 105, type-mode prose at 171, and the parser-field-ref table row at 274, which IS correctly cited elsewhere in the same item) -- none is a worked numeric example. The other half of the same claim, message-loop-tests.sps:150 showing 'method=28' for a PATCH fixture, is accurate and independently sufficient to support the underlying fact. All other citations in this item (grammar.sls:100-106 exports/import, :155-186 tables with 47 names confirmed by count, :267-268 method-number-name unexported, modes.sls:1-15) check out exactly."
+    }
+   ],
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/gap-chez-httparse.md"
+  },
+  {
+   "library": "uriparse",
+   "missing": [
+    {
+     "need": "Parse authority-form (CONNECT host:port)",
+     "status": "missing",
+     "fix": "Immediate: server prepends \"//\" before parsing CONNECT targets in relative-ref mode. Smallest upstream fix: export a uri-parse-authority-form convenience in (uri collect) that does this splice-and-offset-rebase internally, no grammar/byte-machine change required."
+    },
+    {
+     "need": "Parse asterisk-form (OPTIONS *)",
+     "status": "partial",
+     "fix": "Server-side literal check for request-target == \"*\"; no uriparse change needed or useful here."
+    },
+    {
+     "need": "Query splitting into key/value pairs and form-urlencoded decoding",
+     "status": "missing",
+     "fix": "Not an upstream ask -- this is a deliberate, recorded scope boundary. chez-http-server should implement a small standalone query-string module operating on uriparse's raw query bytevector."
+    },
+    {
+     "need": "Host grammar validation (userinfo/host/port split, reg-name/IPv4/IP-literal charset), impact on Host header validation",
+     "status": "missing",
+     "fix": "Immediate: chez-http-server needs its own minimal authority/Host validator (at minimum reject CTL/SP bytes) and its own userinfo@host:port / [IPv6]:port splitter over the raw authority bytevector, as a stopgap until M4 (host grammar) ships upstream -- which is already on uriparse's own roadmap per the project brief, not something to newly request."
+    },
+    {
+     "need": "Performance / allocation of uri-parse per request",
+     "status": "partial",
+     "fix": "Smallest upstream change: export a uri-collector-reset! that calls byte-machine's parser-reset! (already exported by (byte-machine runtime) per the design doc) and clears the collector's three mutable accumulators (table, offsets, present/rooted?/verdict) in place, so a server can own one collector per worker/connection and avoid re-allocating the parser and hashtables per request. Additive change; does not alter uri-parse's existing one-shot behavior."
+    },
+    {
+     "need": "IDNA and Unicode host handling",
+     "status": "missing",
+     "fix": "Not an upstream ask; any IDNA need must be met server-side or via a separate, explicitly-scoped library. Raising it against uriparse would be asking them to reverse a recorded decision."
+    },
+    {
+     "need": "IPv6 literal handling in authority (bracket/port parsing)",
+     "status": "missing",
+     "fix": "Already on uriparse's own M4/v0.2 roadmap; no new upstream ask needed beyond \"ship M4\". Until then, chez-http-server needs its own bracket-aware host:port splitter (recognizing a leading '[' as starting an IP-literal that runs to the matching ']', with the port only allowed after it) over the raw authority bytevector."
+    }
+   ],
+   "open_questions": [
+    "Should chez-http-server carry a local uri-parse-authority-form helper (the //-prefix splice) now, or wait for an upstream convenience function -- given the workaround is a few lines and fully correct per today's measurements?",
+    "Does chez-http-server want to adopt chez-httparse's separate httparse-url standalone parser for anything, or is the recommendation in item 7 (main-parser on-url-data + uriparse, skip the standalone url machine entirely) final? This affects whether uriparse's authority-splitting gap (host grammar, M4) is the only place host/port logic needs to live, or whether it would also need to be reconciled with httparse-url's own combined userinfo:host:port span.",
+    "What is chez-http-server's actual expected request rate / concurrency model (single-threaded event loop via chez-libuv, per the project context)? This determines whether uri-parse's ~1.4-2.8 microsecond fixed per-call overhead (item 6) is worth pursuing a collector-reuse upstream change for, or is negligible relative to libuv/syscall overhead per connection.",
+    "Should the minimal authority/Host CTL-byte rejection (item 8, point 3) be proposed as a small patch to uriparse's (uri charset) now, or implemented purely server-side as a stopgap, given uriparse's own M3/M4 milestone boundaries were a deliberate, recorded scope decision that a partial authority check would blur?",
+    "Has anyone confirmed whether RFC 9112 requires servers to reject an origin-form request-target beginning with '//' outright, or merely to interpret it consistently as a path (this analysis flags the behavior as something the server must special-case per uriparse's relative-ref mode, per grammar.sls:145-149, but the exact RFC-mandated server behavior for that edge case was not independently re-derived from RFC text in this session and should be checked against RFC 9112 directly before chez-http-server picks a policy)."
+   ],
+   "refuted": [
+    {
+     "need": "Parse asterisk-form (OPTIONS *)",
+     "citation_verified": false,
+     "status_agreed": true,
+     "correction": "Status (partial) correct and measured output reproduced exactly. Two minor citation issues: charset.sls:45 cites the sub-delim? function's opening line, but the specific `(fx=? b 42)` clause for byte 42 is on line 46, not 45. Also grammar.sls:160-175 names 'path-nc-first/path-scan' jointly, but tracing the actual state path for input \"*\" shows only path-nc-first (168-175) and the shared path-close-end terminal (166) are exercised -- path-scan's own dispatch body (160-163) is never reached for this input. Neither issue changes the status."
+    },
+    {
+     "need": "Query splitting into key/value pairs and form-urlencoded decoding",
+     "citation_verified": false,
+     "status_agreed": true,
+     "correction": "Status (missing) and substance correct; rg search for query-pair/form-urlencoded/split-query in src/ re-confirmed zero hits, and the raw-query measurement reproduced exactly. CITATION ERROR: the quoted form-urlencoded-out-of-scope text is cited at .plans/2026-09-18-chez-uri-project-brief.md:315-317, but that range is actually the WHATWG URL out-of-scope bullet. The quoted text is really at lines 319-322."
+    },
+    {
+     "need": "Performance / allocation of uri-parse per request",
+     "citation_verified": false,
+     "status_agreed": true,
+     "correction": "Status (partial) and the core finding (roughly 55-65% fixed per-call overhead, recomputed as 56.6%) confirmed correct; decision 0016 citations (:22, :24-30, :50-56) and collect.sls citations (:134-135, :173-182, :190-193) all confirmed exact. Byte-allocation figures in bench2/3/4.sps reproduced bit-for-bit deterministically across multiple re-runs; nanosecond timings showed normal ~2-5% run-to-run jitter, not a discrepancy. FACTUAL ERROR: the bench2.sps request-target is described as '66-byte' but is actually 64 bytes (verified via wc -c and Python len())."
+    },
+    {
+     "need": "Relationship to chez-httparse's own url sub-parser (llhttp's url machine) -- which to use for what, and redundancy",
+     "citation_verified": false,
+     "status_agreed": true,
+     "correction": "Status (present) and substance correct; grammar.sls:727-728,756 and docs/api.org ~231-267 both confirmed exact. CITATION ERROR: grammar.sls:1073-1076 is cited for the 'OPTIONS a.com:443 HTTP/1.1 ... errors' documented example, but that text is actually at lines 1077-1079; lines 1073-1076 discuss an unrelated point (url-span being ONE span vs. the standalone parser's five). Also minor: grammar.sls:1053-1064 for the make-field-branch-node call should extend to line 1065, which is where the quoted 'url-entry-connect 'url-entry-normal text actually appears."
+    },
+    {
+     "need": "IPv6 literal handling in authority (bracket/port parsing)",
+     "citation_verified": false,
+     "status_agreed": true,
+     "correction": "Status (missing) and substance correct; rg search for ipv6/IP-literal in src/ re-confirmed exactly 3 hits, all in comments; probe3.sps IPv6 measurement reproduced exactly. Minor imprecision: .plans/2026-09-18-chez-uri-project-brief.md:282-291 covers the real M4-scope text, but the specific '150-250 nodes' figure quoted is actually at line 293, two lines past the cited range's end."
+    }
+   ],
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/gap-uriparse.md"
+  },
+  {
+   "library": "byte-machine-and-composition",
+   "missing": [],
+   "open_questions": [
+    "Does chez-httparse's own grammar (src/httparse/grammar.sls) actually route message-complete the same 'loop to idle, no reset needed' way byte-machine's own (byte-machine test http-machine) fixture does? I confirmed the pattern exists and works in byte-machine's own fixture (and empirically in my own run), and the generated httparse-message.sls's state list is consistent with it (restart-clear-flags/restart-mark/amc-* states), but did not walk chez-httparse's grammar.sls node-by-node to confirm it never routes through a 'stop' node between pipelined messages. This is chez-httparse-specific and better answered by a gap-analysis pass over chez-httparse directly.",
+    "Cross-process/cross-loop-thread parser sharing (item 5's nuance about the 'busy' guard being a re-entrancy detector, not a concurrency lock) is my own analysis from the source, not stated anywhere in byte-machine's docs -- worth a direct question to the byte-machine maintainers, or a .decisions/ entry, if chez-http-server ever adopts a multi-libuv-loop-thread architecture.",
+    "current-abi-version has moved 4 times across byte-machine's own milestones (5->6->7->8->9) in a matter of weeks; chez-http-server's own pin-checking tooling should assert this number by reading it from the vendored tree at CI time rather than hardcoding it anywhere, per chez-httparse's own decision 0005 item 5."
+   ],
+   "refuted": [],
+   "report_path": "/private/tmp/claude-501/-Users-yuzu-github-chez-http-server/2440228f-3288-4faf-9838-18f1bc1cd3d2/scratchpad/research/gap-byte-machine-and-composition.md"
+  }
+ ]
+}
