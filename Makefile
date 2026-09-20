@@ -27,6 +27,11 @@ BYTE_MACHINE_PIN := 0245db3059504c462b881a550310300fece55216  # v0.6.0
 # byte-machine comes from chez-httparse's vendored copy (uriparse pins the same
 # commit, so a second copy is redundant).  `tests` carries the (testing) bridge
 # and build/scheme-libs carries (srfi :64).
+#
+# The chez-httparse corpus harness ((httparse test ...)) lives under its
+# test/support/harness, NOT its src/, so it is a separate, test-only path (M1.1,
+# design §3.2).  check-imports keeps it out of the pure libraries under
+# src/http-server/, so nothing shipped can reach it.
 BUILD_DIR := build
 SRFI_LIBS := $(BUILD_DIR)/scheme-libs
 EMPTY :=
@@ -35,7 +40,8 @@ LIBDIR_LIST := src tests \
   $(LIBUV_DIR)/src \
   $(HTTPARSE_DIR)/src $(BYTE_MACHINE_DIR)/src \
   $(URIPARSE_DIR)/src \
-  $(SRFI_LIBS)
+  $(SRFI_LIBS) \
+  $(HTTPARSE_DIR)/test/support/harness
 LIBDIRS := $(subst $(SPACE),:,$(strip $(LIBDIR_LIST)))
 
 # Each tests/test-*.sps is its own process with its own (exit ...) status.
