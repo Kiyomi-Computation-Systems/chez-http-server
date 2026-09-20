@@ -31,3 +31,22 @@ restored with `git -C vendor/chez-httparse checkout --` (byte-identical,
 submodule clean). `make test` is green afterwards: six suites, 62 expected
 passes (corpus-inventory 7, flag-pins 8, headers 9, integration 5, limits 19,
 records 14), exit 0.
+
+## M1.2 — the trace lane
+
+| # | suite | mutation | observed |
+|---|-------|----------|----------|
+| M1.2 | `tests/test-trace-lane.sps` | perturb our rendering shim `render-trace` to drop the `off=N ` field from the first rendered line of every trace | suite exited 1; 2 expected passes, 1 unexpected failure. `trace-compare` reported the difference richly for each strict fixture — `request/connection.md#1 size 1: line 0 expected "off=0 message begin" got "message begin" (line-differs)` — the differing index, expected, actual and reason, never a bare `#f` |
+
+The mutation is on OUR code, not the vendored `trace-format`: `render-trace` is
+the thin shim the trace lane renders through, kept ours on purpose (design §8.1
+makes `trace-format` the shared vocabulary and the driving/rendering around it
+ours). A comparator that answered `#f` to a real difference would have gone
+unnoticed — which is the failure this mutation exists to rule out. The
+135-fixture and scan-run assertions stayed green, so the mutation broke only the
+property under test.
+
+Reverted; `make test` green afterwards: seven suites, 65 expected passes
+(corpus-inventory 7, flag-pins 8, headers 9, integration 5, limits 19,
+records 14, trace-lane 3), exit 0. The release lane (`CORPUS=full`) is green at
+9,394 runs, 0 mismatches.
