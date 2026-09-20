@@ -37,3 +37,21 @@ Deadlines are data in the pure state (`deadline`, `deadline-kind`); the shell ke
 - Timeout tests drive `(tick now)` with a fake clock and never sleep.
 - The idle server sleeps in `uv-run 'once` with no periodic wake-up.
 - A future millisecond-exact option (one `uv-timer` per connection, `uv-timer-again!`) changes only the `arm-deadline` executor, not the core.
+
+## Amendment (2026-09-20) — names as shipped in M0
+
+M0 implemented `(http-server limits)` (`src/http-server/limits.sls`) with two
+naming changes from the table above; recorded here in full so this decision matches
+the code and stands on its own:
+
+- **Environment prefix:** overrides use `CHEZ_HTTP_<NAME>` (e.g.
+  `CHEZ_HTTP_READ_HEADER_TIMEOUT`), not `HTTP_SERVER_<NAME>`.
+- **Three field renames:** `header-timeout-ms` → `read-header-timeout-ms`;
+  `body-timeout-ms` → `body-inactivity-timeout-ms`; `max-pipeline` → `pipeline-cap`
+  (`max-pipeline` is also named in ADR-0004).
+
+Every other shipped field keeps its table name, and all defaults and on-breach
+behaviour are unchanged. The remaining limits (write/drain/header-field/water-mark/
+connection/tick) are not yet in the M0 record; they arrive with later milestones
+under the same `CHEZ_HTTP_` prefix. The rung-2 design document carries the same
+field map with rationale.
