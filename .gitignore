@@ -1,2 +1,9 @@
 # third-party test files fetched during the planning research; not ours to redistribute
 .plans/research/stray-downloads/
+
+# build artifacts (SRFI-64 symlink tree; anything we generate)
+/build/
+
+# Chez compiled objects / whole-program optimization outputs
+*.so
+*.wpo
