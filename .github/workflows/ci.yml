@@ -1,0 +1,117 @@
+name: CI
+
+# Linux only, deliberately (AGENTS.md: do NOT set up macOS runners). macOS is
+# the development platform and is exercised by `make test` on the laptop; a
+# hosted macOS runner bills at ~10x the Linux rate for coverage that is never
+# in doubt here. The one job builds the shim against system libuv, resolves all
+# four pinned dependencies onto one library path, and runs the suite.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# README.org's declared Chez floor. The job asserts the Chez it ends up with
+# actually meets this rather than trusting the resolution step.
+env:
+  CHEZ_FLOOR_VERSION: "10.4.1"
+
+jobs:
+  linux:
+    name: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Top-level submodules only; the nested byte-machine is pulled by
+      # `make submodules` (targeted, so chez-libuv's own vendored libuv is not
+      # cloned — the system libuv installed below is what the shim links).
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # libuv for the shim (pkg-config path); the X11/ncurses/uuid headers are
+      # what Chez's from-source build needs.
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config libuv1-dev \
+            libx11-dev libncurses-dev uuid-dev git
+
+      # apt's chezscheme is below the floor, so build 10.4.1 from source and
+      # cache it keyed on the exact version (a bump must miss, not merge).
+      - name: Restore cached Chez Scheme
+        id: chez-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.local/chez
+          key: chez-${{ runner.os }}-${{ runner.arch }}-${{ env.CHEZ_FLOOR_VERSION }}-threads
+
+      - name: Build Chez Scheme from source (apt's is below the floor)
+        if: steps.chez-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "v${CHEZ_FLOOR_VERSION}" \
+            https://github.com/cisco/ChezScheme.git "${RUNNER_TEMP}/ChezScheme"
+          cd "${RUNNER_TEMP}/ChezScheme"
+          ./configure --threads --installprefix="${HOME}/.local/chez"
+          make -j"$(nproc)"
+          make install
+
+      # Saved here, not by the cache action's post-step, so a failed later step
+      # never publishes a half-installed prefix under the key.
+      - name: Save built Chez Scheme
+        if: steps.chez-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.local/chez
+          key: ${{ steps.chez-cache.outputs.cache-primary-key }}
+
+      - name: Put Chez on PATH
+        run: echo "${HOME}/.local/chez/bin" >> "${GITHUB_PATH}"
+
+      # The from-source install names its binary `scheme`; the Makefile
+      # defaults CHEZ to `chez`. Resolve whichever exists into the environment
+      # so every later `make` step uses it.
+      - name: Resolve the Chez binary
+        run: |
+          if command -v chez >/dev/null; then echo "CHEZ=chez" >> "$GITHUB_ENV"
+          elif command -v chezscheme >/dev/null; then echo "CHEZ=chezscheme" >> "$GITHUB_ENV"
+          elif command -v scheme >/dev/null; then echo "CHEZ=scheme" >> "$GITHUB_ENV"
+          else echo "no Chez Scheme binary found" >&2; exit 1; fi
+
+      - name: Assert Chez meets the declared floor
+        run: |
+          raw="$($CHEZ --version 2>&1)"
+          ver="$(echo "$raw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+          [ -n "$ver" ] || { echo "::error::could not parse a Chez version from '$raw'"; exit 1; }
+          lowest="$(printf '%s\n%s\n' "$ver" "$CHEZ_FLOOR_VERSION" | sort -V | head -1)"
+          [ "$lowest" = "$CHEZ_FLOOR_VERSION" ] || { echo "::error::Chez $ver is below the floor $CHEZ_FLOOR_VERSION"; exit 1; }
+          echo "Chez $ver satisfies the $CHEZ_FLOOR_VERSION floor"
+
+      - name: Report versions
+        run: |
+          $CHEZ --version 2>&1 || true
+          cmake --version | head -1
+          echo "libuv: $(pkg-config --modversion libuv)"
+
+      # Pull the nested byte-machine, then verify every gitlink is at its pin
+      # before building anything.
+      - name: Init submodules
+        run: make submodules
+
+      - name: Check dependency pins
+        run: make check-pins
+
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
+
+      - name: Check help is complete
+        run: make check-help
