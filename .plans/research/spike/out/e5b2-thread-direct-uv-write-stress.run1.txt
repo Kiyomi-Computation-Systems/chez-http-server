@@ -1,0 +1,2 @@
+finish (watchdog 5s) at +5000ms: received=43 loop-writes=100 loop-completions=95 worker-ok=2000 worker-completions=1165 worker-raised=0 worker-done=#t
+exit=124

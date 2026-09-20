@@ -1,0 +1,24 @@
+# 0003: The shell is direct callbacks; coroutines exist only for handlers that await; engines and threads are rejected for v1
+
+Date: 2026-09-19
+Status: accepted — evidence: research/spike/spike-control-flow.md E1–E6, judges' J1
+Plan: [async-model options](../2026-09-19-async-model-options.md)
+
+## Context
+
+Measured on Chez 10.4.1 threaded, libuv 1.52.1, macOS arm64, each experiment twice: a continuation captured inside a chez-libuv callback cannot be resumed after that callback returns (`attempt to return to stale foreign context`, a bare `&assertion` escaping `uv-run`); coroutines resumed only from Scheme frames work at ~30 ns per switch; engine expiry inside a callback defeats the binding's re-entry guard and poisons the parser at every mid-feed expiry; a worker thread touching a loop handle corrupts the registry, and a loop blocked in `uv-run` freezes GC for other threads.
+
+## Decision
+
+1. The connection shell registers a fixed set of library-owned closures for `on-connection`, `on-data`, `on-eof`, `on-error`, `on-write-done`, `on-shutdown`, `on-close`, the tick timer and the signal watcher. Each builds an event and calls `dispatch!`; none runs application code beyond a synchronous `call-handler`, and none captures a continuation.
+2. A handler that returns a response is finished with no scheduler involved. A handler that calls `await` runs as a coroutine created and resumed only from the scheduler's `drain-ready!`, whose turn is `drain-ready!` then `(uv-run loop 'once)` (or `'nowait` when a coroutine yielded). Invariants R1–R5 of the two-level proposal are checks: a `phase` cell asserts that `await`, `spawn` and resume happen in the `'scheduling` phase and never in `'in-uv-run` or `'in-parser`; resume cells are one-shot; a coroutine never returns normally.
+3. Engines, OS-thread handlers and callback-captured `await` are rejected for v1. The threads route stays open behind chez-libuv #19 (`__collect_safe`) and #20 (`uv_async`); both landed in chez-libuv v0.6.0 later on 2026-09-19 (the dated note under Consequences), which opens that door without changing this decision for v1.
+4. The only escape hatch chez-libuv's store-and-reraise ever sees is a bug in the ten library-owned closures; the server's run loop guards `&uv-callback-error`, logs, reconciles the connection table against `uv-loop-live-handles`, and runs again.
+
+## Consequences
+
+- No application code ever runs under a C frame. A raise in a handler is caught at the `call-handler` executor or in the coroutine trampoline and becomes a `handler-failed` event.
+- Idle connections carry no coroutine; a parked handler costs the measured 3.4–5.6 KiB only while parked.
+- `poll!` is the scheduler's single injection point, so scheduler tests never load libuv.
+- Multi-core is a door left open, not closed, in this order: pre-fork worker processes sharing the listening socket through `uv-spawn!`'s `inherit-stream` need no binding change and are the first route for scale; a worker pool for blocking or CPU-heavy handlers behind the same event inbox becomes admissible once chez-libuv #19 (`__collect_safe`) and #20 (`uv_async`, enforced loop-thread affinity) land; both were planned upstream on 2026-09-19 as Stage 1 and 2 of one threading arc, whose T1 spike already re-ran the Q1 gate under collect-safe and whose Stage 1 carries the store-and-reraise oracle that item 4 above relies on; until then no timer trick substitutes (spike E5d/E5e: a 1 ms tick opens GC windows only when the loop thread's per-tick Scheme path reaches Chez's trap check), and the conversion's ~60 ns per callback (spike E5f) goes into the performance baseline when the pin moves; thread-per-core loops additionally need a per-loop or locked handle registry and stay unfiled until a measurement shows the other two falling short.
+- 2026-09-19, night: chez-libuv v0.6.0 shipped both stages (#19 via its PR #25, #20 via PR #26). The rerun the bullet above asked for happened at the release: spike E5g re-runs E5c and E5e through the binding and the worker's 27 ms of allocation takes 23-33 ms whatever the loop thread does (10.2 s at the old pin); E5b re-run at v0.6.0 turns the worker's direct `uv-write!` into a named `&uv-wrong-thread` refusal instead of a silent registry write; a raise inside a callback still comes out of the collect-safe `uv-run` as `&uv-callback-error` carrying the raised object (`research/spike/smoke-v060-tcp.sps`), so item 4's oracle holds. The worker-pool route is admissible from this pin on; items 1-3 stand for v1, and `&uv-wrong-thread` needs no guard in the run loop because the v1 shell calls no handle verb off the loop thread. The ~60 ns per callback is in the pin and belongs in M0's performance baseline. The reuseport bind flag is Linux/BSD-only (errno -45 on macOS), so the pre-fork route keeps `inherit-stream` as its portable mechanism.

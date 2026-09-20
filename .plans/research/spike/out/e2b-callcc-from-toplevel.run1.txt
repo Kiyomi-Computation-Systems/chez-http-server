@@ -1,0 +1,17 @@
+A: entered, entry #1
+A: call/cc returned first-time
+A: body end, returning normally to libuv
+top: uv-run 'default -> #f
+top: loop alive? #f (this line runs again if the continuation re-enters here)
+top: invoking saved continuation from top level with 'from-top
+A: call/cc returned from-top
+A: body end, returning normally to libuv
+uv-run | kinds: (&assertion &format &message &irritants &continuation)
+uv-run | display-condition: Exception: attempt to return to stale foreign context
+top: uv-run 'default -> raised
+top: loop alive? #f (this line runs again if the continuation re-enters here)
+top: already invoked once; not invoking again
+top: after invocation, a-entries = 1 invocations = 1
+top: teardown -> ok
+top: done
+exit=0

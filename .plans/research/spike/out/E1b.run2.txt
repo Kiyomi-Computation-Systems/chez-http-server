@@ -1,0 +1,82 @@
+### EXCERPT: original 1337073178 bytes, runaway-loop log; first 40 and last 40 lines kept ###
+t1: fired (entry #1); capturing call/1cc
+t1: call/1cc returned first-time; returning normally to libuv
+uv-run returned #f; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+...
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+uv-run returned raised; now at top level, loop open, not running
+top: invoking stashed k with 'from-top (unguarded)
+uv-run RAISED: Exception: attempt to return to stale foreign context
+exit=124

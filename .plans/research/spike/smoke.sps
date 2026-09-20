@@ -1,0 +1,8 @@
+(import (rnrs) (only (chezscheme) threaded? machine-type) (libuv) (spike common))
+(say "threaded? " (threaded?) " machine-type " (machine-type) " libuv " (uv-version))
+(define loop (make-uv-loop))
+(define t (make-uv-timer loop))
+(uv-timer-start! t (lambda (t) (say "timer fired")) 5 0)
+(say "uv-run -> " (uv-run loop 'default))
+(uv-loop-teardown! loop)
+(say "ok")

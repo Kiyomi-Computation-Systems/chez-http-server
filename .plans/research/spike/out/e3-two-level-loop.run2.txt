@@ -1,0 +1,24 @@
+handler: got "hello" via handle-connection!>recv-message!>recv!>await!
+handler: send! completed, err=#f
+client: echo #1 = "echo:hello"
+handler: got "world" via handle-connection!>recv-message!>recv!>await!
+handler: send! completed, err=#f
+client: echo #2 = "echo:world"
+handler: eof after 2 messages; closing peer + server
+sched: handler finished
+ticker: tick 1 (ran while handler waits)
+ticker: tick 2 (ran while handler waits)
+ticker: tick 3 (ran while handler waits)
+ticker: tick 4 (ran while handler waits)
+sched: ticker finished
+top: scheduler-run! -> idle steps=11 uv-runs=18 echoes=2
+bench pure-suspend-resume (wake immediately, no uv-run): 10000 cycles in 0 ms wall, 1 ms cpu, steps=10001 uv-runs=0
+sched: pure-suspend-resume (wake immediately, no uv-run) finished
+bench timer-wakeup (0ms one-shot timer + uv-run 'once per cycle): 10000 cycles in 132 ms wall, 18 ms cpu, steps=10001 uv-runs=10000
+sched: timer-wakeup (0ms one-shot timer + uv-run 'once per cycle) finished
+bench pure-suspend-resume with full call/cc: 10000 cycles in 0 ms wall, 0 ms cpu, steps=10001
+sched: pure-suspend-resume with full call/cc finished
+top: final uv-run -> #f
+top: teardown -> ok
+top: done
+exit=0

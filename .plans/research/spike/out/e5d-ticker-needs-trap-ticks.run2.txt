@@ -1,0 +1,17 @@
+what the loop thread does per 1 ms tick -> the worker's allocation-triggered GC (plain uv_run unless 'safe')
+  once: worker alloc load 442 ms; collections 8; timer fired 400; uv_run wall 455 ms
+  once-busy 100 calls/tick: worker alloc load 84 ms; collections 8; timer fired 400; uv_run wall 470 ms
+  once-busy 300 calls/tick: worker alloc load 31 ms; collections 7; timer fired 400; uv_run wall 459 ms
+  once-busy 1000 calls/tick: worker alloc load 12 ms; collections 8; timer fired 400; uv_run wall 456 ms
+  once-busy 2000 calls/tick: worker alloc load 11 ms; collections 8; timer fired 400; uv_run wall 558 ms
+  once-mutex: worker alloc load 437 ms; collections 7; timer fired 400; uv_run wall 454 ms
+  once-sleep0: worker alloc load 9 ms; collections 8; timer fired 400; uv_run wall 454 ms
+  default: worker alloc load 439 ms; collections 7; timer fired 400; uv_run wall 455 ms
+  default-busy 100 calls/tick: worker alloc load 85 ms; collections 8; timer fired 400; uv_run wall 455 ms
+  default-busy 300 calls/tick: worker alloc load 32 ms; collections 8; timer fired 400; uv_run wall 456 ms
+  default-busy 1000 calls/tick: worker alloc load 9 ms; collections 7; timer fired 400; uv_run wall 455 ms
+  default-busy 2000 calls/tick: worker alloc load 9 ms; collections 8; timer fired 400; uv_run wall 457 ms
+  default-mutex: worker alloc load 438 ms; collections 8; timer fired 400; uv_run wall 454 ms
+  safe: worker alloc load 6 ms; collections 7; timer fired 400; uv_run wall 455 ms
+done
+exit=0

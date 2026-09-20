@@ -1,0 +1,42 @@
+#!r6rs
+;; chez-httparse v0.4.0: #36 (501-vs-400 via parser-error-node-name) and
+;; #34 (parser-result-next and the two upgrade hand-off channels), as api.org documents them.
+(import (rnrs) (generated httparse-message) (httparse modes) (byte-machine runtime))
+(define (mk complete-outcome)
+  (define (ev name) (lambda (p ctx) (if (eq? name 'on-message-complete) complete-outcome callback-continue)))
+  (define (sp name) (lambda (p ctx bv from to) callback-continue))
+  (define spans '(on-method-data on-url-data on-protocol-data on-version-data on-status-data on-header-field-data on-header-value-data on-body-data on-chunk-extension-name-data on-chunk-extension-value-data))
+  (define evs '(on-method-complete on-url-complete on-protocol-complete on-version-complete on-status-complete on-header-field-complete on-header-value-complete on-chunk-extension-name-complete on-chunk-extension-value-complete on-message-begin on-headers-complete on-chunk-header on-chunk-complete on-message-complete on-reset))
+  (make-parser httparse-message-machine (append (map (lambda (n) (list n (sp n))) spans) (map (lambda (n) (list n (ev n))) evs)) #f
+    (list (cons 'type (httparse-message-type-value 'request)) (cons 'lenient-flags (httparse-lenient-flags-value '())))))
+;; api.org: 501 for the one node; every other invalid-transfer-encoding is 400.
+(define (transfer-encoding-error->status e)
+  (if (eq? (parser-error-node-name e) 'e-request-invalid-te) 501 400))
+;; api.org: #t when the result is either upgrade hand-off, whichever channel it took.
+(define (result-hands-off-stream? r)
+  (or (and (eq? (parser-result-status r) 'paused)
+           (let ((p (parser-result-pause r))) (and p (eq? (parser-error-code p) 'paused-upgrade))))
+      (and (eq? (parser-result-status r) 'error)
+           (let ((e (parser-result-error r))) (and e (eq? (parser-error-code e) 'paused-h2-upgrade))))))
+(define (te-probe label input)
+  (let* ((p (mk callback-continue)) (bv (string->utf8 input)) (r (parser-feed! p bv 0 (bytevector-length bv))) (e (parser-result-error r)))
+    (display (list label (parser-result-status r) (parser-error-code e) (parser-error-reason e) 'node (parser-error-node-name e) 'status (transfer-encoding-error->status e))) (newline)))
+(define (handoff-probe label input complete-outcome)
+  (let* ((p (mk complete-outcome)) (bv (string->utf8 input)) (r (parser-feed! p bv 0 (bytevector-length bv)))
+         (pz (parser-result-pause r)) (e (parser-result-error r)) (next (parser-result-next r)))
+    (display (list label (parser-result-status r)
+                   'pause (and pz (list (parser-error-code pz) (parser-error-reason pz)))
+                   'error (and e (list (parser-error-code e) (parser-error-reason e)))
+                   'consumed (parser-result-consumed r) 'next next
+                   'tail (utf8->string (let ((t (make-bytevector (- (bytevector-length bv) next)))) (bytevector-copy! bv next t 0 (- (bytevector-length bv) next)) t))
+                   'hands-off? (result-hands-off-stream? r))) (newline)))
+(display "--- #36: invalid-transfer-encoding split by parser-error-node-name (llhttp transfer-encoding.md inputs)") (newline)
+(te-probe "pigeons        " "PUT /url HTTP/1.1\r\nTransfer-Encoding: pigeons\r\n\r\n")
+(te-probe "chunkedchunked " "POST / HTTP/1.1\r\nTransfer-Encoding: chunkedchunked\r\n\r\n")
+(te-probe "chunked,deflate" "POST / HTTP/1.1\r\nTransfer-Encoding: chunked, deflate\r\n\r\n")
+(te-probe "empty TE + CL  " "POST / HTTP/1.1\r\nTransfer-Encoding:\r\nContent-Length: 5\r\n\r\n")
+(display "--- #34: the two hand-off channels and parser-result-next") (newline)
+(handoff-probe "CONNECT " "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\nTUNNEL" callback-continue)
+(handoff-probe "Upgrade " "GET /chat HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\nWSDATA" callback-continue)
+(handoff-probe "h2c PRI " "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nFRAME" callback-continue)
+(handoff-probe "plain pause at on-message-complete (pipelining)" "GET /a HTTP/1.1\r\n\r\nGET /b HTTP/1.1\r\n\r\n" callback-pause)

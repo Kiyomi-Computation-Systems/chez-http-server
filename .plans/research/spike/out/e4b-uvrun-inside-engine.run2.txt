@@ -1,0 +1,5 @@
+result=((done 300 fired 6 runs-inside 300)) slices=451 fired=6 loop-alive?=#t
+final uv-run -> #f
+teardown -> ok
+done
+exit=0

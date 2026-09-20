@@ -1,0 +1,25 @@
+#!r6rs
+;; Shared helpers for the control-flow spike. Pure printing/timing; no libuv.
+(library (spike common)
+  (export say show-condition guarded now-ms condition-kinds)
+  (import (rnrs)
+          (only (chezscheme) display-condition current-time time-second
+                time-nanosecond record-rtd record-type-name))
+  (define (say . xs)
+    (for-each display xs) (newline) (flush-output-port (current-output-port)))
+  ;; condition-kinds : object -> (listof symbol)
+  (define (condition-kinds c)
+    (if (condition? c)
+        (map (lambda (s) (record-type-name (record-rtd s))) (simple-conditions c))
+        (list 'non-condition-raise-object c)))
+  (define (show-condition tag c)
+    (say tag " | kinds: " (condition-kinds c))
+    (display tag) (display " | display-condition: ")
+    (if (condition? c) (display-condition c) (write c))
+    (newline) (flush-output-port (current-output-port)))
+  ;; guarded : string thunk -> object | 'raised
+  (define (guarded tag thunk)
+    (guard (e (#t (show-condition tag e) 'raised)) (thunk)))
+  (define (now-ms)
+    (let ((t (current-time)))
+      (+ (* 1000 (time-second t)) (div (time-nanosecond t) 1000000)))))

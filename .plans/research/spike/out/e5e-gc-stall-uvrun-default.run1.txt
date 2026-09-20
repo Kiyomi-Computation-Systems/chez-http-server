@@ -1,0 +1,5 @@
+loop thread in one (uv-run loop 'default); binding dispatch path only
+  period 300 ms: worker elapsed 10223 ms; collections 34; timer fired 35 times
+  period 1 ms: worker elapsed 92 ms; collections 35; timer fired 92 times
+done
+exit=0

@@ -1,0 +1,6 @@
+call/1cc: 1000000 cycles in 34 ms wall, 34 ms cpu, collections=32 => 0.034 us/cycle
+call/cc : 1000000 cycles in 32 ms wall, 33 ms cpu, collections=34 => 0.032 us/cycle
+call/1cc again: 1000000 cycles in 32 ms wall, 32 ms cpu, collections=33 => 0.032 us/cycle
+call/cc  again: 1000000 cycles in 30 ms wall, 30 ms cpu, collections=34 => 0.03 us/cycle
+done
+exit=0

@@ -1,0 +1,5 @@
+threaded? #t machine-type tarm64osx libuv 1.52.1
+timer fired
+uv-run -> #f
+ok
+exit=0

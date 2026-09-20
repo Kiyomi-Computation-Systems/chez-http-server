@@ -1,0 +1,8 @@
+loop thread 0: got item after 43 polls at +57ms (worker 1 pushed at +57ms); uv-write! to peer
+loop: write complete err=#f
+client: received "result=499999500000"
+client: eof
+top: uv-run -> #f
+top: teardown -> ok
+top: done
+exit=0

@@ -1,0 +1,6 @@
+uv-run | kinds: (&assertion &format &message &irritants &continuation)
+uv-run | display-condition: Exception: invalid memory reference.  Some debugging context lost
+top: uv-run -> raised
+top: teardown -> ok
+top: done
+exit=0

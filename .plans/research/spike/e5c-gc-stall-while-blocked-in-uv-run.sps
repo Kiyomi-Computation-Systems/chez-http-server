@@ -1,0 +1,32 @@
+;; E5c: uv_run is bound WITHOUT __collect_safe (native.sls:242). Does a worker
+;; thread that allocates heavily stall while the loop thread blocks in uv-run?
+;; Baseline: worker allocates while the main thread sleeps in Scheme.
+;; Test: worker allocates while the main thread blocks in (uv-run 'once) on a
+;; loop whose only handle is a 300 ms timer.
+(import (rnrs) (only (chezscheme) fork-thread make-mutex with-mutex sleep make-time collections) (libuv) (spike common))
+(define m (make-mutex))
+(define (nap ms) (sleep (make-time 'time-duration (* ms 1000000) 0)))
+(define (allocate!) (let lp ((i 0) (keep '())) (if (= i 3000000) (length keep) (lp (+ i 1) (if (= 0 (mod i 100000)) (cons (make-vector 10) keep) (begin (make-vector 10) keep))))))
+(define (run-worker main-wait)
+  (let ((done #f) (elapsed #f) (c0 (collections)))
+    (fork-thread (lambda () (let ((t0 (now-ms))) (allocate!) (with-mutex m (set! elapsed (- (now-ms) t0)) (set! done #t)))))
+    (let wait () (unless (with-mutex m done) (main-wait) (wait)))
+    (say "  worker elapsed " elapsed " ms; collections during: " (- (collections) c0))
+    elapsed))
+(say "baseline: main thread sleeps 1 ms at a time (Scheme sleep)")
+(run-worker (lambda () (nap 1)))
+(say "test: main thread blocks in (uv-run loop 'once) with only a 300 ms repeating timer armed")
+(define loop (make-uv-loop))
+(define t (make-uv-timer loop))
+(define fires 0)
+(uv-timer-start! t (lambda (tm) (set! fires (+ fires 1))) 300 300)
+(run-worker (lambda () (uv-run loop 'once)))
+(say "  timer fired " fires " times while waiting")
+(say "test 2: same but the loop's timer fires every 1 ms")
+(uv-timer-stop! t)
+(uv-timer-start! t (lambda (tm) (set! fires (+ fires 1))) 1 1)
+(set! fires 0)
+(run-worker (lambda () (uv-run loop 'once)))
+(say "  timer fired " fires " times while waiting")
+(uv-close! t) (uv-run loop 'default) (uv-loop-teardown! loop)
+(say "done")

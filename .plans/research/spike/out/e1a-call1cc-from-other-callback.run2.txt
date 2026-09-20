@@ -1,0 +1,15 @@
+A: entered, entry #1
+A: call/1cc returned first-time
+A: body end, returning normally to libuv
+B: entered; invoking saved continuation with 'from-B
+uv-run | kinds: (&assertion &format &message &irritants &continuation)
+uv-run | display-condition: Exception: attempt to return to stale foreign context
+top: uv-run 'default -> raised
+top: deferred errors: 0
+top: loop alive? #f
+teardown | kinds: (&uv-callback-error &assertion &format &message &irritants &continuation)
+teardown | display-condition: Exception: attempt to invoke shot one-shot continuation
+top: teardown -> raised
+top: a-entries = 1
+top: done
+exit=0

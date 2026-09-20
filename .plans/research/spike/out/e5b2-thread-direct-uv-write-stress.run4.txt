@@ -1,0 +1,8 @@
+uv-run | kinds: (&assertion &format &message &irritants &continuation)
+uv-run | display-condition: Exception: invalid memory reference.  Some debugging context lost
+top: uv-run -> raised
+teardown | kinds: (&assertion &format &who &message &irritants &continuation)
+teardown | display-condition: Exception in registry-entry-loop: 0 is not of type #<record type registry-entry>
+top: teardown -> raised
+top: done
+exit=0

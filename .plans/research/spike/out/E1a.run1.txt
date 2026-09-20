@@ -1,0 +1,3 @@
+control: call/1cc returned first
+Exception: attempt to invoke shot one-shot continuation
+exit=255

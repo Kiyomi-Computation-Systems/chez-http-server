@@ -1,0 +1,28 @@
+;; E1a: capture call/1cc inside timer A's callback, return normally, invoke it
+;; from timer B's callback (same uv-run).
+(import (rnrs) (only (chezscheme) call/1cc) (libuv) (spike common))
+(define loop (make-uv-loop))
+(define saved #f)
+(define a-entries 0)
+(define ta (make-uv-timer loop))
+(define tb (make-uv-timer loop))
+(uv-timer-start! ta
+  (lambda (t)
+    (set! a-entries (+ a-entries 1))
+    (say "A: entered, entry #" a-entries)
+    (let ((v (call/1cc (lambda (k) (set! saved k) 'first-time))))
+      (say "A: call/1cc returned " v))
+    (say "A: body end, returning normally to libuv"))
+  10 0)
+(uv-timer-start! tb
+  (lambda (t)
+    (say "B: entered; invoking saved continuation with 'from-B")
+    (saved 'from-B)
+    (say "B: after invocation (prints only if the invocation returned)"))
+  40 0)
+(say "top: uv-run 'default -> " (guarded "uv-run" (lambda () (uv-run loop 'default))))
+(say "top: deferred errors: " (length (uv-loop-deferred-errors loop)))
+(say "top: loop alive? " (uv-loop-alive? loop))
+(say "top: teardown -> " (guarded "teardown" (lambda () (uv-loop-teardown! loop) 'ok)))
+(say "top: a-entries = " a-entries)
+(say "top: done")
