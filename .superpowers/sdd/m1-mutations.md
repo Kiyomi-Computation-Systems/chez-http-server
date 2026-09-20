@@ -65,3 +65,25 @@ rather than recording a recoverable assertion, which is why it is a bare call
 outside any `test-*` form (a raise inside a SRFI-64 form is swallowed into `#f`,
 `(testing)`'s documented footgun). Reverted (the hash restored); `make test`
 green afterwards: eight suites, 76 expected passes, exit 0.
+
+## M1.4 — the fake shell, and the ratchet opened
+
+| # | suite | mutation | observed |
+|---|-------|----------|----------|
+| M1.4-A | `tests/test-fake-shell.sps` | in `fake-shell.sls`, record actions with `fold-right` instead of `fold-left`, reversing each event's action order | suite exited 1; 11 passes, 1 failure ("multi-action steps record in order"). The single-action, event-order, clock and state assertions held — only intra-event action order broke |
+| M1.4-B | `tests/test-ratchet.sps` | flip `libhtp/files/00-adhoc.t` from not-yet to passing in `ratchet.txt` — a lane with no comparator | suite exited 1; `RATCHET VIOLATION libhtp/files/00-adhoc.t: marked passing but does not pass`, and the libhtp not-yet count fell to 101 → 2 failures. The **regression** arm of the two-way gate |
+| M1.4-C | `tests/test-ratchet.sps` | flip `trace/request/connection.md#1` from passing to not-yet in `ratchet.txt` — a lane whose comparator does pass it | suite exited 1; `RATCHET VIOLATION trace/request/connection.md#1: marked not-yet but now passes`, and the trace passing count fell to 134 → 2 failures. The **improvement** arm of the two-way gate |
+
+M1.4 has two suites, and the ratchet's defining property is that it gates BOTH
+directions (decision 0008 item 6), so it is witnessed in both: B is an unbacked
+promotion (marked passing where no comparator passes it), C is an unexplained
+improvement (a comparator that passes a fixture marked not-yet). Each ratchet
+flip trips the gate AND the lane's opening-count assertion — the two-failure
+signature, as M0's mutation M2 did for the limits drift guard. All three
+reverted; `make test` green afterwards: ten suites, 95 expected passes, exit 0.
+
+The plan (§5) estimated one mutation for M1.4; it took three. The fake shell is
+its own suite and global-constraints requires every test to be watched to fail
+(+1), and a two-way gate is only proven by witnessing both arms (+1). M1's five
+named mutations are therefore **seven** — a measured correction to the plan's
+count, in the spirit of §10 (a ceiling is a bucket count until the slice runs).
