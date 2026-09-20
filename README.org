@@ -1,12 +1,47 @@
 * Chez HTTP Server
 
-(CI badge goes here)
+[[https://github.com/Kiyomi-Computation-Systems/chez-http-server/actions/workflows/ci.yml][https://github.com/Kiyomi-Computation-Systems/chez-http-server/actions/workflows/ci.yml/badge.svg]]
 
 An HTTP 1.1 Server for Chez Scheme built on libuv.
 
 #+begin_quote
 ✨ *AI Disclosure:* LLMs are used extensively in the planning and development of this project.
 #+end_quote
+
+** Status
+
+M0 (the skeleton): the pure records, the connection limits, the pinned
+dependency wiring, and the test harness are in place. There is no server yet —
+that begins at M2. See [[file:.plans/2026-09-19-chez-http-server-project-brief.md][the project brief]] for the milestone map.
+
+** Build and test
+
+Prerequisites:
+
+- *Chez Scheme* 10.4.1 or later, threaded build (the binary is ~chez~)
+- *libuv* 1.44 or later that ~pkg-config~ can see (~brew install libuv~ or
+  ~apt install libuv1-dev~), plus a C compiler — the chez-libuv shim is built
+  from source; CMake 3.26+ is only needed if libuv falls back to its vendored
+  build
+
+Dependencies are pinned git submodules under ~vendor/~ (chez-libuv,
+chez-httparse, uriparse, and chez-srfi for the tests; byte-machine arrives
+under chez-httparse):
+
+#+begin_src sh
+git clone --recursive https://github.com/Kiyomi-Computation-Systems/chez-http-server.git
+cd chez-http-server
+make build   # builds the chez-libuv shim and assembles the one library path
+make test    # runs every tests/test-*.sps
+#+end_src
+
+~make help~ lists every target; ~make check-pins~ verifies each submodule sits
+at its pinned release commit.
+
+** Configuration
+
+Every connection limit has a bounded default and an environment override — see
+[[file:docs/configuration.org][docs/configuration.org]].
 
 ** License
 

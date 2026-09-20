@@ -1,0 +1,12 @@
+[submodule "vendor/chez-libuv"]
+	path = vendor/chez-libuv
+	url = https://github.com/Kiyomi-Computation-Systems/chez-libuv.git
+[submodule "vendor/chez-httparse"]
+	path = vendor/chez-httparse
+	url = https://github.com/Kiyomi-Computation-Systems/chez-httparse.git
+[submodule "vendor/uriparse"]
+	path = vendor/uriparse
+	url = https://github.com/Kiyomi-Computation-Systems/uriparse.git
+[submodule "vendor/chez-srfi"]
+	path = vendor/chez-srfi
+	url = https://github.com/arcfide/chez-srfi.git
