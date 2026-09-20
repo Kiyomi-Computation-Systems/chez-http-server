@@ -27,6 +27,11 @@ BYTE_MACHINE_PIN := 0245db3059504c462b881a550310300fece55216  # v0.6.0
 # byte-machine comes from chez-httparse's vendored copy (uriparse pins the same
 # commit, so a second copy is redundant).  `tests` carries the (testing) bridge
 # and build/scheme-libs carries (srfi :64).
+#
+# The chez-httparse corpus harness ((httparse test ...)) lives under its
+# test/support/harness, NOT its src/, so it is a separate, test-only path (M1.1,
+# design §3.2).  check-imports keeps it out of the pure libraries under
+# src/http-server/, so nothing shipped can reach it.
 BUILD_DIR := build
 SRFI_LIBS := $(BUILD_DIR)/scheme-libs
 EMPTY :=
@@ -35,7 +40,8 @@ LIBDIR_LIST := src tests \
   $(LIBUV_DIR)/src \
   $(HTTPARSE_DIR)/src $(BYTE_MACHINE_DIR)/src \
   $(URIPARSE_DIR)/src \
-  $(SRFI_LIBS)
+  $(SRFI_LIBS) \
+  $(HTTPARSE_DIR)/test/support/harness
 LIBDIRS := $(subst $(SPACE),:,$(strip $(LIBDIR_LIST)))
 
 # Each tests/test-*.sps is its own process with its own (exit ...) status.
@@ -46,7 +52,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps build dev test check-pins check-imports prod clean
+.PHONY: help check-help submodules deps build dev test check-pins check-imports prod clean corpus-refresh
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -128,3 +134,39 @@ prod: ## Rebuild the shim optimized (FLAVOR=prod), then run the suite
 clean: ## Remove our build artifacts and the vendored shim
 	rm -rf $(BUILD_DIR)
 	-$(MAKE) -C $(LIBUV_DIR) clean
+
+# The vendored libhtp corpus is upstream's bytes and is never hand-edited
+# (decision 0007). The initial vendor and every refresh run this one recipe, so
+# a refresh cannot drift from however the first copy was made; the source
+# checkout is named here, never committed. tests/test-libhtp.sps re-checksums
+# every file on each run, so a stale or corrupt vendor is a status-3 failure.
+corpus-refresh: ## Re-vendor the libhtp .t corpus (needs LIBHTP_ROOT=/path/to/libhtp)
+	@test -n "$(LIBHTP_ROOT)" || { echo "corpus-refresh: set LIBHTP_ROOT=/path/to/a/libhtp/checkout" >&2; exit 2; }
+	@test -f "$(LIBHTP_ROOT)/LICENSE" && test -d "$(LIBHTP_ROOT)/test/files" || { echo "corpus-refresh: LIBHTP_ROOT has no LICENSE or test/files" >&2; exit 2; }
+	@dst=test/vendor/libhtp; \
+	sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$$1"; else shasum -a 256 "$$1"; fi | awk '{print $$1}'; }; \
+	rm -rf "$$dst/files"; mkdir -p "$$dst/files"; \
+	cp "$(LIBHTP_ROOT)/LICENSE" "$$dst/LICENSE"; \
+	cp "$(LIBHTP_ROOT)"/test/files/*.t "$$dst/files/"; \
+	printf '%s\n' '# Vendored corpus: exact upstream bytes, verified by sha256 (decision 0007).' '# Never normalize line endings, or the checksums break on a fresh checkout.' '* -text' > "$$dst/.gitattributes"; \
+	commit=$$(git -C "$(LIBHTP_ROOT)" rev-parse HEAD); \
+	count=$$(ls -1 "$$dst/LICENSE" "$$dst"/files/*.t | wc -l | tr -d ' '); \
+	{ echo "# PROVENANCE -- the vendored libhtp connection-stream corpus (decision 0007)."; \
+	  echo "#"; \
+	  echo "# Upstream's bytes, verbatim and never hand-edited: a stream we believe is"; \
+	  echo "# wrong becomes an expectation and a decision record, never a change to these"; \
+	  echo "# bytes. Every file is checksummed below and verified by tests/test-libhtp.sps"; \
+	  echo "# on every run, so drift or corruption is a status-3 failure, not a discovery."; \
+	  echo "# Rewritten only by 'make corpus-refresh LIBHTP_ROOT=<checkout>'."; \
+	  echo "#"; \
+	  echo "# libhtp is BSD-3-Clause (LICENSE beside this file). This is test data; it is"; \
+	  echo "# not part of the distributed library."; \
+	  echo "upstream-url: https://github.com/OISF/libhtp"; \
+	  echo "upstream-ref: 0.5.x"; \
+	  echo "upstream-commit: $$commit"; \
+	  echo "retrieved: $$(date -u +%Y-%m-%d)"; \
+	  echo "file-count: $$count"; \
+	  echo ""; \
+	  ( cd "$$dst" && for f in LICENSE files/*.t; do echo "sha256 $$(sha "$$f") $$f"; done ); \
+	} > "$$dst/PROVENANCE"; \
+	echo "corpus-refresh: vendored $$count files at $$commit into $$dst"
