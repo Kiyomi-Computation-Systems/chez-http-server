@@ -9,7 +9,8 @@
 ;;; override are exercised with no I/O.
 ;;;
 ;;; Defaults (decision 0005): header-read 60 s, idle 75 s, body-inactivity
-;;; 60 s, header bytes 16 KiB (-> 431), header count 100, target 8 KiB
+;;; 60 s, header bytes 16 KiB (-> 431), header count 100, header field and
+;;; header value 8 KiB each (-> 431; M2, milestone plan §3), target 8 KiB
 ;;; (-> 414), bodies stream unbounded (#f), pipeline cap 1, read buffer
 ;;; 16 KiB (standing risk 2).  Durations are stored in milliseconds;
 ;;; sizes and buffers in bytes.  Timeout overrides are given in whole
@@ -25,6 +26,8 @@
     limits-body-inactivity-timeout-ms
     limits-max-header-bytes
     limits-max-header-count
+    limits-max-header-field-bytes
+    limits-max-header-value-bytes
     limits-max-target-bytes
     limits-max-body-bytes
     limits-pipeline-cap
@@ -32,10 +35,11 @@
   (import (rnrs))
 
   ;; make-limits :
-  ;;   Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat -> Limits
-  ;; The nine fields, in declaration order:
+  ;;   Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat -> Limits
+  ;; The eleven fields, in declaration order:
   ;;   read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
-  ;;   max-header-bytes max-header-count max-target-bytes
+  ;;   max-header-bytes max-header-count
+  ;;   max-header-field-bytes max-header-value-bytes max-target-bytes
   ;;   max-body-bytes pipeline-cap read-buffer-size
   ;; (make-limits, limits? and the accessors are generated below.)
   (define-record-type limits
@@ -45,6 +49,8 @@
       (immutable body-inactivity-timeout-ms limits-body-inactivity-timeout-ms)
       (immutable max-header-bytes           limits-max-header-bytes)
       (immutable max-header-count           limits-max-header-count)
+      (immutable max-header-field-bytes     limits-max-header-field-bytes)
+      (immutable max-header-value-bytes     limits-max-header-value-bytes)
       (immutable max-target-bytes           limits-max-target-bytes)
       (immutable max-body-bytes             limits-max-body-bytes)
       (immutable pipeline-cap               limits-pipeline-cap)
@@ -52,7 +58,7 @@
 
   ;; default-limits : Limits — decision 0005's nginx-style defaults.
   (define default-limits
-    (make-limits 60000 75000 60000 16384 100 8192 #f 1 16384))
+    (make-limits 60000 75000 60000 16384 100 8192 8192 8192 #f 1 16384))
 
   ;; limits-environment-variables : (Listof String)
   ;; The environment variables consulted by `limits-from-environment`,
@@ -63,6 +69,8 @@
       "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT"
       "CHEZ_HTTP_MAX_HEADER_BYTES"
       "CHEZ_HTTP_MAX_HEADER_COUNT"
+      "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"
+      "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES"
       "CHEZ_HTTP_MAX_TARGET_BYTES"
       "CHEZ_HTTP_MAX_BODY_BYTES"
       "CHEZ_HTTP_PIPELINE_CAP"
@@ -110,6 +118,8 @@
       (env-seconds->ms lookup "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT" 60000)
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_BYTES"        16384 1)
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_COUNT"        100   1)
+      (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"  8192  1)
+      (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES"  8192  1)
       (env-integer     lookup "CHEZ_HTTP_MAX_TARGET_BYTES"        8192  1)
       (env-max-body    lookup "CHEZ_HTTP_MAX_BODY_BYTES"          #f)
       (env-integer     lookup "CHEZ_HTTP_PIPELINE_CAP"            1     1)

@@ -1,11 +1,12 @@
 #!r6rs
 ;;; (http-server request) — the parsed HTTP request record (pure).
 ;;;
-;;; The connection core (M2) builds a request from chez-httparse's
-;;; callbacks; M0 only fixes its shape.  The request-target and every
-;;; header name and value are kept as raw bytevectors in wire order — no
-;;; percent-decoding, no case folding, no trimming happens here (the
-;;; header library and uriparse own those).  PURE: imports only (rnrs).
+;;; The connection core builds a request from chez-httparse's callbacks
+;;; (M2.2).  The request-target and every header name and value are spans of
+;;; the delivery they arrived in, in wire order, kept without copying (design
+;;; §7.1; see (http-server span)) — no percent-decoding, no case folding, no
+;;; trimming happens here (the header library and uriparse own those).  PURE:
+;;; imports only (rnrs).
 (library (http-server request)
   (export make-request request?
           request-method request-target
@@ -13,11 +14,11 @@
           request-headers request-body)
   (import (rnrs))
 
-  ;; make-request : Method Bytevector Nat Nat Headers Body -> Request
-  ;;   Method  = (U Symbol Fixnum Bytevector)  ; the method token/number (fixed in M2)
-  ;;   target  = the raw request-target bytes
+  ;; make-request : Symbol Span Nat Nat Headers Body -> Request
+  ;;   Symbol  = the method, as llhttp names it: GET, POST, M-SEARCH, ...
+  ;;   Span    = the request-target, as it arrived
   ;;   Nat Nat = the HTTP major and minor version
-  ;;   Headers = (Listof (Pair Bytevector Bytevector))  ; wire order
+  ;;   Headers = (Listof (Pair Span Span))      ; name . value, wire order
   ;;   Body    = Any                            ; a body handle in M6; #f until then
   ;; request? : Any -> Boolean
   ;; request-method / -target / -http-major / -http-minor / -headers / -body :

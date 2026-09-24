@@ -97,3 +97,36 @@ afterwards: twelve suites, 187 expected passes (connection-entry 30,
 connection-table 62, corpus-inventory 7, fake-shell 12, flag-pins 8, headers 9,
 integration 5, libhtp 11, limits 19, ratchet 7, records 14, trace-lane 3),
 exit 0.
+
+### Second step: the pure libraries
+
+2026-09-24, Darwin arm64, Chez 10.4.1 (`tarm64osx`). Same method as the first
+step: one scripted substitution per mutation, refused unless it matched the
+expected number of sites; each suite run alone; the file restored and checked
+byte-identical by sha256. The mutations of this step and of the two that follow
+it (the head, and the corpus and allocation checks, each its own PR) were run
+on a tree with all three applied.
+
+Red before green, before the code each suite tests existed:
+- `test-limits.sps` did not load (`attempt to reference unbound identifier
+  limits-max-header-value-bytes`).
+- `test-span.sps` exited 255 (`library (http-server span) not found`).
+- `test-headers.sps` exited 1: 9 passes, the six new span rows failing.
+- `test-decisions.sps` exited 255 (`library (http-server decisions) not found`).
+
+`test-records.sps` changed only its example; the record itself is unchanged.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.2-L | decisions | `parser-error-status` answers `invalid-transfer-encoding` 501 whatever its node | exit 1; 10 passes, 2 failures — "at any other node is a 400", and the real `chunked,deflate` request mapping to 400 |
+| M2.2-O | limits | `default-limits`' header-field default becomes 8191; `limits-from-environment`'s stays 8192 | exit 1; 21 passes, 2 failures — the default, and "empty env == default-limits, field by field" |
+| M2.2-P | span | `make-span` loses its bounds check | exit 1; 10 passes, 4 failures — the four refusals |
+| M2.2-Q | headers | a span's bytes are read from 0, not its start | exit 1; 11 passes, 4 failures — four of the six span rows. The two left are the miss and the length check, which reading from 0 does not change |
+
+Q's first run left three span rows green: the fixture's first header started
+at offset 0, where ignoring a span's start changes nothing. The fixture now
+puts the headers after a request line, so no span starts at 0.
+
+L, O, P and Q reverted, each restore byte-identical by sha256. On this step's
+tree alone, `make test` is green: fourteen suites, 225 expected passes
+(decisions 12 and span 14 new; limits 23, headers 15 and records 16), exit 0.
