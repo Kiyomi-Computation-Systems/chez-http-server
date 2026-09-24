@@ -1,5 +1,6 @@
 #!r6rs
-;;; (http-server target): the request-target's form and its judgement.  M2.3.
+;;; (http-server target): the request-target's form, its judgement, and the
+;;; narrow redirect.  M2.3.
 ;;;
 ;;; RFC 9112 §3.2 gives a request-target four forms, and the method and the
 ;;; first byte say which one a target must be:
@@ -16,10 +17,15 @@
 ;;; `uri-parse-authority-form-validate`.  Decided on the owner's word,
 ;;; 2026-09-24 (the ledger's M2.3 entry).
 ;;;
+;;; A refused target that browsers produce is redirected rather than refused,
+;;; and only that one (decision 0009): a GET or HEAD origin-form target whose
+;;; only faults are "|" in its path and "[", "]" or "|" in its query.
+;;;
 ;;; Oracles: RFC 9112 §3.2 and RFC 9110 §4.2.4 for the rules; RFC 3986's
 ;;; grammar and uriparse's documented error codes for the verdicts; and, where
 ;;; a code is the scanner's, uriparse's own one-shot `uri-parse-validate` on
-;;; the same bytes.
+;;; the same bytes.  For the redirect: decision 0009, and RFC 3986 §2.1's
+;;; encoding, "%" and two uppercase hex digits: "[" %5B, "]" %5D, "|" %7C.
 ;;;
 ;;; Every verdict is compared as 'accepted or a code, never as #f: SRFI-64
 ;;; turns an exception inside a test expression into #f (design §3.4).
@@ -47,6 +53,14 @@
 (define (uriparse-code mode s)
   (let ((r (uri-parse-validate mode (b s))))
     (if (uri-parse-ok? r) 'accepted (uri-parse-error-code r))))
+
+;; redirect-span : Symbol Span -> (U String 'none)
+;; redirect : Symbol String -> (U String 'none)
+;; Where a fresh judge redirects the target, or 'none.
+(define (redirect-span method target)
+  (let ((location (target-redirect (make-target-judge) method target)))
+    (if location (utf8->string location) 'none)))
+(define (redirect method target) (redirect-span method (span-of target)))
 
 (run-suite "target"
   (lambda ()
@@ -110,4 +124,40 @@
     ;; The method decides first: CONNECT's * is an authority with no port.
     (test-equal "CONNECT * is judged as authority-form" 'port-required (fault 'CONNECT "*"))
     (test-eq "a CONNECT target is judged by its own bytes"
-             'accepted (judged (make-target-judge) 'CONNECT (inside "|example.com:443|" 1 16)))))
+             'accepted (judged (make-target-judge) 'CONNECT (inside "|example.com:443|" 1 16)))
+
+    ;; --- the narrow redirect (decision 0009) -----------------------------------------
+    ;; Browsers send "[", "]" and "|" unencoded (the WHATWG URL standard's query
+    ;; and path percent-encode sets leave them out), and RFC 9112 §3.2 lets a
+    ;; server answer an invalid target with a 301 to it properly encoded.
+    (test-equal "bracket params and pipes are redirected, encoded"
+                '("/search?ids%5B%5D=1&ids%5B%5D=2" "/search?user%5Bname%5D=x"
+                  "/maps?markers=color:red%7Clabel:S" "/files/a%7Cb.txt")
+                (map (lambda (t) (redirect 'GET t))
+                     '("/search?ids[]=1&ids[]=2" "/search?user[name]=x"
+                       "/maps?markers=color:red|label:S" "/files/a|b.txt")))
+    (test-equal "HEAD is redirected as GET is" "/a%7Cb" (redirect 'HEAD "/a|b"))
+    ;; RFC 9110 §15.4.2: a client may turn a POST into a GET on a 301.
+    (test-equal "no other method is redirected"
+                '(none none none) (map (lambda (m) (redirect m "/a|b")) '(POST PUT OPTIONS)))
+    (test-eq "brackets in a path are not bracket params" 'none (redirect 'GET "/a[b]"))
+    (test-equal "a target with any other fault is not redirected"
+                '(none none none none)
+                (map (lambda (t) (redirect 'GET t))
+                     '("/a|b\"" "/a?b[]=1#f" "/a?q={x}|" "/a%zz|")))
+    ;; A Location beginning "//" is a network-path reference: the client would
+    ;; resolve it to another host, so the server would be an open redirect.
+    (test-eq "a path that begins // is not redirected" 'none (redirect 'GET "//evil.example/a|b"))
+    ;; Browsers read "\" in a path as "/", so "/\evil.example" is "//" in
+    ;; disguise; "\" is another fault, so it is never redirected.
+    (test-eq "a path that begins /\\ is not redirected" 'none (redirect 'GET "/\\evil.example/a|b"))
+    (test-eq "an absolute-form target is not redirected" 'none (redirect 'GET "http://h/a|b"))
+    (test-eq "a target with nothing to encode is not redirected" 'none (redirect 'GET "/a?b=%7C"))
+    (test-equal "a target is encoded from its own bytes, not its delivery's"
+                "/x%7C" (redirect-span 'GET (inside "|/x||" 1 4)))
+    (let* ((j (make-target-judge))
+           (location (target-redirect j 'GET (span-of "/s?a[]=1|2"))))
+      (test-eq "the Location is a target the judge accepts" 'accepted
+               (if location
+                   (judged j 'GET (make-span location 0 (bytevector-length location)))
+                   'not-redirected)))))

@@ -222,3 +222,26 @@ Red before green:
 | M2.3-N | trace, head, table, entry, allocation | the core refuses every target | trace exit 1 — every other trace. Head exit 1; 12 failures. Table exit 1; 1 failure — H4, the one row that reaches on-headers-complete. Entry exit 1; 6 failures — the three replays' handler and idle checks. Allocation exit 1; 2 failures — no request is served |
 
 D through N were each reverted, and each restore was byte-identical by sha256. `make test` was green afterwards: seventeen suites, 287 expected passes (target 24, connection-head 25, connection-allocation 10, trace-lane 7), exit 0.
+
+### Fourth step: the narrow redirect (301, decision 0009)
+
+Red before green:
+- `test-target.sps` exited 255 (`target-redirect` unbound).
+- The decisions suite failed its reasons row: `target-redirect` had no status.
+- The head suite failed its two redirect rows, each answered 400. The rows for the POST and for the Location past the limit held from the start: both answers were 400 either way, so they are the boundaries O and T turn red.
+- The trace lane failed on the listed `request/uri.md#5`: it was refused as `invalid-target`, not as `target-redirect`.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.3-O | target, head, trace | any method is redirected, not only GET and HEAD | target exit 1; 1 failure — "no other method is redirected". Head exit 1; 1 failure — the POST row. Trace green |
+| M2.3-P | target, head, trace | a path that begins `//` is redirected (the open-redirect guard removed) | target exit 1; 1 failure — "a path that begins // is not redirected". Head was green on the first run, so the row "a path that begins // is refused with 400, never redirected off-host" was added. Re-run: head exit 1; 1 failure — that row. Trace green |
+| M2.3-Q | target, head, trace | brackets are encoded in the path too | target exit 1; 1 failure — "brackets in a path are not bracket params". Head and trace green |
+| M2.3-R | target, head, trace | the encoded target is not judged | target exit 1; 1 failure — "a target with any other fault is not redirected". Head and trace green: the core's listed refusals have nothing to encode. The row "a path that begins /\ is not redirected" was added afterwards, for the browser reading of `\` as `/`. Re-run: target exit 1; 2 failures — that row too |
+| M2.3-S | target, head, trace | a target with nothing encoded is redirected to itself | target exit 1; 1 failure — "a target with nothing to encode is not redirected". Head and trace green: the core asks only about refused targets, and those can never redirect to themselves |
+| M2.3-T | head, target | the core does not hold the Location to `max-target-bytes` | head exit 1; 1 failure — "one to a target past it is refused with 400". Target green |
+| M2.3-U | head | the Location must be under `max-target-bytes`, not within it (`fx<?`) | head exit 1; 1 failure — "a redirect to a target at max-target-bytes is made" |
+| M2.3-V | decisions, head, trace | `reason-status` answers `target-redirect` 302 | decisions exit 1; 1 failure — the reasons row. Head exit 1; 2 failures — both redirects. Trace green: it checks the reason, not the status |
+| M2.3-W | head, table | the redirect is answered without its Location | head exit 1; 2 failures — both redirects. Table green |
+| M2.3-X | head, trace, target | the core refuses what it would redirect | head exit 1; 2 failures — both redirects. Trace exit 1 — the listed `uri.md#5`. Target green |
+
+O through X were each reverted, and each restore was byte-identical by sha256. `make test` was green afterwards: seventeen suites, 303 expected passes (target 35, connection-head 30), exit 0.

@@ -31,10 +31,16 @@
 ;;; The last two run uriparse's own scanner, a byte-machine parser that this
 ;;; judge owns and that is never the parser calling the core (0002's
 ;;; amendment of 2026-09-24).  Every verdict is data: uriparse's error code,
-;;; or one of this library's three.  PURE: imports (rnrs), (uri ...) and
-;;; (http-server span).
+;;; or one of this library's three.
+;;;
+;;; ONE REFUSAL IS REDIRECTED INSTEAD (decision 0009).  Browsers send "[",
+;;; "]" and "|" unencoded, because the WHATWG URL standard's query and path
+;;; percent-encode sets leave them out, and RFC 9112 §3.2 lets a server answer
+;;; an invalid target with a 301 to the target properly encoded.
+;;; `target-redirect` gives that target, for bracket params and pipes only.
+;;; PURE: imports (rnrs), (uri ...) and (http-server span).
 (library (http-server target)
-  (export make-target-judge target-judge? target-fault)
+  (export make-target-judge target-judge? target-fault target-redirect)
   (import (rnrs)
           (http-server span)
           (only (uri collect)
@@ -44,7 +50,8 @@
                 uri-parse-authority-form-validate)
           (only (uri components) uri-components-authority uri-components-fragment)
           (only (uri charset) validate-component)
-          (only (uri host) authority-host-span))
+          (only (uri host) authority-host-span)
+          (only (uri percent) pct-encode))
 
   ;; make-target-judge : -> TargetJudge
   ;; One connection's judge.  It holds the collector absolute-form targets
@@ -57,6 +64,9 @@
   (define SLASH 47)
   (define ASTERISK 42)
   (define QUESTION 63)
+  (define LEFT-BRACKET 91)
+  (define RIGHT-BRACKET 93)
+  (define PIPE 124)
 
   ;; target-fault : TargetJudge Symbol Span -> (U #f Symbol)
   ;;   judge method target — the method as llhttp names it ('GET, 'CONNECT)
@@ -101,6 +111,53 @@
   (define (component-fault component bv start end)
     (let-values (((code index) (validate-component component (range-copy bv start end))))
       code))
+
+  ;; target-redirect : TargetJudge Symbol Span -> (U #f Bytevector)
+  ;;   judge method target
+  ;; The target a refused one is redirected to (decision 0009), or #f.
+  ;; Narrow on purpose.  The target must be:
+  ;;   - a GET or HEAD request's: a client may turn a POST into a GET when it
+  ;;     follows a 301 (RFC 9110 §15.4.2);
+  ;;   - origin-form, and its path must not begin "//": a Location that did
+  ;;     would be a network-path reference, which a client resolves to
+  ;;     another host;
+  ;;   - one whose only faults are "|" in its path and "[", "]" or "|" in its
+  ;;     query.  Those bytes are percent-encoded by uriparse's `pct-encode`,
+  ;;     and the encoded target is redirected to only if this judge accepts
+  ;;     it and it differs from the target, so a redirect is never refused
+  ;;     and never loops.
+  ;; The Location is the encoded target itself, an absolute-path reference the
+  ;; client resolves against the URI it asked for (RFC 9110 §10.2.2).
+  (define (target-redirect judge method target)
+    (let ((bv (span-bytevector target)) (start (span-start target)) (end (span-end target)))
+      (and (memq method '(GET HEAD))
+           (fx<? start end)
+           (fx=? (bytevector-u8-ref bv start) SLASH)
+           (not (and (fx<? (fx+ start 1) end) (fx=? (bytevector-u8-ref bv (fx+ start 1)) SLASH)))
+           (let* ((q (first-question bv start end))
+                  (path (pct-encode (range-copy bv start q) path-keeps?))
+                  (location (if (fx<? q end)
+                                (join-query path (pct-encode (range-copy bv (fx+ q 1) end) query-keeps?))
+                                path)))
+             (and (fx>? (bytevector-length location) (fx- end start))
+                  (not (target-fault judge method (make-span location 0 (bytevector-length location))))
+                  location)))))
+
+  ;; path-keeps? / query-keeps? : Octet -> Boolean
+  ;; The bytes the redirect leaves as they are: all but "|" in a path, all but
+  ;; "[", "]" and "|" in a query.
+  (define (path-keeps? b) (not (fx=? b PIPE)))
+  (define (query-keeps? b)
+    (not (or (fx=? b PIPE) (fx=? b LEFT-BRACKET) (fx=? b RIGHT-BRACKET))))
+
+  ;; join-query : Bytevector Bytevector -> Bytevector — path "?" query, fresh.
+  (define (join-query path query)
+    (let* ((np (bytevector-length path)) (nq (bytevector-length query))
+           (out (make-bytevector (fx+ np (fx+ 1 nq)))))
+      (bytevector-copy! path 0 out 0 np)
+      (bytevector-u8-set! out np QUESTION)
+      (bytevector-copy! query 0 out (fx+ np 1) nq)
+      out))
 
   ;; absolute-form-fault : TargetJudge Bytevector Nat Nat -> (U #f Symbol)
   (define (absolute-form-fault judge bv start end)

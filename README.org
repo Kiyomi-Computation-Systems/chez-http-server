@@ -43,6 +43,11 @@ at its pinned release commit.
 Every connection limit has a bounded default and an environment override — see
 [[file:docs/configuration.org][docs/configuration.org]].
 
+** Request targets
+
+Which request-targets the server accepts, refuses or redirects — see
+[[file:docs/request-targets.org][docs/request-targets.org]].
+
 ** License
 
 © [[https://kiyomicomputation.systems/][Kiyomi Computation Systems LLC]]. Licensed under BSD 3-Clause — see

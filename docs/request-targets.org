@@ -1,0 +1,52 @@
+#+TITLE: Request targets
+
+The request-target is the part of the request line after the method, the
+~/search?q=1~ in ~GET /search?q=1 HTTP/1.1~. The server checks it before your
+handler runs.
+
+* What gets through
+
+| Form      | Example                     | Used by                    |
+|-----------+-----------------------------+----------------------------|
+| origin    | ~/path?query~               | every method but CONNECT   |
+| absolute  | ~http://example.com/path~   | every method but CONNECT   |
+| authority | ~example.com:443~           | CONNECT, and only CONNECT  |
+| asterisk  | ~*~                         | OPTIONS, and only OPTIONS  |
+
+These are RFC 9112's four forms. Their bytes must also be valid RFC 3986.
+Your handler gets the target exactly as it arrived.
+
+* What gets 400
+
+- a byte RFC 3986 does not allow unencoded, such as ~"~, ~<~, ~{~ or ~^~;
+- a malformed percent-encoding, such as ~%zz~;
+- a fragment (~#section~), which browsers never send;
+- a user name or password in a full URL (~http://user:pw@host/~);
+- ~*~ with any method but OPTIONS, or a CONNECT target that is not ~host:port~.
+
+A target longer than ~CHEZ_HTTP_MAX_TARGET_BYTES~ gets 414 instead (see
+[[file:configuration.org][configuration.org]]).
+
+* The one redirect
+
+Browsers send ~[~, ~]~ and ~|~ without encoding them, so links like
+~/search?ids[]=1~ would fail. For those, and only those, the server answers
+~301 Moved Permanently~ with the same target encoded:
+
+#+begin_example
+GET /search?ids[]=1        ->  301  Location: /search?ids%5B%5D=1
+GET /maps?markers=red|blue ->  301  Location: /maps?markers=red%7Cblue
+#+end_example
+
+The browser follows the redirect, and your handler sees the encoded target.
+The redirect is narrow on purpose:
+
+- only for GET and HEAD, since a redirected POST can lose its body;
+- only for brackets in the query, and pipes in the path or the query;
+- never for a path that begins ~//~, which a browser would read as another host;
+- only when the encoded target is otherwise valid and within the target limit.
+
+Anything else on the list above still gets 400.
+
+After a 301, 400 or 414 the server closes the connection. Decision 0009 in
+~.plans/decisions/~ records why.

@@ -21,7 +21,8 @@ refused rather than silently ignored.
 | ~CHEZ_HTTP_READ_BUFFER_SIZE~        | 16384     | per-connection read buffer               |
 
 A request over any of the four header limits gets ~431~, and one whose target
-is over its limit gets ~414~. Either way the connection closes.
+is over its limit gets ~414~. Either way the connection closes. What else a
+target must be is in [[file:request-targets.org][request-targets.org]].
 
 These are nginx-style bounded defaults (decision 0005). They live in the pure
 library ~(http-server limits)~: the shell reads the environment and hands the

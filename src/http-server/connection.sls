@@ -73,7 +73,10 @@
 ;;; 'invalid-target, answered 400.  (http-server target) holds the rules and
 ;;; one judge per connection.  For the rare absolute-form and CONNECT targets
 ;;; the judge runs uriparse's own scanner, never the parser calling the core
-;;; (0002's amendment of 2026-09-24).
+;;; (0002's amendment of 2026-09-24).  One refusal is a redirect instead
+;;; (decision 0009): bracket params and pipes in a GET or HEAD, the bytes
+;;; browsers send unencoded, are answered 301 with the target encoded as the
+;;; Location.
 ;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
@@ -186,10 +189,12 @@
   ;;   piece    the span being read: #f, a Span, or several, newest first
   ;;   size     the bytes of the piece so far
   ;;   refusal  #f, or the reason the core answered a callback with fail
+  ;;   location #f, or where a redirected target points (decision 0009)
   (define-record-type head
     (fields (mutable target) (mutable fields) (mutable count) (mutable total)
-            (mutable name) (mutable piece) (mutable size) (mutable refusal))
-    (protocol (lambda (new) (lambda () (new #f '() 0 0 #f #f 0 #f)))))
+            (mutable name) (mutable piece) (mutable size) (mutable refusal)
+            (mutable location))
+    (protocol (lambda (new) (lambda () (new #f '() 0 0 #f #f 0 #f #f)))))
 
   ;; head-roll! : Head -> Void — empty the head for the next message.
   (define (head-roll! h)
@@ -200,7 +205,8 @@
     (head-name-set! h #f)
     (head-piece-set! h #f)
     (head-size-set! h 0)
-    (head-refusal-set! h #f))
+    (head-refusal-set! h #f)
+    (head-location-set! h #f))
 
   ;; The value of a piece that arrived with no bytes, such as an empty header
   ;; value: one span, shared.
@@ -344,7 +350,7 @@
       ((head)
        (if (eq? (conn-deadline s) 'header)
            (begin (conn-deadline-set! s #f)
-                  (respond-and-close s 'header-timeout))
+                  (respond-and-close s 'header-timeout '()))
            (values s '())))
       (else (values s '()))))
 
@@ -503,30 +509,48 @@
   ;; parser's reset after each message zeroes it and the flags.  Nothing
   ;; downstream re-reads the parser.  The content-length is the body's, M6's.
   ;; The target is judged here, where the method is known (M2.3; see
-  ;; (http-server target)): one that is not the form its method calls for, or
-  ;; whose bytes uriparse refuses, is refused as 'invalid-target, and the
-  ;; state stays in head until the parser's error arrives, answered 400.
-  ;; Otherwise head -> body: the request is built from the head, the
-  ;; connection is marked to close after the response unless the message
-  ;; keeps it alive (decision 0006 item 1), and the header deadline gives way
-  ;; to the body's.
+  ;; (http-server target)).  One that is not the form its method calls for,
+  ;; or whose bytes uriparse refuses, is refused, and the state stays in head
+  ;; until the parser's error arrives:
+  ;;   - as 'target-redirect, answered 301 with a Location, when it is the
+  ;;     narrow case decision 0009 redirects: bracket params and pipes in a
+  ;;     GET or HEAD, encoded to a target within max-target-bytes;
+  ;;   - as 'invalid-target, answered 400, otherwise.
+  ;; An accepted target moves head -> body: the request is built from the
+  ;; head, the connection is marked to close after the response unless the
+  ;; message keeps it alive (decision 0006 item 1), and the header deadline
+  ;; gives way to the body's.
   (define (conn-headers-complete-step s method http-major http-minor flags content-length)
     (case (conn-phase s)
       ((head)
        (let* ((h (conn-head s))
               (name (method-name method))
               (target (or (head-target h) empty-span)))
-         (if (target-fault (conn-judge s) name target)
-             (refuse s 'invalid-target)
-             (begin
-               (conn-request-set! s (make-request name target http-major http-minor
-                                                  (reverse (head-fields h)) #f))
-               (unless (should-keep-alive? http-major http-minor 'request 0 flags)
-                 (conn-close-after-set! s 'not-keep-alive))
-               (conn-phase-set! s 'body)
-               (conn-deadline-set! s 'body)
-               (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body)))))))
+         (cond
+          ((not (target-fault (conn-judge s) name target))
+           (conn-request-set! s (make-request name target http-major http-minor
+                                              (reverse (head-fields h)) #f))
+           (unless (should-keep-alive? http-major http-minor 'request 0 flags)
+             (conn-close-after-set! s 'not-keep-alive))
+           (conn-phase-set! s 'body)
+           (conn-deadline-set! s 'body)
+           (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+          ((redirect-location s name target)
+           => (lambda (location)
+                (head-location-set! h location)
+                (refuse s 'target-redirect)))
+          (else (refuse s 'invalid-target)))))
       (else (continue s))))
+
+  ;; redirect-location : ConnState Symbol Span -> (U #f Bytevector)
+  ;; Where a refused target is redirected: (http-server target)'s answer, if
+  ;; the target it names is within max-target-bytes, so that a Location is
+  ;; always a target this connection accepts.
+  (define (redirect-location s name target)
+    (let ((location (target-redirect (conn-judge s) name target)))
+      (and location
+           (fx<=? (bytevector-length location) (limits-max-target-bytes (conn-limits s)))
+           location)))
 
   ;; continue : ConnState -> (values ConnState (Listof Action))
   ;; Answer a parser callback and change nothing.  The list is a constant, so
@@ -550,7 +574,8 @@
            (conn-deadline-set! s #f)
            (values s (list '(read-stop) (list 'hand-off (conn-request s)))))
           ((eq? status 'error)
-           (respond-and-close s (or (head-refusal (conn-head s)) 'parser-error)))
+           (respond-and-close s (or (head-refusal (conn-head s)) 'parser-error)
+                             (refusal-headers (conn-head s))))
           (else (values s '()))))
         (else (values s '())))))
 
@@ -568,7 +593,7 @@
   ;; for a failure after the head is on the wire needs a streamed body: M6.)
   (define (on-handler-failed s)
     (case (conn-phase s)
-      ((handling) (respond-and-close s 'handler-failed))
+      ((handling) (respond-and-close s 'handler-failed '()))
       (else (values s '()))))
 
   ;; idle, shutdown-requested -> draining: nothing is in flight, so shut down.
@@ -594,14 +619,25 @@
     (conn-deadline-set! s #f)
     (values s (append before (list (list 'close reason)))))
 
-  ;; respond-and-close : ConnState Symbol -> (values ConnState (Listof Action))
+  ;; respond-and-close :
+  ;;   ConnState Symbol Headers -> (values ConnState (Listof Action))
   ;; Enter `responding` with a status the core originates, closing afterwards
   ;; for `reason` (design §6.5: every originated status closes).  The status
   ;; is the reason's, from (http-server decisions).  The record carries no
-  ;; reason phrase and no headers: M3's serializer derives the phrase and adds
-  ;; `Connection: close`.
-  (define (respond-and-close s reason)
+  ;; reason phrase, and no headers but `headers`, a redirect's Location: M3's
+  ;; serializer derives the phrase and adds `Connection: close`.
+  (define (respond-and-close s reason headers)
     (conn-phase-set! s 'responding)
     (conn-close-after-set! s reason)
     (conn-outstanding-set! s (+ (conn-outstanding s) 1))
-    (values s (list (list 'write (make-response (reason-status reason) #f '() #f))))))
+    (values s (list (list 'write (make-response (reason-status reason) #f headers #f)))))
+
+  ;; refusal-headers : Head -> Headers
+  ;; The headers a refused message's response carries: a redirect's
+  ;; Location, or none.
+  (define (refusal-headers h)
+    (let ((location (head-location h)))
+      (if location (list (cons location-name location)) '())))
+
+  ;; The Location header's name, shared by every redirect.
+  (define location-name (string->utf8 "Location")))
