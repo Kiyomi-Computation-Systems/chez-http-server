@@ -25,14 +25,15 @@
 
 ;; The fixtures the core refuses by policy, with the reason it closes for.
 ;; Each target is outside RFC 9112 §3.2's forms as the owner decided them
-;; (2026-09-24), so the core answers 400 where llhttp parses on.
+;; (2026-09-24), so the core answers where llhttp parses on: 400, or a 301
+;; to the target encoded for the narrow case decision 0009 redirects.
 (define core-refusals
   '(("request/method.md#5" . invalid-target)             ; M-SEARCH *: asterisk-form is OPTIONS's
     ("request/transfer-encoding.md#21" . invalid-target) ; ?q=search#hey: a fragment
     ("request/transfer-encoding.md#22" . invalid-target) ; the same target
     ("request/transfer-encoding.md#23" . invalid-target) ; the same target
     ("request/uri.md#1" . invalid-target)                ; '"' outside the path's set
-    ("request/uri.md#5" . invalid-target)                ; '|' outside the query's set
+    ("request/uri.md#5" . target-redirect)               ; GET /test.cgi?query=|: a pipe, 301
     ("request/uri.md#8" . invalid-target)                ; ?page=1#posts-17408: a fragment
     ("request/uri.md#10" . invalid-target)))             ; absolute-form with userinfo
 

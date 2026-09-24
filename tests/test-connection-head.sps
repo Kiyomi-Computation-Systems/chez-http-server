@@ -21,6 +21,9 @@
 ;;;   - a target that is not the form its method calls for, or whose bytes
 ;;;     uriparse refuses, is refused with 400 (M2.3; the forms are
 ;;;     test-target.sps's to table);
+;;;   - except the narrow case decision 0009 redirects: a GET or HEAD whose
+;;;     target's only faults are bracket params and pipes is answered 301,
+;;;     `Location` the target encoded, when that target is within the limit;
 ;;;   - a parser error with no refusal is still a 400.
 ;;;
 ;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
@@ -143,6 +146,13 @@
 (define (refused reason status)
   (list '() (list reason (list (status-write status))) 'responding reason))
 (define (refusal reason) (refused reason 431))
+;;   redirected  the parser failed with target-redirect as its code, and the
+;;               core answered 301 with a Location header, closing after
+(define (redirected location)
+  (list '()
+        (list 'target-redirect
+              (list (list 'write (list 'response 301 #f (list (cons (b "Location") (b location))) #f))))
+        'responding 'target-redirect))
 
 ;; verdict : (-> Any) -> (U 'accepted 'refused)
 (define (verdict thunk)
@@ -256,6 +266,29 @@
     (test-equal "a CONNECT target without a port is refused with 400"
                 (list (refused 'invalid-target 400))
                 (every-size (b "CONNECT example.com HTTP/1.1\r\n\r\n") default-limits))
+
+    ;; --- the narrow redirect (decision 0009) ------------------------------------
+    ;; Bracket params and pipes, the bytes browsers send unencoded, get a 301 to
+    ;; the target encoded; the connection closes after it, as after every
+    ;; status the core originates (design §6.5).
+    (test-equal "a GET with bracket params and a pipe is redirected: 301, Location encoded"
+                (list (redirected "/s?ids%5B%5D=1%7C2"))
+                (every-size (b "GET /s?ids[]=1|2 HTTP/1.1\r\n\r\n") default-limits))
+    (test-equal "a POST with a pipe is refused with 400, not redirected"
+                (list (refused 'invalid-target 400))
+                (every-size (b "POST /a|b HTTP/1.1\r\n\r\n") default-limits))
+    ;; Location: //evil.example/... would send the client to another host.
+    (test-equal "a path that begins // is refused with 400, never redirected off-host"
+                (list (refused 'invalid-target 400))
+                (every-size (b "GET //evil.example/a|b HTTP/1.1\r\n\r\n") default-limits))
+    ;; The Location is always a target this server accepts, its limit included:
+    ;; "/a?b=|" is 6 bytes and "/a?b=%7C" 8.
+    (test-equal "a redirect to a target at max-target-bytes is made"
+                (list (redirected "/a?b=%7C"))
+                (every-size (b "GET /a?b=| HTTP/1.1\r\n\r\n") (with-limits '((target . 8)))))
+    (test-equal "one to a target past it is refused with 400"
+                (list (refused 'invalid-target 400))
+                (every-size (b "GET /a?b=| HTTP/1.1\r\n\r\n") (with-limits '((target . 7)))))
 
     ;; --- a parser error the core did not ask for is a 400 -------------------------
     (test-equal "an invalid header token: 400, closing after"

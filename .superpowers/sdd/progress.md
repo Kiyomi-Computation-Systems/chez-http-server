@@ -495,7 +495,7 @@ Watched to fail (m2-mutations.md): each new check was red before its code, and m
 `make test` green: seventeen suites, 287 expected passes, exit 0. That is 276 after the second step; connection-head now has 25, connection-allocation 10 and trace-lane 7. `make check-imports` is clean.
 
 Settled in M2.3, open to the owner's review:
-1. **One reason for every form rule.** A target the judge refuses closes as `'invalid-target`. Which rule fired is the judge's verdict, not the close reason.
+1. **One reason for every form rule.** A target the judge refuses closes as `'invalid-target`, or as `'target-redirect` when decision 0009 redirects it. Which rule fired is the judge's verdict, not the close reason.
 2. **The target is judged at on-headers-complete**, where the method is known, not at on-url-complete. So a refused target's headers are still read, within the header limits.
 3. **A head with no target is judged as an empty one, and refused.** The parser never completes a head without a target, and the synthetic states now read one in.
 4. **`(http-server target)` is a library of its own**, so its forms and rules can be tabled without a parser.
@@ -507,4 +507,27 @@ Found and recorded, for later:
   - RFC 9112 §3.2: a server MUST answer 400 to an HTTP/1.1 request with no Host, with more than one, or with an invalid one.
 - **(M2.5)** CONNECT reaches the handler before the hand-off (M2.1's finding). The head suite tests CONNECT only through its refusals, and test-target.sps covers the rest.
 
-NEXT: M2.3's fourth step, the narrow redirect (decision 0009), on feat/m2.3-target-redirect, stacked on this branch.
+DECIDED on the owner's word (2026-09-24), after asking why llhttp accepts what M2.3 refuses: **bracket params and pipes are redirected, not refused** (decision 0009).
+- **Why llhttp accepts them.** Its URL table admits every printable ASCII byte except space, `#` and `?`, under the comment "TODO(indutny): use RFC". Node 12 broke on `|` when it moved to llhttp (nodejs/node#27584), and the corpus now pins `|`.
+- **What browsers send.** The WHATWG URL standard leaves `[`, `]` and `|` unencoded in paths and queries, and `{`, `}`, `\`, `^` and backtick in queries. So a strict core answers ordinary links 400. Checked 2026-09-24 against the standard's percent-encode sets. Tomcat, strict since CVE-2016-6816, added `relaxedPathChars` and `relaxedQueryChars` for the same reason.
+- **What was decided.** RFC 9112 §3.2 allows a 301 to the target properly encoded in place of the 400. The owner chose the redirect, narrow: bracket params and pipes only.
+- **Two guards the narrow reading needs.**
+  - GET and HEAD only: a 301 may turn a POST into a GET (RFC 9110 §15.4.2).
+  - No path that begins `//`: its Location would name another host.
+
+M2.3 FOURTH STEP: the narrow redirect.
+- `(http-server target)` gains `target-redirect : TargetJudge Symbol Span -> (U #f Bytevector)`. It returns the target with `|` percent-encoded in the path and `[`, `]` and `|` in the query, by uriparse's `pct-encode`. It does so only for GET or HEAD, only for origin-form, never for a path beginning `//`, and only when the encoded target is one the judge accepts and differs from the target.
+- In `conn-headers-complete-step`, a refused target that redirects is refused as `'target-redirect`, and the head keeps the Location. The Location must also be within `max-target-bytes`. `respond-and-close` takes the response's headers, so the parser-error row answers `301` with `Location`. `reason-status` answers `target-redirect` with 301.
+- New rows:
+  - test-target.sps, 11: the redirected shapes, HEAD, the methods not redirected, brackets in a path, targets with another fault, `//`, `/\` (which browsers read as `//`), absolute-form, nothing to encode, a span inside a delivery, and the Location accepted;
+  - the head suite, 5: a redirect end to end at every delivery size, a POST refused, `//` refused, and the Location at and past the limit.
+- The trace lane's `request/uri.md#5` (`GET /test.cgi?query=|`) is now a listed redirect.
+- Documentation:
+  - decision 0009;
+  - `docs/request-targets.org`, new and linked from the README and docs/configuration.org, covers what gets through, what gets 400 or 414, and the one redirect.
+
+Watched to fail (m2-mutations.md): each new check was red before its code, and mutations O through X follow. P, the open-redirect guard, first turned only the target suite red, so the head suite gained its `//` row, and P turns that red too. The redirect is off the hot path: the allocation lane is unchanged at 2,640 B.
+
+`make test` green: seventeen suites, 303 expected passes (target 35, connection-head 30), exit 0. The trace lane holds at 'full (9,394 runs). `make check-imports` is clean.
+
+NEXT: land M2.3's four stacked PRs in order, then M2.4, the message loop (plan §6).

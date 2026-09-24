@@ -30,6 +30,7 @@
   ;; idle-timeout, not-keep-alive, ...) is an assertion violation.
   (define (reason-status reason)
     (case reason
+      ((target-redirect) 301)                ; bracket params and pipes (0009)
       ((parser-error) 400)                   ; the parser's default (design §6.3)
       ((invalid-target) 400)                 ; not a form RFC 9112 §3.2 allows
       ((header-timeout) 408)
