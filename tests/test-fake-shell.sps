@@ -1,7 +1,8 @@
 #!r6rs
 ;;; (test-fake-shell) — the fake shell records faithfully, queues in order, and
-;;; takes its clock by injection.  M1.4.  Driven against stub steps, since the
-;;; core it will drive (conn-step) is M2.
+;;; takes its clock by injection.  M1.4.  Driven against stub steps, so these
+;;; checks hold whatever core it carries; conn-step runs in it in
+;;; test-connection-table.sps.
 (import (rnrs) (srfi :64) (testing) (fake-shell))
 
 ;; echo-step : count deliveries; each event's action echoes the event.
@@ -41,7 +42,7 @@
       (fake-shell-tick! s)
       (test-eqv "advance! returns the new now again" 260 (fake-shell-advance! s 10))
       (test-equal "ticks carry the injected clock, in order"
-                  '((tick . 0) (tick . 250)) (fake-shell-events s))
+                  '((tick 0) (tick 250)) (fake-shell-events s))
       (test-eqv "now reflects the injected advances" 260 (fake-shell-now s)))
 
     ;; the injected clock never runs backwards
