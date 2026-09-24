@@ -17,10 +17,11 @@
 ;;;     and pipelined;
 ;;;   - each of the four header limits passes a request at the limit and
 ;;;     refuses one past it with 431, through the parser's own failure;
+;;;   - so does the target's limit, with 414 (M2.3);
 ;;;   - a parser error with no refusal is still a 400.
 ;;;
 ;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
-;;; rows; design §6.5's 431 and 400; the limits each row sets.
+;;; rows; design §6.5's 431, 414 and 400; the limits each row sets.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server private adapter)
         (http-server request) (http-server response) (http-server span)
@@ -29,7 +30,7 @@
 (define (b s) (string->utf8 s))
 
 ;; with-limits : (Listof (Pair Symbol Nat)) -> Limits
-;; default-limits with the named header limits replaced.
+;; default-limits with the named header and target limits replaced.
 (define (with-limits overrides)
   (let ((get (lambda (key default) (cond ((assq key overrides) => cdr) (else default))))
         (L default-limits))
@@ -39,7 +40,8 @@
                  (get 'count (limits-max-header-count L))
                  (get 'field (limits-max-header-field-bytes L))
                  (get 'value (limits-max-header-value-bytes L))
-                 (limits-max-target-bytes L) (limits-max-body-bytes L)
+                 (get 'target (limits-max-target-bytes L))
+                 (limits-max-body-bytes L)
                  (limits-pipeline-cap L) (limits-read-buffer-size L))))
 
 ;; render-request : Request -> Datum — the request as its bytes.
@@ -129,13 +131,14 @@
 ;; The outcomes the rows expect.
 ;;   req      a rendered request: method, target, version, headers
 ;;   ok       every request handled; the connection ends in `phase`
-;;   refusal  the parser failed with the core's reason as its code, and the
-;;            core answered 431, closing after
+;;   refused  the parser failed with the core's reason as its code, and the
+;;            core answered `status`, closing after; a refusal is a 431
 (define (req method target major minor . headers)
   (list method target major minor headers))
 (define (ok requests phase reason) (list requests #f phase reason))
-(define (refusal reason)
-  (list '() (list reason (list (status-write 431))) 'responding reason))
+(define (refused reason status)
+  (list '() (list reason (list (status-write status))) 'responding reason))
+(define (refusal reason) (refused reason 431))
 
 ;; verdict : (-> Any) -> (U 'accepted 'refused)
 (define (verdict thunk)
@@ -213,6 +216,16 @@
     (test-equal "one byte more across the section is refused"
                 (list (refusal 'headers-too-large))
                 (every-size (b "GET / HTTP/1.1\r\nAb: 123\r\nC: 45678\r\n\r\n") (with-limits '((bytes . 10)))))
+
+    ;; --- the target's limit: at the limit, and one past it (M2.3) ---------------
+    ;; Counted over the target's bytes as they arrive, so a target split across
+    ;; deliveries (every size below its length) is counted whole.
+    (test-equal "a target at max-target-bytes passes"
+                (list (ok (list (req 'GET "/abc" 1 1)) 'idle #f))
+                (every-size (b "GET /abc HTTP/1.1\r\n\r\n") (with-limits '((target . 4)))))
+    (test-equal "a target one byte past it is refused with 414"
+                (list (refused 'target-too-large 414))
+                (every-size (b "GET /abcd HTTP/1.1\r\n\r\n") (with-limits '((target . 4)))))
 
     ;; --- a parser error the core did not ask for is a 400 -------------------------
     (test-equal "an invalid header token: 400, closing after"

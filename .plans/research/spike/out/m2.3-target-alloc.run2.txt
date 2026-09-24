@@ -1,0 +1,33 @@
+platform: tarm64osx, Chez Scheme Version 10.4.1
+calibration: 10000 conses read as 160160 bytes (16 per pair)
+--- per target, B per validation
+2-byte target: plan's route 1232 | charset route (copying) 16 | validate-component alone 0
+46-byte target: plan's route 1584 | charset route (copying) 80 | validate-component alone 0
+500-byte target: plan's route 2720 | charset route (copying) 512 | validate-component alone 0
+the plan's route on /a, cumulatively: reset 16, + feed 592, + finish 1232, + validate 1232
+CONNECT example.com:443, the strict authority-form validator (a fresh parse): 3696
+absolute-form http://example.com/p?q=1, a reused 'uri collector: 1984
+--- per request, the whole cycle (parser, adapter, core, shell events)
+cycle, no validation, CPS workload:            2624 B/request (85% of the 3072 B ratchet)
+cycle + the plan's route:                      3856 B/request (125% of the 3072 B ratchet)
+cycle + the charset route (copying):           2640 B/request (85% of the 3072 B ratchet)
+cycle, no validation, 500-byte target:         2624 B/request (85% of the 3072 B ratchet)
+cycle + the plan's route, 500-byte target:     5344 B/request (173% of the 3072 B ratchet)
+cycle + the charset route, 500-byte target:    3136 B/request (102% of the 3072 B ratchet)
+--- where the routes disagree (origin-form is absolute-path [ "?" query ], RFC 9112 3.2.1)
+"//a@b:c/d" plan's route (invalid-port 6), charset route accepted
+"//x/y" plan's route accepted, charset route accepted
+"/a#b" plan's route accepted, charset route invalid-pchar
+"/a?b#c" plan's route accepted, charset route invalid-query
+"/p?q=a|b" plan's route (invalid-query 6), charset route invalid-query
+--- the strict corpus's targets (every message that reaches on-headers-complete, fed whole)
+request/method.md#5 M-SEARCH *: asterisk-form with a method other than OPTIONS
+request/transfer-encoding.md#21 POST "/post_identity_body_world?q=search#hey": a fragment
+request/transfer-encoding.md#22 POST "/post_identity_body_world?q=search#hey": a fragment
+request/transfer-encoding.md#23 POST "/post_identity_body_world?q=search#hey": a fragment
+request/uri.md#1 GET "/with_\"lovely\"_quotes?foo=\\\"bar\\\"": the plan's route refuses (invalid-pchar 6)
+request/uri.md#5 GET "/test.cgi?query=|": the plan's route refuses (invalid-query 16)
+request/uri.md#8 GET "/forums/1/topics/2375?page=1#posts-17408": a fragment
+request/uri.md#10 GET "http://a%12:b!&*$@hypnotoad.org:1234/toto": absolute-form with userinfo
+135 strict fixtures, 94 messages reach on-headers-complete
+exit=0
