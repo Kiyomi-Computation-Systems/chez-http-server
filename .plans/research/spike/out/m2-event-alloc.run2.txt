@@ -1,0 +1,14 @@
+platform: tarm64osx, Chez Scheme Version 10.4.1
+calibration: 10000 conses read as 160160 bytes (16 per pair)
+shape: (parser-event name) 32 B; (parser-event name bv from to) 80 B; pev record 48 B
+callbacks per keep-alive request: 24 = 10 spans + 14 events
+A0     parser alone, silent, no pause (cps-core 4b):      1600 B/request  (52% of the 3072 B gate)
+A1     parser alone, silent, pause + resume:              1600 B/request  (52% of the 3072 B gate)
+B      A1 + M2.1's tagged-list events:                    2848 B/request  = A1 + 1248  (92% of the 3072 B gate)
+B-rec  A1 + a record per callback:                        2752 B/request  = A1 + 1152  (89% of the 3072 B gate)
+B-reuse A1 + one reused event per shape:                  1600 B/request  = A1 + 0  (52% of the 3072 B gate)
+C      M2.1's conn-step, the whole cycle:                 3280 B/request  = A1 + 1680  (106% of the 3072 B gate)
+C-reuse C with no event allocated per callback:           2032 B/request  = A1 + 432  (66% of the 3072 B gate)
+C ended in idle with ((resume-parser) (read-start) (arm-deadline idle)) queued; the sink holds a parser-event
+C-reuse ended in idle with ((resume-parser) (read-start) (arm-deadline idle)) queued
+exit=0
