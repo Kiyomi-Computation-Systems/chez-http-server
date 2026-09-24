@@ -460,4 +460,16 @@ M2.3 FIRST STEP: the target's limit.
 
 Watched to fail: mutations A, B and C. `make test` green: sixteen suites, 252 expected passes.
 
-NEXT: M2.3's second step, the target judge `(http-server target)`, on feat/m2.3-target-judge, stacked on this branch.
+M2.3 SECOND STEP: the target judge, `(http-server target)`.
+- `(http-server target)`, new, exports `make-target-judge`, `target-judge?` and `target-fault : TargetJudge Symbol Span -> (U #f Symbol)`. The method and the first byte pick the form:
+  - CONNECT: authority-form, through `uri-parse-authority-form-validate` over a copy of the span, parsed fresh.
+  - `*` alone: asterisk-form, for OPTIONS only.
+  - "/" first: origin-form. The target is split at its first "?", and the two parts are judged by `(uri charset)`'s `validate-component`, over copies.
+  - anything else: absolute-form, through the judge's collector ('uri mode, made on the first absolute-form target and reset before each one) and `uri-parse-result-validate`. It must then carry no fragment and no userinfo. Userinfo is read by `(uri host)`'s `authority-host-span`, the validator's own split.
+
+  A verdict is uriparse's code, or `'asterisk-not-options`, `'fragment` or `'userinfo`. The library is not in design §3.1's table of libraries; it is introduced here.
+- `tests/test-target.sps` (24 checks) tables the four forms and the three rules. The library is pure, and the core does not call it until the third step, so this step's tree passes on its own.
+
+Watched to fail: `test-target.sps` exited 255 before the library existed. The mutations against the library ran once the core used it, and are recorded with the third step. `make test` green: seventeen suites, 276 expected passes.
+
+NEXT: M2.3's third step, the core judges the target, on feat/m2.3-target-core, stacked on this branch.
