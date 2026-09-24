@@ -54,6 +54,18 @@
 ;;; transitions live in one place.  Either way, the first action answering a
 ;;; parser callback is always its `reply-parser`.
 ;;;
+;;; THE HEAD IS KEPT AS SPANS (design §7.1).  From on-message-begin to
+;;; on-headers-complete the core keeps the request-target and each header
+;;; name and value as a span of the delivery it arrived in, and copies only a
+;;; name or value that arrived in more than one delivery, once, when it
+;;; completes.  The method and version come from on-headers-complete's
+;;; fields, so the request line's other spans are not kept.  The keep-alive
+;;; decision is `should-keep-alive?` over the flags read there (0002 item 4,
+;;; decision 0006 item 1).  The four header limits are checked as the bytes
+;;; arrive; one tripped is answered `(reply-parser (fail reason))`, and when
+;;; the parser's error comes back the status is the reason's, not the
+;;; parser's (design §6.3).
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
 ;;; to arm, and carries no time: no event but `tick` carries `now`, so the core
@@ -66,9 +78,13 @@
           conn-parser-callbacks conn-span-callbacks
           make-conn-state conn-state?
           conn-phase conn-deadline conn-close-after conn-outstanding
-          conn-pending conn-request
+          conn-pending conn-request conn-limits
           conn-step conn-parser-step conn-headers-complete-step)
-  (import (rnrs) (http-server response))
+  (import (rnrs)
+          (http-server response) (http-server request) (http-server span)
+          (http-server limits) (http-server decisions)
+          (only (httparse decisions) should-keep-alive?)
+          (only (httparse methods) httparse-method-numbers))
 
   ;; conn-states : (Listof Symbol)
   ;; The nine connection states, design §4.3.  Only `idle`, `head` and `body`
@@ -114,7 +130,8 @@
       on-status-data on-header-field-data on-header-value-data on-body-data
       on-chunk-extension-name-data on-chunk-extension-value-data))
 
-  ;; make-conn-state : Phase Deadline CloseAfter Nat Pending Request -> ConnState
+  ;; make-conn-state :
+  ;;   Phase Deadline CloseAfter Nat Pending Request Limits -> ConnState
   ;;   Phase      = one of conn-states (anything else is an assertion violation)
   ;;   Deadline   = (U #f 'idle 'header 'body 'write) — the kind armed, if any
   ;;   CloseAfter = (U #f Symbol) — #f keeps the connection after the response;
@@ -122,22 +139,110 @@
   ;;   Nat        = writes issued and not yet completed
   ;;   Pending    = (U #f (List Bytevector Nat Nat)) — input retained at a pause
   ;;   Request    = (U #f Request) — the request in flight
+  ;;   Limits     = the policy the core enforces (decision 0005); anything but
+  ;;                a limits record is an assertion violation
   ;; conn-state? : Any -> Boolean
-  ;; conn-phase / -deadline / -close-after / -outstanding / -pending / -request :
-  ;;   ConnState -> the corresponding field
+  ;; conn-phase / -deadline / -close-after / -outstanding / -pending /
+  ;;   -request / -limits : ConnState -> the corresponding field
+  ;; The request head being read is kept in the state too, and is not exported.
   (define-record-type (conn-state make-conn-state conn-state?)
     (fields (mutable phase       conn-phase       conn-phase-set!)
             (mutable deadline    conn-deadline    conn-deadline-set!)
             (mutable close-after conn-close-after conn-close-after-set!)
             (mutable outstanding conn-outstanding conn-outstanding-set!)
             (mutable pending     conn-pending     conn-pending-set!)
-            (mutable request     conn-request     conn-request-set!))
+            (mutable request     conn-request     conn-request-set!)
+            (immutable limits    conn-limits)
+            (immutable head      conn-head))
     (protocol
      (lambda (new)
-       (lambda (phase deadline close-after outstanding pending request)
+       (lambda (phase deadline close-after outstanding pending request limits)
          (unless (memq phase conn-states)
            (assertion-violation 'make-conn-state "not a connection state" phase))
-         (new phase deadline close-after outstanding pending request)))))
+         (unless (limits? limits)
+           (assertion-violation 'make-conn-state "not a limits record" limits))
+         (new phase deadline close-after outstanding pending request limits
+              (make-head))))))
+
+  ;; The request head being read: the target and the header fields so far,
+  ;; and the running sizes the header limits are checked against.  One per
+  ;; connection, rolled at each on-message-begin.
+  ;;   target   the request-target, once on-url-complete has run
+  ;;   fields   the completed (name . value) pairs, newest first
+  ;;   count    the header names completed so far
+  ;;   total    the header name and value bytes so far
+  ;;   name     the completed name waiting for its value
+  ;;   piece    the span being read: #f, a Span, or several, newest first
+  ;;   size     the bytes of the piece so far
+  ;;   refusal  #f, or the reason the core answered a callback with fail
+  (define-record-type head
+    (fields (mutable target) (mutable fields) (mutable count) (mutable total)
+            (mutable name) (mutable piece) (mutable size) (mutable refusal))
+    (protocol (lambda (new) (lambda () (new #f '() 0 0 #f #f 0 #f)))))
+
+  ;; head-roll! : Head -> Void — empty the head for the next message.
+  (define (head-roll! h)
+    (head-target-set! h #f)
+    (head-fields-set! h '())
+    (head-count-set! h 0)
+    (head-total-set! h 0)
+    (head-name-set! h #f)
+    (head-piece-set! h #f)
+    (head-size-set! h 0)
+    (head-refusal-set! h #f))
+
+  ;; The value of a piece that arrived with no bytes, such as an empty header
+  ;; value: one span, shared.
+  (define empty-span (make-span (make-bytevector 0) 0 0))
+
+  ;; add-fragment! : Head Bytevector Nat Nat -> Void
+  ;; One more fragment of the piece being read.  The first is kept as a span;
+  ;; a piece that arrives in several, split across deliveries, is kept as a
+  ;; list until it completes.
+  (define (add-fragment! h bv from to)
+    (let ((span (make-span bv from to)) (piece (head-piece h)))
+      (head-piece-set! h (cond ((not piece) span)
+                               ((span? piece) (list span piece))
+                               (else (cons span piece))))
+      (head-size-set! h (fx+ (head-size h) (fx- to from)))))
+
+  ;; take-piece! : Head -> Span
+  ;; The piece read so far, as one span, and start the next.  A piece that
+  ;; arrived in one fragment is that fragment's span, with nothing copied.  One
+  ;; that arrived in several is copied into a fresh bytevector, once.
+  (define (take-piece! h)
+    (let ((piece (head-piece h)) (size (head-size h)))
+      (head-piece-set! h #f)
+      (head-size-set! h 0)
+      (cond ((not piece) empty-span)
+            ((span? piece) piece)
+            (else
+             (let ((out (make-bytevector size)))
+               (let loop ((spans (reverse piece)) (at 0))
+                 (if (null? spans)
+                     (make-span out 0 size)
+                     (let ((sp (car spans)))
+                       (bytevector-copy! (span-bytevector sp) (span-start sp)
+                                         out at (span-length sp))
+                       (loop (cdr spans) (fx+ at (span-length sp)))))))))))
+
+  ;; method-symbols : (Vectorof (U Symbol #f))
+  ;; llhttp's method numbers, as the symbols (httparse methods) names them,
+  ;; indexed by number, so naming a request's method allocates nothing.
+  (define method-symbols
+    (let ((v (make-vector (fx+ 1 (fold-left (lambda (m row) (fxmax m (cdr row)))
+                                            0 httparse-method-numbers))
+                          #f)))
+      (for-each (lambda (row) (vector-set! v (cdr row) (string->symbol (car row))))
+                httparse-method-numbers)
+      v))
+
+  ;; method-name : Nat -> Symbol — the method llhttp numbers `n`; any other
+  ;; number is an assertion violation.
+  (define (method-name n)
+    (or (and (fixnum? n) (fx<? -1 n (vector-length method-symbols))
+             (vector-ref method-symbols n))
+        (assertion-violation 'conn-headers-complete-step "not an llhttp method number" n)))
 
   ;; conn-step : ConnState Event -> (values ConnState (Listof Action))
   ;; One event in, the state it leaves (the same object, updated) and the
@@ -166,10 +271,11 @@
   ;; The transitions, one procedure per event kind.  Each names the design
   ;; §4.4 row it implements.
 
-  ;; idle, bytes-arrived -> idle: feed the delivery to the parser.
+  ;; idle, bytes-arrived -> idle: feed the delivery to the parser.  head and
+  ;; body feed it too, for a message that arrives in more than one delivery.
   (define (on-bytes-arrived s ev)
     (case (conn-phase s)
-      ((idle) (values s (list (cons 'feed-parser (cdr ev)))))
+      ((idle head body) (values s (list (cons 'feed-parser (cdr ev)))))
       (else (values s '()))))
 
   ;; any reading state, eof -> closing: close, with no response.
@@ -227,7 +333,7 @@
       ((head)
        (if (eq? (conn-deadline s) 'header)
            (begin (conn-deadline-set! s #f)
-                  (respond-and-close s 408 'header-timeout))
+                  (respond-and-close s 'header-timeout))
            (values s '())))
       (else (values s '()))))
 
@@ -274,20 +380,61 @@
      ((and (not span?) (memq name conn-span-callbacks))
       (assertion-violation 'conn-parser-step "a span callback needs its span" name))))
 
-  ;; The callbacks' transitions.  idle, on-message-begin -> head; body,
+  ;; The callbacks' transitions.  idle, on-message-begin -> head, with a fresh
+  ;; head; in head, the target and the header fields are kept; body,
   ;; on-body-data -> body; body, on-message-complete -> handling, pausing the
   ;; parser and stopping reads in the same step, so one delivery carrying two
   ;; messages cannot start a second handler (design §4.4).  Every other
-  ;; callback, and these three outside their states, changes nothing and
-  ;; answers continue: the parser always gets an answer.
+  ;; callback, and these outside their states, changes nothing and answers
+  ;; continue: the parser always gets an answer.
   (define (on-callback s name bv from to)
     (case name
       ((on-message-begin)
        (case (conn-phase s)
          ((idle)
+          (head-roll! (conn-head s))
+          (conn-request-set! s #f)
           (conn-phase-set! s 'head)
           (conn-deadline-set! s 'header)
           (values s '((reply-parser continue) (disarm-deadline) (arm-deadline header))))
+         (else (continue s))))
+      ((on-url-data)
+       (case (conn-phase s)
+         ((head) (add-fragment! (conn-head s) bv from to) (continue s))
+         (else (continue s))))
+      ((on-url-complete)
+       (case (conn-phase s)
+         ((head)
+          (let ((h (conn-head s))) (head-target-set! h (take-piece! h)))
+          (continue s))
+         (else (continue s))))
+      ((on-header-field-data)
+       (case (conn-phase s)
+         ((head) (header-bytes s bv from to limits-max-header-field-bytes
+                               'header-field-too-large))
+         (else (continue s))))
+      ((on-header-field-complete)
+       (case (conn-phase s)
+         ((head)
+          (let ((h (conn-head s)))
+            (head-count-set! h (fx+ (head-count h) 1))
+            (head-name-set! h (take-piece! h))
+            (if (fx>? (head-count h) (limits-max-header-count (conn-limits s)))
+                (refuse s 'too-many-headers)
+                (continue s))))
+         (else (continue s))))
+      ((on-header-value-data)
+       (case (conn-phase s)
+         ((head) (header-bytes s bv from to limits-max-header-value-bytes
+                               'header-value-too-large))
+         (else (continue s))))
+      ((on-header-value-complete)
+       (case (conn-phase s)
+         ((head)
+          (let ((h (conn-head s)))
+            (head-fields-set! h (cons (cons (head-name h) (take-piece! h)) (head-fields h)))
+            (head-name-set! h #f)
+            (continue s)))
          (else (continue s))))
       ((on-body-data)
        (case (conn-phase s)
@@ -307,6 +454,28 @@
          (else (continue s))))
       (else (continue s))))
 
+  ;; header-bytes : ConnState Bytevector Nat Nat (Limits -> Nat) Symbol
+  ;;                -> (values ConnState (Listof Action))
+  ;; A fragment of a header name or value: keep it, and refuse the message
+  ;; once the name or value, or the header section, grows past its limit.
+  (define (header-bytes s bv from to piece-limit piece-reason)
+    (let ((h (conn-head s)) (limits (conn-limits s)))
+      (add-fragment! h bv from to)
+      (head-total-set! h (fx+ (head-total h) (fx- to from)))
+      (cond ((fx>? (head-size h) (piece-limit limits)) (refuse s piece-reason))
+            ((fx>? (head-total h) (limits-max-header-bytes limits))
+             (refuse s 'headers-too-large))
+            (else (continue s)))))
+
+  ;; refuse : ConnState Symbol -> (values ConnState (Listof Action))
+  ;; A limit tripped inside a parser callback (design §6.3): tell the parser to
+  ;; fail with the reason as its code, and hold the reason for the parser's
+  ;; error result, which is answered with the reason's status.  The state
+  ;; stays where it is until that result arrives (design §4.4's head row).
+  (define (refuse s reason)
+    (head-refusal-set! (conn-head s) reason)
+    (values s (list (list 'reply-parser (list 'fail reason)))))
+
   ;; conn-headers-complete-step :
   ;;   ConnState Nat Nat Nat Nat Nat -> (values ConnState (Listof Action))
   ;;   method http-major http-minor flags content-length
@@ -315,14 +484,24 @@
   ;; llhttp's flag bits and the content-length.  Read there, content-length is
   ;; the declared length, since it counts down as the body arrives, and the
   ;; parser's reset after each message zeroes it and the flags.  Nothing
-  ;; downstream re-reads the parser.
-  ;; head -> body: continue, disarm the header deadline, arm the body one.
+  ;; downstream re-reads the parser.  The content-length is the body's, M6's.
+  ;; head -> body: the request is built from the head, the connection is
+  ;; marked to close after the response unless the message keeps it alive
+  ;; (decision 0006 item 1), and the header deadline gives way to the body's.
   (define (conn-headers-complete-step s method http-major http-minor flags content-length)
     (case (conn-phase s)
       ((head)
-       (conn-phase-set! s 'body)
-       (conn-deadline-set! s 'body)
-       (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+       (let ((h (conn-head s)))
+         (conn-request-set! s (make-request (method-name method)
+                                            (or (head-target h) empty-span)
+                                            http-major http-minor
+                                            (reverse (head-fields h))
+                                            #f))
+         (unless (should-keep-alive? http-major http-minor 'request 0 flags)
+           (conn-close-after-set! s 'not-keep-alive))
+         (conn-phase-set! s 'body)
+         (conn-deadline-set! s 'body)
+         (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
       (else (continue s))))
 
   ;; continue : ConnState -> (values ConnState (Listof Action))
@@ -332,8 +511,10 @@
 
   ;; head/body, a parser result: a pause that carries a reason hands the
   ;; stream off (0006 item 3); an error is answered with a status, then close.
-  ;; Only the pause channel is read here; M2.5 adds the h2c error channel.
-  ;; The status is 400 until M2.2's error-to-status map arrives (design §6.5).
+  ;; Only the pause channel is read here; M2.5 adds the h2c error channel.  An
+  ;; error the core asked for with `fail` is answered with its reason's status
+  ;; (design §6.3); any other is a parser error, 400 until M2.5 reads the
+  ;; parser's code through (http-server decisions)' map.
   (define (on-parser-result s ev)
     (let ((status (list-ref ev 1))
           (pause  (list-ref ev 5)))
@@ -344,7 +525,8 @@
            (conn-phase-set! s 'handed-off)
            (conn-deadline-set! s #f)
            (values s (list '(read-stop) (list 'hand-off (conn-request s)))))
-          ((eq? status 'error) (respond-and-close s 400 'parser-error))
+          ((eq? status 'error)
+           (respond-and-close s (or (head-refusal (conn-head s)) 'parser-error)))
           (else (values s '()))))
         (else (values s '())))))
 
@@ -362,7 +544,7 @@
   ;; for a failure after the head is on the wire needs a streamed body: M6.)
   (define (on-handler-failed s)
     (case (conn-phase s)
-      ((handling) (respond-and-close s 500 'handler-failed))
+      ((handling) (respond-and-close s 'handler-failed))
       (else (values s '()))))
 
   ;; idle, shutdown-requested -> draining: nothing is in flight, so shut down.
@@ -388,13 +570,14 @@
     (conn-deadline-set! s #f)
     (values s (append before (list (list 'close reason)))))
 
-  ;; respond-and-close : ConnState Nat Symbol -> (values ConnState (Listof Action))
+  ;; respond-and-close : ConnState Symbol -> (values ConnState (Listof Action))
   ;; Enter `responding` with a status the core originates, closing afterwards
-  ;; (design §6.5: every originated status closes).  The record carries no
-  ;; reason and no headers: M3's serializer derives the phrase and adds
+  ;; for `reason` (design §6.5: every originated status closes).  The status
+  ;; is the reason's, from (http-server decisions).  The record carries no
+  ;; reason phrase and no headers: M3's serializer derives the phrase and adds
   ;; `Connection: close`.
-  (define (respond-and-close s status reason)
+  (define (respond-and-close s reason)
     (conn-phase-set! s 'responding)
     (conn-close-after-set! s reason)
     (conn-outstanding-set! s (+ (conn-outstanding s) 1))
-    (values s (list (list 'write (make-response status #f '() #f))))))
+    (values s (list (list 'write (make-response (reason-status reason) #f '() #f))))))

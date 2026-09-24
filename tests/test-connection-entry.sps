@@ -24,7 +24,8 @@
 ;;; cumulative allocation counter, calibrated below.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) statistics sstats-bytes)
-        (http-server connection) (http-server response)
+        (http-server connection) (http-server response) (http-server request)
+        (http-server span) (http-server limits)
         (httparse test adapter)          ; adapter-trace-names
         (generated httparse-message) (httparse modes) (byte-machine runtime))
 
@@ -55,7 +56,7 @@
 (define (armed phase)
   (case phase ((idle) 'idle) ((head) 'header) ((body) 'body) (else #f)))
 
-(define (fresh phase) (make-conn-state phase (armed phase) #f 0 #f #f))
+(define (fresh phase) (make-conn-state phase (armed phase) #f 0 #f #f default-limits))
 
 ;; A span for the span callbacks, and on-headers-complete's five fields for a
 ;; keep-alive GET: llhttp's method 1, HTTP/1.1, no flags, no content-length.
@@ -81,10 +82,24 @@
 ;; The table's way in: one tagged list through conn-step.
 (define (tagged s p) (conn-step s (cons 'parser-event p)))
 
+;; render-request : (U Request #f) -> Datum
+;; A request as its bytes: each way in builds its own record, and records
+;; compare by identity.
+(define (render-request r)
+  (and r (list 'request (request-method r) (span->bytevector (request-target r))
+               (request-http-major r) (request-http-minor r)
+               (map (lambda (h) (cons (span->bytevector (car h)) (span->bytevector (cdr h))))
+                    (request-headers r)))))
+
+(define (render-action a)
+  (if (and (eq? (car a) 'call-handler) (request? (cadr a)))
+      (list 'call-handler (render-request (cadr a)))
+      a))
+
 ;; snapshot : ConnState (Listof Action) -> Datum — everything a step decides.
 (define (snapshot s actions)
   (list (conn-phase s) (conn-deadline s) (conn-close-after s) (conn-outstanding s)
-        (conn-pending s) (conn-request s) actions))
+        (conn-pending s) (render-request (conn-request s)) (map render-action actions)))
 
 (define (step way s p) (call-with-values (lambda () (way s p)) snapshot))
 
@@ -216,9 +231,18 @@
     (body on-chunk-extension-value-data) (body on-chunk-extension-value-complete)
     (body on-chunk-complete) (body on-message-complete)))
 
-;; The callbacks whose data the core keeps: a body span goes on to the
-;; handler, and the message's completion carries the request.
-(define kept '(on-body-data on-message-complete))
+;; The callbacks whose data the core keeps, and so may allocate: the target
+;; and each header name and value are kept as spans, a completed value joins
+;; its name as a header, the head's completion builds the request, a body span
+;; goes on to the handler, and the message's completion carries the request.
+(define kept
+  '(on-url-data on-header-field-data on-header-value-data on-header-value-complete
+    on-headers-complete on-body-data on-message-complete))
+
+;; The span callbacks among them, and the state each arrives in.
+(define kept-spans
+  '((head on-url-data) (head on-header-field-data) (head on-header-value-data)
+    (body on-body-data)))
 
 (run-suite "connection-entry"
   (lambda ()
@@ -327,8 +351,11 @@
                           (and (not (memq (cadr row) kept))
                                (> (bytes-per-call (car row) (cadr row) 4) 0)))
                         arrivals))
-    (let ((short (bytes-per-call 'body 'on-body-data 1))
-          (long (bytes-per-call 'body 'on-body-data 1000)))
-      (test-eq "a body span the core keeps costs something" 'allocates
-               (if (> short 0) 'allocates 'free))
-      (test-eqv "and the same for a 1000-byte span as for a 1-byte one" short long))))
+    ;; A span the core keeps costs something, and the same whatever its
+    ;; length: it is kept as bounds, never copied.
+    (test-equal "a kept span costs something, the same for 1 byte as for 1,000" '()
+                (filter (lambda (row)
+                          (let ((short (bytes-per-call (car row) (cadr row) 1))
+                                (long (bytes-per-call (car row) (cadr row) 1000)))
+                            (not (and (> short 0) (= short long)))))
+                        kept-spans))))
