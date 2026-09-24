@@ -2,9 +2,9 @@
 ;;; (fake-shell) — the imperative shell as a test double.
 ;;;
 ;;; M1.4.  The real shell (design §5) delivers libuv events to the pure core and
-;;; runs the actions it returns.  There is no core to drive yet (`conn-step` is
-;;; M2), so this fake shell is driven against a STUB step the test supplies, and
-;;; it proves only what does not depend on connection semantics:
+;;; runs the actions it returns.  It was written before the core existed, so its
+;;; own suite drives it against STUB steps the test supplies, and proves only
+;;; what does not depend on connection semantics:
 ;;;
 ;;;   - it delivers scripted events IN ORDER and threads the step's state;
 ;;;   - it RECORDS every action the step returns, faithfully and in order;
@@ -13,8 +13,8 @@
 ;;;     test ever sleeps (decision 0005, consequences).
 ;;;
 ;;; The step is `(step state event) -> (values state' (Listof Action))`, the
-;;; shape `conn-step` will have (design §4.1), so M2 drops its real core in
-;;; where the stub stands now.
+;;; shape of `conn-step` (design §4.1), so the real core drops in where a stub
+;;; stands; tests/test-connection-table.sps runs it that way (M2.1).
 (library (fake-shell)
   (export make-fake-shell fake-shell?
           fake-shell-state fake-shell-now
@@ -51,8 +51,9 @@
         s (fold-left (lambda (acc a) (cons a acc)) (fake-shell-actions-rev s) actions))
        actions)))
 
-  ;; fake-shell-tick! : deliver a `(tick . now)` event carrying the injected now.
-  (define (fake-shell-tick! s) (fake-shell-deliver! s (cons 'tick (fake-shell-now s))))
+  ;; fake-shell-tick! : deliver a `(tick now)` event carrying the injected now —
+  ;; the tagged-list shape of (http-server connection)'s event vocabulary.
+  (define (fake-shell-tick! s) (fake-shell-deliver! s (list 'tick (fake-shell-now s))))
 
   ;; fake-shell-run! : deliver a list of events in order.
   (define (fake-shell-run! s events)
