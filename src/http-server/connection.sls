@@ -67,6 +67,14 @@
 ;;; status is the reason's, not the parser's (design §6.3): 414 for the
 ;;; target, 431 for the headers.
 ;;;
+;;; THE TARGET IS JUDGED at on-headers-complete, where the method is known
+;;; (M2.3): it must be the RFC 9112 §3.2 form its method and first byte call
+;;; for, with bytes uriparse finds valid, or the message is refused as
+;;; 'invalid-target, answered 400.  (http-server target) holds the rules and
+;;; one judge per connection.  For the rare absolute-form and CONNECT targets
+;;; the judge runs uriparse's own scanner, never the parser calling the core
+;;; (0002's amendment of 2026-09-24).
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
 ;;; to arm, and carries no time: no event but `tick` carries `now`, so the core
@@ -83,7 +91,7 @@
           conn-step conn-parser-step conn-headers-complete-step)
   (import (rnrs)
           (http-server response) (http-server request) (http-server span)
-          (http-server limits) (http-server decisions)
+          (http-server limits) (http-server decisions) (http-server target)
           (only (httparse decisions) should-keep-alive?)
           (only (httparse methods) httparse-method-numbers))
 
@@ -145,7 +153,8 @@
   ;; conn-state? : Any -> Boolean
   ;; conn-phase / -deadline / -close-after / -outstanding / -pending /
   ;;   -request / -limits : ConnState -> the corresponding field
-  ;; The request head being read is kept in the state too, and is not exported.
+  ;; The request head being read is kept in the state too, and so is the
+  ;; connection's target judge (M2.3); neither is exported.
   (define-record-type (conn-state make-conn-state conn-state?)
     (fields (mutable phase       conn-phase       conn-phase-set!)
             (mutable deadline    conn-deadline    conn-deadline-set!)
@@ -154,7 +163,8 @@
             (mutable pending     conn-pending     conn-pending-set!)
             (mutable request     conn-request     conn-request-set!)
             (immutable limits    conn-limits)
-            (immutable head      conn-head))
+            (immutable head      conn-head)
+            (immutable judge     conn-judge))
     (protocol
      (lambda (new)
        (lambda (phase deadline close-after outstanding pending request limits)
@@ -163,7 +173,7 @@
          (unless (limits? limits)
            (assertion-violation 'make-conn-state "not a limits record" limits))
          (new phase deadline close-after outstanding pending request limits
-              (make-head))))))
+              (make-head) (make-target-judge))))))
 
   ;; The request head being read: the target and the header fields so far,
   ;; and the running sizes the header limits are checked against.  One per
@@ -492,23 +502,30 @@
   ;; the declared length, since it counts down as the body arrives, and the
   ;; parser's reset after each message zeroes it and the flags.  Nothing
   ;; downstream re-reads the parser.  The content-length is the body's, M6's.
-  ;; head -> body: the request is built from the head, the connection is
-  ;; marked to close after the response unless the message keeps it alive
-  ;; (decision 0006 item 1), and the header deadline gives way to the body's.
+  ;; The target is judged here, where the method is known (M2.3; see
+  ;; (http-server target)): one that is not the form its method calls for, or
+  ;; whose bytes uriparse refuses, is refused as 'invalid-target, and the
+  ;; state stays in head until the parser's error arrives, answered 400.
+  ;; Otherwise head -> body: the request is built from the head, the
+  ;; connection is marked to close after the response unless the message
+  ;; keeps it alive (decision 0006 item 1), and the header deadline gives way
+  ;; to the body's.
   (define (conn-headers-complete-step s method http-major http-minor flags content-length)
     (case (conn-phase s)
       ((head)
-       (let ((h (conn-head s)))
-         (conn-request-set! s (make-request (method-name method)
-                                            (or (head-target h) empty-span)
-                                            http-major http-minor
-                                            (reverse (head-fields h))
-                                            #f))
-         (unless (should-keep-alive? http-major http-minor 'request 0 flags)
-           (conn-close-after-set! s 'not-keep-alive))
-         (conn-phase-set! s 'body)
-         (conn-deadline-set! s 'body)
-         (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
+       (let* ((h (conn-head s))
+              (name (method-name method))
+              (target (or (head-target h) empty-span)))
+         (if (target-fault (conn-judge s) name target)
+             (refuse s 'invalid-target)
+             (begin
+               (conn-request-set! s (make-request name target http-major http-minor
+                                                  (reverse (head-fields h)) #f))
+               (unless (should-keep-alive? http-major http-minor 'request 0 flags)
+                 (conn-close-after-set! s 'not-keep-alive))
+               (conn-phase-set! s 'body)
+               (conn-deadline-set! s 'body)
+               (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body)))))))
       (else (continue s))))
 
   ;; continue : ConnState -> (values ConnState (Listof Action))

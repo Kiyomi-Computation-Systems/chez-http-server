@@ -1,5 +1,5 @@
 #!r6rs
-;;; (http-server connection): what a request costs in allocation.  M2.2.
+;;; (http-server connection): what a request costs in allocation.  M2.2, M2.3.
 ;;;
 ;;; Decision 0002's second amendment: the 3 KiB gate is a regression ratchet
 ;;; counted as a total (parser, adapter and core), and shapes are the real
@@ -12,19 +12,29 @@
 ;;;
 ;;; The checks:
 ;;;   - the total per request is within the 3,072 B ratchet;
-;;;   - it does not grow with the length of the headers or the target: the
-;;;     head is kept as spans, never copied (the amendment's second shape);
-;;;   - it stays constant from request to request: later requests on the
-;;;     connection cost what earlier ones did (the third).
+;;;   - it does not grow with the length of a header value: the head is kept
+;;;     as spans, never copied (the amendment's second shape);
+;;;   - nor with the length of the target, but for one copy: an origin-form
+;;;     target's path is copied to be judged, because uriparse's validator
+;;;     takes a whole bytevector.  That copy is carried until it takes a range
+;;;     (uriparse #21), and this check then falls to "costs what a short one
+;;;     does";
+;;;   - an absolute-form target costs one parse by a reused uriparse collector
+;;;     in place of that copy: the collector is the connection's, made once,
+;;;     never one per request (M2.3, design §7.5);
+;;;   - the cost stays constant from request to request: later requests on
+;;;     the connection cost what earlier ones did (the third shape).
 ;;; The first shape, per callback, is test-connection-entry.sps's.
 ;;;
 ;;; Oracles: the 3,072 B ratchet and the shapes, from 0002's second amendment;
 ;;; Chez's cumulative allocation counter `sstats-bytes`, calibrated below and
-;;; never the live heap.
+;;; never the live heap; what a bytevector costs, and what uriparse's own
+;;; reused collector costs on the same target, both read by that counter.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) statistics sstats-bytes)
         (http-server connection) (http-server private adapter)
         (http-server response) (http-server limits)
+        (uri collect)
         (byte-machine runtime))
 
 (define (b s) (string->utf8 s))
@@ -57,11 +67,14 @@
                                (conn-phase (conn-context-state ctx))))
         (parser-resume! p)))))
 
+;; What a thunk last returned, so an allocation it makes is never dead code.
+(define hold #f)
+
 ;; bytes-per-call : (-> Any) Nat -> Nat
 ;; Bytes one call of `thunk` allocates, averaged over `n` calls.
 (define (bytes-per-call thunk n)
   (let ((before (sstats-bytes (statistics))))
-    (let loop ((i 0)) (when (< i n) (thunk) (loop (+ i 1))))
+    (let loop ((i 0)) (when (< i n) (set! hold (thunk)) (loop (+ i 1))))
     (div (- (sstats-bytes (statistics)) before) n)))
 
 ;; per-request : Bytevector -> Nat — after a warm-up, over `reps` requests.
@@ -70,14 +83,25 @@
     (bytes-per-call serve warm)
     (bytes-per-call serve reps)))
 
+;; warmed : (-> Any) -> Nat — the same, for any thunk.
+(define (warmed thunk)
+  (bytes-per-call thunk warm)
+  (bytes-per-call thunk reps))
+
 (define (repeat s n)
   (let loop ((i 0) (acc '())) (if (= i n) (apply string-append acc) (loop (+ i 1) (cons s acc)))))
 
 (define cps (b "GET /a HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n"))
-;; The same request with a 500-byte target and a 500-byte User-Agent.
-(define cps-long
-  (b (string-append "GET /" (repeat "a" 499) " HTTP/1.1\r\nHost: x\r\nUser-Agent: "
-                    (repeat "s" 500) "\r\nAccept: */*\r\n\r\n")))
+;; The same request with a 500-byte User-Agent; with a 500-byte target; and
+;; with its target in absolute-form.
+(define cps-long-header
+  (b (string-append "GET /a HTTP/1.1\r\nHost: x\r\nUser-Agent: " (repeat "s" 500)
+                    "\r\nAccept: */*\r\n\r\n")))
+(define cps-long-target
+  (b (string-append "GET /" (repeat "a" 499)
+                    " HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n")))
+(define cps-absolute
+  (b "GET http://x/a HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n"))
 
 (define (diag line)
   (let ((p (current-error-port))) (put-string p line) (put-char p #\newline) (flush-output-port p)))
@@ -106,19 +130,40 @@
               0 (bytes-per-call (lambda () #f) reps))
 
     (let ((short (measure (lambda () (per-request cps))))
-          (long (measure (lambda () (per-request cps-long)))))
-      (test-eq "every request on both connections is served" 'served
-               (if (and (number? short) (number? long)) 'served 'refused))
-      (when (and (number? short) (number? long))
+          (long-header (measure (lambda () (per-request cps-long-header))))
+          (long-target (measure (lambda () (per-request cps-long-target))))
+          (absolute (measure (lambda () (per-request cps-absolute)))))
+      (test-eq "every request on the four connections is served" 'served
+               (if (for-all number? (list short long-header long-target absolute)) 'served 'refused))
+      (when (for-all number? (list short long-header long-target absolute))
         (diag (string-append "connection-allocation: the CPS workload "
                              (number->string short) " B/request (ratchet "
-                             (number->string gate) " B); with a 500-byte target and header "
-                             (number->string long) " B/request"))
+                             (number->string gate) " B); with a 500-byte header "
+                             (number->string long-header) ", with a 500-byte target "
+                             (number->string long-target) ", in absolute-form "
+                             (number->string absolute)))
         (test-eq "a keep-alive request costs something" 'allocates
                  (if (> short 0) 'allocates 'free))
         (test-eq "and no more than the 3,072 B ratchet" 'within
                  (if (<= short gate) 'within 'over))
-        (test-eqv "a 500-byte target and header value cost what short ones do" short long)))
+        (test-eqv "a 500-byte header value costs what a short one does" short long-header)
+        ;; The origin-form path is copied once to be judged (uriparse #21):
+        ;; "/a" and "/aaa..." are 2 and 500 bytes.
+        (let ((copies (- (warmed (lambda () (make-bytevector 500)))
+                         (warmed (lambda () (make-bytevector 2))))))
+          (test-eqv "a 500-byte target costs what a short one does, but for its path's copy"
+                    (+ short copies) long-target))
+        ;; In place of "/a"'s copy, an absolute-form target costs one parse by
+        ;; a reused collector: uriparse's own, measured on the same target.
+        (let* ((c (make-uri-collector 'uri))
+               (t (b "http://x/a"))
+               (parse (warmed (lambda ()
+                                (uri-collector-reset! c)
+                                (uri-collect-feed! c t 0 (bytevector-length t))
+                                (uri-parse-result-validate (uri-collect-finish! c)))))
+               (copy (warmed (lambda () (make-bytevector 2)))))
+          (test-eqv "an absolute-form target costs one reused collector's parse"
+                    (+ (- short copy) parse) absolute))))
 
     ;; The same connection, twice as long: the requests after the first
     ;; 11,000 cost what those did.

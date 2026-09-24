@@ -5,8 +5,9 @@
 ;;; (M2.2).  The request-target and every header name and value are spans of
 ;;; the delivery they arrived in, in wire order, kept without copying (design
 ;;; §7.1; see (http-server span)) — no percent-decoding, no case folding, no
-;;; trimming happens here (the header library and uriparse own those).  PURE:
-;;; imports only (rnrs).
+;;; trimming happens here (the header library and uriparse own those).  The
+;;; target has been judged one of RFC 9112 §3.2's forms before the request is
+;;; built (M2.3; see (http-server target)).  PURE: imports only (rnrs).
 (library (http-server request)
   (export make-request request?
           request-method request-target

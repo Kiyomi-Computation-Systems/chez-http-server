@@ -4,16 +4,18 @@
 ;;;
 ;;; Two maps, because a status has two kinds of origin:
 ;;;
-;;;   - the core's own reasons: a limit or a deadline it enforces (policy), or
-;;;     a handler that raised (application).  The reason is the one the
-;;;     connection closes with after the response (`close-after`).
+;;;   - the core's own reasons: a limit, a deadline or a target form it
+;;;     enforces (policy), or a handler that raised (application).  The
+;;;     reason is the one the connection closes with after the response
+;;;     (`close-after`).
 ;;;   - the parser's error codes.  chez-httparse returns an error as data, and
 ;;;     lifting its codes into statuses is ours (design §6.2).
 ;;;
-;;; A limit the core trips inside a parser callback makes the parser fail with
-;;; the core's own code, and its status comes from the first map, never from
-;;; the second (design §6.3): the parser was told to stop, not asked what went
-;;; wrong.  Every originated status closes the connection (design §6.5).
+;;; A limit tripped or a target refused inside a parser callback makes the
+;;; parser fail with the core's own code, and its status comes from the first
+;;; map, never from the second (design §6.3): the parser was told to stop, not
+;;; asked what went wrong.  Every originated status closes the connection
+;;; (design §6.5).
 ;;;
 ;;; Keep-alive and needs-eof are not here: `should-keep-alive?` and
 ;;; `message-needs-eof?` come from (httparse decisions), which mirrors llhttp.
@@ -29,6 +31,7 @@
   (define (reason-status reason)
     (case reason
       ((parser-error) 400)                   ; the parser's default (design §6.3)
+      ((invalid-target) 400)                 ; not a form RFC 9112 §3.2 allows
       ((header-timeout) 408)
       ((target-too-large) 414)
       ((headers-too-large too-many-headers

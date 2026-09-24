@@ -18,11 +18,17 @@
 ;;; handler cycle and resumes, recording nothing, so the rendered trace must
 ;;; still equal the fixture's log.  A fixture's own harness mode (a pause it
 ;;; names, or skip-body) still answers as the recorder says, since that is part
-;;; of what llhttp recorded; a failure the core asks for always wins, and
-;;; would show in the trace.
+;;; of what llhttp recorded; a failure the core asks for always wins.
+;;;
+;;; M2.3: the core refuses some messages llhttp accepts, by policy (design
+;;; §8.1: the corpus is parser truth, not server truth).  Such a fixture is
+;;; listed with its reason, and checked the other way: the core refuses it for
+;;; that reason at every chunk size, and the trace up to the refusal is the
+;;; recorded log's, line for line.  A refusal the list does not name is a
+;;; property-1 mismatch.
 (library (trace-lane)
   (export request-fixtures strict-request-fixtures fixture-strict?
-          trace-mismatch core-trace-mismatch trace-scan-runs)
+          trace-mismatch core-trace-mismatch core-refusal-mismatch trace-scan-runs)
   (import (rnrs)
           (only (chezscheme) directory-list)
           (httparse test corpus-load)      ; corpus-parse-file, fixture-*, fixture-lenient-flags
@@ -98,20 +104,26 @@
                 (loop (cdr bounds) res)
                 (loop '() res))))))))
 
-  ;; core-trace-at : Fixture Bytevector Nat -> (Listof Bytevector)
+  ;; core-trace-at : Fixture Bytevector Nat -> (values (Listof Bytevector) (U #f Symbol))
   ;; The trace at one chunk size with the core's bindings installed beside the
-  ;; recorder's, one connection per run.
+  ;; recorder's, one connection per run, and the core's reason if the parse
+  ;; ended in a failure the core asked for.  That failure's code is the
+  ;; core's, which has no llhttp number to render, so the trace stops before
+  ;; it.
   (define (core-trace-at f bv size)
     (let* ((init (strict-init f))
            (r (make-trace-recorder))
            (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f default-limits)))
            (harness-paused #f)
            (core-paused #f)
+           (core-failed #f)
            ;; Whose answer the parser gets: a failure the core asks for; else
            ;; a pause the core asks for, noting whether the harness asked too;
            ;; else whatever the harness mode says; else the core's continue.
            (combine (lambda (from-recorder from-core)
-                      (cond ((callback-failure? from-core) from-core)
+                      (cond ((callback-failure? from-core)
+                             (set! core-failed (callback-failure-code from-core))
+                             from-core)
                             ((eq? from-core callback-pause)
                              (set! core-paused #t)
                              (when (eq? from-recorder callback-pause) (set! harness-paused #t))
@@ -156,11 +168,15 @@
       (let loop ((bounds (corpus-chunk-bounds (bytevector-length bv) size)) (result #f))
         (cond
          ((null? bounds)
-          (when (and result (eq? (parser-result-status result) 'error))
-            (trace-recorder-note-error! r (parser-result-error result)))
-          (when (and result (eq? (parser-result-status result) 'paused))
-            (trace-recorder-note-paused! r (parser-result-pause result)))
-          (render-trace r))
+          (let ((refusal (and result core-failed
+                              (eq? (parser-result-status result) 'error)
+                              (eq? (parser-error-code (parser-result-error result)) core-failed)
+                              core-failed)))
+            (when (and result (eq? (parser-result-status result) 'error) (not refusal))
+              (trace-recorder-note-error! r (parser-result-error result)))
+            (when (and result (eq? (parser-result-status result) 'paused))
+              (trace-recorder-note-paused! r (parser-result-pause result)))
+            (values (render-trace r) refusal)))
          (else
           (let ((res (feed (caar bounds) (cdar bounds))))
             (if (eq? (parser-result-status res) 'need-input)
@@ -173,13 +189,52 @@
   ;; trace-mismatch : Fixture Symbol -> #f | String
   ;; #f when every scheduled chunk size matches the recorded log, else the first
   ;; size that did not.  An adapter refusal is a failing fixture, not a crash.
-  (define (trace-mismatch f selection) (mismatch-at trace-at f selection))
+  (define (trace-mismatch f selection)
+    (scan-sizes f selection
+                (lambda (expected bv size) (describe (trace-compare expected (trace-at f bv size))))))
 
   ;; core-trace-mismatch : Fixture Symbol -> #f | String
-  ;; The same, with the core's bindings installed.
-  (define (core-trace-mismatch f selection) (mismatch-at core-trace-at f selection))
+  ;; The same, with the core's bindings installed.  A refusal by the core is a
+  ;; mismatch here, shown as a last line naming its reason.
+  (define (core-trace-mismatch f selection)
+    (scan-sizes f selection
+                (lambda (expected bv size)
+                  (let-values (((lines refusal) (core-trace-at f bv size)))
+                    (describe
+                     (trace-compare expected
+                                    (if refusal
+                                        (append lines
+                                                (list (string->utf8
+                                                       (string-append "the core refused: "
+                                                                      (symbol->string refusal)))))
+                                        lines)))))))
 
-  (define (mismatch-at trace-at f selection)
+  ;; core-refusal-mismatch : Fixture Symbol Symbol -> #f | String
+  ;;   fixture reason selection
+  ;; For a fixture the core refuses by policy: #f when, at every scheduled
+  ;; chunk size, the core refuses it for `reason` and the trace up to the
+  ;; refusal is the recorded log's first lines, with the log going on past it;
+  ;; else the first size that is not.
+  (define (core-refusal-mismatch f reason selection)
+    (scan-sizes f selection
+                (lambda (expected bv size)
+                  (let-values (((lines refusal) (core-trace-at f bv size)))
+                    (if (not (eq? refusal reason))
+                        (string-append "the core refused "
+                                       (if refusal (symbol->string refusal) "nothing")
+                                       ", not " (symbol->string reason))
+                        (let ((d (trace-compare expected lines)))
+                          (cond ((not d) "the whole log rendered before the refusal")
+                                ((and (eq? (mismatch-reason d) 'missing-line)
+                                      (= (mismatch-index d) (length lines)))
+                                 #f)
+                                (else (describe d)))))))))
+
+  ;; scan-sizes : Fixture Symbol (Expectations Bytevector Nat -> (U #f String))
+  ;;              -> (U #f String)
+  ;; Run `check` at every scheduled chunk size, stopping at the first that
+  ;; answers a string.  An adapter refusal is that size's answer, not a crash.
+  (define (scan-sizes f selection check)
     (let* ((bv (corpus-decode-input (fixture-input-text f)))
            (expected (fixture-expected f))
            (no-scan (eq? #t (fixture-meta-ref f 'noScan #f)))
@@ -194,17 +249,18 @@
                            (if (adapter-error? e)
                                (k (string-append "adapter refused: " (adapter-error-detail e)))
                                (raise e)))
-                         (lambda ()
-                           (let ((d (trace-compare expected (trace-at f bv (car sizes)))))
-                             (and d
-                                  (string-append
-                                   "line " (number->string (mismatch-index d))
-                                   " expected \"" (mismatch-expected d)
-                                   "\" got \"" (mismatch-actual d)
-                                   "\" (" (symbol->string (mismatch-reason d)) ")")))))))))
+                         (lambda () (check expected bv (car sizes))))))))
               (if m
                   (string-append "size " (number->string (car sizes)) ": " m)
                   (loop (cdr sizes))))))))
+
+  ;; describe : (U #f Mismatch) -> (U #f String)
+  (define (describe d)
+    (and d
+         (string-append "line " (number->string (mismatch-index d))
+                        " expected \"" (mismatch-expected d)
+                        "\" got \"" (mismatch-actual d)
+                        "\" (" (symbol->string (mismatch-reason d)) ")")))
 
   ;; trace-scan-runs : (Listof Fixture) Symbol -> Nat — scheduled replays (§2.2).
   (define (trace-scan-runs fixtures selection)

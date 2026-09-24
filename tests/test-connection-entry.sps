@@ -154,6 +154,17 @@
 
 (define resp (make-response 200 #f '() (b "ok")))
 
+;; reply? : Action -> Boolean
+;; A reply-parser with one of its three outcomes: continue, pause, or a
+;; refusal naming its reason.  A fresh head has no target, which the core
+;; refuses at on-headers-complete (M2.3), so that reply is a `fail`.
+(define (reply? a)
+  (or (and (member a '((reply-parser continue) (reply-parser pause))) #t)
+      (and (pair? a) (eq? (car a) 'reply-parser) (pair? (cdr a))
+           (let ((outcome (cadr a)))
+             (and (pair? outcome) (eq? (car outcome) 'fail)
+                  (pair? (cdr outcome)) (symbol? (cadr outcome)))))))
+
 ;; replay : (ConnState Payload -> (values ...)) (Listof Payload) -> (Listof Datum)
 ;; Drive one connection through the recorded callbacks, entering them `way`,
 ;; with the handler cycle after each message so the next one starts from idle.
@@ -286,9 +297,7 @@
                       (let ((actions (call-with-values
                                       (lambda () (direct (fresh phase) (payload name 4)))
                                       (lambda (s actions) actions))))
-                        (if (and (pair? actions)
-                                 (member (car actions) '((reply-parser continue)
-                                                         (reply-parser pause))))
+                        (if (and (pair? actions) (reply? (car actions)))
                             acc
                             (cons (list phase name) acc))))
                     acc conn-parser-callbacks))

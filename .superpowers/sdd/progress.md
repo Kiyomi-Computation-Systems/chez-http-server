@@ -472,4 +472,39 @@ M2.3 SECOND STEP: the target judge, `(http-server target)`.
 
 Watched to fail: `test-target.sps` exited 255 before the library existed. The mutations against the library ran once the core used it, and are recorded with the third step. `make test` green: seventeen suites, 276 expected passes.
 
-NEXT: M2.3's third step, the core judges the target, on feat/m2.3-target-core, stacked on this branch.
+M2.3 THIRD STEP: the core judges the target.
+- The core holds one judge per connection and judges the target in `conn-headers-complete-step`, where the method is known. A fault is refused as `'invalid-target`, which `reason-status` answers 400. The request's target is still its span.
+- Six head rows, at every delivery size:
+  - one row where a target of each form passes: `OPTIONS *`, a path that begins "//", and absolute-form;
+  - five refusals answered 400: a byte outside RFC 3986's set, `*` with GET, an absolute-form fragment, absolute-form userinfo, and CONNECT without a port.
+- The trace lane's property 1 lists the eight fixtures the core refuses by policy, each with its reason, and gates them both ways (design §8.1: the corpus is parser truth, not server truth):
+  - each listed fixture is refused for its reason at every chunk size, and its trace is the log's own up to the refusal;
+  - every other fixture's trace equals its log.
+
+  `core-trace-at` now returns the refusal beside the trace. Green at 'extremes (253 runs) and at 'full (9,394).
+- The allocation lane:
+  - the CPS workload costs 2,640 B per request, 85% of the ratchet;
+  - a 500-byte header value costs what a short one does;
+  - a 500-byte target costs exactly its path's copy more, 3,136 B;
+  - an absolute-form request costs exactly one reused collector's parse in place of that copy, 4,336 B;
+  - the cost is constant per request.
+- The table's H4 state holds a target, read in through on-url-data and on-url-complete as the parser delivers one. The entry suite's reply-first check accepts a refusal: a fresh head has no target, so it is refused.
+
+Watched to fail (m2-mutations.md): each new check was red before its code, and mutations D through N follow. D is the plan's named mutation, a collector made per request, and it turns only the allocation check red.
+
+`make test` green: seventeen suites, 287 expected passes, exit 0. That is 276 after the second step; connection-head now has 25, connection-allocation 10 and trace-lane 7. `make check-imports` is clean.
+
+Settled in M2.3, open to the owner's review:
+1. **One reason for every form rule.** A target the judge refuses closes as `'invalid-target`. Which rule fired is the judge's verdict, not the close reason.
+2. **The target is judged at on-headers-complete**, where the method is known, not at on-url-complete. So a refused target's headers are still read, within the header limits.
+3. **A head with no target is judged as an empty one, and refused.** The parser never completes a head without a target, and the synthetic states now read one in.
+4. **`(http-server target)` is a library of its own**, so its forms and rules can be tabled without a parser.
+
+Found and recorded, for later:
+- **(M4) Absolute-form's host.** RFC 9112 §3.2.2 says an origin server MUST ignore Host and use the target's authority. The request carries the target as a span, and reading the authority from it is the handler-facing request's job, M4.
+- **(owner) Two RFC rules no slice names.**
+  - RFC 9110 §4.2.1: a recipient MUST reject an http(s) URI with an empty host. `http:///p` is not checked.
+  - RFC 9112 §3.2: a server MUST answer 400 to an HTTP/1.1 request with no Host, with more than one, or with an invalid one.
+- **(M2.5)** CONNECT reaches the handler before the hand-off (M2.1's finding). The head suite tests CONNECT only through its refusals, and test-target.sps covers the rest.
+
+NEXT: M2.3's fourth step, the narrow redirect (decision 0009), on feat/m2.3-target-redirect, stacked on this branch.
