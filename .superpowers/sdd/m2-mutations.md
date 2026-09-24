@@ -151,3 +151,26 @@ ledger's "Found and recorded, for the head", measured over the corpus).
 G, H, I, J, M and R reverted, each restore byte-identical by sha256. On this
 step's tree, `make test` is green: fifteen suites, 241 expected passes
 (connection-head 17 new; connection-entry 29, connection-table 62), exit 0.
+
+### Fourth step: the corpus and allocation checks
+
+These two checks were written after the code they measure, so mutation is
+their only evidence of failing.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.2-N | trace, head, allocation | the adapter answers on-headers-complete's continue with `skip-body` | trace exit 1; 3 passes, 1 failure — "with the core's bindings installed, every trace still equals its log": 45 of the 135 fixtures mismatched, those with bodies (e.g. `request/connection.md#5` expected its body span and got `message complete`). The plain trace lane held. Head exit 1 — the POST with a body. Allocation green |
+| M2.2-H | allocation | on-message-begin does not roll the head (as above) | exit 1; 2 passes, 2 failures — "every request … is served", on both connections: the stale header count passes 100 after 34 requests |
+| M2.2-K | allocation, head, entry | a piece in one fragment is copied instead of kept as its span | allocation exit 1; 7 passes, 1 failure — "a 500-byte target and header value cost what short ones do". Head and entry green: no correctness test can see the copy, and the per-callback check only completes empty pieces |
+
+H's first run against the allocation suite ended with a harness error (exit 2):
+the refused request raised outside any check. The suite now measures inside a
+guard and reports "every request … is served" as a check. K is the pattern the
+plan gives M2.3: a performance invariant that no correctness test can
+distinguish from correct code is caught only by its shape check.
+
+All twelve reverted, each restore byte-identical by sha256; `make test` green
+afterwards: sixteen suites, 250 expected passes (connection-allocation 8,
+connection-entry 29, connection-head 17, connection-table 62, corpus-inventory
+7, decisions 12, fake-shell 12, flag-pins 8, headers 15, integration 5, libhtp
+11, limits 23, ratchet 7, records 16, span 14, trace-lane 4), exit 0.
