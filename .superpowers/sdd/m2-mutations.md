@@ -174,3 +174,26 @@ afterwards: sixteen suites, 250 expected passes (connection-allocation 8,
 connection-entry 29, connection-head 17, connection-table 62, corpus-inventory
 7, decisions 12, fake-shell 12, flag-pins 8, headers 15, integration 5, libhtp
 11, limits 23, ratchet 7, records 16, span 14, trace-lane 4), exit 0.
+
+## M2.3 — the request-target
+
+2026-09-24, Darwin arm64, Chez 10.4.1 (`tarm64osx`). The same discipline: one
+literal substitution that must match its expected count, each suite run alone,
+the file restored and checked byte-identical by sha256.
+
+### First step: the target's limit (414)
+
+Red before green: the two new rows each failed alone before the code. The
+decisions suite's reasons row failed (`target-too-large` has no status), and
+the head suite's "a target one byte past it is refused with 414" failed (the
+target was accepted). The at-the-limit row passed from the start: it is the
+boundary A turns red.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.3-A | head, trace | the target is refused at its limit, not past it (`fx>=?`) | head exit 1; 18 passes, 1 failure — "a target at max-target-bytes passes". Trace green: no fixture's target comes near 8,192 |
+| M2.3-B | decisions, head | `reason-status` answers `target-too-large` 431 | decisions exit 1; 11 passes, 1 failure — the reasons row. Head exit 1; 18 passes, 1 failure — the refusal, answered 431 |
+| M2.3-C | head | the target is checked against `max-header-field-bytes` | head exit 1; 18 passes, 1 failure — the refusal: the target passes under 8,192 |
+
+A, B and C reverted, each restore byte-identical by sha256. `make test` green
+afterwards: sixteen suites, 252 expected passes (connection-head 19), exit 0.

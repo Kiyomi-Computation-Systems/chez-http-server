@@ -30,6 +30,7 @@
     (case reason
       ((parser-error) 400)                   ; the parser's default (design §6.3)
       ((header-timeout) 408)
+      ((target-too-large) 414)
       ((headers-too-large too-many-headers
         header-field-too-large header-value-too-large) 431)
       ((handler-failed) 500)

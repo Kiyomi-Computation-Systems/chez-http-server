@@ -61,10 +61,11 @@
 ;;; completes.  The method and version come from on-headers-complete's
 ;;; fields, so the request line's other spans are not kept.  The keep-alive
 ;;; decision is `should-keep-alive?` over the flags read there (0002 item 4,
-;;; decision 0006 item 1).  The four header limits are checked as the bytes
-;;; arrive; one tripped is answered `(reply-parser (fail reason))`, and when
-;;; the parser's error comes back the status is the reason's, not the
-;;; parser's (design §6.3).
+;;; decision 0006 item 1).  The target's limit and the four header limits are
+;;; checked as the bytes arrive; one tripped is answered
+;;; `(reply-parser (fail reason))`, and when the parser's error comes back the
+;;; status is the reason's, not the parser's (design §6.3): 414 for the
+;;; target, 431 for the headers.
 ;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
@@ -381,7 +382,8 @@
       (assertion-violation 'conn-parser-step "a span callback needs its span" name))))
 
   ;; The callbacks' transitions.  idle, on-message-begin -> head, with a fresh
-  ;; head; in head, the target and the header fields are kept; body,
+  ;; head; in head, the target and the header fields are kept, each refused
+  ;; once it grows past its limit; body,
   ;; on-body-data -> body; body, on-message-complete -> handling, pausing the
   ;; parser and stopping reads in the same step, so one delivery carrying two
   ;; messages cannot start a second handler (design §4.4).  Every other
@@ -400,7 +402,12 @@
          (else (continue s))))
       ((on-url-data)
        (case (conn-phase s)
-         ((head) (add-fragment! (conn-head s) bv from to) (continue s))
+         ((head)
+          (let ((h (conn-head s)))
+            (add-fragment! h bv from to)
+            (if (fx>? (head-size h) (limits-max-target-bytes (conn-limits s)))
+                (refuse s 'target-too-large)
+                (continue s))))
          (else (continue s))))
       ((on-url-complete)
        (case (conn-phase s)

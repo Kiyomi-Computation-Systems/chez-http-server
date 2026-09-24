@@ -104,3 +104,61 @@ cycle with no event per callback measured 2,032 B. The rules:
 A consequence: the real shell's parser events are no longer data, so tracing them
 needs an explicit hook in the adapter (M4). The work is M2.2's first step, before the
 request accumulator.
+
+## Amendment (2026-09-24) — two rare target forms run uriparse's scanner
+
+Item 1 says `conn-step` calls no byte-machine procedure. M2.3 judges the
+request-target at `on-headers-complete` (milestone plan §6), and two of RFC 9112
+§3.2's four forms can only be judged by a parse. The rules:
+
+1. **What changes.** For an absolute-form target, and for CONNECT's
+   authority-form target, the core runs uriparse's own scanner through
+   `(http-server target)`. Absolute-form uses one collector per connection,
+   made on the connection's first absolute-form target and reset before each
+   one, and judged with `uri-parse-result-validate`. CONNECT uses the strict
+   `uri-parse-authority-form-validate`, which parses fresh. Both are byte-machine
+   parsers, and they run inside the chez-httparse callback that entered the core.
+2. **What does not change.** The core never feeds, resumes, resets or reads the
+   chez-httparse parser that calls it, and the adapter still reads that parser's
+   fields (the third amendment). Origin-form, the form nearly every request
+   carries, runs no parser at all. Its path and query go to `(uri charset)`'s
+   `validate-component`, which is pure.
+3. **Why item 1's reason still holds.** The rule exists because nothing that
+   can raise may run inside a parser callback (the context above). byte-machine's
+   reentrancy guard is per parser (`runtime.sls:985-1059`), so running a second
+   parser inside the first one's callback is not re-entry. The judge owns its
+   collector, resets it before every target, and feeds it one whole target in one
+   call. uriparse returns every verdict as data (design §6.2). A contract
+   violation from the scanner would be a bug in the judge, just as an unknown
+   event is a bug in the core.
+4. **What it costs.** Measured 2026-09-24 on Darwin arm64, Chez 10.4.1
+   `tarm64osx`, by `research/spike/m2.3-target-alloc.sps` and
+   `tests/test-connection-allocation.sps`:
+   - an absolute-form request costs 4,336 B against origin-form's 2,640 B. That
+     is one reused collector's parse in place of the path's copy, and the
+     allocation suite holds it to exactly that, so a collector made per request
+     turns it red;
+   - a CONNECT target's fresh parse costs 3,696 B.
+
+   Neither form is on the workload the ratchet measures, and design §7.5 already
+   accepted CONNECT's fresh parse.
+
+Decided on the owner's word on 2026-09-24, together with the origin-form route and
+the three form rules recorded in the ledger's M2.3 entry.
+
+## Amendment (2026-09-24) — the target-length shape is carried until uriparse #21
+
+The second amendment's second shape says no allocation grows with the target's
+length. M2.3 carries one exception, decided on the owner's word on 2026-09-24:
+
+- **The exception.** To judge an origin-form target, its path and query are
+  copied before `(uri charset)`'s `validate-component` sees them. That validator
+  takes a whole bytevector and has no range.
+- **What it costs.** A request grows by about one byte per target byte. On the
+  CPS workload it costs 2,640 B, against 2,624 B with no validation, and the same
+  request with a 500-byte target costs 3,136 B (measured 2026-09-24, Darwin arm64,
+  Chez 10.4.1 `tarm64osx`).
+- **The request.** uriparse #21 (filed 2026-09-24) asks for a validator that
+  takes a range. Until it lands, `tests/test-connection-allocation.sps` holds the
+  growth to exactly the copy. Header length still costs nothing. Once #21 lands,
+  the check falls back to "a 500-byte target costs what a short one does".
