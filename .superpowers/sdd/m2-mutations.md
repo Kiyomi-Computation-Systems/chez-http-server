@@ -197,3 +197,28 @@ boundary A turns red.
 
 A, B and C reverted, each restore byte-identical by sha256. `make test` green
 afterwards: sixteen suites, 252 expected passes (connection-head 19), exit 0.
+
+### Second and third steps: the target judge, and the core judging the target (400)
+
+Red before green:
+- `test-target.sps` exited 255 before its library existed (`library (http-server target) not found`).
+- The decisions suite failed its reasons row: `invalid-target` had no status.
+- The head suite failed its five refusal rows. The row "a target of each form passes" held from the start, and it is the boundary that G and N turn red.
+- The allocation suite failed its two new shapes. Every workload read 2,624 B: nothing was judged, so nothing was copied or parsed.
+- Before the refusals were listed, the trace lane's property 1 failed on exactly the spike's eight fixtures. Each read "adapter refused: no llhttp error number for code invalid-target".
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.3-D | allocation, target, head, trace | the judge makes a fresh collector for every absolute-form target (the plan's mutation: "a fresh collector per request instead of resetting one") | allocation exit 1; 9 passes, 1 failure — "an absolute-form target costs one reused collector's parse". Target, head and trace green. As the plan predicted, the allocation assertion is the only red |
+| M2.3-E | target, allocation, head, trace | the collector is not reset before a target | target exit 1; 23 passes, 1 failure — "one judge, three absolute-form targets in a row". Allocation exit 1, the same check as D. Head and trace green: none of their connections judges a second absolute-form target |
+| M2.3-F | target, head, trace | an origin-form target is judged whole as a path, not split at its first `?` | target exit 1; 19 passes, 5 failures — every row whose target carries a query. Head exit 1; 1 failure — the GET with a query. Trace exit 1 — property 1: the fixtures with queries become refusals |
+| M2.3-G | target, head, trace | a part is copied from the delivery's start, not the target's | target exit 1; 21 passes, 3 failures — the rows judged inside a larger bytevector. Head exit 1; 3 failures. Trace exit 1; both property-1 checks |
+| M2.3-H | target, head, trace | `*` is accepted with any method | target exit 1; 1 failure — "* with any other method is refused". Head exit 1; 1 failure. Trace exit 1 — the listed `method.md#5` is not refused |
+| M2.3-I | target, head, trace | an absolute-form fragment is accepted | target exit 1; 1 failure. Head exit 1; 1 failure. Trace green: the corpus's four fragments are all origin-form, and the charset refuses those |
+| M2.3-J | target, head, trace | absolute-form userinfo is accepted | target exit 1; 2 failures — the rule's row and three-in-a-row. Head exit 1; 1 failure. Trace exit 1 — the listed `uri.md#10` is not refused |
+| M2.3-K | target, head, trace | CONNECT is not sent to authority-form | target exit 1; 4 failures — every CONNECT refusal answers another code, while host:port still passes, read as a scheme and a path. Head green: a CONNECT with no port is still refused, as `scheme-required`. Trace exit 1 — the corpus's CONNECT targets are refused (in `home_0.netscape.com`, `_` is not a scheme byte) |
+| M2.3-L | decisions, head | `reason-status` answers `invalid-target` 431 | decisions exit 1; 1 failure — the reasons row. Head exit 1; 5 failures — the five refusals, answered 431 |
+| M2.3-M | head, trace, allocation, table, entry | the core ignores the judge's verdict | head exit 1; 5 failures — every refusal. Trace exit 1 — the listed refusals. Allocation exit 1; 2 failures — no copy and no parse. Table and entry green |
+| M2.3-N | trace, head, table, entry, allocation | the core refuses every target | trace exit 1 — every other trace. Head exit 1; 12 failures. Table exit 1; 1 failure — H4, the one row that reaches on-headers-complete. Entry exit 1; 6 failures — the three replays' handler and idle checks. Allocation exit 1; 2 failures — no request is served |
+
+D through N were each reverted, and each restore was byte-identical by sha256. `make test` was green afterwards: seventeen suites, 287 expected passes (target 24, connection-head 25, connection-allocation 10, trace-lane 7), exit 0.

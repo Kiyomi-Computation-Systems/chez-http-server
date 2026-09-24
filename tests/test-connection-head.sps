@@ -18,10 +18,14 @@
 ;;;   - each of the four header limits passes a request at the limit and
 ;;;     refuses one past it with 431, through the parser's own failure;
 ;;;   - so does the target's limit, with 414 (M2.3);
+;;;   - a target that is not the form its method calls for, or whose bytes
+;;;     uriparse refuses, is refused with 400 (M2.3; the forms are
+;;;     test-target.sps's to table);
 ;;;   - a parser error with no refusal is still a 400.
 ;;;
 ;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
-;;; rows; design §6.5's 431, 414 and 400; the limits each row sets.
+;;; rows; design §6.5's 431, 414 and 400; RFC 9112 §3.2's target forms; the
+;;; limits each row sets.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server private adapter)
         (http-server request) (http-server response) (http-server span)
@@ -163,7 +167,7 @@
     (test-equal "method numbers become llhttp's names, DELETE (0) and M-SEARCH included"
                 '(DELETE M-SEARCH OPTIONS)
                 (map (lambda (text) (car (car (car (drive (b text) 1000 default-limits)))))
-                     '("DELETE /x HTTP/1.1\r\n\r\n" "M-SEARCH * HTTP/1.1\r\n\r\n"
+                     '("DELETE /x HTTP/1.1\r\n\r\n" "M-SEARCH /x HTTP/1.1\r\n\r\n"
                        "OPTIONS * HTTP/1.1\r\n\r\n")))
 
     ;; --- keep-alive: decision 0006 item 1 -----------------------------------
@@ -226,6 +230,32 @@
     (test-equal "a target one byte past it is refused with 414"
                 (list (refused 'target-too-large 414))
                 (every-size (b "GET /abcd HTTP/1.1\r\n\r\n") (with-limits '((target . 4)))))
+
+    ;; --- the target's form and bytes (M2.3) -----------------------------------
+    ;; Judged at on-headers-complete, where the method is known; a refusal is
+    ;; the parser's own failure, answered 400 and closing after.
+    (test-equal "a target of each form passes: OPTIONS *, a path that begins //, absolute-form"
+                (list (list (ok (list (req 'OPTIONS "*" 1 1)) 'idle #f))
+                      (list (ok (list (req 'GET "//a@b:c/d" 1 1)) 'idle #f))
+                      (list (ok (list (req 'GET "http://example.com/p?q=1" 1 1)) 'idle #f)))
+                (map (lambda (text) (every-size (b text) default-limits))
+                     '("OPTIONS * HTTP/1.1\r\n\r\n" "GET //a@b:c/d HTTP/1.1\r\n\r\n"
+                       "GET http://example.com/p?q=1 HTTP/1.1\r\n\r\n")))
+    (test-equal "an origin-form byte outside RFC 3986's set is refused with 400"
+                (list (refused 'invalid-target 400))
+                (every-size (b "GET /a\"b HTTP/1.1\r\n\r\n") default-limits))
+    (test-equal "* is refused with 400 unless the method is OPTIONS"
+                (list (refused 'invalid-target 400))
+                (every-size (b "GET * HTTP/1.1\r\n\r\n") default-limits))
+    (test-equal "an absolute-form target with a fragment is refused with 400"
+                (list (refused 'invalid-target 400))
+                (every-size (b "GET http://h/p#f HTTP/1.1\r\n\r\n") default-limits))
+    (test-equal "an absolute-form target with userinfo is refused with 400"
+                (list (refused 'invalid-target 400))
+                (every-size (b "GET http://u@h/p HTTP/1.1\r\n\r\n") default-limits))
+    (test-equal "a CONNECT target without a port is refused with 400"
+                (list (refused 'invalid-target 400))
+                (every-size (b "CONNECT example.com HTTP/1.1\r\n\r\n") default-limits))
 
     ;; --- a parser error the core did not ask for is a 400 -------------------------
     (test-equal "an invalid header token: 400, closing after"

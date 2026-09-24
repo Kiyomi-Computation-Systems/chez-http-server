@@ -23,17 +23,26 @@
 
 ;; state : Symbol . Plist -> ConnState
 ;; A synthetic state: the phase, plus any of deadline / close-after /
-;; outstanding / pending / request; every field not named takes its default,
-;; and the limits are decision 0005's defaults.
+;; outstanding / pending / request / target; every field not named takes its
+;; default, and the limits are decision 0005's defaults.  The head is the
+;; core's own, so a target (a string) is read into it the way the parser
+;; delivers one: on-url-data, then on-url-complete.
 (define (state phase . plist)
   (define (get key default)
     (let loop ((p plist))
       (cond ((null? p) default)
             ((eq? (car p) key) (cadr p))
             (else (loop (cddr p))))))
-  (make-conn-state phase
-                   (get 'deadline #f) (get 'close-after #f) (get 'outstanding 0)
-                   (get 'pending #f) (get 'request #f) default-limits))
+  (let ((s (make-conn-state phase
+                            (get 'deadline #f) (get 'close-after #f) (get 'outstanding 0)
+                            (get 'pending #f) (get 'request #f) default-limits))
+        (target (get 'target #f)))
+    (when target
+      (let ((tbv (b target)))
+        (let*-values (((s1 a1) (conn-parser-step s 'on-url-data tbv 0 (bytevector-length tbv)))
+                      ((s2 a2) (conn-parser-step s 'on-url-complete)))
+          #t)))
+    s))
 
 ;; render-action : Action -> Datum
 ;; A written response is a record, and `equal?` compares records by identity,
@@ -97,9 +106,10 @@
 
    ;; on-headers-complete carries the five parser fields read inside it
    ;; (0002 item 4): here llhttp's method 1 (GET), HTTP/1.1, no flags, no
-   ;; content-length.
+   ;; content-length.  The head holds a target, as every parsed one does,
+   ;; since the target is judged here (M2.3).
    (row 'H4 "head, on-headers-complete -> body: continue, disarm, arm body"
-        (i (state 'head 'deadline 'header) '(parser-event on-headers-complete 1 1 1 0 0)
+        (i (state 'head 'deadline 'header 'target "/") '(parser-event on-headers-complete 1 1 1 0 0)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    (row 'H5 "body, on-body-data -> body: continue, deliver-body, arm body"
