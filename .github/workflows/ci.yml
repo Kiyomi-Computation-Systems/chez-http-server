@@ -24,7 +24,10 @@ env:
 jobs:
   linux:
     name: linux
-    runs-on: ubuntu-latest
+    # An explicit image, not ubuntu-latest: that label moves to Ubuntu 26.04
+    # from 2026-10-19 (actions/runner-images#14748), and an image change should
+    # be a reviewed commit. Changing it re-keys the Chez cache (step `os`).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       # Top-level submodules only; the nested byte-machine is pulled by
@@ -43,14 +46,25 @@ jobs:
             build-essential cmake pkg-config libuv1-dev \
             libx11-dev libncurses-dev uuid-dev git
 
+      # The OS release for the Chez cache key, read off the machine rather than
+      # restated from runs-on (which a bump could forget), so a new image misses
+      # the cache instead of restoring a Chez built against another release's
+      # libraries. An empty ID or VERSION_ID fails the step.
+      - name: Identify the OS release
+        id: os
+        run: |
+          . /etc/os-release
+          echo "release=${ID:?}-${VERSION_ID:?}" >> "$GITHUB_OUTPUT"
+
       # apt's chezscheme is below the floor, so build 10.4.1 from source and
-      # cache it keyed on the exact version (a bump must miss, not merge).
+      # cache it keyed on the exact version and OS release (a change to either
+      # must miss, not merge).
       - name: Restore cached Chez Scheme
         id: chez-cache
         uses: actions/cache/restore@v4
         with:
           path: ~/.local/chez
-          key: chez-${{ runner.os }}-${{ runner.arch }}-${{ env.CHEZ_FLOOR_VERSION }}-threads
+          key: chez-${{ runner.os }}-${{ steps.os.outputs.release }}-${{ runner.arch }}-${{ env.CHEZ_FLOOR_VERSION }}-threads
 
       - name: Build Chez Scheme from source (apt's is below the floor)
         if: steps.chez-cache.outputs.cache-hit != 'true'
