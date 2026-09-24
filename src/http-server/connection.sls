@@ -39,6 +39,21 @@
 ;;; core never copies it (design §7.1).  `reply-parser` is the one action the
 ;;; shell answers inside the parser callback that produced it (0002 item 3).
 ;;;
+;;; PARSER CALLBACKS ALSO ENTER DIRECTLY (0002's third amendment).  A tagged
+;;; list per callback was the largest cost the core added per request, so the
+;;; adapter calls `conn-parser-step` or `conn-headers-complete-step` with the
+;;; callback's own arguments and nothing is allocated to carry them.  The
+;;; `parser-event` payload has three shapes, one per way in:
+;;;
+;;;   (parser-event name)                  an event callback
+;;;   (parser-event name bv from to)       a span callback
+;;;   (parser-event on-headers-complete method http-major http-minor
+;;;                 flags content-length)
+;;;
+;;; and `conn-step` only unpacks it and calls the entry point, so the
+;;; transitions live in one place.  Either way, the first action answering a
+;;; parser callback is always its `reply-parser`.
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
 ;;; to arm, and carries no time: no event but `tick` carries `now`, so the core
@@ -48,10 +63,11 @@
 ;;; is acted on only while the core still has a deadline of that kind armed.
 (library (http-server connection)
   (export conn-states conn-events conn-actions
+          conn-parser-callbacks conn-span-callbacks
           make-conn-state conn-state?
           conn-phase conn-deadline conn-close-after conn-outstanding
           conn-pending conn-request
-          conn-step)
+          conn-step conn-parser-step conn-headers-complete-step)
   (import (rnrs) (http-server response))
 
   ;; conn-states : (Listof Symbol)
@@ -75,6 +91,28 @@
     '(reply-parser feed-parser resume-parser write read-stop read-start
       call-handler deliver-body deliver-body-end notify-producer
       arm-deadline disarm-deadline shutdown close log hand-off))
+
+  ;; conn-parser-callbacks : (Listof Symbol)
+  ;; chez-httparse's twenty-five parser callbacks (design §4.2), in llhttp's
+  ;; trace order: the closed set the two parser entry points accept.
+  (define conn-parser-callbacks
+    '(on-reset on-message-begin on-method-data on-method-complete
+      on-url-data on-url-complete on-protocol-data on-protocol-complete
+      on-version-data on-version-complete on-status-data on-status-complete
+      on-header-field-data on-header-field-complete
+      on-header-value-data on-header-value-complete
+      on-headers-complete on-body-data on-chunk-header
+      on-chunk-extension-name-data on-chunk-extension-name-complete
+      on-chunk-extension-value-data on-chunk-extension-value-complete
+      on-chunk-complete on-message-complete))
+
+  ;; conn-span-callbacks : (Listof Symbol)
+  ;; The ten of them that carry a span, `bv from to`.  The other fifteen carry
+  ;; nothing, except on-headers-complete, which has an entry point of its own.
+  (define conn-span-callbacks
+    '(on-method-data on-url-data on-protocol-data on-version-data
+      on-status-data on-header-field-data on-header-value-data on-body-data
+      on-chunk-extension-name-data on-chunk-extension-value-data))
 
   ;; make-conn-state : Phase Deadline CloseAfter Nat Pending Request -> ConnState
   ;;   Phase      = one of conn-states (anything else is an assertion violation)
@@ -104,7 +142,8 @@
   ;; conn-step : ConnState Event -> (values ConnState (Listof Action))
   ;; One event in, the state it leaves (the same object, updated) and the
   ;; actions to perform, in order.  A vocabulary event with no transition from
-  ;; the current state changes nothing and asks for nothing.
+  ;; the current state changes nothing and asks for nothing, except that a
+  ;; parser callback is always answered.
   (define (conn-step s ev)
     (case (and (pair? ev) (car ev))
       ((bytes-arrived)      (on-bytes-arrived s ev))
@@ -112,7 +151,7 @@
       ((read-error)         (on-read-error s (cadr ev)))
       ((write-completed)    (on-write-completed s))
       ((tick)               (on-tick s))
-      ((parser-event)       (on-parser-event s ev))
+      ((parser-event)       (on-parser-event s (cadr ev) (cddr ev)))
       ((parser-result)      (on-parser-result s ev))
       ((handler-responded)  (on-handler-responded s (cadr ev)))
       ((handler-failed)     (on-handler-failed s))
@@ -192,45 +231,104 @@
            (values s '())))
       (else (values s '()))))
 
-  ;; The parser's callbacks.  idle, on-message-begin -> head; head, the
-  ;; header callbacks -> head; head, on-headers-complete -> body; body,
+  ;; A parser callback as a tagged list: unpack the payload and call the entry
+  ;; point the adapter calls directly (0002's third amendment, item 3).  A
+  ;; payload of the wrong length is an assertion violation, from the entry
+  ;; point's own check or from the call itself.
+  (define (on-parser-event s name payload)
+    (cond
+     ((eq? name 'on-headers-complete)
+      (apply conn-headers-complete-step s payload))
+     ((null? payload) (conn-parser-step s name))
+     (else (apply conn-parser-step s name payload))))
+
+  ;; conn-parser-step : ConnState Symbol -> (values ConnState (Listof Action))
+  ;; conn-parser-step : ConnState Symbol Bytevector Nat Nat
+  ;;                    -> (values ConnState (Listof Action))
+  ;; A parser callback, entered with the callback's own arguments: its name
+  ;; alone for an event callback, its name and span for a span callback.  The
+  ;; first action is always the callback's (reply-parser outcome).  A name
+  ;; outside conn-parser-callbacks, on-headers-complete (which enters through
+  ;; conn-headers-complete-step) or a span given to the wrong kind of callback
+  ;; is an assertion violation.
+  (define conn-parser-step
+    (case-lambda
+      ((s name)
+       (check-callback name #f)
+       (on-callback s name #f 0 0))
+      ((s name bv from to)
+       (check-callback name #t)
+       (on-callback s name bv from to))))
+
+  ;; check-callback : Symbol Boolean -> Void
+  ;; Refuse a callback outside the closed set, or one given the wrong shape.
+  (define (check-callback name span?)
+    (cond
+     ((not (memq name conn-parser-callbacks))
+      (assertion-violation 'conn-parser-step "not a parser callback" name))
+     ((eq? name 'on-headers-complete)
+      (assertion-violation 'conn-parser-step
+        "on-headers-complete enters through conn-headers-complete-step" name))
+     ((and span? (not (memq name conn-span-callbacks)))
+      (assertion-violation 'conn-parser-step "an event callback carries no span" name))
+     ((and (not span?) (memq name conn-span-callbacks))
+      (assertion-violation 'conn-parser-step "a span callback needs its span" name))))
+
+  ;; The callbacks' transitions.  idle, on-message-begin -> head; body,
   ;; on-body-data -> body; body, on-message-complete -> handling, pausing the
   ;; parser and stopping reads in the same step, so one delivery carrying two
-  ;; messages cannot start a second handler (design §4.4).
-  (define (on-parser-event s ev)
-    (let ((name (cadr ev)))
-      (case (conn-phase s)
-        ((idle)
-         (case name
-           ((on-message-begin)
-            (conn-phase-set! s 'head)
-            (conn-deadline-set! s 'header)
-            (values s '((reply-parser continue) (disarm-deadline) (arm-deadline header))))
-           (else (values s '()))))
-        ((head)
-         (case name
-           ((on-header-field-data on-header-field-complete
-             on-header-value-data on-header-value-complete)
-            (values s '((reply-parser continue))))
-           ((on-headers-complete)
-            (conn-phase-set! s 'body)
-            (conn-deadline-set! s 'body)
-            (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body))))
-           (else (values s '()))))
-        ((body)
-         (case name
-           ((on-body-data)
-            (conn-deadline-set! s 'body)
-            (values s (list '(reply-parser continue)
-                            (cons 'deliver-body (cddr ev))
-                            '(arm-deadline body))))
-           ((on-message-complete)
-            (conn-phase-set! s 'handling)
-            (conn-deadline-set! s #f)
-            (values s (list '(reply-parser pause) '(read-stop) '(disarm-deadline)
-                            (list 'call-handler (conn-request s)))))
-           (else (values s '()))))
-        (else (values s '())))))
+  ;; messages cannot start a second handler (design §4.4).  Every other
+  ;; callback, and these three outside their states, changes nothing and
+  ;; answers continue: the parser always gets an answer.
+  (define (on-callback s name bv from to)
+    (case name
+      ((on-message-begin)
+       (case (conn-phase s)
+         ((idle)
+          (conn-phase-set! s 'head)
+          (conn-deadline-set! s 'header)
+          (values s '((reply-parser continue) (disarm-deadline) (arm-deadline header))))
+         (else (continue s))))
+      ((on-body-data)
+       (case (conn-phase s)
+         ((body)
+          (conn-deadline-set! s 'body)
+          (values s (list '(reply-parser continue)
+                          (list 'deliver-body bv from to)
+                          '(arm-deadline body))))
+         (else (continue s))))
+      ((on-message-complete)
+       (case (conn-phase s)
+         ((body)
+          (conn-phase-set! s 'handling)
+          (conn-deadline-set! s #f)
+          (values s (list '(reply-parser pause) '(read-stop) '(disarm-deadline)
+                          (list 'call-handler (conn-request s)))))
+         (else (continue s))))
+      (else (continue s))))
+
+  ;; conn-headers-complete-step :
+  ;;   ConnState Nat Nat Nat Nat Nat -> (values ConnState (Listof Action))
+  ;;   method http-major http-minor flags content-length
+  ;; on-headers-complete, entered with the five parser fields the adapter reads
+  ;; inside the callback (0002 item 4): llhttp's method number, the version,
+  ;; llhttp's flag bits and the content-length.  Read there, content-length is
+  ;; the declared length, since it counts down as the body arrives, and the
+  ;; parser's reset after each message zeroes it and the flags.  Nothing
+  ;; downstream re-reads the parser.
+  ;; head -> body: continue, disarm the header deadline, arm the body one.
+  (define (conn-headers-complete-step s method http-major http-minor flags content-length)
+    (case (conn-phase s)
+      ((head)
+       (conn-phase-set! s 'body)
+       (conn-deadline-set! s 'body)
+       (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+      (else (continue s))))
+
+  ;; continue : ConnState -> (values ConnState (Listof Action))
+  ;; Answer a parser callback and change nothing.  The list is a constant, so
+  ;; this allocates nothing.
+  (define (continue s) (values s '((reply-parser continue))))
 
   ;; head/body, a parser result: a pause that carries a reason hands the
   ;; stream off (0006 item 3); an error is answered with a status, then close.

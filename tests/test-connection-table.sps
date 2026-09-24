@@ -94,8 +94,11 @@
         (i (state 'head 'deadline 'header) '(parser-event on-header-value-complete)
            '(head #f ((reply-parser continue)))))
 
+   ;; on-headers-complete carries the five parser fields read inside it
+   ;; (0002 item 4): here llhttp's method 1 (GET), HTTP/1.1, no flags, no
+   ;; content-length.
    (row 'H4 "head, on-headers-complete -> body: continue, disarm, arm body"
-        (i (state 'head 'deadline 'header) '(parser-event on-headers-complete)
+        (i (state 'head 'deadline 'header) '(parser-event on-headers-complete 1 1 1 0 0)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    (row 'H5 "body, on-body-data -> body: continue, deliver-body, arm body"
