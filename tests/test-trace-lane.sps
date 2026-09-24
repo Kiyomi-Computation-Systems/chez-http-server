@@ -6,6 +6,10 @@
 ;;; renders a trace, through OUR path, byte-identical to its recorded log at
 ;;; every scheduled chunk size (design §8.1).  `make test` runs 'extremes; the
 ;;; release lane runs 'full under CORPUS=full (§2.2).
+;;;
+;;; M2.2 adds design §8.1's property 1 with the connection core's bindings
+;;; installed beside the recorder's: the core answers every callback, pausing
+;;; at each message's end, and the trace must not change.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) getenv)
         (trace-lane))
@@ -36,4 +40,13 @@
       (for-each (lambda (m) (diag (string-append "TRACE MISMATCH " (car m) ": " (cdr m))))
                 mismatches)
       (test-eqv "every strict fixture's trace equals its recorded log"
+                0 (length mismatches)))
+    ;; Property 1: the connection layer does not perturb parsing.
+    (let ((mismatches
+           (filter (lambda (p) (cdr p))
+                   (map (lambda (p) (cons (car p) (core-trace-mismatch (cdr p) selection)))
+                        strict-request-fixtures))))
+      (for-each (lambda (m) (diag (string-append "CORE TRACE MISMATCH " (car m) ": " (cdr m))))
+                mismatches)
+      (test-eqv "with the core's bindings installed, every trace still equals its log"
                 0 (length mismatches)))))
