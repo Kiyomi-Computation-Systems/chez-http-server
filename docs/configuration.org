@@ -11,12 +11,17 @@ refused rather than silently ignored.
 | ~CHEZ_HTTP_READ_HEADER_TIMEOUT~     | 60 s      | time to receive the whole request head  |
 | ~CHEZ_HTTP_IDLE_TIMEOUT~            | 75 s      | keep-alive idle time between requests    |
 | ~CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT~ | 60 s      | longest gap between body reads           |
-| ~CHEZ_HTTP_MAX_HEADER_BYTES~        | 16384     | total size of the header block           |
+| ~CHEZ_HTTP_MAX_HEADER_BYTES~        | 16384     | all header names and values together     |
 | ~CHEZ_HTTP_MAX_HEADER_COUNT~        | 100       | number of header fields                  |
+| ~CHEZ_HTTP_MAX_HEADER_FIELD_BYTES~  | 8192      | one header name                          |
+| ~CHEZ_HTTP_MAX_HEADER_VALUE_BYTES~  | 8192      | one header value                         |
 | ~CHEZ_HTTP_MAX_TARGET_BYTES~        | 8192      | size of the request-target               |
 | ~CHEZ_HTTP_MAX_BODY_BYTES~          | unbounded | request-body cap (~unbounded~ disables)  |
 | ~CHEZ_HTTP_PIPELINE_CAP~            | 1         | in-flight pipelined requests             |
 | ~CHEZ_HTTP_READ_BUFFER_SIZE~        | 16384     | per-connection read buffer               |
+
+A request over any of the four header limits gets ~431~ and the connection
+closes.
 
 These are nginx-style bounded defaults (decision 0005). They live in the pure
 library ~(http-server limits)~: the shell reads the environment and hands the

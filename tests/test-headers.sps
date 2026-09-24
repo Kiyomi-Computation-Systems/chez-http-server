@@ -1,7 +1,9 @@
 #!r6rs
 ;;; (http-server headers): ASCII case-insensitive field-name operations over a
 ;;; header alist.  Oracle: RFC 9110 §5.1 (field names are case-insensitive).
-(import (rnrs) (srfi :64) (testing) (http-server headers))
+;;; Names and values are bytevectors or spans: the connection core builds a
+;;; request's headers as spans of the delivery (design §7.1).
+(import (rnrs) (srfi :64) (testing) (http-server headers) (http-server span))
 
 (define (b s) (string->utf8 s))
 
@@ -26,4 +28,26 @@
     ;; header-name=? folds ASCII case and is length-sensitive
     (test-eq "name=? folds case"     'same (if (header-name=? (b "Content-Length") (b "content-length")) 'same 'diff))
     (test-eq "name=? rejects prefix" 'diff (if (header-name=? (b "X") (b "XY")) 'same 'diff))
-    (test-eq "name=? non-alpha byte" 'same (if (header-name=? (b "X-1_a") (b "x-1_A")) 'same 'diff))))
+    (test-eq "name=? non-alpha byte" 'same (if (header-name=? (b "X-1_a") (b "x-1_A")) 'same 'diff))
+
+    ;; --- spans: a request's headers as the core builds them ---
+    ;; One delivery, read as spans of it.  The headers follow the request
+    ;; line, so no span starts at 0 and every comparison has to honour the
+    ;; span's start.
+    (let* ((wire (b "GET / HTTP/1.1\r\nHost: x\r\nX-A: 1\r\nx-a: 2\r\n"))
+           (sp (lambda (from to) (make-span wire from to)))
+           (spans (list (cons (sp 16 20) (sp 22 23))
+                        (cons (sp 25 28) (sp 30 31))
+                        (cons (sp 33 36) (sp 38 39)))))
+      (test-equal "a bytevector query finds a span name, case folded"
+                  (b "x") (span->bytevector (headers-ref spans (b "HOST"))))
+      (test-equal "ref-all over spans keeps wire order"
+                  (list (b "1") (b "2"))
+                  (map span->bytevector (headers-ref-all spans (b "x-a"))))
+      (test-eq "a miss over spans is absent" 'absent (or (headers-ref spans (b "Hos")) 'absent))
+      (test-eq "name=? compares a span with a bytevector" 'same
+               (if (header-name=? (sp 25 28) (b "x-A")) 'same 'diff))
+      (test-eq "name=? compares two spans at different offsets" 'same
+               (if (header-name=? (sp 25 28) (sp 33 36)) 'same 'diff))
+      (test-eq "name=? on spans is length-sensitive" 'diff
+               (if (header-name=? (sp 25 28) (sp 25 27)) 'same 'diff)))))
