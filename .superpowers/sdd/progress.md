@@ -255,7 +255,7 @@ CI RUNNER PINNED, between M2.1 and M2.2. PR #8 (fix/ci-runner-pin, cut from main
 
 M2.1 FOLLOW-UPS MERGED, between M2.1 and M2.2. PR #9 (docs/m2.1-follow-ups, cut from main at ce76004) MERGED to main as 62104ee on 2026-09-23 (`gh pr merge --squash --delete-branch`): local main fast-forwarded to 62104ee and in sync with origin, docs/m2.1-follow-ups deleted local and remote, the squash tree identical to the branch tip's (d5d3103), `make test` green on main (eleven suites, 157 expected passes, exit 0). It is docs and evidence only: decision 0002's three dated amendments (the sixteenth action; what the allocation gate measures; parser callbacks enter directly), `research/spike/m2-event-alloc.sps` with its two runs, and the MEASURED, SETTLED and DECIDED entries below. PR #9's `linux` check (run 35939792913) executed zero steps, stopped at the billing check as every run has been.
 
-Slices ①②③④⑤: ① vocabulary + table — MERGED (85e7d81, PR #7); ② head + request accumulator — MERGED in four PRs: the parser entry points (722269e, PR #10), the pure libraries (7e4ba1a, PR #11), the head (a75bf39, PR #12), and the corpus and allocation checks (70cb0cf, PR #13); ③ request-target through uriparse — in four stacked PRs (the ledger's M2.3 entry); ④ message loop: pause, read-stop, pending input; ⑤ hand-off door + error rows. The plan expected two PRs (①② then ③④⑤). ① alone is 596 inserted lines of code and tests (connection.sls 302, test-connection-table.sps 282, the fake shell's tick 12), over plan §1 rule 1's ~400, so on the owner's word (2026-09-23) it went up as its own PR. Mutation log: `.superpowers/sdd/m2-mutations.md`.
+Slices ①②③④⑤: ① vocabulary + table — MERGED (85e7d81, PR #7); ② head + request accumulator — MERGED in four PRs: the parser entry points (722269e, PR #10), the pure libraries (7e4ba1a, PR #11), the head (a75bf39, PR #12), and the corpus and allocation checks (70cb0cf, PR #13); ③ request-target through uriparse — MERGED in four stacked PRs: the target's limit (0e789d1, PR #14), the target judge (1197f51, PR #15), the core judging the target (b3a37c9, PR #16) and the narrow redirect (ab6725d, PR #17); ④ message loop: pause, read-stop, pending input; ⑤ hand-off door + error rows. The plan expected two PRs (①② then ③④⑤). ① alone is 596 inserted lines of code and tests (connection.sls 302, test-connection-table.sps 282, the fake shell's tick 12), over plan §1 rule 1's ~400, so on the owner's word (2026-09-23) it went up as its own PR. Mutation log: `.superpowers/sdd/m2-mutations.md`.
 
 M2.1 DONE: `src/http-server/connection.sls`, `(http-server connection)`, importing `(rnrs)` and `(http-server response)` only. It exports the three closed sets as data (`conn-states` 9, `conn-events` 15, `conn-actions` 16), a linear state record (`make-conn-state`, which refuses a phase outside the nine) and `conn-step`, which raises an assertion violation on an event outside the vocabulary (including one that is not a tagged list). Design §4.4's nineteen rows run as data in `tests/test-connection-table.sps`: 10 happy-path and 9 termination/error rows, 33 instances, each driven from a synthetic state by one synthetic event, with no parser. "any" and "head/body" rows get one instance per state they name. A row with no instance is missing from the coverage count, and the count is asserted against the design's 10 + 9. `conn-step` also runs inside M1.4's fake shell, where the stub step used to be: an idle tick closes the connection. Watched to fail (m2-mutations.md): the plan's mutation turns exactly H9 and H10 red. Six more mutations cover the closed event set (both arms), the tick guard, the coverage count, the sixteenth action and the phase check. `make test` green: eleven suites, 157 expected passes (95 before; connection-table adds 62), exit 0. `make check-imports` is clean.
 
@@ -414,7 +414,10 @@ M2.2 DONE and MERGED: its last PR, #13, landed as 70cb0cf. `make test` green: si
 
 ---
 
-M2.3 — THE REQUEST-TARGET. Branch feat/m2.3-request-target, cut from main at 8209de6; 2026-09-24, Darwin arm64, Chez 10.4.1 `tarm64osx`. The slice goes up as four stacked PRs, one per step below: feat/m2.3-request-target, then feat/m2.3-target-judge, feat/m2.3-target-core and feat/m2.3-target-redirect, each cut from the one before. Each step's tree passes `make test` on its own.
+M2.3 — THE REQUEST-TARGET. Branch feat/m2.3-request-target, cut from main at 8209de6; 2026-09-24, Darwin arm64, Chez 10.4.1 `tarm64osx`. The slice goes up as four stacked PRs, one per step below: feat/m2.3-request-target, then feat/m2.3-target-judge, feat/m2.3-target-core and feat/m2.3-target-redirect, each cut from the one before. Each step's tree passes `make test` on its own. MERGED to main on 2026-09-24, bottom up, as four squash commits: 0e789d1 (PR #14), 1197f51 (PR #15), b3a37c9 (PR #16), ab6725d (PR #17).
+- #14 merged without deleting its branch, since #15 was based on it. Each PR above it was then retargeted to main (`gh pr edit --base main`), rebased onto the squash below it (`git rebase --onto`) and force-pushed with a lease. Each rebased tree was identical to the one tested: 0051e22 to 3b03292, eb92f5f to ade452a, 44ea0ef to 2ff65ed. Each squash tree was identical to its tip's, and main's final tree is identical to the tested 2ff65ed.
+- Every `linux` check executed zero steps, stopped at the billing check. That covers the four PR runs (36072710925, 36072726353, 36072750493, 36072770871) and the three runs on rebased tips (36073646847, 36073690029, 36073734316).
+- #17 merged with `--delete-branch`, which fast-forwarded local main to ab6725d. The other three branches were deleted local and remote by hand, and refs pruned; no PR is open. `make test` green on main: seventeen suites, 303 expected passes, exit 0.
 
 MEASURED (2026-09-24), before the target was judged. `.plans/research/spike/m2.3-target-alloc.sps` measures what the plan's route costs and what it judges. Two runs gave identical output (`out/m2.3-target-alloc.run{1,2}.txt`, exit 0):
 
@@ -454,13 +457,13 @@ The alternatives weighed:
 - the plan's route with an upstream fix first, M2.3 waiting on a collector that validates without assembling components;
 - for 0002, keeping item 1 literal by splitting absolute-form ourselves as RFC 9110 §4.2.1's http-URI with `(uri host)` and `(uri charset)`, which is more URI code of our own.
 
-M2.3 FIRST STEP: the target's limit.
+M2.3 FIRST STEP: the target's limit. MERGED as 0e789d1 (PR #14).
 - `on-url-data` counts the target's bytes as they arrive and refuses a target past `max-target-bytes` (8,192, decision 0005) with `(fail target-too-large)`. `reason-status` answers it 414, and docs/configuration.org says so.
 - Two head rows: a target at the limit, and one byte past it, at every delivery size.
 
 Watched to fail: mutations A, B and C. `make test` green: sixteen suites, 252 expected passes.
 
-M2.3 SECOND STEP: the target judge, `(http-server target)`.
+M2.3 SECOND STEP: the target judge, `(http-server target)`. MERGED as 1197f51 (PR #15).
 - `(http-server target)`, new, exports `make-target-judge`, `target-judge?` and `target-fault : TargetJudge Symbol Span -> (U #f Symbol)`. The method and the first byte pick the form:
   - CONNECT: authority-form, through `uri-parse-authority-form-validate` over a copy of the span, parsed fresh.
   - `*` alone: asterisk-form, for OPTIONS only.
@@ -472,7 +475,7 @@ M2.3 SECOND STEP: the target judge, `(http-server target)`.
 
 Watched to fail: `test-target.sps` exited 255 before the library existed. The mutations against the library ran once the core used it, and are recorded with the third step. `make test` green: seventeen suites, 276 expected passes.
 
-M2.3 THIRD STEP: the core judges the target.
+M2.3 THIRD STEP: the core judges the target. MERGED as b3a37c9 (PR #16).
 - The core holds one judge per connection and judges the target in `conn-headers-complete-step`, where the method is known. A fault is refused as `'invalid-target`, which `reason-status` answers 400. The request's target is still its span.
 - Six head rows, at every delivery size:
   - one row where a target of each form passes: `OPTIONS *`, a path that begins "//", and absolute-form;
@@ -515,7 +518,7 @@ DECIDED on the owner's word (2026-09-24), after asking why llhttp accepts what M
   - GET and HEAD only: a 301 may turn a POST into a GET (RFC 9110 §15.4.2).
   - No path that begins `//`: its Location would name another host.
 
-M2.3 FOURTH STEP: the narrow redirect.
+M2.3 FOURTH STEP: the narrow redirect. MERGED as ab6725d (PR #17).
 - `(http-server target)` gains `target-redirect : TargetJudge Symbol Span -> (U #f Bytevector)`. It returns the target with `|` percent-encoded in the path and `[`, `]` and `|` in the query, by uriparse's `pct-encode`. It does so only for GET or HEAD, only for origin-form, never for a path beginning `//`, and only when the encoded target is one the judge accepts and differs from the target.
 - In `conn-headers-complete-step`, a refused target that redirects is refused as `'target-redirect`, and the head keeps the Location. The Location must also be within `max-target-bytes`. `respond-and-close` takes the response's headers, so the parser-error row answers `301` with `Location`. `reason-status` answers `target-redirect` with 301.
 - New rows:
@@ -530,4 +533,6 @@ Watched to fail (m2-mutations.md): each new check was red before its code, and m
 
 `make test` green: seventeen suites, 303 expected passes (target 35, connection-head 30), exit 0. The trace lane holds at 'full (9,394 runs). `make check-imports` is clean.
 
-NEXT: land M2.3's four stacked PRs in order, then M2.4, the message loop (plan §6).
+M2.3 DONE and MERGED: its last PR, #17, landed as ab6725d. `make test` green: seventeen suites, 303 expected passes, exit 0. Against the 250 after M2.2, the new target suite adds 35, connection-head gains 13, trace-lane 3 and connection-allocation 2. `make check-imports` is clean. The four steps are 476, 262, 361 and 377 inserted lines, and each tree passes on its own: 252, 276, 287 and 303 expected passes. uriparse #21 is still open, and the copy it would remove is carried.
+
+NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after ab6725d, when the owner asks.
