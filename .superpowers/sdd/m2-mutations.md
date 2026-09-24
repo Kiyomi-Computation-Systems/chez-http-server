@@ -130,3 +130,24 @@ puts the headers after a request line, so no span starts at 0.
 L, O, P and Q reverted, each restore byte-identical by sha256. On this step's
 tree alone, `make test` is green: fourteen suites, 225 expected passes
 (decisions 12 and span 14 new; limits 23, headers 15 and records 16), exit 0.
+
+### Third step: the head
+
+Red before green: `test-connection-head.sps` exited 255 (`library (http-server
+private adapter) not found`) before the head and the adapter existed.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.2-G | head, trace | the adapter passes `flags` as 0, what the parser's reset leaves, instead of reading them in on-headers-complete (replaces the plan's mutation; see the ledger) | head exit 1; 14 passes, 3 failures — the one-request keep-alive rows, pipelined 1.1 and pipelined 1.0: every row that carries a `Connection` header. Trace green |
+| M2.2-H | head | on-message-begin does not roll the head | exit 1; 16 passes, 1 failure — pipelined 1.0, whose first message has a header. Pipelined 1.1's first message has none, so that row held |
+| M2.2-I | head, trace | a name or value is refused at its limit, not past it (`fx>=?`) | head exit 1; 15 passes, 2 failures — the two at-the-limit rows for names and values. Trace green: no fixture comes near 8,192 |
+| M2.2-J | head | the parser's error after a refusal is answered as a parser error | exit 1; 13 passes, 4 failures — the four refusals, answered 400 |
+| M2.2-M | decisions, table | `reason-status` answers `handler-failed` 502 | decisions exit 1; 11 passes, 1 failure — the reasons row. Table exit 1; 61 passes, 1 failure — `T6`: the core reads its statuses from the table |
+| M2.2-R | head, trace | the adapter answers the core's `fail` with continue | head exit 1; 13 passes, 4 failures — the four refusals. Trace green |
+
+G replaces the plan's mutation, which cannot change a keep-alive answer (the
+ledger's "Found and recorded, for the head", measured over the corpus).
+
+G, H, I, J, M and R reverted, each restore byte-identical by sha256. On this
+step's tree, `make test` is green: fifteen suites, 241 expected passes
+(connection-head 17 new; connection-entry 29, connection-table 62), exit 0.

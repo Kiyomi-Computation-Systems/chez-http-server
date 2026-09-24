@@ -1,0 +1,110 @@
+#!r6rs
+;;; (http-server private adapter) — chez-httparse's parser, bound to the core.
+;;;
+;;; The binding list chez-httparse requires: all twenty-five callbacks, built
+;;; once and shared by every connection, which reaches its callbacks through
+;;; the parser's user-context argument (design §7.5: a list per connection
+;;; would cost 1,216 B each).  Each callback enters the core directly, with
+;;; its own arguments, so nothing is allocated to carry it (0002's third
+;;; amendment); on-headers-complete also reads the five parser fields the
+;;; parser's reset between messages would otherwise lose (0002 item 4).
+;;;
+;;; The core's first action is its `reply-parser`, and that one is answered
+;;; here, inside the callback (0002 item 3): continue, pause, or a failure
+;;; carrying the core's reason as its code.  The rest are queued on the
+;;; connection's context in order, for the shell to take once the feed has
+;;; returned: nothing but the reply runs at parser depth.
+;;;
+;;; Brought forward from M4.1 (milestone plan §8), because M2.2's checks need
+;;; the core driven by the real parser: the head's tests, and the trace lane
+;;; with these bindings installed.  M4 adds the shell's closures and the
+;;; per-connection allocation assertion.  Imports no chez-libuv.
+(library (http-server private adapter)
+  (export make-conn-context conn-context? conn-context-state
+          conn-context-step! conn-context-take-actions!
+          adapter-bindings make-conn-parser)
+  (import (rnrs)
+          (byte-machine runtime) (generated httparse-message) (httparse modes)
+          (http-server connection))
+
+  ;; make-conn-context : ConnState -> ConnContext
+  ;; One connection as the parser sees it: the core's state, and the actions
+  ;; its callbacks queued during the feed in progress.
+  ;; conn-context? : Any -> Boolean
+  ;; conn-context-state : ConnContext -> ConnState
+  (define-record-type (conn-context make-conn-context conn-context?)
+    (fields (mutable state conn-context-state conn-context-state-set!)
+            (mutable queued conn-context-queued conn-context-queued-set!))
+    (protocol (lambda (new) (lambda (state) (new state '())))))
+
+  ;; conn-context-step! : ConnContext Event -> (Listof Action)
+  ;; Deliver one of the shell's events to the core, keep the state it leaves,
+  ;; and answer the actions it asks for.
+  (define (conn-context-step! ctx event)
+    (let-values (((s actions) (conn-step (conn-context-state ctx) event)))
+      (conn-context-state-set! ctx s)
+      actions))
+
+  ;; conn-context-take-actions! : ConnContext -> (Listof Action)
+  ;; The actions the parser callbacks queued since the last take, in order,
+  ;; without their replies; the queue is left empty.
+  (define (conn-context-take-actions! ctx)
+    (let ((queued (conn-context-queued ctx)))
+      (conn-context-queued-set! ctx '())
+      ;; Newest first: each earlier list goes in front of what follows it.
+      (fold-left (lambda (later actions) (append actions later)) '() queued)))
+
+  ;; answer! : ConnContext ConnState (Listof Action) -> Outcome
+  ;; Keep the state, queue every action but the first, and turn the first,
+  ;; the reply, into the parser's outcome.
+  (define (answer! ctx s actions)
+    (conn-context-state-set! ctx s)
+    (unless (and (pair? actions) (pair? (car actions))
+                 (eq? (caar actions) 'reply-parser))
+      (assertion-violation 'adapter "the core did not answer the callback first" actions))
+    (unless (null? (cdr actions))
+      (conn-context-queued-set! ctx (cons (cdr actions) (conn-context-queued ctx))))
+    (let ((outcome (cadar actions)))
+      (cond ((eq? outcome 'continue) callback-continue)
+            ((eq? outcome 'pause) callback-pause)
+            ((and (pair? outcome) (eq? (car outcome) 'fail))
+             (make-callback-failure (cadr outcome) #f))
+            (else (assertion-violation 'adapter "not a reply-parser outcome" outcome)))))
+
+  ;; adapter-bindings : (Listof (List Symbol Procedure))
+  ;; The twenty-five bindings, in conn-parser-callbacks' order: a span
+  ;; callback's procedure takes (parser context bv from to), every other one
+  ;; (parser context).  The context is the connection's ConnContext.
+  (define adapter-bindings
+    (map (lambda (name)
+           (list name
+                 (cond
+                  ((eq? name 'on-headers-complete)
+                   (lambda (p ctx)
+                     (let-values (((s actions)
+                                   (conn-headers-complete-step
+                                    (conn-context-state ctx)
+                                    (parser-field-ref p 'method)
+                                    (parser-field-ref p 'http-major)
+                                    (parser-field-ref p 'http-minor)
+                                    (parser-field-ref p 'flags)
+                                    (parser-field-ref p 'content-length))))
+                       (answer! ctx s actions))))
+                  ((memq name conn-span-callbacks)
+                   (lambda (p ctx bv from to)
+                     (let-values (((s actions)
+                                   (conn-parser-step (conn-context-state ctx) name bv from to)))
+                       (answer! ctx s actions))))
+                  (else
+                   (lambda (p ctx)
+                     (let-values (((s actions) (conn-parser-step (conn-context-state ctx) name)))
+                       (answer! ctx s actions)))))))
+         conn-parser-callbacks))
+
+  ;; make-conn-parser : ConnContext -> Parser
+  ;; A request parser for one connection, strict (no lenient flags), carrying
+  ;; the context to every callback.
+  (define make-conn-parser
+    (let ((inits (list (cons 'type (httparse-message-type-value 'request)))))
+      (lambda (ctx)
+        (make-parser httparse-message-machine adapter-bindings ctx inits)))))

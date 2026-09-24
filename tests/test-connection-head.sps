@@ -1,0 +1,237 @@
+#!r6rs
+;;; (http-server connection): the request head.  M2.2.
+;;;
+;;; on-message-begin through on-headers-complete, with chez-httparse driving
+;;; the core through the adapter's bindings, the way a shell will.  The driver
+;;; below delivers each chunk as `bytes-arrived` and feeds the parser only when
+;;; the core asks with `feed-parser`; when the core pauses the parser at
+;;; on-message-complete it runs the handler cycle (handler-responded, then
+;;; write-completed), resumes, and feeds on from `parser-result-next`, and it
+;;; stops once the core closes.  M2.4 builds that loop into the fake shell.
+;;;
+;;; The rows:
+;;;   - the request (method, target, version, headers in wire order) is what
+;;;     the request's bytes say, at every chunk size;
+;;;   - keep-alive is `should-keep-alive?` over the flags the adapter reads
+;;;     inside on-headers-complete: decision 0006 item 1's four rows, alone
+;;;     and pipelined;
+;;;   - each of the four header limits passes a request at the limit and
+;;;     refuses one past it with 431, through the parser's own failure;
+;;;   - a parser error with no refusal is still a 400.
+;;;
+;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
+;;; rows; design §6.5's 431 and 400; the limits each row sets.
+(import (rnrs) (srfi :64) (testing)
+        (http-server connection) (http-server private adapter)
+        (http-server request) (http-server response) (http-server span)
+        (http-server limits) (byte-machine runtime))
+
+(define (b s) (string->utf8 s))
+
+;; with-limits : (Listof (Pair Symbol Nat)) -> Limits
+;; default-limits with the named header limits replaced.
+(define (with-limits overrides)
+  (let ((get (lambda (key default) (cond ((assq key overrides) => cdr) (else default))))
+        (L default-limits))
+    (make-limits (limits-read-header-timeout-ms L) (limits-idle-timeout-ms L)
+                 (limits-body-inactivity-timeout-ms L)
+                 (get 'bytes (limits-max-header-bytes L))
+                 (get 'count (limits-max-header-count L))
+                 (get 'field (limits-max-header-field-bytes L))
+                 (get 'value (limits-max-header-value-bytes L))
+                 (limits-max-target-bytes L) (limits-max-body-bytes L)
+                 (limits-pipeline-cap L) (limits-read-buffer-size L))))
+
+;; render-request : Request -> Datum — the request as its bytes.
+(define (render-request r)
+  (list (request-method r) (utf8->string (span->bytevector (request-target r)))
+        (request-http-major r) (request-http-minor r)
+        (map (lambda (h) (cons (utf8->string (span->bytevector (car h)))
+                               (utf8->string (span->bytevector (cdr h)))))
+             (request-headers r))))
+
+;; render-action : Action -> Datum — a written response as its fields.
+(define (render-action a)
+  (if (and (eq? (car a) 'write) (response? (cadr a)))
+      (let ((r (cadr a)))
+        (list 'write (list 'response (response-status r) (response-reason r)
+                           (response-headers r) (response-body r))))
+      a))
+
+(define resp (make-response 200 #f '() (b "ok")))
+
+;; Outcome: what one connection did with its input.
+;;   requests  the requests handed to call-handler, rendered, in order
+;;   error     #f, or the parser's error code and the core's answer to it
+;;   phase     the state the connection ended in
+;;   reason    its close-after reason
+(define (outcome requests error s)
+  (list (reverse requests) error (conn-phase s) (conn-close-after s)))
+
+;; drive : Bytevector Nat Limits -> Outcome
+;; One connection reading `input` in `size`-byte deliveries.
+(define (drive input size limits)
+  (let* ((ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f limits)))
+         (p (make-conn-parser ctx))
+         (len (bytevector-length input)))
+    (let chunk ((from 0) (requests '()))
+      (if (>= from len)
+          (outcome requests #f (conn-context-state ctx))
+          (let* ((to (min len (+ from size)))
+                 (asked (conn-context-step! ctx (list 'bytes-arrived input from to))))
+            (if (not (member (list 'feed-parser input from to) asked))
+                (outcome requests (list 'not-fed asked) (conn-context-state ctx))
+                (let feed ((at from) (requests requests))
+                  (let* ((r (parser-feed! p input at to))
+                         (queued (conn-context-take-actions! ctx))
+                         (requests (fold-left (lambda (acc a)
+                                                (if (eq? (car a) 'call-handler)
+                                                    (cons (render-request (cadr a)) acc)
+                                                    acc))
+                                              requests queued)))
+                    (case (parser-result-status r)
+                      ((need-input) (chunk to requests))
+                      ((paused)
+                       ;; The core's pause at on-message-complete: the handler
+                       ;; answers, the write completes, and the parse resumes.
+                       (conn-context-step! ctx (list 'handler-responded resp))
+                       (conn-context-step! ctx '(write-completed 2))
+                       (if (eq? (conn-phase (conn-context-state ctx)) 'closing)
+                           (outcome requests #f (conn-context-state ctx))
+                           (begin (parser-resume! p)
+                                  (feed (parser-result-next r) requests))))
+                      ((error)
+                       (let* ((e (parser-result-error r))
+                              (answer (conn-context-step!
+                                       ctx (list 'parser-result 'error
+                                                 (parser-result-consumed r)
+                                                 (parser-result-next r)
+                                                 (parser-error-code e) #f))))
+                         (outcome requests
+                                  (list (parser-error-code e) (map render-action answer))
+                                  (conn-context-state ctx))))
+                      (else (outcome requests (list 'status (parser-result-status r))
+                                     (conn-context-state ctx))))))))))))
+
+;; every-size : Bytevector Limits -> (Listof Outcome)
+;; The distinct outcomes over every delivery size from 1 to the whole input.
+(define (every-size input limits)
+  (let loop ((size 1) (seen '()))
+    (if (> size (bytevector-length input))
+        (reverse seen)
+        (let ((o (drive input size limits)))
+          (loop (+ size 1) (if (member o seen) seen (cons o seen)))))))
+
+;; An originated status as render-action shows it (design §6.5: every one
+;; closes; M3's serializer derives the phrase and the headers).
+(define (status-write n) (list 'write (list 'response n #f '() #f)))
+
+;; The outcomes the rows expect.
+;;   req      a rendered request: method, target, version, headers
+;;   ok       every request handled; the connection ends in `phase`
+;;   refusal  the parser failed with the core's reason as its code, and the
+;;            core answered 431, closing after
+(define (req method target major minor . headers)
+  (list method target major minor headers))
+(define (ok requests phase reason) (list requests #f phase reason))
+(define (refusal reason)
+  (list '() (list reason (list (status-write 431))) 'responding reason))
+
+;; verdict : (-> Any) -> (U 'accepted 'refused)
+(define (verdict thunk)
+  (guard (e ((assertion-violation? e) 'refused))
+    (thunk)
+    'accepted))
+
+(run-suite "connection-head"
+  (lambda ()
+    ;; --- the request is what its bytes say, at every chunk size --------------
+    ;; every-size lists the distinct outcomes over all delivery sizes, so one
+    ;; expected outcome is chunk invariance as well as the value.
+    (test-equal "a GET with an empty header value, every delivery size"
+                (list (ok (list (req 'GET "/a/b?c=1" 1 1 '("Host" . "example.com")
+                                     '("X-Empty" . "") '("Accept" . "*/*")))
+                          'idle #f))
+                (every-size (b "GET /a/b?c=1 HTTP/1.1\r\nHost: example.com\r\nX-Empty:\r\nAccept: */*\r\n\r\n")
+                            default-limits))
+    (test-equal "a POST with a body, every delivery size"
+                (list (ok (list (req 'POST "/u" 1 1 '("Content-Length" . "5"))) 'idle #f))
+                (every-size (b "POST /u HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello") default-limits))
+    (test-equal "method numbers become llhttp's names, DELETE (0) and M-SEARCH included"
+                '(DELETE M-SEARCH OPTIONS)
+                (map (lambda (text) (car (car (car (drive (b text) 1000 default-limits)))))
+                     '("DELETE /x HTTP/1.1\r\n\r\n" "M-SEARCH * HTTP/1.1\r\n\r\n"
+                       "OPTIONS * HTTP/1.1\r\n\r\n")))
+
+    ;; --- keep-alive: decision 0006 item 1 -----------------------------------
+    (test-equal "keep-alive, one request each: 1.1, 1.1 close, 1.0, 1.0 keep-alive"
+                '((idle #f) (closing not-keep-alive) (closing not-keep-alive) (idle #f))
+                (map (lambda (text)
+                       (let ((o (drive (b text) 1000 default-limits)))
+                         (list (caddr o) (cadddr o))))
+                     '("GET / HTTP/1.1\r\n\r\n"
+                       "GET / HTTP/1.1\r\nConnection: close\r\n\r\n"
+                       "GET / HTTP/1.0\r\n\r\n"
+                       "GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n")))
+    ;; Pipelined: the second message asks to close, so the third is never
+    ;; handled, and each message's head holds only its own headers.
+    (test-equal "pipelined 1.1, every delivery size: keep, then close, then nothing"
+                (list (ok (list (req 'GET "/1" 1 1) (req 'GET "/2" 1 1 '("Connection" . "close")))
+                          'closing 'not-keep-alive))
+                (every-size (b "GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\nConnection: close\r\n\r\nGET /3 HTTP/1.1\r\n\r\n")
+                            default-limits))
+    (test-equal "pipelined 1.0, every delivery size: keep-alive, then the default close"
+                (list (ok (list (req 'GET "/1" 1 0 '("Connection" . "keep-alive")) (req 'GET "/2" 1 0))
+                          'closing 'not-keep-alive))
+                (every-size (b "GET /1 HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /2 HTTP/1.0\r\n\r\nGET /3 HTTP/1.0\r\n\r\n")
+                            default-limits))
+
+    ;; --- the four header limits: at the limit, and one past it ------------------
+    ;; A refusal is the parser's own failure with the core's reason as its code,
+    ;; answered 431 and closing after, at every delivery size.
+    (test-equal "a header name at max-header-field-bytes passes"
+                (list (ok (list (req 'GET "/" 1 1 '("X-Ab" . "1"))) 'idle #f))
+                (every-size (b "GET / HTTP/1.1\r\nX-Ab: 1\r\n\r\n") (with-limits '((field . 4)))))
+    (test-equal "a header name one byte past it is refused"
+                (list (refusal 'header-field-too-large))
+                (every-size (b "GET / HTTP/1.1\r\nX-Abc: 1\r\n\r\n") (with-limits '((field . 4)))))
+    (test-equal "a header value at max-header-value-bytes passes"
+                (list (ok (list (req 'GET "/" 1 1 '("X" . "abc"))) 'idle #f))
+                (every-size (b "GET / HTTP/1.1\r\nX: abc\r\n\r\n") (with-limits '((value . 3)))))
+    (test-equal "a header value one byte past it is refused"
+                (list (refusal 'header-value-too-large))
+                (every-size (b "GET / HTTP/1.1\r\nX: abcd\r\n\r\n") (with-limits '((value . 3)))))
+    (test-equal "max-header-count headers pass"
+                (list (ok (list (req 'GET "/" 1 1 '("A" . "1") '("B" . "2"))) 'idle #f))
+                (every-size (b "GET / HTTP/1.1\r\nA: 1\r\nB: 2\r\n\r\n") (with-limits '((count . 2)))))
+    (test-equal "one header more is refused"
+                (list (refusal 'too-many-headers))
+                (every-size (b "GET / HTTP/1.1\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\n") (with-limits '((count . 2)))))
+    (test-equal "names and values totalling max-header-bytes pass"
+                (list (ok (list (req 'GET "/" 1 1 '("Ab" . "123") '("C" . "4567"))) 'idle #f))
+                (every-size (b "GET / HTTP/1.1\r\nAb: 123\r\nC: 4567\r\n\r\n") (with-limits '((bytes . 10)))))
+    (test-equal "one byte more across the section is refused"
+                (list (refusal 'headers-too-large))
+                (every-size (b "GET / HTTP/1.1\r\nAb: 123\r\nC: 45678\r\n\r\n") (with-limits '((bytes . 10)))))
+
+    ;; --- a parser error the core did not ask for is a 400 -------------------------
+    (test-equal "an invalid header token: 400, closing after"
+                (list (list '() (list 'invalid-header-token (list (status-write 400)))
+                            'responding 'parser-error))
+                (every-size (b "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n") default-limits))
+
+    ;; --- bytes-arrived feeds the parser in every reading state -----------------
+    (let ((bv (b "abcd")))
+      (test-equal "bytes-arrived asks for feed-parser in idle, head and body, not handling"
+                  (list (list (list 'feed-parser bv 0 4)) (list (list 'feed-parser bv 0 4))
+                        (list (list 'feed-parser bv 0 4)) '())
+                  (map (lambda (phase)
+                         (call-with-values
+                          (lambda () (conn-step (make-conn-state phase #f #f 0 #f #f default-limits)
+                                                (list 'bytes-arrived bv 0 4)))
+                          (lambda (s actions) actions)))
+                       '(idle head body handling))))
+
+    ;; --- the state holds its limits ------------------------------------------------
+    (test-eq "a state without a limits record is refused" 'refused
+             (verdict (lambda () (make-conn-state 'idle #f #f 0 #f #f #f))))))

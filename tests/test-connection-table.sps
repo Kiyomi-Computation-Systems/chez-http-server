@@ -12,7 +12,7 @@
 ;;; item 3 adds; the 10 + 9 rows of design §4.4's two tables.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
-        (fake-shell))
+        (http-server limits) (fake-shell))
 
 (define (b s) (string->utf8 s))
 
@@ -23,7 +23,8 @@
 
 ;; state : Symbol . Plist -> ConnState
 ;; A synthetic state: the phase, plus any of deadline / close-after /
-;; outstanding / pending / request; every field not named takes its default.
+;; outstanding / pending / request; every field not named takes its default,
+;; and the limits are decision 0005's defaults.
 (define (state phase . plist)
   (define (get key default)
     (let loop ((p plist))
@@ -32,7 +33,7 @@
             (else (loop (cddr p))))))
   (make-conn-state phase
                    (get 'deadline #f) (get 'close-after #f) (get 'outstanding 0)
-                   (get 'pending #f) (get 'request #f)))
+                   (get 'pending #f) (get 'request #f) default-limits))
 
 ;; render-action : Action -> Datum
 ;; A written response is a record, and `equal?` compares records by identity,
