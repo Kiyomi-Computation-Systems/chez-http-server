@@ -1031,3 +1031,14 @@ Updated:
 
 NEXT: the two stacked PRs, on the owner's word. Then the M2 exit (plan §6): our expectations for libhtp's pipelining and multi-packet files, promoted in the ratchet by name, then M2's close-out.
 
+MERGED to main on 2026-09-25, as two stacked PRs landed bottom up on the owner's "do closing ritual":
+- #28, the pin, merged as b164248 without deleting its branch, since #29 was based on it. Its squash tree (5962a67) is identical to the tested tip's, a8582eb.
+- #29 was retargeted to main, rebased onto b164248 and force-pushed with a lease read from the remote. The rebase took 848799d to 1106b6b with the tree unchanged (10b17d9). #29 merged as bb9aef6, whose tree is the tested one, proved against the merge commit gh reports.
+- Every `linux` check executed zero steps, stopped at the billing check: runs 36190037834 (#28), 36190062358 (#29) and 36190360680 (#29's rebased tip).
+- `gh pr merge --delete-branch` switched this checkout to main and fast-forwarded it to bb9aef6. The pin branch was deleted by hand, local and remote, and refs pruned; no PR is open.
+
+`make test` green on main: twenty suites, 386 expected passes, exit 0.
+
+The server now reads the parser's own `upgrade` answer, and nothing filed is open upstream: all seventeen asks are closed and released.
+
+NEXT: the M2 exit (plan §6): our expectations for libhtp's pipelining and multi-packet files, promoted in the ratchet by name, then M2's close-out, on a fresh branch cut from main after bb9aef6, when the owner asks.
