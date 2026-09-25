@@ -15,3 +15,12 @@ sent.
 After a request that asks to close the connection (~Connection: close~, or
 HTTP/1.0 without ~Connection: keep-alive~), the server writes its response and
 closes. Anything the client sent after that request is ignored.
+
+A request can ask to switch the connection to another protocol: a WebSocket
+handshake (~Connection: upgrade~ with ~Upgrade: websocket~), ~Upgrade: h2c~,
+or a proxy's ~CONNECT host:port~. This server speaks only HTTP/1.1 and 1.0, so
+your handler answers such a request like any other, and then the server closes
+the connection. Anything the client sent after that request is ignored.
+
+A client that opens with HTTP/2's preface (~PRI * HTTP/2.0~) gets ~505 HTTP
+Version Not Supported~, and the connection closes.

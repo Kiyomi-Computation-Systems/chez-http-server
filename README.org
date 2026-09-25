@@ -55,8 +55,8 @@ with none — see [[file:docs/host-header.org][docs/host-header.org]].
 
 ** Connections
 
-How one connection carries many requests, answered one at a time — see
-[[file:docs/connections.org][docs/connections.org]].
+How one connection carries many requests, answered one at a time, and what a
+request to switch protocols gets — see [[file:docs/connections.org][docs/connections.org]].
 
 ** License
 

@@ -138,11 +138,11 @@
 (run-suite "ratchet"
   (lambda ()
     ;; the per-lane counts: the plan's at the opening, moved only by a
-    ;; reviewed promotion (M2.4: 131 outcomes, the 4 upgrades left to M2.5)
+    ;; reviewed promotion (M2.4: 131 outcomes; M2.5: the 4 upgrades)
     (test-eqv "trace lane: 135 passing"   135 (lane-count "trace" 'passing))
     (test-eqv "trace lane: 32 deferred"    32 (lane-count "trace" 'deferred))
-    (test-eqv "outcome lane: 131 passing" 131 (lane-count "outcome" 'passing))
-    (test-eqv "outcome lane: 4 not-yet"     4 (lane-count "outcome" 'not-yet))
+    (test-eqv "outcome lane: 135 passing" 135 (lane-count "outcome" 'passing))
+    (test-eqv "outcome lane: 0 not-yet"     0 (lane-count "outcome" 'not-yet))
     (test-eqv "outcome lane: 32 deferred"  32 (lane-count "outcome" 'deferred))
     (test-eqv "libhtp lane: 102 not-yet"  102 (lane-count "libhtp" 'not-yet))
     ;; every fixture in every lane is listed (no missing entry)

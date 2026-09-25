@@ -11,8 +11,8 @@
 #   trace   -- the rendered parser trace equals the recorded log (M1.2): the 135
 #              strict fixtures pass; the 32 lenient ones are deferred (0009).
 #   outcome -- the connection-level outcome is chunk-size invariant (M2.4, design
-#              §8.1 property 2): 131 strict fixtures pass; the 4 upgrades are
-#              not-yet until M2.5's hand-off door; the 32 lenient ones are deferred.
+#              §8.1 property 2): the 135 strict fixtures pass, the 4 upgrades
+#              since M2.5; the 32 lenient ones are deferred.
 #   libhtp  -- our per-file expectations hold: ours are M2's, so all not-yet.
 passing trace/request/connection.md#1
 passing trace/request/connection.md#2
@@ -194,14 +194,14 @@ passing outcome/request/connection.md#10
 deferred outcome/request/connection.md#11
 passing outcome/request/connection.md#12
 deferred outcome/request/connection.md#13
-not-yet outcome/request/connection.md#14
+passing outcome/request/connection.md#14
 deferred outcome/request/connection.md#15
 passing outcome/request/connection.md#16
 deferred outcome/request/connection.md#17
 passing outcome/request/connection.md#18
-not-yet outcome/request/connection.md#19
-not-yet outcome/request/connection.md#20
-not-yet outcome/request/connection.md#21
+passing outcome/request/connection.md#19
+passing outcome/request/connection.md#20
+passing outcome/request/connection.md#21
 passing outcome/request/content-length.md#1
 passing outcome/request/content-length.md#2
 passing outcome/request/content-length.md#3

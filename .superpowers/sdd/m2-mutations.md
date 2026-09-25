@@ -385,3 +385,31 @@ Red before green: test-limits.sps failed "a pipeline cap of 1 is accepted; 2 and
 | M2.4-P | limits | the cap check refuses 1, the default | limits exit 2 — a harness error after 12 passes: the suite's first read of an empty environment, outside any test, raised |
 
 `make test` was green afterwards: twenty suites, 362 expected passes (limits 26), exit 0.
+
+## M2.5 — the hand-off door and the error rows (2026-09-25)
+
+Each mutant ran from a scratch copy of the mutated file placed first on the library path, against every suite of the tree at feat/m2.5-hand-off-door (uncommitted, cut from main at ee23fb7).
+
+The first run of all ten came back all-green, every suite, every mutant. The spec files were given to the runner by relative path, so it built each mutant's root as a relative path, and the suites, run from the repository, never found it: every mutant tested the real tree. The runner now makes the root absolute, and every row below is from the rerun. A mutation run in which nothing dies is checked before it is believed.
+
+Red before green:
+- test-decisions.sps exited 255 before `result-hands-off-stream?` and `request-upgrades?` existed.
+- In the table, T3's 501 instance, U1's CONNECT and `Connection: upgrade` instances, and U2 failed. U1's HTTP/1.0 and one-flag instances held, as they must: M2.5-E and M2.5-C are theirs.
+- In the message loop, the six new rows failed. Delivered in small pieces, an upgrade still reached a paused parser and raised; delivered whole, it was served and left idle. The `Upgrade: h2c` row also had its expected value one list too shallow, which the first green run showed; M2.5-D turns the corrected row red.
+- The head suite's 25 refusal and error rows failed once its driver read the event's error as `(code . node)` and the fake shell still passed a bare code. The fake shell then passed the node, and the core the split.
+- The outcome lane's listed-fixture gate and the ratchet's four not-yet entries failed when the core closed after an upgrade: the promotion is the reviewed diff below.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.5-A | decisions, table, loop, outcome, ratchet | the plan's mutation: `result-hands-off-stream?` checks only the pause channel | decisions exit 1; 20 passes, 1 failure — "at the pin, the HTTP/2 preface hands off (the error channel)"; the CONNECT, Upgrade and plain-pause rows held, as the plan predicted. Table exit 1; 1 failure — U2. Loop exit 1; 1 failure — the preface row. The lane: method.md#15's whole input raised "a hand-off, not an error", since the preface now reaches the error map, which refuses it; the ratchet names the same fixture |
+| M2.5-B | decisions, table, loop | `request-upgrades?` forgets CONNECT | decisions exit 1; 2 failures — the rule's rows and "request-upgrades? marks exactly those" (the four CONNECT fixtures unmarked). Table exit 1; 1 failure — U1's CONNECT instance. Loop exit 1; 1 failure — the CONNECT row. The lane held: the corpus's four CONNECTs are HTTP/1.0 and close anyway |
+| M2.5-C | decisions, table | `request-upgrades?` takes either upgrade flag alone | decisions exit 1; 2 failures — the rule's rows, and the corpus check: connection.md#12 carries `upgrade` among its `Connection` options and no `Upgrade`, and its llhttp log records no hand-off. Table exit 1; 1 failure — U1's one-flag instance |
+| M2.5-D | table, loop, outcome, ratchet | the core does not mark an upgrade to close after its response | table exit 1; 2 failures — U1's two upgrade instances. Loop exit 1; 13 passes, 5 failures — the WebSocket, CONNECT and `Upgrade: h2c` rows, the frame never delivered, and the WebSocket depth check. The lane: connection.md#14, #19, #20 and #21 raise `&byte-machine-contract` at size 1, M2.4's stall; the ratchet names the same four |
+| M2.5-E | table | `upgrade` takes precedence over the message's own `not-keep-alive` | table exit 1; 1 failure — U1's HTTP/1.0 instance. Every other suite held: whole-input outcomes change their close reason but stay chunk-invariant |
+| M2.5-F | decisions, table, head | `invalid-transfer-encoding` ignores the node: always 400 | decisions exit 1; 2 failures — the 501 row and the real `pigeons` request. Table exit 1; 1 failure — T3's 501 instance. Head exit 1; 1 failure — the `pigeons` row |
+| M2.5-G | table, head | the core asks the map without the error's node | table exit 1; 1 failure — T3's 501 instance. Head exit 1; 1 failure — the `pigeons` row. Decisions held: the map is right, the core does not ask it right |
+| M2.5-H | table, loop, outcome, ratchet | the core hands the HTTP/2 preface off instead of answering 505 | table exit 1; 1 failure — U2. Loop exit 1; 1 failure — the preface row. The lane: method.md#15's whole input raised, since a hand-off in `head` carries no request; the ratchet names it |
+| M2.5-I | decisions | `result-hands-off-stream?` takes either code on either channel | decisions exit 1; 1 failure — "a hand-off code on the other channel is no hand-off" |
+| M2.5-J | decisions | the error map answers `paused-h2-upgrade` 505 again | decisions exit 1; 1 failure — "paused-h2-upgrade is a hand-off, not an error". The core held: its door answers the preface before the map is asked |
+
+`make test` was green afterwards: twenty suites, 385 expected passes (decisions 21, connection-table 77, message-loop 18, connection-head 42, outcome-lane 4), exit 0. The lane at 'full: 135 of 135 in 9,394 runs.
