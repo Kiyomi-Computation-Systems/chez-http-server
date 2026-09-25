@@ -961,7 +961,7 @@ Settled in M2.5, open to the owner's review:
 4. **The upgrade rule is transcribed, not read.** The parser's `upgrade` field decides the hand-off but is not in chez-httparse's documented `parser-field-ref` list. The rule uses documented inputs, two flags and a method, and llhttp's logs hold it.
 
 Found and recorded:
-- **(owner, upstream) chez-httparse exports the flag bits, not the upgrade rule.** (httparse decisions) mirrors llhttp's after-a-message decisions. `before_headers_complete`'s `upgrade` is the same kind of decision, and the server transcribes it. An ask to export it, or to document `upgrade` as a readable field, would retire the transcription. Not filed: that is the owner's to decide (decision 0008).
+- **(owner, upstream) chez-httparse exports the flag bits, not the upgrade rule.** (httparse decisions) mirrors llhttp's after-a-message decisions. `before_headers_complete`'s `upgrade` is the same kind of decision, and the server transcribes it. An ask to export it, or to document `upgrade` as a readable field, would retire the transcription. Not filed: that is the owner's to decide (decision 0008). (Later on 2026-09-25: filed as chez-httparse #47 on the owner's word, and landed in v0.4.1; see UPSTREAM ASK FILED AND LANDED below.)
 - **(M3) A 2xx to CONNECT carries neither `Content-Length` nor `Transfer-Encoding`.** RFC 9110 §9.3.6: "A server MUST NOT send any Transfer-Encoding or Content-Length header fields in a 2xx (Successful) response to CONNECT." A v1 handler may answer a CONNECT 200, so M3's framing must drop both there.
 - **(M8) The hook has no v1 user.** The core answers the HTTP/2 preface itself. M8 decides how a handler takes an upgrade, at the message's end, and writes the hook's contract test for that door.
 - **(M2 exit)** One item remains: libhtp's pipelining and multi-packet files, with our expectations, promoted in the ratchet by name. The outcome lane holds 135 at 'extremes and at 'full, allocation is 2,512 B against the 3 KiB ratchet, and `make check-imports` is clean.
@@ -976,3 +976,35 @@ MERGED to main on 2026-09-25 as f5c13ca (PR #27), on the owner's "do closing rit
 Every slice of M2 is merged, ① to ⑤. Of M2's exit, one item remains: our expectations for libhtp's pipelining and multi-packet files.
 
 NEXT: the M2 exit (plan §6): our expectations for libhtp's pipelining and multi-packet files, promoted in the ratchet by name, then M2's close-out, on a fresh branch cut from main after f5c13ca, when the owner asks.
+
+UPSTREAM ASK FILED AND LANDED (2026-09-25, after M2.5 merged): chez-httparse #47, on the owner's word.
+
+M2.5 transcribed llhttp's upgrade rule as `request-upgrades?` (settled item 4 above), and offered the ask in one line of its report, not in a form. Asked what it was, the ask shrank. The parser already stores llhttp's answer in its `upgrade` field, and `parser-field-ref` reads it. What was missing was the documentation, and llhttp documents the same answer as `llhttp_get_upgrade` (src/native/api.h:104). So #47 asks for documentation only, "Document the `upgrade` field so embedders need not copy llhttp's upgrade rule", with no new procedure. It was filed on the owner's word: "yes drop it and file the issue".
+
+chez-httparse tagged v0.4.1 the same day: annotated tag 89d716f pointing at 9bc669c; #47 via PR #48 (fa6d7ae); release PR #49; #47 closed at 20:40 UTC. `docs/api.org`'s `parser-field-ref` table gains `upgrade`: 1 when the message upgrades, written just before on-headers-complete, and held through the body, on-message-complete and the hand-off result. It is not cleared between messages, and `parser-reset!` zeroes it. Its CHANGELOG adds the `unit.upgrade-field` lane: 160 on-headers-complete reads over 212 fixtures, held to llhttp's rule. That lane is also the first check that sees the grammar's 101 test, which had survived every lane when moved to 100.
+
+The pin moves from v0.4.0 to the v0.4.1 tag, on a commit of its own (branch chore/pin-httparse-v0.4.1): `vendor/chez-httparse` is at 9bc669c, and its nested byte-machine is still 0245db3. Watched to fail: with the checkout moved and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2). A trap: `make test` runs `git submodule update`, which checks out the gitlink the index records. The first run put the checkout back at 1cddba8, and then failed `check-pins`. Stage the gitlink before `make test`.
+
+Byte identity: between the tags, the only change on our library path is 14 comment lines in `src/httparse/grammar.sls` (`git diff v0.4.0 v0.4.1`). Byte-identical:
+- `src/generated/`: httparse-message.sls and httparse-url.sls;
+- `test/support/harness`;
+- the nested `vendor/`;
+- the corpus under `test/vendor/`. So test-corpus-inventory's counts hold as they are.
+
+Smoke evidence (`.plans/research/spike/smoke-httparse-v041.sps`, Darwin arm64, Chez 10.4.1, on the Makefile's LIBDIRS; exit 0 on both runs, `out/smoke-httparse-v041.run{1,2}.txt`, identical):
+
+    (strict-fixtures 135)
+    (logged-upgrades 9 ("request/connection.md#14" "request/connection.md#18" "request/connection.md#19" "request/connection.md#20" "request/connection.md#21" "request/method.md#2" "request/method.md#3" "request/method.md#4" "request/uri.md#9"))
+    (size whole on-headers-complete-reads 94 field-vs-rule-disagreements 0 field-is-1-in 9 same-as-logged #t)
+    (size 1 on-headers-complete-reads 94 field-vs-rule-disagreements 0 field-is-1-in 9 same-as-logged #t)
+
+Reading: the documented field gives the answer the server transcribed. Over the 135 strict fixtures, whole and a byte at a time, it equals llhttp's rule at all 94 on-headers-complete reads. It is 1 in exactly the nine fixtures whose logs pause for an upgrade. The spike keeps its own copy of the rule as its oracle, so it still runs once the server stops carrying one.
+
+`make test` at the moved pin: twenty suites, 385 expected passes (as on main), exit 0. The CPS workload costs 2,512 B per request, unchanged. Updated:
+- the Makefile (the pin);
+- global-constraints (the pin);
+- decision 0008 (a row for #47 and a dated note);
+- the research README;
+- the version comments in `tests/test-integration.sps` and `tests/test-corpus-inventory.sps`.
+
+NEXT: the server reads the field, on a branch stacked on this one. The adapter passes `upgrade` into conn-headers-complete-step, the core closes after an upgrade on it, and `request-upgrades?` retires. Then the M2 exit.
