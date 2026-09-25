@@ -356,3 +356,21 @@ Red before green:
 | M2.4-L | loop, head | a close never completes: no `closed` on a later turn | loop exit 1; 2 failures — the spike's messages and the raising handler, both left in closing. Head exit 1; 13 passes, 27 failures — every row that closes |
 
 `make test` was green afterwards: nineteen suites, 355 expected passes (message-loop 12, fake-shell 15), exit 0.
+
+### Third step: the outcome lane
+
+Watched to fail by mutation only, since the lane and the ratchet's comparator were written after the code they measure.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.4-M | outcome, ratchet | the lane's connection is never fed: every outcome is the empty one | outcome exit 1; 3 failures — both calibration rows, and "each listed fixture's outcome still depends on the chunk size". Ratchet exit 1 — the four upgrades "marked not-yet but now passes" |
+| M2.4-N | outcome | the lane sees only the handlers, not the responses or the close | outcome exit 1; 2 failures — both calibration rows. Every fixture held: no corpus outcome differs only in its responses or its close |
+
+On this tree the earlier mutants reach the lane:
+- A: 44 fixtures differ, at 'extremes and at 'full, and the ratchet names the same 44;
+- B and C: all 131 promoted fixtures, since every run records actions outside the outermost drain;
+- J: 4 fixtures, and the calibration;
+- L: the calibration only, since every fixture ends in closing at every size;
+- I survives the lane and dies in the loop suite. Feeds are not in the outcome, and the parser's error after a close is not answered.
+
+`make test` was green afterwards: twenty suites, 362 expected passes (outcome-lane 6, ratchet 8), exit 0.
