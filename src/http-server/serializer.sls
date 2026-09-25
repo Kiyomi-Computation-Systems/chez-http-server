@@ -2,28 +2,242 @@
 ;;; (http-server serializer) — a response, as the bytes the server writes (M3;
 ;;; design §3.1, §7.3; decision 0010).
 ;;;
-;;; M3.1 lands in two steps.  This one holds what a handler's response may
-;;; carry and the Date line; the second adds `serialize-response`, which
-;;; turns a response and the connection's framing decision into the segments
-;;; of one `uv-write*!`.
+;;; `serialize-response` turns a response record and the connection's framing
+;;; decision into the segments of one `uv-write*!`: the status line, the Date
+;;; slot, the header block and the body, each a segment of its own, so nothing
+;;; is concatenated (one request, one completion; design §7.3).  It is a
+;;; function of its arguments alone, tabled apart from any connection state,
+;;; which is why it is a library of its own.
+;;;
+;;; THE DATE SLOT (decision 0010 item 4).  The core reads no clock (decision
+;;; 0002 item 1), so a final response leaves the symbol `date` where its Date
+;;; line goes, directly after the status line, and the shell writes the line
+;;; there.  A line is always `date-line-length` bytes, so the byte count is
+;;; exact before the shell fills the slot.  `date-line` formats one from whole
+;;; seconds since the epoch; the shell keeps it and re-formats it when the
+;;; second changes.  A response whose handler wrote its own Date keeps that
+;;; one and leaves no slot.
+;;;
+;;; THE FRAMING IS THE SERVER'S (decision 0010 items 1 and 3).  The handler's
+;;; fields are written in its order, then Content-Length or Transfer-Encoding
+;;; as the mode says, then Connection as the connection says, then the blank
+;;; line.  A handler's own Connection field is never copied: it may only be
+;;; `close`, and the connection argument carries that.
 ;;;
 ;;; WHAT CANNOT BE WRITTEN SAFELY is a fault (decision 0010 item 2).
-;;; `response-fault` names it, and the core answers 500 instead.  The value
-;;; bytes refused are the ones llhttp's strict parser refuses in a field
-;;; value: every control character but HTAB.  A handler's `Connection` field
-;;; may only be `close` (item 3), which `response-closes?` reads.
-;;;
-;;; THE DATE LINE (decision 0010 item 4).  The core reads no clock (decision
-;;; 0002 item 1), so the shell fills each response's Date: `date-line`
-;;; formats the line from whole seconds since the epoch, always
-;;; `date-line-length` bytes, and the shell keeps it and re-formats it when
-;;; the second changes.
+;;; `response-fault` names it, and the core answers 500 instead; serializing
+;;; a response with a fault is a caller bug, an assertion violation.  The
+;;; value bytes refused are the ones llhttp's strict parser refuses in a
+;;; field value: every control character but HTAB.
 ;;;
 ;;; PURE: imports only (rnrs) and this project's pure libraries.
 (library (http-server serializer)
-  (export response-fault response-closes? date-line date-line-length)
+  (export serialize-response response-fault response-closes?
+          framing-modes date-line date-line-length)
   (import (rnrs) (http-server response) (http-server span)
           (only (http-server headers) header-name=?))
+
+  ;; framing-modes : (Listof Symbol)
+  ;; How a response's body goes on the wire, as the framing decision names it
+  ;; (M3.2; RFC 9112 §6):
+  ;;   content-length       Content-Length, then the body
+  ;;   content-length-only  Content-Length and no body: a HEAD's answer
+  ;;   no-body              neither, and no body: a 204, a 304, a 2xx to
+  ;;                        CONNECT, a HEAD answered with no body
+  ;;   chunked              Transfer-Encoding: chunked, and the body, if any,
+  ;;                        as the first chunk; the rest of the stream is M6's
+  ;;   close-delimited      neither, then the body, which the close ends
+  (define framing-modes
+    '(content-length content-length-only no-body chunked close-delimited))
+
+  ;; serialize-response :
+  ;;   Response Mode Connection -> (values (Listof Segment) Nat)
+  ;;   Mode       = one of framing-modes
+  ;;   Connection = (U 'close 'keep-alive #f) — the Connection field to write
+  ;;   Segment    = (U Bytevector 'date) — 'date is the Date slot
+  ;; The segments of one write, in order, and the bytes they come to, the
+  ;; slot counted at date-line-length.  A response with a fault, a mode or a
+  ;; connection outside those sets, and a close-delimited body or a handler's
+  ;; `Connection: close` on a connection that stays open, are assertion
+  ;; violations.
+  (define (serialize-response r mode connection)
+    (cond ((response-fault r)
+           => (lambda (fault)
+                (assertion-violation 'serialize-response "a response with a fault" fault)))
+          ((not (memq mode framing-modes))
+           (assertion-violation 'serialize-response "not a framing mode" mode))
+          ((not (memq connection '(close keep-alive #f)))
+           (assertion-violation 'serialize-response "not a Connection" connection))
+          ((and (not (eq? connection 'close))
+                (or (eq? mode 'close-delimited) (response-closes? r)))
+           (assertion-violation 'serialize-response
+             "a response that closes the connection, on one that stays open" mode)))
+    (let* ((headers (response-headers r))
+           (body (response-body r))
+           (length (if body (bytevector-length body) 0))
+           (status (status-line (response-status r) (response-reason r)))
+           (block (header-block headers mode length connection))
+           (tail (body-segments mode body length))
+           (bytes (fold-left (lambda (n seg) (fx+ n (bytevector-length seg)))
+                             (fx+ (bytevector-length status) (bytevector-length block))
+                             tail)))
+      (if (exists (lambda (h) (header-name=? (car h) date-name)) headers)
+          (values (cons status (cons block tail)) bytes)
+          (values (cons status (cons 'date (cons block tail)))
+                  (fx+ bytes date-line-length)))))
+
+  ;; --- the status line --------------------------------------------------------
+
+  ;; The reason phrases: RFC 9110 §15's, and RFC 6585's for 428, 429, 431 and
+  ;; 511.  A status without one is written with an empty phrase, which RFC
+  ;; 9112 §4 allows ("status-code SP [ reason-phrase ]"); a client ignores
+  ;; the phrase anyway.
+  (define reason-phrases
+    '((100 . "Continue") (101 . "Switching Protocols")
+      (200 . "OK") (201 . "Created") (202 . "Accepted")
+      (203 . "Non-Authoritative Information") (204 . "No Content")
+      (205 . "Reset Content") (206 . "Partial Content")
+      (300 . "Multiple Choices") (301 . "Moved Permanently") (302 . "Found")
+      (303 . "See Other") (304 . "Not Modified") (305 . "Use Proxy")
+      (307 . "Temporary Redirect") (308 . "Permanent Redirect")
+      (400 . "Bad Request") (401 . "Unauthorized") (402 . "Payment Required")
+      (403 . "Forbidden") (404 . "Not Found") (405 . "Method Not Allowed")
+      (406 . "Not Acceptable") (407 . "Proxy Authentication Required")
+      (408 . "Request Timeout") (409 . "Conflict") (410 . "Gone")
+      (411 . "Length Required") (412 . "Precondition Failed")
+      (413 . "Content Too Large") (414 . "URI Too Long")
+      (415 . "Unsupported Media Type") (416 . "Range Not Satisfiable")
+      (417 . "Expectation Failed") (421 . "Misdirected Request")
+      (422 . "Unprocessable Content") (426 . "Upgrade Required")
+      (428 . "Precondition Required") (429 . "Too Many Requests")
+      (431 . "Request Header Fields Too Large")
+      (500 . "Internal Server Error") (501 . "Not Implemented")
+      (502 . "Bad Gateway") (503 . "Service Unavailable")
+      (504 . "Gateway Timeout") (505 . "HTTP Version Not Supported")
+      (511 . "Network Authentication Required")))
+
+  ;; build-status-line : Nat Bytevector -> Bytevector
+  ;; `HTTP/1.1 NNN reason CRLF`: the version is always 1.1 (RFC 9110 §2.5).
+  (define (build-status-line status reason)
+    (let* ((n (bytevector-length reason))
+           (out (make-bytevector (fx+ 15 n))))
+      (bytevector-copy! version-prefix 0 out 0 9)
+      (put-decimal! out 12 status)
+      (bytevector-u8-set! out 12 32)
+      (bytevector-copy! reason 0 out 13 n)
+      (bytevector-u8-set! out (fx+ 13 n) 13)
+      (bytevector-u8-set! out (fx+ 14 n) 10)
+      out))
+
+  (define version-prefix (string->utf8 "HTTP/1.1 "))
+
+  ;; status-line : Nat (U Bytevector #f) -> Bytevector
+  (define (status-line status reason)
+    (cond (reason (build-status-line status reason))
+          ((vector-ref status-lines status))
+          (else (build-status-line status (make-bytevector 0)))))
+
+  ;; put-decimal! : Bytevector Nat Nat -> Void
+  ;; Write `n`'s decimal digits into `out`, ending just before `end`.
+  (define (put-decimal! out end n)
+    (let loop ((at (fx- end 1)) (n n))
+      (bytevector-u8-set! out at (fx+ 48 (fxmod n 10)))
+      (when (fx>=? n 10) (loop (fx- at 1) (fxdiv n 10)))))
+
+  ;; decimal-digits : Nat -> Nat — how many digits `n` is written in.
+  (define (decimal-digits n)
+    (if (fx<? n 10) 1 (fx+ 1 (decimal-digits (fxdiv n 10)))))
+
+  ;; status-lines : (Vectorof (U Bytevector #f)) — by status, made once, so a
+  ;; registered status's line allocates nothing per response.
+  (define status-lines
+    (let ((v (make-vector 600 #f)))
+      (for-each (lambda (row)
+                  (vector-set! v (car row) (build-status-line (car row) (string->utf8 (cdr row)))))
+                reason-phrases)
+      v))
+
+  ;; --- the header block ---------------------------------------------------------
+
+  (define date-name (string->utf8 "Date"))
+  (define content-length-prefix (string->utf8 "Content-Length: "))
+  (define chunked-line (string->utf8 "Transfer-Encoding: chunked\r\n"))
+  (define close-line (string->utf8 "Connection: close\r\n"))
+  (define keep-alive-line (string->utf8 "Connection: keep-alive\r\n"))
+  (define crlf (string->utf8 "\r\n"))
+
+  ;; put-bytes! : Bytevector Nat Bytes -> Nat — copy `x` in at `at`; where it ends.
+  (define (put-bytes! out at x)
+    (let ((n (bytes-length x)))
+      (bytevector-copy! (bytes-vector x) (bytes-start x) out at n)
+      (fx+ at n)))
+
+  ;; header-block : Headers Mode Nat Connection -> Bytevector
+  ;; The handler's fields but Connection, the framing field, the Connection
+  ;; field, and the blank line, in one bytevector.
+  (define (header-block headers mode length connection)
+    (let* ((framing (case mode
+                      ((content-length content-length-only)
+                       (fx+ (fx+ (bytevector-length content-length-prefix) (decimal-digits length)) 2))
+                      ((chunked) (bytevector-length chunked-line))
+                      (else 0)))
+           (closing (case connection
+                      ((close) close-line)
+                      ((keep-alive) keep-alive-line)
+                      (else #f)))
+           (size (fold-left (lambda (n h)
+                              (if (copied? h)
+                                  (fx+ n (fx+ (fx+ (bytes-length (car h)) (bytes-length (cdr h))) 4))
+                                  n))
+                            (fx+ (fx+ framing (if closing (bytevector-length closing) 0)) 2)
+                            headers))
+           (out (make-bytevector size)))
+      (let* ((at (fold-left (lambda (at h)
+                              (if (copied? h)
+                                  (let ((at (put-bytes! out at (car h))))
+                                    (bytevector-u8-set! out at 58)          ; ":"
+                                    (bytevector-u8-set! out (fx+ at 1) 32)  ; SP
+                                    (put-bytes! out (put-bytes! out (fx+ at 2) (cdr h)) crlf))
+                                  at))
+                            0 headers))
+             (at (case mode
+                   ((content-length content-length-only)
+                    (let* ((at (put-bytes! out at content-length-prefix))
+                           (end (fx+ at (decimal-digits length))))
+                      (put-decimal! out end length)
+                      (put-bytes! out end crlf)))
+                   ((chunked) (put-bytes! out at chunked-line))
+                   (else at)))
+             (at (if closing (put-bytes! out at closing) at)))
+        (put-bytes! out at crlf))
+      out))
+
+  ;; copied? : (Pair Bytes Bytes) -> Boolean — every field of the handler's
+  ;; but Connection, which the connection argument writes.
+  (define (copied? h) (not (header-name=? (car h) connection-name)))
+
+  ;; body-segments : Mode (U Bytevector #f) Nat -> (Listof Bytevector)
+  ;; What follows the head: the body itself, never copied, where the mode
+  ;; writes one and there is one; for chunked, framed as the first chunk
+  ;; (RFC 9112 §7.1: chunk-size in hex, CRLF, the data, CRLF).
+  (define (body-segments mode body length)
+    (cond ((fx=? length 0) '())
+          ((memq mode '(content-length close-delimited)) (list body))
+          ((eq? mode 'chunked) (list (chunk-size-line length) body crlf))
+          (else '())))
+
+  ;; chunk-size-line : Nat -> Bytevector — `length` in lowercase hex, CRLF.
+  (define (chunk-size-line length)
+    (let* ((digits (let loop ((n length) (d 1)) (if (fx<? n 16) d (loop (fxdiv n 16) (fx+ d 1)))))
+           (out (make-bytevector (fx+ digits 2))))
+      (let loop ((at (fx- digits 1)) (n length))
+        (bytevector-u8-set! out at (bytevector-u8-ref hex-digits (fxmod n 16)))
+        (when (fx>=? n 16) (loop (fx- at 1) (fxdiv n 16))))
+      (bytevector-u8-set! out digits 13)
+      (bytevector-u8-set! out (fx+ digits 1) 10)
+      out))
+
+  (define hex-digits (string->utf8 "0123456789abcdef"))
 
   ;; --- the faults ------------------------------------------------------------------
 

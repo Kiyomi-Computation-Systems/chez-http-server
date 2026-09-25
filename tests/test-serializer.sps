@@ -1,26 +1,177 @@
 #!r6rs
-;;; (http-server serializer): what a handler's response may carry, and the
-;;; Date line.  M3.1, first step.
+;;; (http-server serializer): a response, as the bytes the server writes.  M3.1.
 ;;;
-;;; Two tables:
+;;; Four tables:
+;;;   - the wire: a response, a framing mode and a Connection, to the bytes of
+;;;     one write, written out here by hand from RFC 9112's grammar.  Each row
+;;;     also asserts how many segments the write is (the plan's check: status
+;;;     line, Date slot, header block and body stay separate, never
+;;;     concatenated; design §7.3), the byte count the serializer reports, and
+;;;     what chez-httparse's strict response parser reads back (response-reader),
+;;;     a client that is not our code;
+;;;   - the status lines: RFC 9110 §15's and RFC 6585's reason phrases;
 ;;;   - the Date line: RFC 9110 §5.6.7's example, and Chez's own UTC calendar
 ;;;     over four centuries of instants;
 ;;;   - the faults: what a handler's response may not carry (decision 0010
 ;;;     item 2), each with its reason.
+;;; Every slot is filled with RFC 9110 §5.6.7's example line, written out here,
+;;; so the wire does not depend on the Date line under test.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) make-time time-utc->date
               date-week-day date-day date-month date-year date-hour date-minute date-second)
-        (http-server serializer) (http-server response) (http-server span))
+        (http-server serializer) (http-server response) (http-server span)
+        (response-reader))
 
 (define (b s) (string->utf8 s))
 
 ;; bytes->text : Bytevector -> String — one character per byte (Latin-1).
 (define (bytes->text bv) (list->string (map integer->char (bytevector->u8-list bv))))
 
-;; RFC 9110 §5.6.7's example, as a Date line.
+;; The line every Date slot is filled with.
 (define date-text "Date: Sun, 06 Nov 1994 08:49:37 GMT\r\n")
 
+;; wire : (Listof Segment) -> String — the write as it reaches the socket.
+(define (wire segments)
+  (apply string-append
+         (map (lambda (seg) (if (eq? seg 'date) date-text (bytes->text seg))) segments)))
+
+;; The slot's place in a row's expected wire.
+(define D date-text)
+
 (define (response status headers body) (make-response status #f headers body))
+(define (h name value) (cons (b name) (b value)))
+
+;; The server's Date, as the parser reads it back.
+(define read-date '("Date" . "Sun, 06 Nov 1994 08:49:37 GMT"))
+
+;; A row: name, response, mode, connection, the wire expected, the segments
+;; expected, whether it answers a HEAD, whether the connection ends after it,
+;; and what the parser reads back: (status reason headers body end).
+(define-record-type row
+  (fields name response mode connection wire segments head? eof? read))
+
+(define request-bytes (b "X-Id: abc"))   ; a span's delivery, as a request's
+
+(define rows
+  (list
+   (make-row "a body goes out after its Content-Length"
+             (response 200 '() (b "hi")) 'content-length #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 2\r\n\r\n" "hi")
+             4 #f #f
+             `(200 "OK" (,read-date ("Content-Length" . "2")) "hi" complete))
+   (make-row "no body is Content-Length: 0, and no body segment"
+             (response 200 '() #f) 'content-length #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 0\r\n\r\n")
+             3 #f #f
+             `(200 "OK" (,read-date ("Content-Length" . "0")) "" complete))
+   ;; RFC 9110 §9.3.2: a HEAD's answer carries the GET's fields, and no content.
+   (make-row "a HEAD's answer announces the length and writes no body"
+             (response 200 '() (b "hello")) 'content-length-only #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 5\r\n\r\n")
+             3 #t #f
+             `(200 "OK" (,read-date ("Content-Length" . "5")) "" complete))
+   ;; RFC 9110 §8.6: no Content-Length in a 204.
+   (make-row "a 204 has neither a length nor a body"
+             (response 204 '() #f) 'no-body #f
+             (string-append "HTTP/1.1 204 No Content\r\n" D "\r\n")
+             3 #f #f
+             `(204 "No Content" (,read-date) "" complete))
+   ;; RFC 9110 §15.4.5: a 304 "cannot contain content".
+   (make-row "a body where none may go is not written"
+             (response 304 (list (h "ETag" "\"v1\"")) (b "stale")) 'no-body #f
+             (string-append "HTTP/1.1 304 Not Modified\r\n" D "ETag: \"v1\"\r\n\r\n")
+             3 #f #f
+             `(304 "Not Modified" (,read-date ("ETag" . "\"v1\"")) "" complete))
+   ;; RFC 9112 §7.1: chunk = chunk-size CRLF chunk-data CRLF, the size in hex.
+   (make-row "chunked: Transfer-Encoding, and the body as the first chunk"
+             (response 200 '() (b "abcdefghijklmnopqrstuvwxyz")) 'chunked #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "Transfer-Encoding: chunked\r\n\r\n"
+                            "1a\r\n" "abcdefghijklmnopqrstuvwxyz" "\r\n")
+             6 #f #f
+             `(200 "OK" (,read-date ("Transfer-Encoding" . "chunked"))
+                   "abcdefghijklmnopqrstuvwxyz" need-input))
+   (make-row "chunked with no body yet is the head alone"
+             (response 200 '() #f) 'chunked #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "Transfer-Encoding: chunked\r\n\r\n")
+             3 #f #f
+             `(200 "OK" (,read-date ("Transfer-Encoding" . "chunked")) "" need-input))
+   ;; RFC 9112 §6.3 rule 8: a response with neither is delimited by the close.
+   (make-row "close-delimited: no length, then the body, ended by the close"
+             (response 200 '() (b "hello")) 'close-delimited 'close
+             (string-append "HTTP/1.1 200 OK\r\n" D "Connection: close\r\n\r\n" "hello")
+             4 #f #t
+             `(200 "OK" (,read-date ("Connection" . "close")) "hello" complete))
+   (make-row "the handler's fields in its order, then the framing, then Connection"
+             (response 200 (list (h "Content-Type" "text/plain") (h "X-Request-Id" "7")) (b "ok"))
+             'content-length 'close
+             (string-append "HTTP/1.1 200 OK\r\n" D
+                            "Content-Type: text/plain\r\nX-Request-Id: 7\r\n"
+                            "Content-Length: 2\r\nConnection: close\r\n\r\n" "ok")
+             4 #f #f
+             `(200 "OK" (,read-date ("Content-Type" . "text/plain") ("X-Request-Id" . "7")
+                         ("Content-Length" . "2") ("Connection" . "close"))
+                   "ok" complete))
+   ;; Decision 0006 item 1; decision 0010 item 3.
+   (make-row "an HTTP/1.0 client kept alive is told so"
+             (response 200 '() (b "ok")) 'content-length 'keep-alive
+             (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 2\r\nConnection: keep-alive\r\n\r\n" "ok")
+             4 #f #f
+             `(200 "OK" (,read-date ("Content-Length" . "2") ("Connection" . "keep-alive")) "ok" complete))
+   ;; Decision 0010 item 4.
+   (make-row "a handler's own Date is written, and no slot is left"
+             (response 200 (list (h "Date" "Mon, 07 Nov 1994 08:49:37 GMT")) #f) 'content-length #f
+             (string-append "HTTP/1.1 200 OK\r\n" "Date: Mon, 07 Nov 1994 08:49:37 GMT\r\n"
+                            "Content-Length: 0\r\n\r\n")
+             2 #f #f
+             `(200 "OK" (("Date" . "Mon, 07 Nov 1994 08:49:37 GMT") ("Content-Length" . "0")) "" complete))
+   ;; Decision 0010 item 3: one Connection field, the server's.
+   (make-row "a handler's Connection: close is written once"
+             (response 200 (list (h "Connection" "close")) (b "ok")) 'content-length 'close
+             (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 2\r\nConnection: close\r\n\r\n" "ok")
+             4 #f #f
+             `(200 "OK" (,read-date ("Content-Length" . "2") ("Connection" . "close")) "ok" complete))
+   (make-row "a handler's reason phrase is written as given"
+             (make-response 200 (b "Fine") '() #f) 'content-length #f
+             (string-append "HTTP/1.1 200 Fine\r\n" D "Content-Length: 0\r\n\r\n")
+             3 #f #f
+             `(200 "Fine" (,read-date ("Content-Length" . "0")) "" complete))
+   ;; RFC 9112 §4: status-line = HTTP-version SP status-code SP [ reason-phrase ].
+   (make-row "a status with no registered phrase keeps the space before it"
+             (response 299 '() #f) 'content-length #f
+             (string-append "HTTP/1.1 299 \r\n" D "Content-Length: 0\r\n\r\n")
+             3 #f #f
+             `(299 "" (,read-date ("Content-Length" . "0")) "" complete))
+   (make-row "a name and a value may be spans of a request's bytes"
+             (response 200 (list (cons (make-span request-bytes 0 4) (make-span request-bytes 6 9))) #f)
+             'content-length #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "X-Id: abc\r\nContent-Length: 0\r\n\r\n")
+             3 #f #f
+             `(200 "OK" (,read-date ("X-Id" . "abc") ("Content-Length" . "0")) "" complete))
+   ;; RFC 9110 §5.5: field-vchar = VCHAR / obs-text, with SP and HTAB between.
+   (make-row "an HTAB and obs-text in a value are written"
+             (response 200 (list (cons (b "X-Tab") (u8-list->bytevector '(97 9 98 233)))) #f)
+             'content-length #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "X-Tab: a\tb\xE9;\r\nContent-Length: 0\r\n\r\n")
+             3 #f #f
+             `(200 "OK" (,read-date ("X-Tab" . "a\tb\xE9;") ("Content-Length" . "0")) "" complete))
+   ;; Decision 0009: the core's own redirect.
+   (make-row "a redirect carries its Location, and closes"
+             (response 301 (list (h "Location" "/a?x=%5B%5D")) #f) 'content-length 'close
+             (string-append "HTTP/1.1 301 Moved Permanently\r\n" D
+                            "Location: /a?x=%5B%5D\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+             3 #f #f
+             `(301 "Moved Permanently" (,read-date ("Location" . "/a?x=%5B%5D")
+                                        ("Content-Length" . "0") ("Connection" . "close"))
+                   "" complete))))
+
+;; The statuses the server writes or a handler commonly sends, with their
+;; phrases: RFC 9110 §15's section titles, and RFC 6585 §5 for 431.
+(define phrases
+  '((200 "OK") (204 "No Content") (301 "Moved Permanently") (304 "Not Modified")
+    (400 "Bad Request") (404 "Not Found") (408 "Request Timeout")
+    (413 "Content Too Large") (414 "URI Too Long")
+    (431 "Request Header Fields Too Large") (500 "Internal Server Error")
+    (501 "Not Implemented") (505 "HTTP Version Not Supported")))
 
 ;; --- the Date line, against Chez's own calendar -------------------------------
 
@@ -103,6 +254,33 @@
 
 (run-suite "serializer"
   (lambda ()
+    (for-each
+     (lambda (r)
+       ;; A refusal fails the row's checks rather than ending the suite.
+       (let-values (((segments bytes)
+                     (guard (e ((assertion-violation? e) (values '(refused) -1)))
+                       (serialize-response (row-response r) (row-mode r) (row-connection r)))))
+         (test-equal (string-append (row-name r) ": the wire") (row-wire r) (wire segments))
+         (test-eqv (string-append (row-name r) ": its segments") (row-segments r) (length segments))
+         (test-eqv (string-append (row-name r) ": its byte count")
+                   (string-length (row-wire r)) bytes)
+         (test-equal (string-append (row-name r) ": what a client reads")
+                     (row-read r)
+                     (read-response (u8-list->bytevector (map char->integer (string->list (wire segments))))
+                                    (row-head? r) (row-eof? r)))
+         (test-eq (string-append (row-name r) ": no fault") #f (response-fault (row-response r)))))
+     rows)
+
+    (for-each
+     (lambda (p)
+       (let-values (((segments bytes)
+                     (guard (e ((assertion-violation? e) (values '(refused) -1)))
+                       (serialize-response (response (car p) '() #f) 'no-body #f))))
+         (test-equal (string-append "the status line of " (number->string (car p)))
+                     (string-append "HTTP/1.1 " (number->string (car p)) " " (cadr p) "\r\n")
+                     (bytes->text (car segments)))))
+     phrases)
+
     (test-equal "RFC 9110 §5.6.7's example" date-text (bytes->text (date-line 784111777)))
     (test-equal "the epoch" "Date: Thu, 01 Jan 1970 00:00:00 GMT\r\n" (bytes->text (date-line 0)))
     (test-equal "every instant's line is Chez's calendar's" '()
@@ -120,4 +298,16 @@
      faults)
     (test-eq "a handler's Connection: close closes" #t
              (response-closes? (with-header (b "Connection") (b "CLOSE"))))
-    (test-eq "no Connection field does not" #f (response-closes? (response 200 '() #f)))))
+    (test-eq "no Connection field does not" #f (response-closes? (response 200 '() #f)))
+    (test-eq "a response with a fault is not serialized" 'refused
+             (assertion-raised?
+              (lambda () (serialize-response (with-header (b "X") (b "a\nb")) 'content-length #f))))
+    (test-eq "a mode outside the five is refused" 'refused
+             (assertion-raised? (lambda () (serialize-response (response 200 '() #f) 'identity #f))))
+    (test-eq "a close-delimited body on a kept connection is refused" 'refused
+             (assertion-raised?
+              (lambda () (serialize-response (response 200 '() (b "x")) 'close-delimited #f))))
+    (test-eq "a handler's close on a kept connection is refused" 'refused
+             (assertion-raised?
+              (lambda () (serialize-response (with-header (b "Connection") (b "close"))
+                                             'content-length 'keep-alive))))))

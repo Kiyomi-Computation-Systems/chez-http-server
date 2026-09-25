@@ -1146,3 +1146,16 @@ M3.1 FIRST STEP: what a handler's response may carry, and the Date line (feat/m3
 - Every suite green in a scratch worktree with only this step: twenty-two suites, 440 expected passes (serializer 39), each exit 0. `make check-imports` is clean there.
 
 NEXT: the second step, the wire, stacked on this one.
+
+M3.1 SECOND STEP: the wire (feat/m3.1-wire, cut from feat/m3-response-path).
+- `(http-server serializer)` gains `serialize-response` and `framing-modes`. A response, a framing mode and the Connection to write become the segments of one write and their byte count: the status line, the Date slot, the header block, the body.
+  - The five modes: Content-Length; Content-Length with no body, a HEAD's answer; no body; chunked; close-delimited.
+  - The status line of each of the 48 registered statuses (RFC 9110 §15's phrases, and RFC 6585's) is made once; any other status gets an empty phrase. The header block is one bytevector. The body is the handler's bytevector itself, never copied; a chunked body goes out as the first chunk, its size in lowercase hex.
+  - A handler's Date takes the slot's place. A handler's Connection field is never copied: the connection argument writes the one line.
+- `tests/response-reader.sls`, new: a response read back by chez-httparse's strict response parser, a client that is not our code. It returns the status, the reason, each field in order, the body, and how the read ended, and finishes a close-delimited message at EOF with `parser-finish!`, as a client does.
+- `tests/test-serializer.sps` gains the wire table: 17 rows, each with its wire written out by hand, its segment count (the plan's check), its byte count, and what the parser reads back; the status lines of 13 statuses; and four refusals of `serialize-response`.
+- Red before green: with the first step's library and a `serialize-response` that answered nothing, the suite exited 1, 56 passes and 85 failures. The 56 were the first step's 39 and the rows' 17 "no fault" checks.
+- Mutations (m3-mutations.md): A, the plan's, joins consecutive segments into one bytevector, and exactly the seven segment counts go red while every wire, byte count and read-back holds. D, F and G break the Connection line, the chunk size and the Date slot, each on its row. The first step's ten, re-run on the whole suite, go red on their rows.
+- `make test` green: twenty-two suites, 542 expected passes (serializer 141), exit 0. `make check-imports` is clean.
+
+NEXT: the two stacked PRs, on the owner's word. Then M3.2, framing: the decision in `(http-server decisions)`, and the core writing through the serializer.
