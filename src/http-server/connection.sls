@@ -78,6 +78,13 @@
 ;;; browsers send unencoded, are answered 301 with the target encoded as the
 ;;; Location.
 ;;;
+;;; THE HOST IS JUDGED FIRST, at the same moment (RFC 9112 §3.2; decided on
+;;; the owner's word, 2026-09-25): two Host lines, a Host value that is not
+;;; `uri-host [ ":" port ]`, and no Host on HTTP/1.1 unless the limits'
+;;; switch is off, are refused as 'invalid-host, answered 400.  The 400 is a
+;;; MUST, so a target the redirect would take never reaches it.
+;;; (http-server host) holds the rules; the value is judged in place.
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
 ;;; to arm, and carries no time: no event but `tick` carries `now`, so the core
@@ -95,6 +102,7 @@
   (import (rnrs)
           (http-server response) (http-server request) (http-server span)
           (http-server limits) (http-server decisions) (http-server target)
+          (only (http-server host) host-fault)
           (only (httparse decisions) should-keep-alive?)
           (only (httparse methods) httparse-method-numbers))
 
@@ -508,7 +516,10 @@
   ;; the declared length, since it counts down as the body arrives, and the
   ;; parser's reset after each message zeroes it and the flags.  Nothing
   ;; downstream re-reads the parser.  The content-length is the body's, M6's.
-  ;; The target is judged here, where the method is known (M2.3; see
+  ;; The Host lines are judged here first (RFC 9112 §3.2; see (http-server
+  ;; host)): a request whose Host is missing on HTTP/1.1 (when the limits
+  ;; require one), doubled or invalid is refused as 'invalid-host, answered
+  ;; 400.  Then the target, where the method is known (M2.3; see
   ;; (http-server target)).  One that is not the form its method calls for,
   ;; or whose bytes uriparse refuses, is refused, and the state stays in head
   ;; until the parser's error arrives:
@@ -527,6 +538,9 @@
               (name (method-name method))
               (target (or (head-target h) empty-span)))
          (cond
+          ((host-fault (head-fields h) http-major http-minor
+                       (limits-require-host? (conn-limits s)))
+           (refuse s 'invalid-host))
           ((not (target-fault (conn-judge s) name target))
            (conn-request-set! s (make-request name target http-major http-minor
                                               (reverse (head-fields h)) #f))

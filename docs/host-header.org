@@ -1,0 +1,17 @@
+#+TITLE: The Host header
+
+Every HTTP/1.1 request names the site it wants in a ~Host~ line, such as
+~Host: example.com~. The server checks it before your handler runs, and
+answers ~400 Bad Request~ and closes the connection when:
+
+- an HTTP/1.1 request has no ~Host~ line;
+- a request has more than one ~Host~ line;
+- the value is not a host with an optional port, such as ~a b~, ~h:x~ or
+  ~[::1~;
+- the value carries a user name (~user@example.com~).
+
+These are RFC 9112's rules. An HTTP/1.0 request may leave ~Host~ out. An empty
+~Host:~ is allowed: a client sends one when its URL has no host.
+
+To serve HTTP/1.1 requests that have no ~Host~, set ~CHEZ_HTTP_REQUIRE_HOST=false~
+(see [[file:configuration.org][configuration.org]]). The other rules always apply.

@@ -51,12 +51,12 @@
     ;; --- the core's own reasons (design §6.5, policy and application) -----
     (test-equal "each reason the core closes with after a response, and its status"
                 '((target-redirect . 301) (parser-error . 400) (invalid-target . 400)
-                  (header-timeout . 408) (target-too-large . 414)
+                  (invalid-host . 400) (header-timeout . 408) (target-too-large . 414)
                   (headers-too-large . 431) (too-many-headers . 431)
                   (header-field-too-large . 431) (header-value-too-large . 431)
                   (handler-failed . 500))
                 (map (lambda (r) (cons r (reason-status r)))
-                     '(target-redirect parser-error invalid-target header-timeout
+                     '(target-redirect parser-error invalid-target invalid-host header-timeout
                        target-too-large headers-too-large too-many-headers
                        header-field-too-large header-value-too-large handler-failed)))
     ;; A connection that closes with no response has no status to give.

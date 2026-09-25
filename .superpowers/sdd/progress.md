@@ -706,4 +706,52 @@ Reading:
 
 `make test` at the moved pin: seventeen suites, 310 expected passes, exit 0; the trace lane holds at 'full (9,394 runs). Updated: the Makefile (the pin), global-constraints (the pin), decision 0008 (a row for #24 and a dated note), the research README, and `tests/test-integration.sps` (its version comments).
 
-NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after 01f7a5d, when the owner asks. Also waiting for the owner's word: RFC 9112 §3.2's Host rules, decided on 2026-09-25. A duplicate Host gets 400, and so does a missing one, behind a `CHEZ_HTTP_` switch that the corpus lane turns off; an invalid value waits for uriparse #24, filed that day. Their DECIDED entry opens that branch.
+HOST HEADER RULES: the second of M2.3's two open RFC rules (RFC 9112 §3.2). Branch feat/host-header-rules, cut from chore/uriparse-v0.6.0, the second of two stacked PRs; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
+
+MEASURED first, on main after the uriparse v0.5.0 stack merged:
+- the server read no Host at all;
+- of the 135 strict fixtures, 95 messages reach on-headers-complete: 84 are HTTP/1.1, 10 HTTP/1.0 and 1 another version, and 23 carry a Host;
+- 65 HTTP/1.1 messages in 61 fixtures carry none (pausing.md 13, transfer-encoding.md 16, sample.md 9, uri.md 8, connection.md 8, content-length.md 5, pipelining.md 1, method.md 1), and none has two Host lines, an empty Host or an invalid one;
+- 33 of the head suite's requests are HTTP/1.1 with no Host;
+- judging a Host value through a copy costs 16, 32 and 64 B per request for 1-, 16- and 41-byte values, where uriparse's `validate-authority` allocates nothing on a bytevector in hand;
+- other servers: nginx answers 400 for all three rules; Go for a missing Host on HTTP/1.1 (CONNECT exempt) and a malformed one; Node for a missing Host on HTTP/1.1, behind its `requireHostHeader` option, default on.
+
+DECIDED on the owner's word (2026-09-25), asked with the facts above:
+- **Two Host lines are refused with 400.**
+- **An HTTP/1.1 request with no Host is refused with 400**, CONNECT included, behind a switch: `CHEZ_HTTP_REQUIRE_HOST`, default on (decision 0005's amendment of 2026-09-25). The corpus lane runs with it off, so its 61 fixtures keep full coverage; the head suite tests it on.
+- **An invalid Host value waits for uriparse #24**, a ranged `validate-authority`, filed on the owner's word that day, and is then judged in place. uriparse released it as v0.6.0 the same day (above).
+- **It lands on a fresh branch after the uriparse v0.5.0 stack merges.**
+
+The alternatives weighed:
+- for two Host lines, leaving them to M4;
+- for a missing Host, refusing it always and listing the 61 fixtures, or leaving it for now;
+- for an invalid value, copying it now and asking uriparse (carried, like #21), or leaving it to M4;
+- landing as a fourth stacked PR.
+
+Left to M4: an empty Host on origin-form (RFC 9112 §3.3: the server "can reject the request or determine whether a configured default applies"), and absolute-form's host taking precedence over Host.
+
+What changed:
+- `(http-server host)`, new and pure, exports `host-fault : (Listof (Pair Span Span)) Nat Nat Boolean -> (U #f Symbol)` over the head's kept fields. It walks them once and gives:
+  - `'duplicate-host` at a second Host line, in any version;
+  - `'missing-host` when there is none, on HTTP/1.1, and only with the switch on;
+  - for one Host, uriparse's error code when the value is not an authority, judged in place by the ranged `validate-authority`, or `'host-userinfo` when its host starts after 0 by the ranged `authority-host-span`.
+
+  An empty value passes.
+- The core judges the Host first in `conn-headers-complete-step`, before the target, and refuses a fault as `'invalid-host`, which `reason-status` answers 400. The 400 is RFC 9112 §3.2's MUST, so a target decision 0009 would redirect still gets 400 when its Host is wrong.
+- `(http-server limits)` gains a twelfth field, `limits-require-host?`, from `CHEZ_HTTP_REQUIRE_HOST`: "true" or "false", nothing else.
+- The trace lane runs the core under `corpus-limits`, the defaults with the switch off.
+- The head suite's rows about other rules run under `minimal`, the defaults with the switch off. Their minimal requests carry no Host, and giving them one would change the header-limit rows' arithmetic. The table's H4 head reads a Host line in, as every HTTP/1.1 head must.
+- docs: `docs/host-header.org`, new, linked from the README and configuration.org; configuration.org lists the switch.
+
+Tests:
+- test-host.sps (11): one valid Host, an empty one, the name in any case, a field named like Host, no Host on HTTP/1.1 with the switch on and off, HTTP/1.0 and 0.9 with none, two Host lines in any version, four invalid values with uriparse's codes, userinfo, and a value judged in place;
+- the head suite (40): eight Host rows at every delivery size, among them a redirectable target refused with 400;
+- the limits suite (26): the default, "true" and "false", and three other values refused;
+- the allocation lane (12): a 500-byte Host costs what a short one does, 2,624 B;
+- the decisions suite: `invalid-host` is 400.
+
+Watched to fail (m2-mutations.md): test-limits and test-host exited 255 before the code, on an unbound accessor and a missing library. The head suite's five refusal rows and the decisions suite's reasons row were red before the wiring, while the served rows held. The table's H4 and the trace lane went red at the wiring: with the switch still on, 54 fixtures' traces changed and 7 listed fixtures were refused for their Host instead, 61 in all, the count measured first. Mutations AL to AU follow.
+
+`make test` green: eighteen suites, 333 expected passes (host 11, connection-head 40, limits 26, connection-allocation 12), exit 0. The trace lane holds at 'full (9,394 runs). `make check-imports` is clean.
+
+NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after 01f7a5d, when the owner asks.

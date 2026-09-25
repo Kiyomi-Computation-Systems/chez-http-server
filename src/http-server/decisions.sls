@@ -33,6 +33,7 @@
       ((target-redirect) 301)                ; bracket params and pipes (0009)
       ((parser-error) 400)                   ; the parser's default (design §6.3)
       ((invalid-target) 400)                 ; not a form RFC 9112 §3.2 allows
+      ((invalid-host) 400)                   ; RFC 9112 §3.2's Host rules
       ((header-timeout) 408)
       ((target-too-large) 414)
       ((headers-too-large too-many-headers

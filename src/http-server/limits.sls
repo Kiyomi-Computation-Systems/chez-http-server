@@ -15,6 +15,10 @@
 ;;; 16 KiB (standing risk 2).  Durations are stored in milliseconds;
 ;;; sizes and buffers in bytes.  Timeout overrides are given in whole
 ;;; seconds; size and count overrides in their stored unit.
+;;;
+;;; One switch rides with them (decision 0005's amendment of 2026-09-25):
+;;; an HTTP/1.1 request with no Host is refused with 400 (RFC 9112 §3.2)
+;;; unless CHEZ_HTTP_REQUIRE_HOST is exactly "false".
 (library (http-server limits)
   (export
     make-limits limits?
@@ -31,16 +35,17 @@
     limits-max-target-bytes
     limits-max-body-bytes
     limits-pipeline-cap
-    limits-read-buffer-size)
+    limits-read-buffer-size
+    limits-require-host?)
   (import (rnrs))
 
   ;; make-limits :
-  ;;   Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat -> Limits
-  ;; The eleven fields, in declaration order:
+  ;;   Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Boolean -> Limits
+  ;; The twelve fields, in declaration order:
   ;;   read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
   ;;   max-header-bytes max-header-count
   ;;   max-header-field-bytes max-header-value-bytes max-target-bytes
-  ;;   max-body-bytes pipeline-cap read-buffer-size
+  ;;   max-body-bytes pipeline-cap read-buffer-size require-host?
   ;; (make-limits, limits? and the accessors are generated below.)
   (define-record-type limits
     (fields
@@ -54,11 +59,12 @@
       (immutable max-target-bytes           limits-max-target-bytes)
       (immutable max-body-bytes             limits-max-body-bytes)
       (immutable pipeline-cap               limits-pipeline-cap)
-      (immutable read-buffer-size           limits-read-buffer-size)))
+      (immutable read-buffer-size           limits-read-buffer-size)
+      (immutable require-host?              limits-require-host?)))
 
   ;; default-limits : Limits — decision 0005's nginx-style defaults.
   (define default-limits
-    (make-limits 60000 75000 60000 16384 100 8192 8192 8192 #f 1 16384))
+    (make-limits 60000 75000 60000 16384 100 8192 8192 8192 #f 1 16384 #t))
 
   ;; limits-environment-variables : (Listof String)
   ;; The environment variables consulted by `limits-from-environment`,
@@ -74,7 +80,8 @@
       "CHEZ_HTTP_MAX_TARGET_BYTES"
       "CHEZ_HTTP_MAX_BODY_BYTES"
       "CHEZ_HTTP_PIPELINE_CAP"
-      "CHEZ_HTTP_READ_BUFFER_SIZE"))
+      "CHEZ_HTTP_READ_BUFFER_SIZE"
+      "CHEZ_HTTP_REQUIRE_HOST"))
 
   ;; blank? : (U String #f) -> Boolean — an absent or empty value.
   (define (blank? s)
@@ -108,6 +115,17 @@
             ((string=? s "unbounded") #f)
             (else (parse-exact 'limits-from-environment name s 0)))))
 
+  ;; env-boolean : Lookup String Boolean -> Boolean
+  ;; Exactly "true" or "false"; anything else faults with who/name, as a
+  ;; malformed size does, rather than guessing.
+  (define (env-boolean lookup name default)
+    (let ((s (lookup name)))
+      (cond ((blank? s) default)
+            ((string=? s "true") #t)
+            ((string=? s "false") #f)
+            (else (assertion-violation 'limits-from-environment
+                                       "expected true or false" name s)))))
+
   ;; limits-from-environment : (String -> (U String #f)) -> Limits
   ;; default-limits with any variable present in `lookup` applied over it.
   ;; Pure: all I/O lives in the injected lookup.
@@ -123,4 +141,5 @@
       (env-integer     lookup "CHEZ_HTTP_MAX_TARGET_BYTES"        8192  1)
       (env-max-body    lookup "CHEZ_HTTP_MAX_BODY_BYTES"          #f)
       (env-integer     lookup "CHEZ_HTTP_PIPELINE_CAP"            1     1)
-      (env-integer     lookup "CHEZ_HTTP_READ_BUFFER_SIZE"        16384 1))))
+      (env-integer     lookup "CHEZ_HTTP_READ_BUFFER_SIZE"        16384 1)
+      (env-boolean     lookup "CHEZ_HTTP_REQUIRE_HOST"            #t))))

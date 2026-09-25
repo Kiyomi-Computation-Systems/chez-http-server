@@ -55,3 +55,26 @@ behaviour are unchanged. The remaining limits (write/drain/header-field/water-ma
 connection/tick) are not yet in the M0 record; they arrive with later milestones
 under the same `CHEZ_HTTP_` prefix. The rung-2 design document carries the same
 field map with rationale.
+
+## Amendment (2026-09-25) — one switch rides with the limits: CHEZ_HTTP_REQUIRE_HOST
+
+RFC 9112 §3.2 says a server MUST answer 400 to an HTTP/1.1 request with no
+Host. Decided on the owner's word on 2026-09-25, the server does so by default,
+behind a switch:
+
+- **The field.** `(http-server limits)` gains a twelfth field, `require-host?`
+  (`limits-require-host?`), default `#t`, read from `CHEZ_HTTP_REQUIRE_HOST`.
+  The value is exactly `true` or `false`; anything else is refused, as a
+  malformed size is. An unset or empty variable keeps the default.
+- **Why a switch.** Node's HTTP server has the same one (`requireHostHeader`,
+  default on). The corpus lane runs the core with it off, because 61 of the
+  135 strict llhttp fixtures are HTTP/1.1 requests with no Host. Refused, they
+  would be checked only up to their headers, losing the body, pausing and
+  pipelining coverage they give.
+- **What it does not switch.** Two Host lines, or a Host value that is not
+  `uri-host [ ":" port ]`, are refused with 400 whatever it says: the corpus
+  has neither, and RFC 9112 §3.2 gives them no exception.
+
+It is the one field that is not a bound. It rides here because the core reads
+every connection setting from this record, and the shell fills it from the
+environment the same way.

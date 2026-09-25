@@ -26,6 +26,14 @@
 ;;; that reason at every chunk size, and the trace up to the refusal is the
 ;;; recorded log's, line for line.  A refusal the list does not name is a
 ;;; property-1 mismatch.
+;;;
+;;; 2026-09-25: the core runs here with the Host requirement off
+;;; (`corpus-limits`).  The corpus is parser truth, and 61 of its strict
+;;; fixtures are HTTP/1.1 requests with no Host; refused, they would be
+;;; checked only up to their headers, losing the body, pausing and pipelining
+;;; coverage they give.  Decided on the owner's word, with decision 0005's
+;;; switch.  The other Host rules stay on; no fixture has two Host lines or
+;;; an invalid Host value.
 (library (trace-lane)
   (export request-fixtures strict-request-fixtures fixture-strict?
           trace-mismatch core-trace-mismatch core-refusal-mismatch trace-scan-runs)
@@ -104,6 +112,17 @@
                 (loop (cdr bounds) res)
                 (loop '() res))))))))
 
+  ;; corpus-limits : Limits — decision 0005's defaults with the Host
+  ;; requirement off, the one limit this lane changes.
+  (define corpus-limits
+    (let ((L default-limits))
+      (make-limits (limits-read-header-timeout-ms L) (limits-idle-timeout-ms L)
+                   (limits-body-inactivity-timeout-ms L) (limits-max-header-bytes L)
+                   (limits-max-header-count L) (limits-max-header-field-bytes L)
+                   (limits-max-header-value-bytes L) (limits-max-target-bytes L)
+                   (limits-max-body-bytes L) (limits-pipeline-cap L)
+                   (limits-read-buffer-size L) #f)))
+
   ;; core-trace-at : Fixture Bytevector Nat -> (values (Listof Bytevector) (U #f Symbol))
   ;; The trace at one chunk size with the core's bindings installed beside the
   ;; recorder's, one connection per run, and the core's reason if the parse
@@ -113,7 +132,7 @@
   (define (core-trace-at f bv size)
     (let* ((init (strict-init f))
            (r (make-trace-recorder))
-           (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f default-limits)))
+           (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f corpus-limits)))
            (harness-paused #f)
            (core-paused #f)
            (core-failed #f)
