@@ -1171,3 +1171,12 @@ MERGED to main on 2026-09-25, as two stacked PRs landed bottom up on the owner's
 M3.1 DONE and merged: `(http-server serializer)` writes a response as the segments of one write, and refuses what it cannot write safely. Nothing calls it yet; M3.2 puts it in the core's path.
 
 NEXT: M3.2, framing (plan §7): the framing decision in `(http-server decisions)` (Content-Length, chunked, close-delimited; HEAD, 204, 304 and the 2xx to CONNECT; HTTP/1.0), and the core writing through the serializer, answering 500 for a response with a fault. On a fresh branch cut from main after fda651d, when the owner asks.
+
+A LIBHTP RUN THAT RAISES: the ratchet crashed instead of naming the stream. Branch fix/ratchet-libhtp-raise, cut from main at bd49005; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
+- Found by M3.2-T on feat/m3.2-framing: its fault made the fake shell raise, and test-ratchet.sps exited 255, outside the status vocabulary. The ratchet computed its lane verdicts at the program's top level, and `libhtp-mismatch` ran each stream with no guard, unlike the outcome lane.
+- `libhtp-mismatch` runs a stream through the outcome lane's `attempt`, now exported and taking the run as a thunk. A run that raises is a mismatch that says what it raised. The run is an optional second argument, which the new check uses.
+- The ratchet's gate is a procedure the suite calls, as test-connection-table's tables are. Any other raise there, such as the trace lane's re-raise of an error other than the adapter's, is a harness error, exit 2. A violation line now ends with its lane's reason.
+- Red before green, then L9 (m3-mutations.md). Under M3.2-T's fault, simulated on this tree, the ratchet exits 1 and names 141 violations, the 12 libhtp streams among them; on main it exits 255 with the report's exception.
+- `make test` green: twenty-two suites, 543 expected passes (libhtp-lane 15), exit 0. `make check-imports` is clean.
+
+NEXT: unchanged, M3.2, framing; feat/m3.2-framing takes this fix from main.

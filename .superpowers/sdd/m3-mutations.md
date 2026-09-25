@@ -77,3 +77,40 @@ our code; it goes red with the wire in D, F, G, H and L.
 
 `make test` was green afterwards: twenty-two suites, 542 expected passes
 (serializer 141), exit 0.
+
+## The ratchet and a libhtp run that raises (2026-09-25)
+
+Found by M3.2-T on feat/m3.2-framing. Its fault made the fake shell raise
+"a write's byte count is not its bytes'", and test-ratchet.sps exited 255,
+outside the status vocabulary. The ratchet computed its verdicts at the
+program's top level, and `libhtp-mismatch` ran each stream with no guard.
+
+The mutants ran against the fix, uncommitted on fix/ratchet-libhtp-raise (cut
+from main at bd49005). F is M3.2-T's fault, simulated on this tree: the fake
+shell's `write` raises its assertion, with the irritants (95 94).
+
+Red before green: the new check in test-libhtp-lane, "a stream whose run
+raises is a mismatch that says what it raised", first failed against main's
+`libhtp-mismatch` on arity. With the run as an argument and no guard, it
+failed for the right reason: exit 1, 14 passes, 1 failure. The run's assertion
+escaped `libhtp-mismatch`, and SRFI-64 counted it as the check's failure.
+
+| # | suites | mutation (`tests/libhtp-lane.sls`) | observed |
+|---|--------|------------------------------------|----------|
+| L9 | libhtp-lane, ratchet | `libhtp-mismatch` runs the stream bare, not through the outcome lane's `attempt` (the lane's L1–L8 are the M2 exit's) | libhtp-lane exit 1; 14 passes, 1 failure — the new row. Ratchet green: on this tree no stream's run raises |
+
+test-ratchet under F:
+
+| lane and ratchet | observed |
+|---|---|
+| main's | exit 255; "Exception in fake-shell: a write's byte count is not its bytes' with irritants (95 94)", the report's crash |
+| the fix's lane with L9, main's ratchet | exit 255, the same crash: the gate ran at the program's top level |
+| the fix with L9 | exit 2; HARNESS-ERROR after 8 passes: the gate runs inside the suite |
+| the fix | exit 1; 8 passes, 1 failure. 141 violations, each with its lane's reason: the 12 libhtp streams ("raised fake-shell a write's byte count is not its bytes'") and 129 outcome fixtures ("the whole input raised …"). The other 6 end in `body` and write nothing: content-length.md#10, #11 and #16, and transfer-encoding.md#2, #8 and #11. The trace lane runs no fake shell |
+
+The trace lane passes on any raise but an adapter refusal. With its comparator
+made to raise, the fix's ratchet exited 2, HARNESS-ERROR after 8 passes, and
+main's exited 255 ("Exception in trace-lane: a probe raise").
+
+`make test` was green afterwards: twenty-two suites, 543 expected passes
+(libhtp-lane 15), exit 0.

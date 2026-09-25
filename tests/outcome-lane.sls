@@ -21,7 +21,7 @@
 ;;; it independent of how the bytes were split.  It runs under the trace
 ;;; lane's `corpus-limits`, with no Host required, for the same reason.
 (library (outcome-lane)
-  (export outcome-at outcome-mismatch render-request)
+  (export outcome-at outcome-mismatch render-request attempt)
   (import (rnrs)
           (httparse test corpus-load)      ; fixture-input-text, fixture-meta-ref
           (httparse test corpus-decode)    ; corpus-decode-input
@@ -73,7 +73,7 @@
     (let* ((bv (corpus-decode-input (fixture-input-text f)))
            (len (bytevector-length bv))
            (no-scan (eq? #t (fixture-meta-ref f 'noScan #f)))
-           (whole (attempt bv (max 1 len))))
+           (whole (attempt (lambda () (outcome-at bv (max 1 len))))))
       (cond
        ((string? whole) (string-append "the whole input " whole))
        ((pair? (cadddr whole)) (string-append "the whole input ran actions inside a feed or a nested drain"))
@@ -81,21 +81,23 @@
         (let loop ((sizes (corpus-scan-sizes len no-scan selection)))
           (if (null? sizes)
               #f
-              (let ((o (attempt bv (max 1 (car sizes)))))
+              (let ((o (attempt (lambda () (outcome-at bv (max 1 (car sizes)))))))
                 (cond
                  ((string? o) (string-append "size " (number->string (car sizes)) " " o))
                  ((equal? o whole) (loop (cdr sizes)))
                  (else (string-append "size " (number->string (car sizes)) " did "
                                       (show o) " where the whole input did " (show whole)))))))))))
 
-  ;; attempt : Bytevector Nat -> (U Datum String)
-  ;; The outcome, or a string saying what the run raised.
-  (define (attempt bv size)
+  ;; attempt : (-> Datum) -> (U Datum String)
+  ;; The run's outcome, or a string saying what the run raised.  The libhtp
+  ;; lane runs its streams through it too, so the two lanes report a raise
+  ;; alike.
+  (define (attempt run)
     (call/cc
      (lambda (k)
        (with-exception-handler
         (lambda (e) (k (string-append "raised " (describe e))))
-        (lambda () (outcome-at bv size))))))
+        run))))
 
   ;; describe : Any -> String — a raised object, briefly.
   (define (describe e)
