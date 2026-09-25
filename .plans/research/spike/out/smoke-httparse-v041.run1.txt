@@ -1,0 +1,4 @@
+(strict-fixtures 135)
+(logged-upgrades 9 ("request/connection.md#14" "request/connection.md#18" "request/connection.md#19" "request/connection.md#20" "request/connection.md#21" "request/method.md#2" "request/method.md#3" "request/method.md#4" "request/uri.md#9"))
+(size whole on-headers-complete-reads 94 field-vs-rule-disagreements 0 field-is-1-in 9 same-as-logged #t)
+(size 1 on-headers-complete-reads 94 field-vs-rule-disagreements 0 field-is-1-in 9 same-as-logged #t)
