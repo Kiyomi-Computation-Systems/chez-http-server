@@ -180,3 +180,14 @@ length. M2.3 carries one exception, decided on the owner's word on 2026-09-24:
   - absolute-form's reused collector assembles the target's components as it
     parses;
   - CONNECT's target is copied and parsed fresh (design §7.5).
+
+## Amendment (2026-09-25) — the shell owns item 3's queue
+
+Item 3's queue belongs to the shell (M2.4). The adapter hands each parser callback's
+actions after its reply to a procedure the shell gave the connection's context, and
+the shell runs them from its one queue once the feed has returned. Before, the adapter
+kept a list of its own and copied it out after each feed, the 112 B per request that
+M2.2's fourth step measured. With that copy gone the CPS workload costs 2,512 B per
+request, and an absolute-form request 4,224 B, still one reused collector's parse more
+(measured 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`). The shapes hold: a
+500-byte header value, target, query or Host costs what a short one does.

@@ -11,9 +11,10 @@
 ;;;
 ;;; The core's first action is its `reply-parser`, and that one is answered
 ;;; here, inside the callback (0002 item 3): continue, pause, or a failure
-;;; carrying the core's reason as its code.  The rest are queued on the
-;;; connection's context in order, for the shell to take once the feed has
-;;; returned: nothing but the reply runs at parser depth.
+;;; carrying the core's reason as its code.  The rest go, in order, to the
+;;; queue the shell gave the connection's context, and the shell runs them
+;;; once the feed has returned: nothing but the reply runs at parser depth
+;;; (design §4.5; M2.4's fake shell checks it).
 ;;;
 ;;; Brought forward from M4.1 (milestone plan §8), because M2.2's checks need
 ;;; the core driven by the real parser: the head's tests, and the trace lane
@@ -21,21 +22,23 @@
 ;;; per-connection allocation assertion.  Imports no chez-libuv.
 (library (http-server private adapter)
   (export make-conn-context conn-context? conn-context-state
-          conn-context-step! conn-context-take-actions!
+          conn-context-step!
           adapter-bindings make-conn-parser)
   (import (rnrs)
           (byte-machine runtime) (generated httparse-message) (httparse modes)
           (http-server connection))
 
-  ;; make-conn-context : ConnState -> ConnContext
-  ;; One connection as the parser sees it: the core's state, and the actions
-  ;; its callbacks queued during the feed in progress.
+  ;; make-conn-context : ConnState ((Listof Action) -> Any) -> ConnContext
+  ;; One connection as the parser sees it: the core's state, and `queue!`,
+  ;; where the actions its callbacks ask for go.  `queue!` is the shell's.
+  ;; It is called inside a parser callback with the actions after the reply,
+  ;; in order, when there are any, and must only queue them: the shell runs
+  ;; them after the feed has returned (design §4.5).
   ;; conn-context? : Any -> Boolean
   ;; conn-context-state : ConnContext -> ConnState
   (define-record-type (conn-context make-conn-context conn-context?)
     (fields (mutable state conn-context-state conn-context-state-set!)
-            (mutable queued conn-context-queued conn-context-queued-set!))
-    (protocol (lambda (new) (lambda (state) (new state '())))))
+            (immutable queue! conn-context-queue!)))
 
   ;; conn-context-step! : ConnContext Event -> (Listof Action)
   ;; Deliver one of the shell's events to the core, keep the state it leaves,
@@ -45,25 +48,16 @@
       (conn-context-state-set! ctx s)
       actions))
 
-  ;; conn-context-take-actions! : ConnContext -> (Listof Action)
-  ;; The actions the parser callbacks queued since the last take, in order,
-  ;; without their replies; the queue is left empty.
-  (define (conn-context-take-actions! ctx)
-    (let ((queued (conn-context-queued ctx)))
-      (conn-context-queued-set! ctx '())
-      ;; Newest first: each earlier list goes in front of what follows it.
-      (fold-left (lambda (later actions) (append actions later)) '() queued)))
-
   ;; answer! : ConnContext ConnState (Listof Action) -> Outcome
-  ;; Keep the state, queue every action but the first, and turn the first,
-  ;; the reply, into the parser's outcome.
+  ;; Keep the state, hand every action but the first to the shell's queue,
+  ;; and turn the first, the reply, into the parser's outcome.
   (define (answer! ctx s actions)
     (conn-context-state-set! ctx s)
     (unless (and (pair? actions) (pair? (car actions))
                  (eq? (caar actions) 'reply-parser))
       (assertion-violation 'adapter "the core did not answer the callback first" actions))
     (unless (null? (cdr actions))
-      (conn-context-queued-set! ctx (cons (cdr actions) (conn-context-queued ctx))))
+      ((conn-context-queue! ctx) (cdr actions)))
     (let ((outcome (cadar actions)))
       (cond ((eq? outcome 'continue) callback-continue)
             ((eq? outcome 'pause) callback-pause)

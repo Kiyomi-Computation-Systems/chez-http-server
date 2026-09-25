@@ -9,7 +9,9 @@
 ;;;
 ;;; Oracles: the nine states of design §4.3; the fifteen events and fifteen
 ;;; actions of decision 0002 item 2, plus the `hand-off` action decision 0006
-;;; item 3 adds; the 10 + 9 rows of design §4.4's two tables.
+;;; item 3 adds; the 10 + 9 rows of design §4.4's two tables; and the three
+;;; rows of decision 0004's pause protocol that the design's tables fold into
+;;; H6 and H10 (M2.4).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server limits) (fake-shell))
@@ -219,15 +221,70 @@
         (i (state 'closing) '(closed)
            '(closed #f ())))))
 
-;; run-row : Row -> (U 0 1)
-;; Run every instance of a row; 1 if the row has a test, 0 if it has none.
-(define (run-row r)
-  (for-each (lambda (inst)
-              (test-equal (string-append (symbol->string (row-id r)) " " (row-text r))
-                          (caddr inst)
-                          (outcome (car inst) (cadr inst))))
-            (row-instances r))
-  (if (null? (row-instances r)) 0 1))
+;; ---------------------------------------------------------------------------
+;; Decision 0004's pause protocol: three rows (M2.4).  Design §4.4 folds the
+;; first into H6, "retain pending-input", but the core cannot keep the
+;; remainder at on-message-complete: the parser says where it stopped,
+;; `parser-result-next`, only when the feed has returned.  So the result that
+;; follows the pause keeps the rest of the delivery the core fed, and these
+;; rows' outcomes show what is kept.
+
+;; paused : Nat Nat CloseAfter -> ConnState
+;; A connection that fed the parser the delivery bv[from, to) and was paused
+;; by its own answer to on-message-complete: in handling, its result to come.
+(define (paused from to close-after)
+  (let ((s (state 'body 'deadline 'body 'request req 'close-after close-after)))
+    (conn-step s `(bytes-arrived ,bv ,from ,to))
+    (conn-step s '(parser-event on-message-complete))
+    s))
+
+;; kept : ConnState Event -> (List Phase CloseAfter (Listof Datum) Pending)
+;; One step's outcome, and the pending input the state holds after it.
+(define (kept s ev)
+  (let* ((o (outcome s ev)) (pending (conn-pending s)))
+    (append o (list pending))))
+
+(define (pause-protocol)
+  (list
+   ;; bv[10, 40) was fed and the parser stopped at 28, 18 bytes in: the rest
+   ;; of the delivery is what the resume feeds (H9).  A pause at the feed's
+   ;; end leaves nothing.
+   (row 'P1 "handling, parser-result paused with no reason -> handling: keep the delivery's rest from next"
+        (i (paused 10 40 #f) '(parser-result paused 18 28 #f #f)
+           `(handling #f () (,bv 28 40)))
+        (i (paused 10 28 #f) '(parser-result paused 18 28 #f #f)
+           '(handling #f () #f)))
+
+   ;; llhttp's "Data after `Connection: close`".  The pause at every
+   ;; message's end means the core never feeds that data, so the error cannot
+   ;; fire; if it did, it is not answered.
+   (row 'P2 "handling after a close-marked message, parser-result error -> handling: ignored"
+        (i (paused 10 40 'not-keep-alive) '(parser-result error 1 29 closed-connection #f)
+           '(handling not-keep-alive () #f)))
+
+   ;; The states a close-marked message passes through after its pause.
+   (row 'P3 "after a close-marked message, bytes-arrived -> no feed-parser"
+        (i (state 'handling 'close-after 'not-keep-alive) `(bytes-arrived ,bv 0 5)
+           '(handling not-keep-alive () #f))
+        (i (state 'responding 'deadline 'write 'outstanding 1 'close-after 'not-keep-alive)
+           `(bytes-arrived ,bv 0 5)
+           '(responding not-keep-alive () #f))
+        (i (state 'closing 'close-after 'not-keep-alive) `(bytes-arrived ,bv 0 5)
+           '(closing not-keep-alive () #f)))))
+
+;; run-row : Row [(ConnState Event -> Datum)] -> (U 0 1)
+;; Run every instance of a row through `step` (default: outcome); 1 if the
+;; row has a test, 0 if it has none.
+(define run-row
+  (case-lambda
+    ((r) (run-row r outcome))
+    ((r step)
+     (for-each (lambda (inst)
+                 (test-equal (string-append (symbol->string (row-id r)) " " (row-text r))
+                             (caddr inst)
+                             (step (car inst) (cadr inst))))
+               (row-instances r))
+     (if (null? (row-instances r)) 0 1))))
 
 ;; One well-formed event of every kind, for the closed-set checks.
 (define samples
@@ -283,7 +340,9 @@
            (happy (count-rows (happy-path)))
            (term (count-rows (termination))))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
-      (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term))
+      (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
+      (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3
+                (fold-left (lambda (n r) (+ n (run-row r kept))) 0 (pause-protocol))))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it but the two body-streaming actions (M6's).
