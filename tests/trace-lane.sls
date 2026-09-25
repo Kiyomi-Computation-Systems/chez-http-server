@@ -36,7 +36,8 @@
 ;;; an invalid Host value.
 (library (trace-lane)
   (export request-fixtures strict-request-fixtures fixture-strict?
-          trace-mismatch core-trace-mismatch core-refusal-mismatch trace-scan-runs)
+          trace-mismatch core-trace-mismatch core-refusal-mismatch trace-scan-runs
+          corpus-limits)
   (import (rnrs)
           (only (chezscheme) directory-list)
           (httparse test corpus-load)      ; corpus-parse-file, fixture-*, fixture-lenient-flags
@@ -113,7 +114,8 @@
                 (loop '() res))))))))
 
   ;; corpus-limits : Limits — decision 0005's defaults with the Host
-  ;; requirement off, the one limit this lane changes.
+  ;; requirement off, the one limit this lane changes; (outcome-lane) runs
+  ;; under it too.
   (define corpus-limits
     (let ((L default-limits))
       (make-limits (limits-read-header-timeout-ms L) (limits-idle-timeout-ms L)

@@ -813,4 +813,38 @@ Settled in the second step, open to the owner's review:
 1. **One depth counter, every action at depth 1.** Design §4.5 counts the feed and the drain in one counter, and plan §6 says no action but `reply-parser` runs at non-zero depth. The drain itself is depth 1, so the check is "depth 1 exactly". A nested drain (C) is silent but for the check: every outcome held.
 2. **The fake shell leaves a hand-off unperformed.** In M2.4 the core never hands off inside the loop (below, for M2.5), so the case was removed rather than left untested.
 
-NEXT: M2.4's third step, the outcome lane, stacked on this one as feat/m2.4-outcome-lane.
+M2.4 THIRD STEP: the outcome lane (feat/m2.4-outcome-lane).
+- `tests/outcome-lane.sls`, new: design §8.1's property 2. Each strict fixture goes through one fake connection at every scheduled chunk size. Its outcome is:
+  - the handlers called, with their requests;
+  - the responses, by status;
+  - the close and its reason;
+  - the final phase and close-after;
+  - the actions run outside the outermost drain.
+
+  At every size it must equal the whole input's, and a raise is a mismatch. It runs under the trace lane's `corpus-limits`.
+- `tests/test-outcome-lane.sps` (6): the instrument is calibrated on the spike's three messages, whole and a byte at a time. Every fixture not listed has one outcome at every chunk size, and the four listed upgrades still depend on it (gated both ways). It runs 'extremes in `make test` (253 runs) and 'full under CORPUS=full (9,394).
+- The ratchet's outcome lane has its comparator: 131 entries promoted to passing, a reviewed diff; 4 not-yet, 32 deferred.
+
+Watched to fail by mutation only, since the lane was written after the code it measures: M and N. On this tree the earlier mutants reach the lane:
+- A turns 44 fixtures red in the lane and in the ratchet;
+- B and C turn all 131 red;
+- J turns 4 red;
+- L fails only the calibration.
+
+`make test` green: twenty suites, 362 expected passes, exit 0. The lane at 'full: 131 of 135.
+
+Settled in the third step, open to the owner's review:
+1. **The trace lane keeps its own driver.** M2.2 recorded its core driver as the head suite's small message loop. It is not the same loop: property 1 is parser truth, so the trace lane feeds every byte the recorder saw, past a close-marked message too, and the message loop stops there. The outcome lane is where the loop meets the corpus.
+2. **What the outcome is.** Design §8.1 names the call-handler sequence, the keep-alive decision and the close reason. The keep-alive decision shows as whether a close follows a response. Feeds, reads and deadlines follow the deliveries and are left out; I, a rest fed after a close, survives the lane and dies in the loop suite.
+
+Found and recorded:
+- **(M2.5) An upgrade now reaches the handler, and at small deliveries stalls the parser.** With the pause at every message's end, an upgrade's hand-off (`paused-upgrade`) comes only on the resumed feed, after the handler has answered and the core is back in idle. The core does not answer it there. The next delivery feeds a paused parser, which byte-machine refuses (`&byte-machine-contract`). Delivered whole, there is no next delivery. So the four `Connection: upgrade` fixtures are listed, not-yet: connection.md#14, #19, #20 and #21. Six more hand-off fixtures pass the lane with outcomes M2.5 will change:
+  - the four HTTP/1.0 CONNECTs (method.md#2–#4, uri.md#9) are served as plain requests and closed;
+  - connection.md#18, an upgrade with nothing after it, is served and left idle;
+  - the h2c preface, method.md#15, is answered 400.
+
+  M2.1's finding said the hand-off arrives in `handling`. It arrives one step later still, and M2.5 decides where the door is.
+- **(owner) Decision 0004 item 2 has no slice.** Item 2 keeps the `inflight`/`ready`/`head` ordering machinery in the core, "so raising the cap is a setting and a test". No slice of the milestone plan builds it. Its consequence says no response-ordering queue is exercised in v1. `pipeline-cap` is read by nothing: the core serves one request at a time whatever its value, while docs/configuration.org says the variable bounds in-flight pipelined requests.
+- **(M2 exit)** Three things remain: libhtp's pipelining and multi-packet files with our expectations, the outcome lane's four upgrades (M2.5), and the lane at 'full, which holds today.
+
+NEXT: settling decision 0004 item 2, stacked on this one as feat/m2.4-pipeline-cap.
