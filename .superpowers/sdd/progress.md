@@ -1159,3 +1159,15 @@ M3.1 SECOND STEP: the wire (feat/m3.1-wire, cut from feat/m3-response-path).
 - `make test` green: twenty-two suites, 542 expected passes (serializer 141), exit 0. `make check-imports` is clean.
 
 NEXT: the two stacked PRs, on the owner's word. Then M3.2, framing: the decision in `(http-server decisions)`, and the core writing through the serializer.
+
+MERGED to main on 2026-09-25, as two stacked PRs landed bottom up on the owner's "do closing ritual":
+- #31, the first step, merged as 12eb761 without deleting its branch, since #32 was based on it. Its squash tree (800e305) is identical to the tested tip's, 759b41b.
+- #32 was retargeted to main, rebased onto 12eb761 and force-pushed with a lease read from the remote. The rebase took bf69714 to 9185286 with the tree unchanged (b82defc). #32 merged as fda651d, whose tree is the tested one, proved against the merge commit gh reports.
+- Every `linux` check executed zero steps, stopped at the billing check: runs 36197576823 (#31), 36197580602 (#32) and 36198237486 (#32's rebased tip).
+- `gh pr merge --delete-branch` switched this checkout to main and fast-forwarded it to fda651d. The first step's branch was deleted by hand, local and remote, and refs pruned; no PR is open.
+
+`make test` green on main: twenty-two suites, 542 expected passes, exit 0.
+
+M3.1 DONE and merged: `(http-server serializer)` writes a response as the segments of one write, and refuses what it cannot write safely. Nothing calls it yet; M3.2 puts it in the core's path.
+
+NEXT: M3.2, framing (plan §7): the framing decision in `(http-server decisions)` (Content-Length, chunked, close-delimited; HEAD, 204, 304 and the 2xx to CONNECT; HTTP/1.0), and the core writing through the serializer, answering 500 for a response with a fault. On a fresh branch cut from main after fda651d, when the owner asks.
