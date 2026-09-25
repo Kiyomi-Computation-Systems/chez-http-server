@@ -334,3 +334,25 @@ Red before green:
 | M2.4-I | table | the rest is fed after a close-marked message | table exit 1; 1 failure — H10 |
 
 `make test` was green afterwards: eighteen suites, 340 expected passes (connection-table 69), exit 0.
+
+### Second step: the message loop
+
+Red before green:
+- test-fake-shell.sps and test-message-loop.sps exited 255 before the loop existed: `fake-shell-violations` and `make-fake-connection` were unbound.
+- The first run of the finished loop left G alive. No row checked that input stops arriving when the connection stops reading. The row "a byte at a time, the 19 bytes after the close-marked GET are never delivered" was added, and G turns it red.
+- The fake shell's hand-off case was removed: the core cannot hand off inside the loop yet (M2.5), so nothing could test it.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.4-A | loop, head, table | the plan's mutation A, on this tree | loop exit 1; 5 passes, 7 failures — the boundary (the rest kept from 47, not 98), the spike's messages at every size, no parser error, the 98 bytes delivered, three GETs, one message at a time, and every action from the outermost drain (a replay reaches the dispatch cap). Head exit 1; 28 passes, 12 failures — its rows whose message ends in a later delivery. Table as in the first step |
+| M2.4-B | loop, head | the plan's mutation B: the queue the fake shell gives the adapter runs a callback's actions inside the callback | loop exit 1; 4 passes, 8 failures — the three depth checks, and the pipelining rows: the handler answers before the pause's result arrives, so the core is in responding, not handling, when it comes, and the rest is never kept. Head exit 1; 2 failures — both pipelined rows |
+| M2.4-C | fake-shell, loop | every dispatch drains, nested inside a drain or a feed | fake-shell exit 1; 1 failure — "every action ran from the outermost drain". Loop exit 1; 3 failures — the three depth checks. Every outcome held: a nested drain is silent but for the check (design §6.4) |
+| M2.4-D | table, loop | a pause at the delivery's end keeps an empty rest | loop exit 1; 1 failure — the happy path in order, which gains an empty feed after the response. Table as before |
+| M2.4-G | loop | the fake shell delivers input while the connection is not reading | loop exit 1; 1 failure — the 98-byte row |
+| M2.4-H | table, loop | the pause does not stop reading | table exit 1; 1 failure — H6. Loop exit 1; 2 failures — the happy path in order, and "from a call-handler to its resume, the parser is not fed nor the socket read" |
+| M2.4-I | table, loop, head | the rest is fed after a close-marked message | loop exit 1; 2 failures — "the resume feeds exactly the rest" and "the parser never reported an error". Head exit 1; 2 failures — both pipelined rows. Table as before |
+| M2.4-J | fake-shell, loop, head | the queue runs newest first within each refill | fake-shell exit 1; 2 failures — "multi-action steps record in order" and "a dispatch made while draining queues its actions behind the rest". Loop exit 1; 3 passes, 9 failures. Head exit 1; 2 failures |
+| M2.4-K | loop | a handler's raise escapes the shell | loop exit 1; 1 failure — the raising handler's row |
+| M2.4-L | loop, head | a close never completes: no `closed` on a later turn | loop exit 1; 2 failures — the spike's messages and the raising handler, both left in closing. Head exit 1; 13 passes, 27 failures — every row that closes |
+
+`make test` was green afterwards: nineteen suites, 355 expected passes (message-loop 12, fake-shell 15), exit 0.

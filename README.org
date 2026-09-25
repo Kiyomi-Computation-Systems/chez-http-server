@@ -53,6 +53,11 @@ Which request-targets the server accepts, refuses or redirects — see
 Which ~Host~ lines the server refuses, and the switch for HTTP/1.1 requests
 with none — see [[file:docs/host-header.org][docs/host-header.org]].
 
+** Connections
+
+How one connection carries many requests, answered one at a time — see
+[[file:docs/connections.org][docs/connections.org]].
+
 ** License
 
 © [[https://kiyomicomputation.systems/][Kiyomi Computation Systems LLC]]. Licensed under BSD 3-Clause — see

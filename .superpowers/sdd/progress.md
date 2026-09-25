@@ -786,4 +786,31 @@ Settled in the first step, open to the owner's review:
 2. **The rest is always the end of the last delivery.** Reading stops at the pause and the rest is fed before reading starts again, so no other delivery comes between. The core remembers only that delivery, not each feed: re-recording the resume's feed, or forgetting the delivery at each result, changed nothing any test could see.
 3. **The shell owns the action queue.** Design §4.5 has one queue, drained after the outermost dispatch, and the adapter's own list made two, with a copy between them. 0002's amendment records it.
 
-NEXT: M2.4's second step, the message loop, stacked on this one as feat/m2.4-message-loop.
+M2.4 SECOND STEP: the message loop (feat/m2.4-message-loop).
+- `tests/fake-shell.sls` runs actions after the outermost dispatch, from one queue; a dispatch made while the queue drains, or while the parser feeds, only queues. One depth counter counts the drain and the feed inside it. An action run anywhere but depth 1, the outermost drain, is a violation the shell records: design §6.4's check.
+- `make-fake-connection`: the core through the adapter, one real parser, and a handler that answers at once. It performs:
+  - feed-parser, then the result as `parser-result`;
+  - resume-parser;
+  - call-handler, answering a raise with `handler-failed`;
+  - write, completing on a later turn;
+  - read-stop and read-start: input arrives only while the connection reads;
+  - close, with `closed` on a later turn.
+  It records the rest. A dispatch cap turns a runaway into a harness error.
+- `tests/test-message-loop.sps` (12):
+  - one keep-alive request runs design §4.4's rows in order;
+  - the pipelining boundary: the handler runs with [51, 117) kept, then [98, 117), and the resume feeds exactly the rest;
+  - a close-marked message ends the reading: the third message is never fed, the parser reports no error, and a byte at a time only 98 of the 117 bytes arrive;
+  - three pipelined GETs are served one at a time;
+  - a raising handler gets 500, then close;
+  - every action runs from the outermost drain, at every delivery size.
+- test-fake-shell.sps (15): a dispatch made while draining queues its actions behind the rest.
+- The head suite runs in the fake shell, so its own loop is gone. A refused message's response is now written and the connection closed, so those rows end in `closed`.
+- `docs/connections.org`, new, linked from the README.
+
+Watched to fail: test-fake-shell.sps and test-message-loop.sps exited 255 before the loop existed. The first loop left G alive, since nothing checked that input stops when reading does; the 98-byte row was added for it. Mutations B, C, G, H, J, K and L follow, and A, D and I reach the loop. `make test` green: nineteen suites, 355 expected passes, exit 0.
+
+Settled in the second step, open to the owner's review:
+1. **One depth counter, every action at depth 1.** Design §4.5 counts the feed and the drain in one counter, and plan §6 says no action but `reply-parser` runs at non-zero depth. The drain itself is depth 1, so the check is "depth 1 exactly". A nested drain (C) is silent but for the check: every outcome held.
+2. **The fake shell leaves a hand-off unperformed.** In M2.4 the core never hands off inside the loop (below, for M2.5), so the case was removed rather than left untested.
+
+NEXT: M2.4's third step, the outcome lane, stacked on this one as feat/m2.4-outcome-lane.
