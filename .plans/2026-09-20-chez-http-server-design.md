@@ -114,6 +114,12 @@ unless the client asks for keep-alive, chunked does not exist so an unknown-leng
 response is close-delimited, `Host` is optional — and all three are rows in tables,
 not branches scattered through the core.
 
+> *Amended 2026-09-25 (decision 0006's amendment "an upgrade is served, then the
+> connection closes"):* v1 serves an upgrade request like any other and closes the
+> connection after the response. The hook is the door M8 opens for a handler that takes
+> upgrades. Only the HTTP/2 preface is answered `505`; `Upgrade: h2c` is an upgrade like
+> any other.
+
 Corpora are **vendored as data with provenance** (0007). llhttp is reached through
 chez-httparse's own loader, chunker, recorder and comparator rather than copied;
 libhtp's 102 connection streams come first among the rest because they are the only
@@ -335,7 +341,7 @@ being read:
 | `handling` | **no** | none in v1 | parser paused at `on-message-complete`, handler running |
 | `responding` | **no** | write deadline per completion | segments written, awaiting completions |
 | `draining` | no | write deadline | last response written, close to follow |
-| `handed-off` | no | none | an upgrade left through the hook; the core emits nothing further |
+| `handed-off` | no | none | an upgrade left through the hook; the core emits nothing further (M8's door, 2026-09-25) |
 | `closing` | no | none | `close` issued, awaiting `closed` |
 | `closed` | no | none | terminal |
 
@@ -398,6 +404,14 @@ Termination and error rows:
 | `head`/`body` | `parser-result` hands off | `handed-off` | `read-stop`, the hand-off hook (0006 item 3) |
 | any | `shutdown-requested` | `draining` | finish in flight, `Connection: close` on the last response, then `shutdown` |
 | `closing` | `closed` | `closed` | — |
+
+> *Amended 2026-09-25 (decision 0006's amendment, M2.5):* the core's own flow never
+> reaches the hand-off row in v1. The core pauses the parser at every message's end,
+> before the parser's hand-off, and it closes after an upgrade's response, so the parser
+> is never resumed onto the hand-off. The row is the door M8 opens: answering `continue`
+> to on-message-complete brings the hand-off back in the same feed, with the source
+> state `body` (`research/spike/upgrade-door.sps`). The error channel's hand-off, the
+> HTTP/2 preface, arrives in `head` and is answered `505`, then close.
 
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with
@@ -713,7 +727,7 @@ Every status the server can originate, and who decides it:
 | `431` | header bytes or header count (policy) | yes |
 | `500` | handler raise | yes |
 | `501` | `invalid-transfer-encoding` at node `e-request-invalid-te` | yes |
-| `505` | h2c preface or `Upgrade: h2c` (decision 0006 item 2) | yes |
+| `505` | the HTTP/2 preface (decision 0006 item 2; `Upgrade: h2c` only until its 2026-09-25 amendment) | yes |
 
 Every originated status closes the connection. That is not a simplification to revisit:
 each of them means either the framing is untrustworthy or a bound was exceeded, and in

@@ -9,12 +9,19 @@
 ;;;
 ;;; Oracles: the nine states of design §4.3; the fifteen events and fifteen
 ;;; actions of decision 0002 item 2, plus the `hand-off` action decision 0006
-;;; item 3 adds; the 10 + 9 rows of design §4.4's two tables; and the three
+;;; item 3 adds; the 10 + 9 rows of design §4.4's two tables; the three
 ;;; rows of decision 0004's pause protocol that the design's tables fold into
-;;; H6 and H10 (M2.4).
+;;; H6 and H10 (M2.4); and the two rows of the upgrade door, decided on the
+;;; owner's word on 2026-09-25 (M2.5).
+;;;
+;;; A parser-result event carries its error as the error's code and node,
+;;; (code . node), because the status of one code splits by node (design
+;;; §6.3); the node names in the rows are the ones chez-httparse reports at
+;;; the pin for the same failure.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
-        (http-server limits) (fake-shell))
+        (http-server limits) (fake-shell)
+        (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE))
 
 (define (b s) (string->utf8 s))
 
@@ -177,10 +184,18 @@
         (i (state 'draining) '(read-error ECONNRESET)
            '(closing #f ((log read-error ECONNRESET) (close read-error)))))
 
+   ;; The status is design §6.5's for the error: 400, except the one
+   ;; invalid-transfer-encoding node that is a 501 (RFC 9112 §6.1).
    (row 'T3 "head/body, parser-result status=error -> responding: write the status, close-after"
-        (i (state 'head 'deadline 'header) '(parser-result error 5 5 invalid-method #f)
+        (i (state 'head 'deadline 'header) '(parser-result error 0 0 (invalid-method . e-bad-method-open) #f)
            `(responding parser-error (,(status-write 400))))
-        (i (state 'body 'deadline 'body) '(parser-result error 40 40 invalid-chunk-size #f)
+        (i (state 'body 'deadline 'body) '(parser-result error 47 47 (invalid-chunk-size . e-bad-chunk-size) #f)
+           `(responding parser-error (,(status-write 400))))
+        (i (state 'body 'deadline 'body)
+           '(parser-result error 49 49 (invalid-transfer-encoding . e-request-invalid-te) #f)
+           `(responding parser-error (,(status-write 501))))
+        (i (state 'body 'deadline 'body)
+           '(parser-result error 44 44 (invalid-transfer-encoding . e-bad-te-value) #f)
            `(responding parser-error (,(status-write 400)))))
 
    ;; Deadlines are kinds, not instants: the shell's wheel ticks a connection
@@ -203,7 +218,11 @@
         (i (state 'handling) '(handler-failed boom)
            `(responding handler-failed (,(status-write 500)))))
 
-   ;; One channel here, the pause code; M2.5 adds the h2c error channel.
+   ;; The pause channel.  In v1 the core's own flow never reaches this row:
+   ;; it pauses the parser at every message's end, and serves an upgrade and
+   ;; closes after it (U1), so the parser never runs on to its hand-off.  It
+   ;; is the door M8 opens for a handler that takes upgrades (decision 0006's
+   ;; amendment of 2026-09-25).  The error channel is U2's.
    (row 'T7 "head/body, parser-result hands off -> handed-off: read-stop, the hand-off hook"
         (i (state 'head 'deadline 'header 'request req) '(parser-result paused 55 55 #f paused-upgrade)
            `(handed-off #f ((read-stop) (hand-off ,req))))
@@ -244,6 +263,38 @@
   (let* ((o (outcome s ev)) (pending (conn-pending s)))
     (append o (list pending))))
 
+;; ---------------------------------------------------------------------------
+;; The upgrade door: two rows (M2.5, decided on the owner's word, 2026-09-25).
+;; An upgrade (llhttp's rule: CONNECT, or `Connection: upgrade` with
+;; `Upgrade`) is served like any request and closes the connection after the
+;; response, so the bytes after it are never read (decision 0006's
+;; amendment).  The HTTP/2 preface, a hand-off on the parser's error channel,
+;; is answered 505 (0006 item 2).
+(define upgrade-flags (bitwise-ior F-UPGRADE F-CONNECTION-UPGRADE))
+
+(define (upgrade-door)
+  (list
+   ;; on-headers-complete's fields: llhttp's method (5 CONNECT, 1 GET), the
+   ;; version, the flags and the content-length.  A message that closes the
+   ;; connection anyway keeps its own reason.
+   (row 'U1 "head, on-headers-complete of an upgrade -> body: served, close-after upgrade"
+        (i (state 'head 'deadline 'header 'target "example.com:443" 'host "example.com:443")
+           '(parser-event on-headers-complete 5 1 1 0 0)
+           '(body upgrade ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+        (i (state 'head 'deadline 'header 'target "/chat" 'host "x")
+           `(parser-event on-headers-complete 1 1 1 ,upgrade-flags 0)
+           '(body upgrade ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+        (i (state 'head 'deadline 'header 'target "/chat")
+           `(parser-event on-headers-complete 1 1 0 ,upgrade-flags 0)
+           '(body not-keep-alive ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+        (i (state 'head 'deadline 'header 'target "/chat" 'host "x")
+           `(parser-event on-headers-complete 1 1 1 ,F-UPGRADE 0)
+           '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
+
+   (row 'U2 "head, parser-result hands off on the error channel (the HTTP/2 preface) -> responding 505, close-after"
+        (i (state 'head 'deadline 'header) '(parser-result error 24 24 (paused-h2-upgrade . e-pri-upgrade) #f)
+           `(responding http2-preface (,(status-write 505)))))))
+
 (define (pause-protocol)
   (list
    ;; bv[10, 40) was fed and the parser stopped at 28, 18 bytes in: the rest
@@ -259,7 +310,8 @@
    ;; message's end means the core never feeds that data, so the error cannot
    ;; fire; if it did, it is not answered.
    (row 'P2 "handling after a close-marked message, parser-result error -> handling: ignored"
-        (i (paused 10 40 'not-keep-alive) '(parser-result error 1 29 closed-connection #f)
+        (i (paused 10 40 'not-keep-alive)
+           '(parser-result error 1 29 (closed-connection . e-data-after-close) #f)
            '(handling not-keep-alive () #f)))
 
    ;; The states a close-marked message passes through after its pause.
@@ -342,7 +394,8 @@
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
       (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3
-                (fold-left (lambda (n r) (+ n (run-row r kept))) 0 (pause-protocol))))
+                (fold-left (lambda (n r) (+ n (run-row r kept))) 0 (pause-protocol)))
+      (test-eqv "M2.5: both upgrade-door rows have a test" 2 (count-rows (upgrade-door))))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it but the two body-streaming actions (M6's).

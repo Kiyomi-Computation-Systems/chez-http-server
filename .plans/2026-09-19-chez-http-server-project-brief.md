@@ -39,6 +39,7 @@ Each of these is a decision record; the one-line form is here so the brief reads
    *Amended 2026-09-25 (decision 0004):* serial by design. The cap accepts only 1, and a parse-ahead policy would be a new decision with its own design, not a setting.
 4. **Bounded, nginx-style defaults; one tick timer and a timing wheel per loop** (decision 0005). Header read 60 s, idle 75 s, body inactivity 60 s, header bytes 16 KiB → 431, header count 100, target 8 KiB → 414, bodies stream unbounded, pipeline cap 1. Every limit is overridable from the environment.
 5. **HTTP/1.0 is supported; an h2c preface is answered 505 and closed; upgrades hand off through one hook** (decision 0006).
+   *Amended 2026-09-25 (decision 0006):* v1 serves an upgrade request and closes the connection after the response; the hook is M8's door for a handler that takes upgrades, and only the HTTP/2 preface gets 505.
 6. **Corpora are vendored as data with provenance** (decision 0007): llhttp reached through chez-httparse's harness, libhtp's 102 connection streams first, the rest by tier.
 7. **Twelve upstream asks were filed and tackled first** (decision 0008): chez-httparse #32–#36 (plus #42, split from #33), chez-libuv #18–#21, uriparse #9–#11. All fourteen have landed, counting #42 and the later uriparse #18: chez-httparse's in v0.3.0 and v0.4.0, uriparse's in v0.2.0, v0.3.0 and v0.4.0, chez-libuv's in v0.6.0, every pin at a release tag. No workaround remains on the request path; the one allocation v1 still accepts is the strict CONNECT target validator, which parses fresh (CONNECT is rare).
 
@@ -116,6 +117,7 @@ The two-level scheduler with injectable `poll!`, the phase assertion, one-shot r
 ### M8 — shutdown, hand-off, black-box, release
 
 SIGTERM drain with deadline; the upgrade hand-off hook (h2c preface → 505 + close; the hook shape reserved for WebSocket); black-box lane (vtest2, hurl, curl); load smoke with `oha`; smuggling corpora (libhtp invalid-* files, `smuggler` payloads, the AWS desync-guardian classifications) as a robustness lane. **Exit:** v0.1.0 tagged with the measured numbers in `CHANGELOG.md`.
+*Amended 2026-09-25 (decision 0006):* the core answers the HTTP/2 preface 505 itself (M2.5); M8's hook is the door for a handler that takes upgrades.
 
 ## Standing risks
 

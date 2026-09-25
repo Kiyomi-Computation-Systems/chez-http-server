@@ -8,28 +8,16 @@
 ;;; (outcome-lane)).  `make test` runs 'extremes; the release lane runs 'full
 ;;; under CORPUS=full (plan §2.2), the M2 exit's two selections.
 ;;;
-;;; Except the fixtures listed below, gated both ways: each listed fixture's
-;;; outcome does depend on the chunk size, and every other fixture's does not.
-;;; They are upgrades, which M2.5's hand-off door takes.  The core pauses the
-;;; parser at every message's end, so the upgrade's own pause arrives only when
-;;; the parse resumes after the handler's response, with the core back in idle.
-;;; The core does not answer it there, and the next delivery feeds a paused
-;;; parser, which byte-machine refuses.  Delivered whole, there is no next
-;;; delivery, so the connection ends in idle.
+;;; Since M2.5 that holds for all 135, the four upgrades M2.4 listed
+;;; included: the core serves an upgrade and closes the connection after the
+;;; response, so the parser is never resumed onto its own hand-off (decision
+;;; 0006's amendment, on the owner's word, 2026-09-25).
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) getenv)
         (trace-lane) (outcome-lane))
 
 (define selection
   (let ((v (getenv "CORPUS"))) (if (and (string? v) (string=? v "full")) 'full 'extremes)))
-
-;; The fixtures whose outcome still depends on the chunk size, each an
-;; upgrade the parser hands off after its message.
-(define hand-offs
-  '("request/connection.md#14"      ; Connection: keep-alive, upgrade; Upgrade: WebSocket
-    "request/connection.md#19"      ; Connection: upgrade, a 4-byte body, Upgrade: ws
-    "request/connection.md#20"      ; Connection: Upgrade; Upgrade: WebSocket
-    "request/connection.md#21"))    ; Connection: Upgrade; Upgrade: HTTP/2.0, a 15-byte body
 
 ;; The instrument, calibrated on an input whose outcome is known from
 ;; decision 0004 and the input's own bytes: research/spike/pipeline-pause.sps's
@@ -61,14 +49,8 @@
     (test-equal "and a byte at a time, the same" spike-outcome (outcome-at spike 1))
     (let* ((results (map (lambda (p) (cons (car p) (outcome-mismatch (cdr p) selection)))
                          strict-request-fixtures))
-           (listed? (lambda (r) (member (car r) hand-offs)))
            (varied (filter cdr results)))
-      (for-each (lambda (r) (diag (string-append (if (listed? r) "LISTED " "OUTCOME MISMATCH ")
-                                                 (car r) ": " (cdr r))))
+      (for-each (lambda (r) (diag (string-append "OUTCOME MISMATCH " (car r) ": " (cdr r))))
                 varied)
-      (test-equal "every listed fixture names a strict fixture"
-                  hand-offs (filter (lambda (id) (assoc id results)) hand-offs))
-      (test-equal "every fixture not listed has one outcome at every chunk size"
-                  '() (map car (filter (lambda (r) (not (listed? r))) varied)))
-      (test-equal "each listed fixture's outcome still depends on the chunk size (M2.5)"
-                  hand-offs (map car (filter listed? varied))))))
+      (test-equal "every fixture has one outcome at every chunk size"
+                  '() (map car varied)))))

@@ -41,10 +41,11 @@
 ;;;
 ;;; and records the rest (deadlines, logs, body deliveries, a hand-off)
 ;;; without acting on them: the wheel is M5's, bodies M6's, the hand-off
-;;; M2.5's.  Input is delivered only while the connection reads, as libuv
-;;; delivers it.  An event the core cannot finish within `dispatch-cap`
-;;; dispatches is a harness error, never a hang (global-constraints: cap by
-;;; iteration count, never wall-clock).
+;;; M8's.  (Since M2.5 the core serves an upgrade and closes after it, so its
+;;; own loop never hands off.)  Input is delivered only while the connection
+;;; reads, as libuv delivers it.  An event the core cannot finish within
+;;; `dispatch-cap` dispatches is a harness error, never a hang
+;;; (global-constraints: cap by iteration count, never wall-clock).
 (library (fake-shell)
   (export make-fake-shell fake-shell?
           fake-shell-state fake-shell-now
@@ -215,17 +216,23 @@
   ;; feed! : FakeShell Bytevector Nat Nat -> Void
   ;; Feed the parser bv[start, end), counting the feed in the depth, then
   ;; dispatch its result: the status, the bytes consumed, where to resume,
-  ;; and the error's or the pause's code.
+  ;; the error as its code and node, and the pause's code.
   (define (feed! s bv start end)
     (fake-shell-depth-set! s (+ (fake-shell-depth s) 1))
     (let ((r (parser-feed! (fake-shell-parser s) bv start end)))
       (fake-shell-depth-set! s (- (fake-shell-depth s) 1))
       (fake-shell-deliver! s (list 'parser-result (parser-result-status r)
                                    (parser-result-consumed r) (parser-result-next r)
-                                   (code (parser-result-error r)) (code (parser-result-pause r))))))
+                                   (code+node (parser-result-error r))
+                                   (code (parser-result-pause r))))))
 
   ;; code : (U #f ParserError) -> (U #f Symbol)
   (define (code e) (and e (parser-error-code e)))
+
+  ;; code+node : (U #f ParserError) -> (U #f (Pair Symbol Symbol))
+  ;; An error's code, and the node the parser refused at, which splits
+  ;; one code's status (design §6.3).
+  (define (code+node e) (and e (cons (parser-error-code e) (parser-error-node-name e))))
 
   ;; fake-shell-feed-input! : FakeShell Bytevector Nat -> Nat
   ;; Deliver `input` in `size`-byte deliveries, each as `bytes-arrived`, while

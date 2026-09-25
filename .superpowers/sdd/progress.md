@@ -892,4 +892,78 @@ MERGED to main on 2026-09-25, as four stacked PRs landed bottom up on the owner'
 
 M2.4 is done, and decision 0004 item 2 is settled. The outcome lane holds 131 of the 135 strict fixtures; the four upgrades wait for M2.5's hand-off door.
 
-NEXT: M2.5, the hand-off door and the error rows (plan §6), on a fresh branch cut from main after 11abb8c, when the owner asks.
+---
+
+M2.5 — THE HAND-OFF DOOR AND THE ERROR ROWS (plan §6). Cut from main at ee23fb7 as feat/m2.5-hand-off-door; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`. One slice: 429 inserted lines of code and tests (ratchet.txt's 6 among them), just over plan §1 rule 1's ~400, so it goes up as its own PR, as M2.1 did at 596.
+
+MEASURED first, on main at ee23fb7:
+- `research/spike/upgrade-door.sps`, new, at the pins (`out/upgrade-door.run{1,2}.txt`, identical):
+  - answered `continue` at on-message-complete, the parser runs on to its own hand-off, `paused-upgrade`, in the same feed, a byte at a time and whole, with `next` one past the message. That holds for `Connection: upgrade` with and without a body, CONNECT over 1.1 and 1.0, and `Upgrade: h2c`;
+  - answered `pause`, as the core answers every message, the hand-off comes only after a resume and a feed, even of an empty range at `next`; a plain message answers need-input there;
+  - llhttp's rule (CONNECT, or both upgrade flags) equals the parser's own `upgrade` field at on-headers-complete, and an `Upgrade` or a `Connection: upgrade` alone is no upgrade;
+  - the HTTP/2 preface errors, `paused-h2-upgrade`, before any on-headers-complete.
+- Over the 135 strict fixtures, the rule agrees with the parser's field at every on-headers-complete, and marks exactly the nine whose llhttp logs pause for an upgrade: connection.md#14, #18–#21, method.md#2–#4 and uri.md#9.
+- Three scratch prototypes of the core, each run over the 135 strict fixtures:
+  - A, hand it off at the message's end: 9 outcomes changed, 26 core lines;
+  - B, serve it, then close: 5 outcomes changed, 17 core lines;
+  - C, serve it and keep the connection: 4 outcomes changed, 21 core lines.
+
+  Each held all 135 at 'extremes and at 'full, at 2,512 B per request.
+- Checked the same day:
+  - RFC 9110 §7.8 lets a server ignore `Upgrade`, and says it "MUST ignore" one in an HTTP/1.0 request;
+  - RFC 9110 §9.3.6: "most origin servers do not implement CONNECT";
+  - RFC 9113 §3.1 deprecated the h2c upgrade;
+  - curl's manual: `--http2` sends `Upgrade:` to an http:// URL.
+  - The project's own reads of other servers (research/server-*.md): Go gives an upgrade no special handling; Node, with no listener, answers `Upgrade` as an ordinary request and closes a CONNECT with no response; h2o serves an upgrade it does not take, and that connection is not persistent.
+
+DECIDED on the owner's word (2026-09-25), asked with the measurements above:
+- **An upgrade request is served, then the connection closes** (B). The handler answers it like any other request, and the bytes after it are never read. The core never lets the parser run on to its hand-off in v1. M8 opens that door, at the message's end, for a handler that takes upgrades. This amends decision 0006 item 3.
+- **`Upgrade: h2c` is an upgrade like any other.** Only the HTTP/2 preface is answered 505. This amends decision 0006 item 2.
+
+The alternatives weighed:
+- for the door, A, which is 0006 item 3 as written: the handler never sees the request, and with nothing to take it in v1 the connection closes with no response. It would also need a version check for RFC 9110's HTTP/1.0 rule;
+- for the door, C: the bytes after the request would be read as HTTP requests, a request-smuggling path behind a proxy that forwards them unread;
+- for `Upgrade: h2c`, keeping 0006's 505. It costs about 20 lines and a parser for the `Upgrade` token list, and it answers `curl --http2 http://…` with an error.
+
+What changed:
+- `(http-server decisions)`:
+  - `result-hands-off-stream?`, the two-channel check chez-httparse's docs/api.org gives as embedder code, over the parts the parser-result event carries: a pause with `paused-upgrade`, or an error with `paused-h2-upgrade`. A code counts only on its own channel;
+  - `request-upgrades?`, llhttp's `before_headers_complete` for a request. chez-httparse exports the flag bits and not the rule, so it is transcribed here and held to llhttp's recorded logs;
+  - `parser-error-status` refuses `paused-h2-upgrade`, a hand-off, as it already refused `paused-upgrade`;
+  - `reason-status` answers the core's new reason `http2-preface` 505, and refuses `parser-error`, whose status is the error's.
+- `(http-server connection)`:
+  - on-headers-complete marks an upgrade to close after its response, with the reason `upgrade`, unless the message closes anyway: `not-keep-alive` keeps precedence;
+  - in head or body, a parser result that hands off, on either channel, is the door. The HTTP/2 preface is answered 505, then close. A pause-channel hand-off is design §4.4's T7 row, which the core's own flow no longer reaches. Any other error takes the refusal's status, or the one `parser-error-status` gives its code and node: 400, or 501 at `e-request-invalid-te`;
+  - a parser-result event's `error` is now `(code . node)`, and tests/fake-shell.sls passes the node.
+- Tests:
+  - decisions 21: the four smoke-v040 rows at the pin, one test each; the channels kept apart; the rule's rows; and the rule against llhttp's logs over the 135;
+  - connection-table 77: T3's 501 and 400 split, and the upgrade-door rows U1 (four instances) and U2, counted apart;
+  - message-loop 18: a WebSocket handshake, a CONNECT and `Upgrade: h2c` each served and then closed, at every delivery size, with the frame after the handshake never delivered; the preface answered 505;
+  - connection-head 42: `Transfer-Encoding: pigeons` answered 501, `chunked, deflate` 400;
+  - outcome-lane 4: every fixture has one outcome at every chunk size, the listed-fixture gates gone;
+  - ratchet: the four upgrades promoted, 135 passing, a reviewed diff.
+- docs/connections.org: two paragraphs on upgrades and the preface; README's Connections line.
+- Decision 0006 gains a dated amendment, with what was weighed. Dated notes where the decision is restated: design §2, §4.3, §4.4 and §6.5; the brief's item 5 and its M8; the plan's M2.5 and M8.
+
+Seven fixtures' whole-input outcomes differ from main's:
+- the five upgrades (connection.md#14 and #18–#21) are served, then closed with the reason `upgrade`, where four varied by chunk size and #18 was left idle;
+- method.md#15, the HTTP/2 preface, is answered 505 (`http2-preface`) where it got 400;
+- transfer-encoding.md#13, a `Transfer-Encoding` whose last coding is not chunked, is answered 501 where it got 400.
+
+Watched to fail (m2-mutations.md): the new rows were red before the code, and mutations M2.5-A to J follow, the plan's first. The plan's mutation turns exactly the preface's row red among the four; the preface then reaches the error map, which refuses it, and the lane shows the raise. The first run of the ten came back all-green: the runner built each mutant's root from a relative path, which the suites never found. Every mutant was rerun with the root made absolute.
+
+`make test` green: twenty suites, 385 expected passes (362 on main), exit 0. The lane at 'full: 135 of 135 in 9,394 runs. The CPS workload costs 2,512 B per request, unchanged, and an absolute-form request 4,224 B.
+
+Settled in M2.5, open to the owner's review:
+1. **The event carries the error's node.** One code's status splits by the node the parser refused at, so a parser-result's `error` is `(code . node)` rather than the code alone. The ParserError record would need byte-machine's accessors in the core, and the table's rows would stop being data.
+2. **The HTTP/2 preface's 505 is the core's own reason, not the error map's.** M2.2's map answered `paused-h2-upgrade` 505. With the door checking both channels first, the map refuses it, so a check of one channel only, the plan's mutation, is loud instead of quiet.
+3. **`not-keep-alive` keeps precedence over `upgrade`.** A message that closes anyway keeps its own reason. So an HTTP/1.0 request with `Upgrade`, which RFC 9110 §7.8 says must be ignored, closes as HTTP/1.0 does.
+4. **The upgrade rule is transcribed, not read.** The parser's `upgrade` field decides the hand-off but is not in chez-httparse's documented `parser-field-ref` list. The rule uses documented inputs, two flags and a method, and llhttp's logs hold it.
+
+Found and recorded:
+- **(owner, upstream) chez-httparse exports the flag bits, not the upgrade rule.** (httparse decisions) mirrors llhttp's after-a-message decisions. `before_headers_complete`'s `upgrade` is the same kind of decision, and the server transcribes it. An ask to export it, or to document `upgrade` as a readable field, would retire the transcription. Not filed: that is the owner's to decide (decision 0008).
+- **(M3) A 2xx to CONNECT carries neither `Content-Length` nor `Transfer-Encoding`.** RFC 9110 §9.3.6: "A server MUST NOT send any Transfer-Encoding or Content-Length header fields in a 2xx (Successful) response to CONNECT." A v1 handler may answer a CONNECT 200, so M3's framing must drop both there.
+- **(M8) The hook has no v1 user.** The core answers the HTTP/2 preface itself. M8 decides how a handler takes an upgrade, at the message's end, and writes the hook's contract test for that door.
+- **(M2 exit)** One item remains: libhtp's pipelining and multi-packet files, with our expectations, promoted in the ratchet by name. The outcome lane holds 135 at 'extremes and at 'full, allocation is 2,512 B against the 3 KiB ratchet, and `make check-imports` is clean.
+
+NEXT: the M2 exit (plan §6): our expectations for libhtp's pipelining and multi-packet files, promoted in the ratchet by name, then M2's close-out, once M2.5 merges and the owner asks.

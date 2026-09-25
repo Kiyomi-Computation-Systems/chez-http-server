@@ -32,11 +32,12 @@
 ;;;     The rows about other rules send minimal requests with no Host, under
 ;;;     `minimal`, the defaults with the switch off; the Host rows run under
 ;;;     the defaults;
-;;;   - a parser error with no refusal is still a 400.
+;;;   - a parser error with no refusal is a 400, except a Transfer-Encoding
+;;;     whose last coding is not chunked, a 501 (M2.5).
 ;;;
 ;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
-;;; rows; design §6.5's 431, 414 and 400; RFC 9112 §3.2's target forms; the
-;;; limits each row sets.
+;;; rows; design §6.5's 431, 414, 400 and 501; RFC 9112 §3.2's target forms
+;;; and §6.1's 501; the limits each row sets.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection)
         (http-server request) (http-server response) (http-server span)
@@ -85,8 +86,9 @@
 
 ;; Outcome: what one connection did with its input.
 ;;   requests  the requests handed to call-handler, rendered, in order
-;;   error     #f, or the parser's error code and the responses the core
-;;             originated, a status of its own rather than the handler's
+;;   error     #f, or the parser's error code (the event carries the code and
+;;             its node) and the responses the core originated, a status of
+;;             its own rather than the handler's
 ;;   phase     the state the connection ended in
 ;;   reason    its close-after reason
 ;; drive : Bytevector Nat Limits -> Outcome
@@ -101,7 +103,7 @@
       (list (map (lambda (a) (render-request (cadr a)))
                  (filter (lambda (a) (eq? (car a) 'call-handler)) actions))
             (and error
-                 (list (list-ref error 4)
+                 (list (car (list-ref error 4))
                        (map render-action
                             (filter (lambda (a) (and (eq? (car a) 'write) (not (eq? (cadr a) resp))))
                                     actions))))
@@ -312,11 +314,22 @@
                 (list (refused 'invalid-target 400))
                 (every-size (b "GET /a?b=| HTTP/1.1\r\n\r\n") (with-limits '((target . 7)))))
 
-    ;; --- a parser error the core did not ask for is a 400 -------------------------
+    ;; --- a parser error the core did not ask for (design §6.3) ------------------
     (test-equal "an invalid header token: 400, then close"
                 (list (list '() (list 'invalid-header-token (list (status-write 400)))
                             'closed 'parser-error))
                 (every-size (b "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n") minimal))
+    ;; invalid-transfer-encoding splits by the node the parser refused at
+    ;; (M2.5): a Transfer-Encoding whose last coding is not chunked is a 501
+    ;; (RFC 9112 §6.1), and every other one a 400.
+    (test-equal "Transfer-Encoding: pigeons: 501, then close"
+                (list (list '() (list 'invalid-transfer-encoding (list (status-write 501)))
+                            'closed 'parser-error))
+                (every-size (b "PUT /url HTTP/1.1\r\nTransfer-Encoding: pigeons\r\n\r\n") minimal))
+    (test-equal "Transfer-Encoding: chunked, deflate: 400, then close"
+                (list (list '() (list 'invalid-transfer-encoding (list (status-write 400)))
+                            'closed 'parser-error))
+                (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: chunked, deflate\r\n\r\n") minimal))
 
     ;; --- bytes-arrived feeds the parser in every reading state -----------------
     (let ((bv (b "abcd")))

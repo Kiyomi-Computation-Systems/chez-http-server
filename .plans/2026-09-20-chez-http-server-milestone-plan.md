@@ -422,6 +422,11 @@ by reason string.
 - **Mutation:** check only the `parser-result-pause` channel. Expect the h2c row red
   and the other three green — the single-channel bug this slice exists to prevent.
 
+*Amended 2026-09-25 (decision 0006's amendment, on the owner's word):* the door. An
+upgrade request is served and the connection closed after it, so the core's own flow
+never reaches the pause channel's hand-off; the error channel's, the HTTP/2 preface, is
+answered 505. The ledger's M2.5 entry has the measurements the owner chose from.
+
 ### M2 exit
 
 The brief's gate, plus measured on the tree:
@@ -621,6 +626,10 @@ Limits arriving: `drain-timeout-ms`.
 **Hazard:** the upgrade hook is a door for code we do not write. Its shape is fixed here
 and its only v1 user is h2c → 505 + close (0006 item 2); the WebSocket shape is reserved,
 not built.
+*Amended 2026-09-25 (decision 0006's amendment, M2.5):* the core answers the HTTP/2
+preface 505 itself, so the hook has no v1 user. M8 opens the door at the message's end,
+for a handler that takes upgrades; until then an upgrade is served and the connection
+closed.
 **Exit (brief):** v0.1.0 tagged with the measured numbers in `CHANGELOG.md`.
 
 ---

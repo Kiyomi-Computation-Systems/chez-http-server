@@ -35,9 +35,12 @@
 ;;;            (disarm-deadline)  (shutdown)  (close reason)
 ;;;            (log what . details)  (hand-off request)
 ;;;
-;;; A span payload `bv start end` indexes the delivery the shell handed in; the
-;;; core never copies it (design §7.1).  `reply-parser` is the one action the
-;;; shell answers inside the parser callback that produced it (0002 item 3).
+;;; A parser-result's `error` is #f or the error's code and the node the parser
+;;; refused at, `(code . node)`, since one code's status splits by node (design
+;;; §6.3); its `pause` is #f or the pause's code.  A span payload `bv start
+;;; end` indexes the delivery the shell handed in; the core never copies it
+;;; (design §7.1).  `reply-parser` is the one action the shell answers inside
+;;; the parser callback that produced it (0002 item 3).
 ;;;
 ;;; PARSER CALLBACKS ALSO ENTER DIRECTLY (0002's third amendment).  A tagged
 ;;; list per callback was the largest cost the core added per request, so the
@@ -99,6 +102,20 @@
 ;;; dropped, never fed (0004 item 4), so llhttp's "Data after `Connection:
 ;;; close`" error cannot fire; an error result after the pause is not
 ;;; answered.
+;;;
+;;; AN UPGRADE IS SERVED, THEN THE CONNECTION CLOSES (M2.5; decision 0006's
+;;; amendment, on the owner's word, 2026-09-25).  A request that asks to
+;;; switch protocols, by llhttp's rule a CONNECT or `Connection: upgrade` with
+;;; `Upgrade` (`request-upgrades?`), reaches the handler like any other, and
+;;; the connection closes after the response, as a close-marked message's
+;;; does.  So its pause at on-message-complete is the last: the parser is
+;;; never resumed onto its own hand-off, and the bytes after the request,
+;;; another protocol's, are never read.  v1 has nothing to hand them to.
+;;; `Upgrade: h2c` is such a request.  The HTTP/2 preface is not a request: it
+;;; hands off on the parser's error channel (`result-hands-off-stream?` checks
+;;; both), and the core answers it 505, then close.  The pause channel's
+;;; hand-off (design §4.4's head/body row, `handed-off`) is the door M8 opens
+;;; for a handler that takes upgrades; the core's own flow never reaches it.
 ;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
@@ -551,8 +568,9 @@
   ;;   - as 'invalid-target, answered 400, otherwise.
   ;; An accepted target moves head -> body: the request is built from the
   ;; head, the connection is marked to close after the response unless the
-  ;; message keeps it alive (decision 0006 item 1), and the header deadline
-  ;; gives way to the body's.
+  ;; message keeps it alive (decision 0006 item 1), or, when it does, if the
+  ;; request upgrades (M2.5), and the header deadline gives way to the
+  ;; body's.
   (define (conn-headers-complete-step s method http-major http-minor flags content-length)
     (case (conn-phase s)
       ((head)
@@ -566,8 +584,10 @@
           ((not (target-fault (conn-judge s) name target))
            (conn-request-set! s (make-request name target http-major http-minor
                                               (reverse (head-fields h)) #f))
-           (unless (should-keep-alive? http-major http-minor 'request 0 flags)
-             (conn-close-after-set! s 'not-keep-alive))
+           (cond ((not (should-keep-alive? http-major http-minor 'request 0 flags))
+                  (conn-close-after-set! s 'not-keep-alive))
+                 ((request-upgrades? method flags)
+                  (conn-close-after-set! s 'upgrade)))
            (conn-phase-set! s 'body)
            (conn-deadline-set! s 'body)
            (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body))))
@@ -593,12 +613,16 @@
   ;; this allocates nothing.
   (define (continue s) (values s '((reply-parser continue))))
 
-  ;; head/body: a pause that carries a reason hands the stream off (0006
-  ;; item 3); an error is answered with a status, then close.  Only the pause
-  ;; channel is read here; M2.5 adds the h2c error channel.  An error the core
-  ;; asked for with `fail` is answered with its reason's status (design §6.3);
-  ;; any other is a parser error, 400 until M2.5 reads the parser's code
-  ;; through (http-server decisions)' map.
+  ;; head/body: a hand-off, on either of the parser's channels
+  ;; (`result-hands-off-stream?`), is the door (M2.5).  The HTTP/2 preface, on
+  ;; the error channel, is answered 505, then close (decision 0006 item 2).
+  ;; A pause for an upgrade stops reading and hands the stream off (0006
+  ;; item 3): the door M8 opens for a handler that takes upgrades, which the
+  ;; core's own flow never reaches, since it pauses at every message's end
+  ;; and closes after an upgrade.  Any other error is answered with a status,
+  ;; then close: one the core asked for with `fail` gets its reason's status
+  ;; (design §6.3), and any other the status (http-server decisions) gives
+  ;; its code and node.
   ;; handling: the core's own answer to on-message-complete paused the
   ;; parser, a pause with no reason, so the rest of the last delivery, from
   ;; `next`, is kept as the pending input the resume feeds (decision 0004
@@ -614,15 +638,21 @@
            (conn-pending-set! s (rest-of (conn-delivery s) next)))
          (values s '()))
         ((head body)
-         (cond
-          ((and (eq? status 'paused) pause)
-           (conn-phase-set! s 'handed-off)
-           (conn-deadline-set! s #f)
-           (values s (list '(read-stop) (list 'hand-off (conn-request s)))))
-          ((eq? status 'error)
-           (respond-and-close s (or (head-refusal (conn-head s)) 'parser-error)
-                             (refusal-headers (conn-head s))))
-          (else (values s '()))))
+         (let ((err (list-ref ev 4)))
+           (cond
+            ((result-hands-off-stream? status (and err (car err)) pause)
+             (if (eq? status 'error)
+                 (respond-and-close s 'http2-preface '())
+                 (begin
+                   (conn-phase-set! s 'handed-off)
+                   (conn-deadline-set! s #f)
+                   (values s (list '(read-stop) (list 'hand-off (conn-request s)))))))
+            ((not (eq? status 'error)) (values s '()))
+            ((head-refusal (conn-head s))
+             => (lambda (reason)
+                  (respond-and-close s reason (refusal-headers (conn-head s)))))
+            (else
+             (respond s (parser-error-status (car err) (cdr err)) 'parser-error '())))))
         (else (values s '())))))
 
   ;; rest-of : (List Bytevector Nat Nat) Nat -> Pending
@@ -675,14 +705,21 @@
   ;;   ConnState Symbol Headers -> (values ConnState (Listof Action))
   ;; Enter `responding` with a status the core originates, closing afterwards
   ;; for `reason` (design §6.5: every originated status closes).  The status
-  ;; is the reason's, from (http-server decisions).  The record carries no
-  ;; reason phrase, and no headers but `headers`, a redirect's Location: M3's
-  ;; serializer derives the phrase and adds `Connection: close`.
+  ;; is the reason's, from (http-server decisions).
   (define (respond-and-close s reason headers)
+    (respond s (reason-status reason) reason headers))
+
+  ;; respond :
+  ;;   ConnState Nat Symbol Headers -> (values ConnState (Listof Action))
+  ;; Enter `responding` with `status`, closing afterwards for `reason`.  The
+  ;; record carries no reason phrase, and no headers but `headers`, a
+  ;; redirect's Location: M3's serializer derives the phrase and adds
+  ;; `Connection: close`.
+  (define (respond s status reason headers)
     (conn-phase-set! s 'responding)
     (conn-close-after-set! s reason)
     (conn-outstanding-set! s (+ (conn-outstanding s) 1))
-    (values s (list (list 'write (make-response (reason-status reason) #f headers #f)))))
+    (values s (list (list 'write (make-response status #f headers #f)))))
 
   ;; refusal-headers : Head -> Headers
   ;; The headers a refused message's response carries: a redirect's
