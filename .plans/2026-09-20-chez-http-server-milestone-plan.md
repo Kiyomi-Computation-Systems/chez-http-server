@@ -164,6 +164,11 @@ default, its name appended to `limits-environment-variables`, and the existing
 guard is not theoretical — M0's mutation M2 showed it fires as the second failure
 whenever a default moves.
 
+*Amended 2026-09-25 (decision 0010 item 5, on the owner's word):* `write-high-water`
+and `write-low-water` arrive in **M6**, not M3. In v1 a handler's response is written
+with reading already stopped, and only one response is outstanding, so their read-stop
+could never fire in M3. M6 streams response bodies, and settles what crossing them does.
+
 **`tick-ms` is the one duration that cannot take the seconds convention.** Every
 timeout override in `(http-server limits)` is given in whole seconds and stored in
 milliseconds (`env-seconds->ms`, `src/http-server/limits.sls:91-93`). A 250 ms tick has
@@ -469,6 +474,10 @@ request, one completion, no concatenation. It is a total function of its argumen
 it is tabled independently of any connection state, which is the reason it is its own
 library rather than part of `(http-server connection)`.
 
+*Amended 2026-09-25 (decision 0010):* a fixed 37-byte Date slot follows the status line,
+and the shell fills it. A handler's response the serializer cannot write safely is a
+fault, answered 500.
+
 - **Mutation:** concatenate the segments into one bytevector. The wire bytes are
   identical, so only the segment-count assertion goes red — which is the assertion
   earning its place.
@@ -484,7 +493,7 @@ suppression; HTTP/1.0's rules; `Connection: close` on the last response.
 ### M3.3 — write accounting
 
 Bytes outstanding and request count, with `write-high-water` / `write-low-water`
-arriving per §3. Design §7.3 is the load-bearing fact: chez-libuv copies each write
+arriving per §3 (*amended 2026-09-25:* in M6). Design §7.3 is the load-bearing fact: chez-libuv copies each write
 payload into request-owned foreign memory at the call
 (`vendor/chez-libuv/src/libuv/stream.sls:88-128`), so the core does **not** retain
 response bytevectors until completion. Accounting tracks bytes, not buffers.
@@ -499,6 +508,10 @@ response bytevectors until completion. Accounting tracks bytes, not buffers.
 
 Every status in design §6.5 — 400, 408, 413, 414, 431, 500, 501, 505 — produced
 end-to-end through the serializer, each closing the connection.
+
+*Noted 2026-09-25:* nothing produces 413 before M6's buffering helper (decision 0005's
+`max-body-bytes` row), so 413 goes through the serializer alone here. Decision 0009 added
+a ninth originated status, 301, which closes too.
 
 - **Mutation:** make one of them keep the connection alive. Expect the close assertion
   red for that status alone.

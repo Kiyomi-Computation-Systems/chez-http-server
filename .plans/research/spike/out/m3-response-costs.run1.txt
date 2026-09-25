@@ -1,0 +1,25 @@
+--- (A) the Date header: bytes and ns per response
+A1 per response, through strings  4032 B  1256.3 ns
+A2 per response, into bytes       208 B  205.1 ns
+A3 cached by the shell            0 B  0.8 ns
+A2's line: Date: Fri, 25 Sep 2026 22:03:14 GMT
+
+A1 and A2 agree: #t
+--- (B) a prototype head: bytes per response, with its segments and write action
+B1 200, no headers, no body       112 B
+B2 200, three headers, 13 B body  448 B
+B2's wire: HTTP/1.1 200 OK
+Content-Type: text/plain; charset=utf-8
+Cache-Control: no-store
+ETag: "abc123"
+Content-Length: 13
+
+hello, world
+
+--- (C) the header scan: bytes and ns per response
+C  three headers                  0 B  144.5 ns
+--- (D) the allocation suite's workload (M2's gate: 3,072 B per request)
+D0 today, no serializer           2464 B/request
+D1 with B1 in the loop            2576 B/request
+D2 with B2 in the loop            2912 B/request
+exit=0

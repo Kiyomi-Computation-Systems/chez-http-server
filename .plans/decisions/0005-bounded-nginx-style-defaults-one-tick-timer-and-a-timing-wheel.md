@@ -86,3 +86,20 @@ can raise. Decision 0004's amendment of the same day makes v1 serial by design, 
 `CHEZ_HTTP_PIPELINE_CAP` accepts 1 and refuses any other value at startup, as a
 malformed value is refused. The field stays in the record, so a future parse-ahead
 design keeps its name.
+
+## Amendment (2026-09-25) — the write watermarks arrive in M6
+
+Decided on the owner's word on 2026-09-25, when M3 began
+([decision 0010](0010-the-server-writes-framing-connection-and-date-and-refuses-a-response-it-cannot-write-safely.md)
+item 5). The table's `write-high-water` / `write-low-water` row says to stop reading
+above 262,144 bytes outstanding and to start again below 65,536. In v1 that read-stop
+can never fire. A handler's response is written with reading already stopped (decision
+0004 item 1), and only one response is ever outstanding.
+
+- **The two fields arrive in M6**, not in M3 as the milestone plan's §3 had it. M6
+  streams response bodies, which is the first time a response can outrun its client
+  and a test can watch the watermarks act. M6 settles what crossing them does, and
+  this row's on-breach column is not in force until then.
+- **M3 keeps the accounting.** Its write action carries the write's byte count, and
+  the core tracks the bytes and writes outstanding.
+- The defaults are unchanged.

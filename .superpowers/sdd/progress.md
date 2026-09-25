@@ -1098,3 +1098,51 @@ The ratchet stands at trace 135, outcome 135 and libhtp 12 passing. Each llhttp 
 
 NEXT: M3, the response path (plan §7): the serializer as a total function, framing and the suppression rules, write accounting, and the eight originated statuses. It starts on a fresh branch cut from main after this commit, when the owner asks. Carried into M3: a 2xx answer to CONNECT carries neither Content-Length nor Transfer-Encoding (RFC 9110 §9.3.6; M2.5's note).
 
+
+M3 — THE RESPONSE PATH (plan §7). Branch feat/m3-response-path, cut from main at b491d1f; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`. Mutation log: m3-mutations.md.
+
+MEASURED first, on main at b491d1f, by `research/spike/m3-response-costs.sps`, new (`out/m3-response-costs.run{1,2}.txt`: the bytes identical, the times within 1%). A prior, not an oracle:
+- a Date line, per response: 4,016–4,032 B and 1.2 µs through strings (the bytes vary with the time's digits), 208 B and 0.2 µs straight into bytes, 0 B when the shell keeps the line;
+- the header check (a token name, a value with no control character but HTAB): 0 B and 145 ns for three headers;
+- the allocation gate's workload, its actions going nowhere: 2,464 B per request today, 2,576 B with a prototype serializer writing an empty 200, 2,912 B with three headers and a 13-byte body. A Date formatted per response would put the second at 3,120 B, over the 3,072 B gate.
+
+Found before the first test, and put to the owner: the plan and the decisions say nothing about a Date (RFC 9110 §6.6.1 makes it a MUST for 2xx, 3xx and 4xx from a server with a clock), nothing about a handler's response that cannot be written safely, and the write watermarks' read-stop can never fire in v1.
+
+DECIDED on the owner's word (2026-09-25), asked by form with the measurements above; recorded as decision 0010:
+- **The shell fills the Date.** The serializer leaves a fixed 37-byte slot after the status line, counts it, and formats the line; the shell fills the slot from a line it re-formats once a second (M4), and the fake shell from its fake clock. A handler's own Date is written instead.
+- **A handler's response the serializer cannot write safely is answered 500**, then close, with a `log` action naming the fault. The server writes Content-Length and Transfer-Encoding itself, so a handler's are refused; a handler's `Connection: close` is honoured.
+- **The write watermarks arrive in M6.** M3.3 keeps the byte and write accounting and the retention check. Decision 0005 and plan §3 and §7 carry dated notes.
+
+The alternatives weighed: for the Date, none in v1, or the handler's job; for the unsafe response, repairing it silently, or trusting the handler's framing as Node does; for the watermarks, landing them in M3 with a read-stop no test can reach.
+
+Defaults shown to the owner with the form, and taken: the status line says `HTTP/1.1`; a response the core originates has no body, `Content-Length: 0` and `Connection: close`; a HEAD answered with no body gets no Content-Length; an HTTP/1.0 keep-alive request gets `Connection: keep-alive`.
+
+Read as the owner's choice, and flagged for the PR:
+- a `Connection` field from a handler must be exactly `close`: any other value is a fault;
+- a value's other control characters are faults too, not only CR, LF and NUL (RFC 9110 §5.5 calls them invalid);
+- a body a 204, a 304 or a 2xx to CONNECT forbids is not written. That is the brief's suppression, not a fault.
+
+Found and recorded:
+- nothing produces 413 before M6's buffering helper, so M3.4 sends it through the serializer alone and drives the other seven end to end;
+- decision 0009's 301 is a ninth status the core originates, and it closes too;
+- a tick in `body` past the body deadline has no row (design §4.4 lists only head's 408); the wheel's M5 owns it.
+
+The slices (plan §7), each red first and finished by a named mutation:
+- M3.1, the serializer: `(http-server serializer)`, a response and a framing decision to segments and their byte count, the faults, the Date line. Every row is read back through chez-httparse's strict response parser.
+- M3.2, framing: the decision in `(http-server decisions)` (Content-Length, chunked, close-delimited; HEAD, 1xx, 204, 304 and the 2xx to CONNECT; HTTP/1.0), and the core writing through the serializer.
+- M3.3, write accounting: the bytes and writes outstanding, and the check that the core keeps no response bytes once the write is issued.
+- M3.4, the originated statuses end to end, each closing.
+
+M3.1 — THE SERIALIZER. At 794 inserted lines of code and tests, twice plan §1 rule 1's ~400, it goes up as two stacked PRs, one per step below, each green on its own: feat/m3-response-path (this entry's records and the first step), then feat/m3.1-wire, cut from it.
+
+M3.1 FIRST STEP: what a handler's response may carry, and the Date line (feat/m3-response-path).
+- `src/http-server/serializer.sls`, `(http-server serializer)`, new and pure (it imports `(rnrs)`, response, span and headers):
+  - `response-fault`: #f, or the first fault decision 0010 item 2 names: not a response, a status outside 200–599, a reason or value with a control character other than HTAB, a header list that is not pairs of bytes, a name that is not a token, a Content-Length or Transfer-Encoding, a Connection that is not `close`, a body that is neither a bytevector nor #f. The value bytes refused are exactly the ones llhttp's strict parser refuses: measured with the response reader, it refuses 0x01 and DEL, and accepts HTAB and 0x80–0xFF;
+  - `response-closes?`: the handler's `Connection: close`, in any case, with whitespace around it;
+  - `date-line` and `date-line-length`: an IMF-fixdate line from whole seconds since the epoch, always 37 bytes, by the proleptic Gregorian calendar's 400-year eras. Instants before 1970 or after 9999 are refused.
+- `tests/test-serializer.sps`, new: the Date line against RFC 9110 §5.6.7's example, the epoch, and Chez's own UTC calendar (`time-utc->date`) over 4,347 instants from 1970 to 2400, with the leap days of 2000 and 2400 and the 2100 that is not leap; and 30 fault rows, each with its RFC or its item of decision 0010.
+- Red before green: against a stub that exported the four names and answered nothing, the suite exited 1, 7 passes and 32 failures. The 7 were the rows whose answer is "no fault" or "does not close"; mutations H to N make each red.
+- Mutations (m3-mutations.md): ten, B to N. Each turns exactly its rows red: the era's last day, the control characters, the 1xx statuses, HTAB, the close option's case and whitespace, the status range's end, spans, and an empty reason.
+- Every suite green in a scratch worktree with only this step: twenty-two suites, 440 expected passes (serializer 39), each exit 0. `make check-imports` is clean there.
+
+NEXT: the second step, the wire, stacked on this one.
