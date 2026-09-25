@@ -97,6 +97,11 @@ writes, then resumes. The cap is a field of the limits record with default 1 —
 ordering machinery stays in the core, so raising the cap is a setting and a test
 rather than a redesign.
 
+> *Amended 2026-09-25 (decision 0004's amendment "item 2: serial by design"):* v1 is
+> serial by design. The core has no ordering machinery, the cap accepts only 1, and
+> parse-ahead would be a new decision with its own design, since this document's
+> states (§4.3) serve one message at a time.
+
 Limits and timeouts are **bounded, nginx-style, and data** (0005). Deadlines live in
 the pure state as `deadline` and `deadline-kind`; the shell keeps a hashed timing
 wheel keyed by `(deadline div tick-ms)` and dispatches `(tick now)` only to

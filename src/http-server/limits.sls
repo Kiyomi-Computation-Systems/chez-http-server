@@ -12,7 +12,9 @@
 ;;; 60 s, header bytes 16 KiB (-> 431), header count 100, header field and
 ;;; header value 8 KiB each (-> 431; M2, milestone plan §3), target 8 KiB
 ;;; (-> 414), bodies stream unbounded (#f), pipeline cap 1, read buffer
-;;; 16 KiB (standing risk 2).  Durations are stored in milliseconds;
+;;; 16 KiB (standing risk 2).  The pipeline cap accepts only 1: the server
+;;; answers one request at a time by design (decision 0004's amendment of
+;;; 2026-09-25), so any other value is refused rather than ignored.  Durations are stored in milliseconds;
 ;;; sizes and buffers in bytes.  Timeout overrides are given in whole
 ;;; seconds; size and count overrides in their stored unit.
 ;;;
@@ -115,6 +117,17 @@
             ((string=? s "unbounded") #f)
             (else (parse-exact 'limits-from-environment name s 0)))))
 
+  ;; env-pipeline-cap : Lookup String -> Nat
+  ;; 1, the only cap the server serves; a value that parses but is not 1
+  ;; faults with who/name, as a malformed one does, rather than being
+  ;; accepted and ignored.
+  (define (env-pipeline-cap lookup name)
+    (let ((n (env-integer lookup name 1 1)))
+      (unless (= n 1)
+        (assertion-violation 'limits-from-environment
+          "the pipeline cap must be 1: requests are answered one at a time" name n))
+      n))
+
   ;; env-boolean : Lookup String Boolean -> Boolean
   ;; Exactly "true" or "false"; anything else faults with who/name, as a
   ;; malformed size does, rather than guessing.
@@ -140,6 +153,6 @@
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES"  8192  1)
       (env-integer     lookup "CHEZ_HTTP_MAX_TARGET_BYTES"        8192  1)
       (env-max-body    lookup "CHEZ_HTTP_MAX_BODY_BYTES"          #f)
-      (env-integer     lookup "CHEZ_HTTP_PIPELINE_CAP"            1     1)
+      (env-pipeline-cap lookup "CHEZ_HTTP_PIPELINE_CAP")
       (env-integer     lookup "CHEZ_HTTP_READ_BUFFER_SIZE"        16384 1)
       (env-boolean     lookup "CHEZ_HTTP_REQUIRE_HOST"            #t))))

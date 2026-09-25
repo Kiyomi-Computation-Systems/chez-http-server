@@ -17,13 +17,17 @@ refused rather than silently ignored.
 | ~CHEZ_HTTP_MAX_HEADER_VALUE_BYTES~  | 8192      | one header value                         |
 | ~CHEZ_HTTP_MAX_TARGET_BYTES~        | 8192      | size of the request-target               |
 | ~CHEZ_HTTP_MAX_BODY_BYTES~          | unbounded | request-body cap (~unbounded~ disables)  |
-| ~CHEZ_HTTP_PIPELINE_CAP~            | 1         | in-flight pipelined requests             |
+| ~CHEZ_HTTP_PIPELINE_CAP~            | 1         | must be 1: one request at a time         |
 | ~CHEZ_HTTP_READ_BUFFER_SIZE~        | 16384     | per-connection read buffer               |
 | ~CHEZ_HTTP_REQUIRE_HOST~            | true      | HTTP/1.1 requests must send ~Host~       |
 
 A request over any of the four header limits gets ~431~, and one whose target
 is over its limit gets ~414~. Either way the connection closes. What else a
 target must be is in [[file:request-targets.org][request-targets.org]].
+
+~CHEZ_HTTP_PIPELINE_CAP~ must be 1; any other value is refused at startup.
+The server answers the requests on a connection one at a time, in order (see
+[[file:connections.org][connections.org]]), so a larger value would have nothing to do.
 
 ~CHEZ_HTTP_REQUIRE_HOST~ is ~true~ or ~false~, nothing else. With ~false~, an
 HTTP/1.1 request with no ~Host~ is served instead of getting ~400~. The other

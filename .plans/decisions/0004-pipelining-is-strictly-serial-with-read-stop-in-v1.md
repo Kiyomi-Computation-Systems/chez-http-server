@@ -43,3 +43,48 @@ M2.4 built item 1's cycle, with one change of timing and one clarification.
   remainder after a close-marked message, so the parser is never fed past one, and
   its `closed-connection` error ("Data after `Connection: close`") never comes. If it
   did, it would not be answered; the connection table's P2 row holds that.
+
+## Amendment (2026-09-25) — item 2: serial by design
+
+Decided on the owner's word on 2026-09-25, after M2.4 found that no slice builds item 2's
+ordering machinery and that `pipeline-cap` was read by nothing.
+
+1. **Item 2 is withdrawn.** v1 answers the requests on a connection one at a time, by
+   design, not as a default. The core has no `inflight`/`ready`/`head` ordering
+   machinery. So raising the cap is no longer "a setting and a test". The nine states
+   of design §4.3 serve one message in flight: `handling` does not read. A cap above
+   1 would need the connection to read while it answers, which means:
+   - about half of the connection table's 22 rows change (H6–H10, T1, T3, T4, T6, T7
+     and P1);
+   - handler events need request ids;
+   - one deadline per connection no longer holds.
+2. **The cap accepts only 1.** `pipeline-cap` stays a limits field, so a future
+   design keeps its name, but `CHEZ_HTTP_PIPELINE_CAP` refuses any other value at
+   startup rather than accepting it and ignoring it.
+3. **Parse-ahead, if ever wanted, is a new decision** with its own design, set against
+   a throughput goal. M8's load test is the first place to set one (decision 0002's
+   amendment on what the allocation gate measures).
+4. **Item 3's alternative is untouched.** Reading during a handler only to notice a
+   client leave, with a bounded inbox and nothing parsed ahead, stays open as item 3
+   records it.
+
+What was weighed, measured 2026-09-25 on Darwin arm64, Chez 10.4.1 `tarm64osx`:
+- **What parsing ahead would save the parser.** On 16 pipelined GETs in one buffer,
+  pausing at every message's end costs 47 to 69 ns (3–5%) and 384 B per request, one
+  feed more per message (`research/spike/pipeline-parse-ahead.sps`, two runs).
+  Requests that do not arrive pipelined gain nothing. Writing a batch of responses in
+  one call might gain more, and cannot be measured before M3 and M4.
+- **Who pipelines.** Browsers turned pipelining off years ago (the context above), and
+  libcurl disabled HTTP/1 pipelining in 7.62.0. TechEmpower's plaintext test assumes
+  pipelining support, which a serial server gives: it answers pipelined requests in
+  order. 2 of the 135 strict llhttp fixtures and 1 of libhtp's 102 streams carry more
+  than one request.
+- **What parsing ahead costs.** Each request in flight holds its delivery, up to
+  `read-buffer-size` (16 KiB by default), and its response waits its turn. Reading
+  while handling loses read-stop's backpressure. A request body must be read through,
+  and buffered, to reach the next request. Node, which parses ahead, needed flood
+  throttling after CVE-2013-4450 (pipelined requests whose responses were never read
+  exhausted its memory) and discards bodies its handlers never read.
+- **The alternatives.** For item 2: plan the machinery for M7, the first milestone
+  whose handlers can wait; or build it now, before M2.5. For the variable: remove the
+  field; or leave it accepting any value, with the docs saying only 1 takes effect.

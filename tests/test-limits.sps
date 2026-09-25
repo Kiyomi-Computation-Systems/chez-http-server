@@ -55,14 +55,12 @@
                (lambda (name)
                  (cond ((string=? name "CHEZ_HTTP_IDLE_TIMEOUT") "30")
                        ((string=? name "CHEZ_HTTP_MAX_HEADER_BYTES") "4096")
-                       ((string=? name "CHEZ_HTTP_PIPELINE_CAP") "8")
                        ((string=? name "CHEZ_HTTP_MAX_BODY_BYTES") "1048576")
                        ((string=? name "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES") "256")
                        ((string=? name "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES") "512")
                        (else #f))))))
       (test-eqv "idle 30 s -> 30000 ms" 30000   (limits-idle-timeout-ms L))
       (test-eqv "header bytes overridden" 4096   (limits-max-header-bytes L))
-      (test-eqv "pipeline cap overridden" 8      (limits-pipeline-cap L))
       (test-eqv "body cap overridden"     1048576 (limits-max-body-bytes L))
       (test-eqv "header field overridden" 256    (limits-max-header-field-bytes L))
       (test-eqv "header value overridden" 512    (limits-max-header-value-bytes L))
@@ -92,6 +90,17 @@
                           (lambda (name) (and (string=? name "CHEZ_HTTP_REQUIRE_HOST") value)))
                          'no-fault))
                      '("0" "no" "False")))
+
+    ;; --- the pipeline cap: 1 and nothing else.  The server answers one
+    ;; request at a time by design (decision 0004's amendment of
+    ;; 2026-09-25), so a larger cap would be ignored; it is refused instead.
+    (let ((cap (lambda (value)
+                 (guard (e (#t 'faulted))
+                   (limits-pipeline-cap
+                    (limits-from-environment
+                     (lambda (name) (and (string=? name "CHEZ_HTTP_PIPELINE_CAP") value))))))))
+      (test-equal "a pipeline cap of 1 is accepted; 2 and 8 are refused"
+                  '(1 faulted faulted) (map cap '("1" "2" "8"))))
 
     ;; --- a malformed value faults rather than silently defaulting ---
     (test-eq "a negative pipeline cap is refused" 'faulted

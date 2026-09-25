@@ -844,7 +844,38 @@ Found and recorded:
   - the h2c preface, method.md#15, is answered 400.
 
   M2.1's finding said the hand-off arrives in `handling`. It arrives one step later still, and M2.5 decides where the door is.
-- **(owner) Decision 0004 item 2 has no slice.** Item 2 keeps the `inflight`/`ready`/`head` ordering machinery in the core, "so raising the cap is a setting and a test". No slice of the milestone plan builds it. Its consequence says no response-ordering queue is exercised in v1. `pipeline-cap` is read by nothing: the core serves one request at a time whatever its value, while docs/configuration.org says the variable bounds in-flight pipelined requests.
+- **(owner, settled in the fourth step below) Decision 0004 item 2 has no slice.** Item 2 keeps the `inflight`/`ready`/`head` ordering machinery in the core, "so raising the cap is a setting and a test". No slice of the milestone plan builds it. Its consequence says no response-ordering queue is exercised in v1. `pipeline-cap` is read by nothing: the core serves one request at a time whatever its value, while docs/configuration.org says the variable bounds in-flight pipelined requests.
 - **(M2 exit)** Three things remain: libhtp's pipelining and multi-packet files with our expectations, the outcome lane's four upgrades (M2.5), and the lane at 'full, which holds today.
 
-NEXT: settling decision 0004 item 2, stacked on this one as feat/m2.4-pipeline-cap.
+PIPELINE CAP: decision 0004 item 2 settled. The fourth stacked PR, feat/m2.4-pipeline-cap, cut from feat/m2.4-outcome-lane; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
+
+The owner asked what pipelining is, what serial costs against the alternatives, and what Node gains from parsing ahead, then decided. Measured and checked for it:
+- `research/spike/pipeline-parse-ahead.sps`, new: on 16 pipelined GETs in one buffer, pausing at every message's end costs 47 to 69 ns (3–5%) and 384 B per request against never pausing, one feed more per message (`out/pipeline-parse-ahead.run{1,2}.txt`). Earlier scratch runs of the same program measured 60–94 ns: the time varies by run, the bytes do not.
+- 2 of the 135 strict fixtures (connection.md#2, pipelining.md#1) and 1 libhtp stream (07-pipelined-connection.t) carry more than one request.
+- Checked the same day:
+  - libcurl disabled HTTP/1 pipelining in 7.62.0;
+  - TechEmpower's plaintext test assumes pipelining support;
+  - RFC 9112 §9.3.2 lets a server work on pipelined safe requests in parallel, but its responses must leave in order;
+  - Node parses ahead with an `outgoing[]` queue (research/server-node-http.md §2–§3), and needed flood throttling after CVE-2013-4450.
+
+DECIDED on the owner's word (2026-09-25), asked with the facts above:
+- **Serial by design.** Decision 0004 item 2 is withdrawn: v1 answers one request at a time by construction, and the core has no ordering machinery. Parse-ahead would be a new decision with its own design, set against a throughput goal; M8's load test is the first place to set one. Reading during a handler only to notice a client leave stays open under item 3.
+- **`CHEZ_HTTP_PIPELINE_CAP` accepts only 1**; any other value is refused at startup. The field stays.
+- **A fourth stacked PR now**, so the pipelining work and the decision about its cap merge together.
+
+The alternatives weighed:
+- for item 2, planning the machinery for M7, or building it before M2.5;
+- for the variable, removing the field, or leaving it with the docs saying only 1 takes effect;
+- for when, folding it into M2.4's first step, or landing it after the stack merges.
+
+What changed:
+- `(http-server limits)`: `limits-from-environment` refuses a pipeline cap other than 1 and names the variable, as it does a malformed value.
+- test-limits.sps (26): "pipeline cap overridden 8" is replaced by "a pipeline cap of 1 is accepted; 2 and 8 are refused".
+- docs/configuration.org: the row says the cap must be 1, and a paragraph says why.
+- Decision 0004 gains a second amendment of the day, "item 2: serial by design", with what was weighed; decision 0005 gains one, "the pipeline cap accepts only 1". Design §2 and brief item 3, whose "a setting and a test" sentences the amendment withdraws, carry dated notes.
+
+Watched to fail: the new row was red before the check, since "2" and "8" were accepted. Mutations O and P follow. `make test` green: twenty suites, 362 expected passes, exit 0.
+
+Found and recorded, for M4: `make-limits` checks no field, as before, so only the environment path refuses the cap. If M4's facade lets embedders build limits directly, it must refuse a cap other than 1 too.
+
+NEXT: M2.5, the hand-off door and the error rows (plan §6), on a fresh branch cut from main once the M2.4 stack merges, when the owner asks.
