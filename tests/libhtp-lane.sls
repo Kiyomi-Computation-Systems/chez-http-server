@@ -26,7 +26,7 @@
   (import (rnrs)
           (libhtp-corpus) (fake-shell)
           (http-server connection) (http-server response)
-          (only (outcome-lane) render-request)
+          (only (outcome-lane) render-request attempt)
           (only (trace-lane) corpus-limits))
 
   ;; --- the expectations ------------------------------------------------------
@@ -205,12 +205,19 @@
       (bytevector-copy! bv from out 0 (- to from))
       out))
 
-  ;; libhtp-mismatch : String -> (U #f String)
+  ;; libhtp-mismatch : String [(String -> Outcome)] -> (U #f String)
   ;; #f when the stream `name` has an expectation and meets it; else why not.
-  (define (libhtp-mismatch name)
-    (let ((expected (libhtp-expectation name)))
-      (if (not expected)
-          "no expectation"
-          (let ((actual (libhtp-outcome name)))
-            (and (not (equal? actual expected))
-                 "the outcome is not the expectation"))))))
+  ;; `run` gives the outcome, `libhtp-outcome` unless a test says otherwise.
+  ;; A run that raises is a mismatch saying what it raised, never a raise:
+  ;; the ratchet calls this outside any check.
+  (define libhtp-mismatch
+    (case-lambda
+      ((name) (libhtp-mismatch name libhtp-outcome))
+      ((name run)
+       (let ((expected (libhtp-expectation name)))
+         (if (not expected)
+             "no expectation"
+             (let ((actual (attempt (lambda () (run name)))))
+               (cond ((string? actual) actual)
+                     ((equal? actual expected) #f)
+                     (else "the outcome is not the expectation")))))))))

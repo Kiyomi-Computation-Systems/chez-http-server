@@ -8,7 +8,9 @@
 ;;; that over all 102 streams, so a stream that carries either with no
 ;;; expectation is red, and so is an expectation for one that carries
 ;;; neither.  Then each of those streams must meet its expectation, from
-;;; (libhtp-lane).
+;;; (libhtp-lane).  And a stream whose run raises is a mismatch that says what
+;;; it raised, never a raise out of `libhtp-mismatch`, which the ratchet calls
+;;; outside any check.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) directory-list)
         (libhtp-corpus) (libhtp-lane)
@@ -76,4 +78,13 @@
     (for-each (lambda (name)
                 (test-equal (string-append name " meets its expectation")
                             (libhtp-expectation name) (libhtp-outcome name)))
-              libhtp-expected-files)))
+              libhtp-expected-files)
+    ;; The raise M3.2-T's fault gave the fake shell (2026-09-25), which the
+    ;; ratchet met as an uncaught exception, exit 255.
+    (test-equal "a stream whose run raises is a mismatch that says what it raised"
+                "raised fake-shell a write's byte count is not its bytes'"
+                (libhtp-mismatch "07-pipelined-connection.t"
+                                 (lambda (name)
+                                   (assertion-violation 'fake-shell
+                                                        "a write's byte count is not its bytes'"
+                                                        95 94))))))

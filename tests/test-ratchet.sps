@@ -16,6 +16,11 @@
 ;;;             outcome is the same at every chunk size ('extremes);
 ;;;   libhtp  — the M2 exit's, re-run here (via (libhtp-lane)): a stream passes
 ;;;             when it has one of our expectations and meets it.
+;;;
+;;; The gate runs the lanes, so it runs inside the suite: a raise there is a
+;;; harness error (status 2), never a crash outside the status vocabulary.
+;;; The outcome and libhtp lanes make a run that raises a mismatch, which the
+;;; gate reports as a violation with the lane's reason (status 1).
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) directory-list)
         (httparse test ratchet)          ; ratchet-parse, ratchet-entry-id/-status
@@ -74,19 +79,22 @@
     (if (hashtable-contains? libhtp-id-set fid) 'in-scope 'unknown))
    (else 'unknown)))
 
-;; lane-passes? : String String -> Boolean — the lane's comparator on an
-;; in-scope fixture.  A libhtp id is "files/<name>".
-(define (lane-passes? lane fid)
+;; lane-mismatch : String String -> (U #f String) — the lane's comparator on
+;; an in-scope fixture: #f when it passes, else why not.  A libhtp id is
+;; "files/<name>".
+(define (lane-mismatch lane fid)
   (let ((f (hashtable-ref request-by-id fid #f)))
-    (cond ((string=? lane "trace") (and f (not (trace-mismatch f 'extremes))))
-          ((string=? lane "outcome") (and f (not (outcome-mismatch f 'extremes))))
+    (cond ((string=? lane "trace") (if f (trace-mismatch f 'extremes) "no fixture"))
+          ((string=? lane "outcome") (if f (outcome-mismatch f 'extremes) "no fixture"))
           ((string=? lane "libhtp")
-           (not (libhtp-mismatch (substring fid 6 (string-length fid)))))
-          (else #f))))
+           (libhtp-mismatch (substring fid 6 (string-length fid))))
+          (else "no comparator"))))
 
 ;; --- the two-way gate -----------------------------------------------------
 
-(define violations
+;; violations : -> (Listof String) — one line per entry the gate refuses.
+;; It runs every lane, so only the suite calls it.
+(define (violations)
   (fold-right
    (lambda (e acc)
      (let* ((full (ratchet-entry-id e))
@@ -103,11 +111,11 @@
         ((eq? status 'deferred)
          (cons (string-append full ": in-scope fixture marked deferred") acc))
         (else
-         (let ((passes (lane-passes? lane fid)))
+         (let ((why (lane-mismatch lane fid)))
            (cond
-            ((and (eq? status 'passing) (not passes))
-             (cons (string-append full ": marked passing but does not pass") acc))
-            ((and (eq? status 'not-yet) passes)
+            ((and (eq? status 'passing) why)
+             (cons (string-append full ": marked passing but does not pass: " why) acc))
+            ((and (eq? status 'not-yet) (not why))
              (cons (string-append full ": marked not-yet but now passes") acc))
             (else acc)))))))
    '() entries))
@@ -155,5 +163,6 @@
     (for-each (lambda (m) (diag (string-append "RATCHET MISSING " m))) missing)
     (test-equal "manifest covers every fixture in every lane" '() missing)
     ;; the two-way gate and the meta-derived split hold
-    (for-each (lambda (v) (diag (string-append "RATCHET VIOLATION " v))) violations)
-    (test-equal "no ratchet violations" '() violations)))
+    (let ((vs (violations)))
+      (for-each (lambda (v) (diag (string-append "RATCHET VIOLATION " v))) vs)
+      (test-equal "no ratchet violations" '() vs))))
