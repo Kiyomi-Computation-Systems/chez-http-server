@@ -1081,3 +1081,20 @@ THE M2 EXIT, measured on the tree:
 
 NEXT: commit and PR on the owner's word. At the merge, M2 is complete. Then M3, the response path (plan §7).
 
+MERGED to main on 2026-09-25 as ae1ef45 (PR #30), on the owner's "do closing ritual":
+- The squash tree (e689ccd) is identical to the tested tip's, 373b5f8, proved against the merge commit gh reports.
+- The `linux` check (run 36192541757) executed zero steps, stopped at the billing check.
+- `gh pr merge --delete-branch` switched this checkout to main and fast-forwarded it to ae1ef45. The branch was deleted local and remote, and refs pruned; no PR is open.
+
+`make test` green on main: twenty-one suites, 401 expected passes, exit 0.
+
+M2 COMPLETE and merged (ae1ef45, PR #30): the pure connection core, request path. It took 24 PRs, #7 to #30, merged on 2026-09-24 and 2026-09-25. Among them, #8 is a CI fix, #9 follow-up docs, and #18, #21 and #28 pin moves. The exit criteria are met on main:
+- the outcome lane holds 135 of 135 at 'extremes and at 'full (9,394 runs), chunk-size invariant;
+- libhtp's twelve pipelining and multi-packet streams pass with our expectations, promoted by name;
+- allocation: 2,512 B per request against the 3 KiB gate;
+- m2-mutations.md is complete, and `make check-imports` is clean.
+
+The ratchet stands at trace 135, outcome 135 and libhtp 12 passing. Each llhttp lane defers the 32 lenient fixtures, and libhtp has 90 not-yet. The suite count went from M1's ten to twenty-one, adding connection-allocation, connection-entry, connection-head, connection-table, decisions, host, libhtp-lane, message-loop, outcome-lane, span and target.
+
+NEXT: M3, the response path (plan §7): the serializer as a total function, framing and the suppression rules, write accounting, and the eight originated statuses. It starts on a fresh branch cut from main after this commit, when the owner asks. Carried into M3: a 2xx answer to CONNECT carries neither Content-Length nor Transfer-Encoding (RFC 9110 §9.3.6; M2.5's note).
+
