@@ -1172,11 +1172,18 @@ M3.1 DONE and merged: `(http-server serializer)` writes a response as the segmen
 
 NEXT: M3.2, framing (plan §7): the framing decision in `(http-server decisions)` (Content-Length, chunked, close-delimited; HEAD, 204, 304 and the 2xx to CONNECT; HTTP/1.0), and the core writing through the serializer, answering 500 for a response with a fault. On a fresh branch cut from main after fda651d, when the owner asks.
 
-A LIBHTP RUN THAT RAISES: the ratchet crashed instead of naming the stream. Branch fix/ratchet-libhtp-raise, cut from main at bd49005; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
+A LIBHTP RUN THAT RAISES: the ratchet crashed instead of naming the stream. MERGED as e339931 (PR #33). Branch fix/ratchet-libhtp-raise, cut from main at bd49005; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
 - Found by M3.2-T on feat/m3.2-framing: its fault made the fake shell raise, and test-ratchet.sps exited 255, outside the status vocabulary. The ratchet computed its lane verdicts at the program's top level, and `libhtp-mismatch` ran each stream with no guard, unlike the outcome lane.
 - `libhtp-mismatch` runs a stream through the outcome lane's `attempt`, now exported and taking the run as a thunk. A run that raises is a mismatch that says what it raised. The run is an optional second argument, which the new check uses.
 - The ratchet's gate is a procedure the suite calls, as test-connection-table's tables are. Any other raise there, such as the trace lane's re-raise of an error other than the adapter's, is a harness error, exit 2. A violation line now ends with its lane's reason.
 - Red before green, then L9 (m3-mutations.md). Under M3.2-T's fault, simulated on this tree, the ratchet exits 1 and names 141 violations, the 12 libhtp streams among them; on main it exits 255 with the report's exception.
 - `make test` green: twenty-two suites, 543 expected passes (libhtp-lane 15), exit 0. `make check-imports` is clean.
 
-NEXT: unchanged, M3.2, framing; feat/m3.2-framing takes this fix from main.
+MERGED to main on 2026-09-25 as e339931 (PR #33), on the owner's "do closing ritual":
+- The squash tree (444989d) is identical to the tested tip's, c1e7d5d, proved against the merge commit gh reports.
+- The `linux` check (run 36202813436) executed zero steps, stopped at the billing check.
+- `gh pr merge --delete-branch` switched this worktree to main, which no other worktree held, and fast-forwarded it to e339931. The branch was deleted local and remote, and refs pruned; no PR is open.
+
+`make test` green on main: twenty-two suites, 543 expected passes, exit 0.
+
+NEXT: M3.2, framing (plan §7), on feat/m3.2-framing, which takes this fix from main. Its four test files merge with it cleanly; the ledger and the mutation log meet only at the end of each file.
