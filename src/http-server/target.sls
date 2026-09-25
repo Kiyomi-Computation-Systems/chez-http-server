@@ -25,14 +25,16 @@
 ;;;   - absolute-form is parsed by the judge's collector, made on the
 ;;;     connection's first absolute-form target and reset before each one,
 ;;;     and judged by `uri-parse-result-validate`.  It must carry no fragment
-;;;     (§3.2's forms have none) and no userinfo (RFC 9110 §4.2.4).
+;;;     (§3.2's forms have none) and no userinfo (RFC 9110 §4.2.4), and an
+;;;     http or https one must name a host (RFC 9110 §4.2.1 and §4.2.2).
 ;;;   - authority-form goes through `uri-parse-authority-form-validate`,
-;;;     which parses a copy of the target fresh.
+;;;     which parses a copy of the target fresh.  It must name a host: it is
+;;;     the tunnel's destination (RFC 9112 §3.2.3).
 ;;;
 ;;; The last two run uriparse's own scanner, a byte-machine parser that this
 ;;; judge owns and that is never the parser calling the core (0002's
 ;;; amendment of 2026-09-24).  Every verdict is data: uriparse's error code,
-;;; or one of this library's three.
+;;; or one of this library's four.
 ;;;
 ;;; ONE REFUSAL IS REDIRECTED INSTEAD (decision 0009).  Browsers send "[",
 ;;; "]" and "|" unencoded, because the WHATWG URL standard's query and path
@@ -49,7 +51,8 @@
                 uri-collect-finish! uri-parse-result-validate
                 uri-parse-ok? uri-parse-error-code uri-parse-components
                 uri-parse-authority-form-validate)
-          (only (uri components) uri-components-authority uri-components-fragment)
+          (only (uri components)
+                uri-components-scheme uri-components-authority uri-components-fragment)
           (only (uri charset) validate-component)
           (only (uri host) authority-host-span)
           (only (uri percent) pct-encode))
@@ -73,7 +76,8 @@
   ;;   judge method target — the method as llhttp names it ('GET, 'CONNECT)
   ;; #f when the target is the form its method and first byte call for, and
   ;; uriparse finds its bytes valid; otherwise what is wrong with it:
-  ;; uriparse's error code, or 'asterisk-not-options, 'fragment or 'userinfo.
+  ;; uriparse's error code, or 'asterisk-not-options, 'fragment, 'userinfo or
+  ;; 'no-host.
   (define (target-fault judge method target)
     (let ((bv (span-bytevector target)) (start (span-start target)) (end (span-end target)))
       (cond
@@ -175,9 +179,12 @@
       (uri-collect-feed! c bv start end)
       (let ((r (uri-parse-result-validate (uri-collect-finish! c))))
         (if (uri-parse-ok? r)
-            (let ((parts (uri-parse-components r)))
+            (let* ((parts (uri-parse-components r))
+                   (authority (uri-components-authority parts)))
               (cond ((uri-components-fragment parts) 'fragment)
-                    ((userinfo? (uri-components-authority parts)) 'userinfo)
+                    ((userinfo? authority) 'userinfo)
+                    ((and (http-scheme? (uri-components-scheme parts)) (not (host? authority)))
+                     'no-host)
                     (else #f)))
             (uri-parse-error-code r)))))
 
@@ -189,10 +196,45 @@
          (let-values (((host-start host-end) (authority-host-span authority)))
            (fx>? host-start 0))))
 
+  ;; host? : (U #f Bytevector) -> Boolean
+  ;; An authority that names a host: present, and its host, by `(uri host)`'s
+  ;; own split, not empty.  "http:x" has no authority; "http:///x" and
+  ;; "http://:80/x" have an empty host.
+  (define (host? authority)
+    (and authority
+         (let-values (((host-start host-end) (authority-host-span authority)))
+           (fx<? host-start host-end))))
+
+  ;; http-scheme? : Bytevector -> Boolean
+  ;; "http" or "https", in any case: schemes are case-insensitive (RFC 3986
+  ;; §3.1), and uriparse keeps the case it was sent.  A validated absolute-
+  ;; form target always has a scheme.
+  (define (http-scheme? scheme)
+    (or (scheme=? scheme HTTP) (scheme=? scheme HTTPS)))
+
+  (define HTTP (string->utf8 "http"))
+  (define HTTPS (string->utf8 "https"))
+
+  ;; scheme=? : Bytevector Bytevector -> Boolean
+  ;; `scheme` is `lower`, ignoring the case of its letters.  A scheme holds
+  ;; letters, digits, "+", "-" and "."; of those, setting bit 5 changes only
+  ;; an upper-case letter, to its lower case.
+  (define (scheme=? scheme lower)
+    (let ((n (bytevector-length lower)))
+      (and (fx=? (bytevector-length scheme) n)
+           (let loop ((i 0))
+             (or (fx=? i n)
+                 (and (fx=? (fxior (bytevector-u8-ref scheme i) #x20) (bytevector-u8-ref lower i))
+                      (loop (fx+ i 1))))))))
+
   ;; authority-form-fault : Span -> (U #f Symbol)
   ;; The strict validator parses a whole bytevector fresh, so the target is
   ;; copied first.  Accepted without an ask: CONNECT is rare, and the fresh
-  ;; parse, not the copy, is most of what it costs (design §7.5).
+  ;; parse, not the copy, is most of what it costs (design §7.5).  A valid
+  ;; target is an authority with no userinfo, so its host is `host?`'s.
   (define (authority-form-fault target)
-    (let ((r (uri-parse-authority-form-validate (span->bytevector target))))
-      (if (uri-parse-ok? r) #f (uri-parse-error-code r)))))
+    (let* ((authority (span->bytevector target))
+           (r (uri-parse-authority-form-validate authority)))
+      (cond ((not (uri-parse-ok? r)) (uri-parse-error-code r))
+            ((host? authority) #f)
+            (else 'no-host)))))

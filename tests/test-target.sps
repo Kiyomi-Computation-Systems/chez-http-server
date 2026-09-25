@@ -13,9 +13,11 @@
 ;;; target is split at its first "?" and its parts judged by `(uri charset)`.
 ;;; An absolute-form target is judged by a reused collector with
 ;;; `uri-parse-result-validate`, and must carry neither a fragment (§3.2 has
-;;; none) nor userinfo (RFC 9110 §4.2.4).  CONNECT's goes through
-;;; `uri-parse-authority-form-validate`.  Decided on the owner's word,
-;;; 2026-09-24 (the ledger's M2.3 entry).
+;;; none) nor userinfo (RFC 9110 §4.2.4); an http or https one must name a
+;;; host (RFC 9110 §4.2.1 and §4.2.2).  CONNECT's goes through
+;;; `uri-parse-authority-form-validate`, and must name a host too.  Decided on
+;;; the owner's word, 2026-09-24 (the ledger's M2.3 entry), and for the host,
+;;; 2026-09-25.
 ;;;
 ;;; A refused target that browsers produce is redirected rather than refused,
 ;;; and only that one (decision 0009): a GET or HEAD origin-form target whose
@@ -109,6 +111,19 @@
     (test-equal "the host grammar judges the authority" 'invalid-port (fault 'GET "http://h:8x/p"))
     (test-equal "userinfo is refused (RFC 9110 §4.2.4)" 'userinfo (fault 'GET "http://u@h/p"))
     (test-equal "a fragment is refused" 'fragment (fault 'GET "http://h/p#f"))
+    ;; RFC 9110 §4.2.1 and §4.2.2: an http or https URI is "//" and an
+    ;; authority, and a recipient MUST reject one with an empty host.  A
+    ;; missing authority is no host either.  The scheme matches in any case.
+    (test-equal "an http or https target with no host is refused"
+                '(no-host no-host no-host no-host no-host no-host)
+                (map (lambda (t) (fault 'GET t))
+                     '("http:///x" "http://:80/x" "https://?q" "HTTP:///x" "http:x" "http:/x")))
+    ;; The rule is RFC 9110's, for http and https only: another scheme, even
+    ;; one that begins "http", keeps uriparse's verdict.  Whether to serve it
+    ;; is M4's question.
+    (test-equal "a target of another scheme keeps uriparse's verdict"
+                '(accepted accepted)
+                (map (lambda (t) (fault 'GET t)) '("ftp:///x" "httpx:///x")))
     (test-equal "an empty target is refused as uriparse refuses it"
                 (uriparse-code 'uri "") (fault 'GET ""))
     (test-eq "an absolute-form target is judged by its own bytes"
@@ -127,6 +142,9 @@
     (test-equal "CONNECT with userinfo is refused" 'userinfo-forbidden
                 (fault 'CONNECT "u@example.com:443"))
     (test-equal "CONNECT with a path is refused" 'not-authority-form (fault 'CONNECT "h:1/x"))
+    ;; The target is the tunnel's destination (RFC 9112 §3.2.3), and an empty
+    ;; host names none, though RFC 3986's grammar allows it.
+    (test-equal "CONNECT with an empty host is refused" 'no-host (fault 'CONNECT ":443"))
     ;; The method decides first: CONNECT's * is an authority with no port.
     (test-equal "CONNECT * is judged as authority-form" 'port-required (fault 'CONNECT "*"))
     (test-eq "a CONNECT target is judged by its own bytes"

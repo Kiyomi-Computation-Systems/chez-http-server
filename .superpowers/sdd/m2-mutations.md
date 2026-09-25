@@ -268,3 +268,23 @@ Each mutant ran from a scratch copy of `src/http-server/target.sls` placed first
 | M2.3-AE | allocation | the path is copied before it is judged | allocation exit 1; 8 passes, 3 failures — both 500-byte targets and the absolute-form check; the CPS workload costs 2,672 B. Every other suite green |
 
 `make test` was green afterwards: seventeen suites, 305 expected passes (target 36, connection-allocation 11), exit 0.
+
+### Empty hosts (2026-09-25)
+
+Red before green:
+- test-target.sps failed "an http or https target with no host is refused" and "CONNECT with an empty host is refused".
+- The head suite failed its two new rows, each request served instead of refused.
+- The boundary row, where another scheme keeps uriparse's verdict, passed before the rule, as it must. AG and AH are its mutations.
+
+Each mutant ran from a scratch copy of `src/http-server/target.sls` placed first on the library path, against every suite.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.3-AF | target | the scheme is compared with its case | target exit 1; 38 passes, 1 failure — "an http or https target with no host is refused", through `HTTP:///x`. Every other suite green |
+| M2.3-AG | target | the rule holds for every scheme | target exit 1; 1 failure — "a target of another scheme keeps uriparse's verdict". Every other suite green |
+| M2.3-AH | target | a scheme that begins "http" or "https" matches | target exit 1; 1 failure — the same row, through `httpx:///x`. Every other suite green |
+| M2.3-AI | target | a missing authority counts as a host | target exit 1; 1 failure — the no-host row, through `http:x` and `http:/x`. Every other suite green |
+| M2.3-AJ | target, head | CONNECT's host is not checked | target exit 1; 1 failure — "CONNECT with an empty host is refused". Head exit 1; 31 passes, 1 failure — its CONNECT row |
+| M2.3-AK | target, head | an empty host counts as a host | target exit 1; 37 passes, 2 failures — both no-host rows. Head exit 1; 30 passes, 2 failures — both new rows |
+
+`make test` was green afterwards: seventeen suites, 310 expected passes (target 39, connection-head 32), exit 0.
