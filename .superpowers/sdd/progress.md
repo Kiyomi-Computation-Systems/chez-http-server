@@ -704,9 +704,9 @@ Reading:
 4. `validate-component` judges as v0.5.0 did after its range check moved.
 5. Nothing filed is open upstream: all sixteen asks are closed and released.
 
-`make test` at the moved pin: seventeen suites, 310 expected passes, exit 0; the trace lane holds at 'full (9,394 runs). Updated: the Makefile (the pin), global-constraints (the pin), decision 0008 (a row for #24 and a dated note), the research README, and `tests/test-integration.sps` (its version comments).
+`make test` at the moved pin: seventeen suites, 310 expected passes, exit 0; the trace lane holds at 'full (9,394 runs). Updated: the Makefile (the pin), global-constraints (the pin), decision 0008 (a row for #24 and a dated note), the research README, and `tests/test-integration.sps` (its version comments). The pin MERGED as f23e927 (PR #21).
 
-HOST HEADER RULES: the second of M2.3's two open RFC rules (RFC 9112 §3.2). Branch feat/host-header-rules, cut from chore/uriparse-v0.6.0, the second of two stacked PRs; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
+HOST HEADER RULES: the second of M2.3's two open RFC rules (RFC 9112 §3.2). MERGED as a9b9590 (PR #22). Branch feat/host-header-rules, cut from chore/uriparse-v0.6.0, the second of two stacked PRs; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
 
 MEASURED first, on main after the uriparse v0.5.0 stack merged:
 - the server read no Host at all;
@@ -754,4 +754,11 @@ Watched to fail (m2-mutations.md): test-limits and test-host exited 255 before t
 
 `make test` green: eighteen suites, 333 expected passes (host 11, connection-head 40, limits 26, connection-allocation 12), exit 0. The trace lane holds at 'full (9,394 runs). `make check-imports` is clean.
 
-NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after 01f7a5d, when the owner asks.
+MERGED to main on 2026-09-25, as two stacked PRs landed bottom up on the owner's "do closing ritual":
+- #21 merged without deleting its branch, since #22 was based on it. #22 was retargeted to main, rebased onto the squash below it and force-pushed with a lease read from the remote. Its rebased tree (380fb1a) was identical to the one tested (3966dea). Each squash tree was identical to its tip's, proved against the merge commit gh reports, and main's final tree (d202d4e) is the tested top of the stack.
+- Every `linux` check executed zero steps, stopped at the billing check: the two PR runs (36158713608, 36158743565) and the run on the rebased tip (36159292446).
+- #22 merged with `--delete-branch`, which again left this checkout on its branch. So main was fast-forwarded to a9b9590 by hand, both branches were deleted local and remote, and refs pruned; no PR is open. `make test` green on main: eighteen suites, 333 expected passes, exit 0.
+
+Both of M2.3's open RFC rules are now in: the empty host (#20) and the Host header (#22). Nothing filed is open upstream.
+
+NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after a9b9590, when the owner asks.
