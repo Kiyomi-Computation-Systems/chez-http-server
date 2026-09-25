@@ -143,6 +143,11 @@ request-target at `on-headers-complete` (milestone plan §6), and two of RFC 911
    Neither form is on the workload the ratchet measures, and design §7.5 already
    accepted CONNECT's fresh parse.
 
+   Since 2026-09-24, evening, origin-form copies nothing (the next amendment's
+   closing note). Absolute-form still costs 4,336 B, now one reused collector's
+   parse more than origin-form's 2,624 B, and the allocation suite holds it to
+   exactly that.
+
 Decided on the owner's word on 2026-09-24, together with the origin-form route and
 the three form rules recorded in the ledger's M2.3 entry.
 
@@ -162,3 +167,16 @@ length. M2.3 carries one exception, decided on the owner's word on 2026-09-24:
   takes a range. Until it lands, `tests/test-connection-allocation.sps` holds the
   growth to exactly the copy. Header length still costs nothing. Once #21 lands,
   the check falls back to "a 500-byte target costs what a short one does".
+- **Closed (2026-09-24, evening).** uriparse v0.5.0 (4d95118) released #21, and
+  the judge now reads an origin-form target's path and query in place: it copies
+  nothing. The CPS workload costs 2,624 B, the figure with no validation, and a
+  500-byte path or a 500-byte query costs the same (measured the same day, on the
+  same platform). The check has fallen back as planned, and this exception is
+  closed. The second shape holds on the workload the gate measures: origin-form
+  requests that arrive in one delivery. Three costs still grow with a target's
+  length, and none of them was this exception:
+  - a target split across deliveries is joined into one bytevector by the core,
+    once, as a header is (`connection.sls`, `take-piece!`);
+  - absolute-form's reused collector assembles the target's components as it
+    parses;
+  - CONNECT's target is copied and parsed fresh (design §7.5).

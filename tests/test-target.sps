@@ -78,14 +78,20 @@
     (test-eq "the query begins at the first \"?\"" 'accepted (fault 'GET "/a?b?c"))
     (test-equal "a byte outside pchar in the path is refused" 'invalid-pchar (fault 'GET "/a\"b"))
     (test-equal "a byte outside the query's set is refused" 'invalid-query (fault 'GET "/p?q=a|b"))
+    ;; The query is judged from the byte after the "?", its first.
+    (test-equal "a query's first byte is judged"
+                '(invalid-query invalid-query invalid-pct-encoded invalid-pct-encoded)
+                (map (lambda (t) (fault 'GET t)) '("/a?\"b" "/a?|b" "/a?%zz" "/?%")))
     (test-equal "a malformed percent-encoding is refused" 'invalid-pct-encoded (fault 'GET "/a%zz"))
     ;; RFC 9112 §3.2's forms carry no fragment, and "#" is in neither the
     ;; path's set nor the query's.
     (test-equal "a fragment is refused, after a path or after a query"
                 '(invalid-pchar invalid-query)
                 (list (fault 'GET "/a#b") (fault 'GET "/a?b#c")))
-    (test-eq "a target is judged by its own bytes, not its delivery's"
-             'accepted (judged (make-target-judge) 'GET (inside "|/x?y|" 1 5)))
+    (test-equal "a target is judged by its own bytes, not its delivery's"
+                '(accepted accepted)
+                (list (judged (make-target-judge) 'GET (inside "|/x?y|" 1 5))
+                      (judged (make-target-judge) 'GET (inside "|/x|" 1 3))))
 
     ;; --- asterisk-form: OPTIONS only -------------------------------------------
     (test-eq "OPTIONS * is accepted" 'accepted (fault 'OPTIONS "*"))

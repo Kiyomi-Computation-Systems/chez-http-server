@@ -14,22 +14,23 @@
 ;;;   - the total per request is within the 3,072 B ratchet;
 ;;;   - it does not grow with the length of a header value: the head is kept
 ;;;     as spans, never copied (the amendment's second shape);
-;;;   - nor with the length of the target, but for one copy: an origin-form
-;;;     target's path is copied to be judged, because uriparse's validator
-;;;     takes a whole bytevector.  That copy is carried until it takes a range
-;;;     (uriparse #21), and this check then falls to "costs what a short one
-;;;     does";
+;;;   - nor with the length of the target: an origin-form target's path and
+;;;     query are judged in place, by uriparse's ranged `validate-component`
+;;;     (v0.5.0, uriparse #21), never copied, so a long path and a long query
+;;;     each cost what a short target does (every request here arrives in one
+;;;     delivery: a target split across deliveries is joined once by the core,
+;;;     as a header is);
 ;;;   - an absolute-form target costs one parse by a reused uriparse collector
-;;;     in place of that copy: the collector is the connection's, made once,
-;;;     never one per request (M2.3, design §7.5);
+;;;     more: the collector is the connection's, made once, never one per
+;;;     request (M2.3, design §7.5);
 ;;;   - the cost stays constant from request to request: later requests on
 ;;;     the connection cost what earlier ones did (the third shape).
 ;;; The first shape, per callback, is test-connection-entry.sps's.
 ;;;
 ;;; Oracles: the 3,072 B ratchet and the shapes, from 0002's second amendment;
 ;;; Chez's cumulative allocation counter `sstats-bytes`, calibrated below and
-;;; never the live heap; what a bytevector costs, and what uriparse's own
-;;; reused collector costs on the same target, both read by that counter.
+;;; never the live heap; and what uriparse's own reused collector costs on
+;;; the same target, read by that counter.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) statistics sstats-bytes)
         (http-server connection) (http-server private adapter)
@@ -92,13 +93,17 @@
   (let loop ((i 0) (acc '())) (if (= i n) (apply string-append acc) (loop (+ i 1) (cons s acc)))))
 
 (define cps (b "GET /a HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n"))
-;; The same request with a 500-byte User-Agent; with a 500-byte target; and
-;; with its target in absolute-form.
+;; The same request with a 500-byte User-Agent; with a 500-byte target, all
+;; path; with a 500-byte target, nearly all query; and with its target in
+;; absolute-form.
 (define cps-long-header
   (b (string-append "GET /a HTTP/1.1\r\nHost: x\r\nUser-Agent: " (repeat "s" 500)
                     "\r\nAccept: */*\r\n\r\n")))
 (define cps-long-target
   (b (string-append "GET /" (repeat "a" 499)
+                    " HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n")))
+(define cps-long-query
+  (b (string-append "GET /a?" (repeat "q" 497)
                     " HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n")))
 (define cps-absolute
   (b "GET http://x/a HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n"))
@@ -132,38 +137,38 @@
     (let ((short (measure (lambda () (per-request cps))))
           (long-header (measure (lambda () (per-request cps-long-header))))
           (long-target (measure (lambda () (per-request cps-long-target))))
+          (long-query (measure (lambda () (per-request cps-long-query))))
           (absolute (measure (lambda () (per-request cps-absolute)))))
-      (test-eq "every request on the four connections is served" 'served
-               (if (for-all number? (list short long-header long-target absolute)) 'served 'refused))
-      (when (for-all number? (list short long-header long-target absolute))
+      (test-eq "every request on the five connections is served" 'served
+               (if (for-all number? (list short long-header long-target long-query absolute))
+                   'served 'refused))
+      (when (for-all number? (list short long-header long-target long-query absolute))
         (diag (string-append "connection-allocation: the CPS workload "
                              (number->string short) " B/request (ratchet "
                              (number->string gate) " B); with a 500-byte header "
                              (number->string long-header) ", with a 500-byte target "
-                             (number->string long-target) ", in absolute-form "
+                             (number->string long-target) ", with a 500-byte query "
+                             (number->string long-query) ", in absolute-form "
                              (number->string absolute)))
         (test-eq "a keep-alive request costs something" 'allocates
                  (if (> short 0) 'allocates 'free))
         (test-eq "and no more than the 3,072 B ratchet" 'within
                  (if (<= short gate) 'within 'over))
         (test-eqv "a 500-byte header value costs what a short one does" short long-header)
-        ;; The origin-form path is copied once to be judged (uriparse #21):
-        ;; "/a" and "/aaa..." are 2 and 500 bytes.
-        (let ((copies (- (warmed (lambda () (make-bytevector 500)))
-                         (warmed (lambda () (make-bytevector 2))))))
-          (test-eqv "a 500-byte target costs what a short one does, but for its path's copy"
-                    (+ short copies) long-target))
-        ;; In place of "/a"'s copy, an absolute-form target costs one parse by
-        ;; a reused collector: uriparse's own, measured on the same target.
+        ;; "/a", "/aaa..." and "/a?qqq..." are 2, 500 and 500 bytes, each judged
+        ;; where it arrived: the path, and the query after the "?".
+        (test-eqv "a 500-byte target costs what a short one does" short long-target)
+        (test-eqv "a 500-byte target with a query costs what a short one does" short long-query)
+        ;; An absolute-form target costs one parse by a reused collector more:
+        ;; uriparse's own, measured on the same target.
         (let* ((c (make-uri-collector 'uri))
                (t (b "http://x/a"))
                (parse (warmed (lambda ()
                                 (uri-collector-reset! c)
                                 (uri-collect-feed! c t 0 (bytevector-length t))
-                                (uri-parse-result-validate (uri-collect-finish! c)))))
-               (copy (warmed (lambda () (make-bytevector 2)))))
-          (test-eqv "an absolute-form target costs one reused collector's parse"
-                    (+ (- short copy) parse) absolute))))
+                                (uri-parse-result-validate (uri-collect-finish! c))))))
+          (test-eqv "an absolute-form target costs one reused collector's parse more"
+                    (+ short parse) absolute))))
 
     ;; The same connection, twice as long: the requests after the first
     ;; 11,000 cost what those did.

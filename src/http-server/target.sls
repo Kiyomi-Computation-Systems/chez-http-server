@@ -13,20 +13,21 @@
 ;;; The bytes are judged by uriparse's audited validators, never by a copy of
 ;;; them here (decision 0001):
 ;;;
-;;;   - origin-form, the form nearly every request carries, is split at its
-;;;     first "?", and the path and the query are judged by `(uri charset)`'s
-;;;     `validate-component`.  No parser runs.  (A uriparse parse would read a
-;;;     leading "//" as an authority, as RFC 3986 requires; RFC 9110 §4.1's
-;;;     absolute-path is 1*( "/" segment ), so "//a" is a path.)
-;;;     `validate-component` judges a whole bytevector, so the two parts are
-;;;     copied first, about one byte per target byte.  That workaround is
-;;;     carried until it takes a range (uriparse #21, filed 2026-09-24).
+;;;   - origin-form, the form nearly every request carries, is judged by
+;;;     `(uri charset)`'s `validate-component` in one pass: as a path up to
+;;;     its first "?", which is outside the path's set and so ends the path's
+;;;     judgement, then as a query after it.  Both are judged in place, in the
+;;;     bytevector the target is held in (a range since uriparse v0.5.0, #21):
+;;;     the judge copies nothing, and reads nothing outside the target.  No
+;;;     parser runs.  (A uriparse parse would read a leading "//" as an
+;;;     authority, as RFC 3986 requires; RFC 9110 §4.1's absolute-path is
+;;;     1*( "/" segment ), so "//a" is a path.)
 ;;;   - absolute-form is parsed by the judge's collector, made on the
 ;;;     connection's first absolute-form target and reset before each one,
 ;;;     and judged by `uri-parse-result-validate`.  It must carry no fragment
 ;;;     (§3.2's forms have none) and no userinfo (RFC 9110 §4.2.4).
 ;;;   - authority-form goes through `uri-parse-authority-form-validate`,
-;;;     which parses fresh.
+;;;     which parses a copy of the target fresh.
 ;;;
 ;;; The last two run uriparse's own scanner, a byte-machine parser that this
 ;;; judge owns and that is never the parser calling the core (0002's
@@ -76,7 +77,7 @@
   (define (target-fault judge method target)
     (let ((bv (span-bytevector target)) (start (span-start target)) (end (span-end target)))
       (cond
-       ((eq? method 'CONNECT) (authority-form-fault bv start end))
+       ((eq? method 'CONNECT) (authority-form-fault target))
        ((and (fx=? (fx- end start) 1) (fx=? (bytevector-u8-ref bv start) ASTERISK))
         (if (eq? method 'OPTIONS) #f 'asterisk-not-options))
        ((and (fx<? start end) (fx=? (bytevector-u8-ref bv start) SLASH))
@@ -84,32 +85,29 @@
        (else (absolute-form-fault judge bv start end)))))
 
   ;; origin-form-fault : Bytevector Nat Nat -> (U #f Symbol)
-  ;; The path before the first "?", then the query after it.
+  ;; The path before the first "?", then the query after it.  One pass finds
+  ;; both: judged as a path, the target's first fault is at or before its
+  ;; first "?", and a fault that is a "?" is where the query begins.
   (define (origin-form-fault bv start end)
-    (let ((q (first-question bv start end)))
-      (or (component-fault 'path bv start q)
-          (and (fx<? q end) (component-fault 'query bv (fx+ q 1) end)))))
+    (let-values (((code index) (validate-component 'path bv start end)))
+      (if (and code (fx=? (bytevector-u8-ref bv (fx+ start index)) QUESTION))
+          (component-fault 'query bv (fx+ start (fx+ index 1)) end)
+          code)))
 
   ;; first-question : Bytevector Nat Nat -> Nat
   ;; The first "?" in [start, end), where an origin-form query begins, or end.
+  ;; The redirect's split; the judge finds the same "?" by judging the path.
   (define (first-question bv start end)
     (let loop ((i start))
       (cond ((fx=? i end) end)
             ((fx=? (bytevector-u8-ref bv i) QUESTION) i)
             (else (loop (fx+ i 1))))))
 
-  ;; range-copy : Bytevector Nat Nat -> Bytevector — [start, end), fresh.
-  (define (range-copy bv start end)
-    (let ((part (make-bytevector (fx- end start))))
-      (bytevector-copy! bv start part 0 (fx- end start))
-      part))
-
   ;; component-fault : Symbol Bytevector Nat Nat -> (U #f Symbol)
-  ;; `(uri charset)`'s verdict on [start, end) as the named component.  The
-  ;; range is copied because the validator judges a whole bytevector
-  ;; (uriparse #21).
+  ;; `(uri charset)`'s verdict on [start, end) as the named component, judged
+  ;; in place.
   (define (component-fault component bv start end)
-    (let-values (((code index) (validate-component component (range-copy bv start end))))
+    (let-values (((code index) (validate-component component bv start end)))
       code))
 
   ;; target-redirect : TargetJudge Symbol Span -> (U #f Bytevector)
@@ -135,13 +133,21 @@
            (fx=? (bytevector-u8-ref bv start) SLASH)
            (not (and (fx<? (fx+ start 1) end) (fx=? (bytevector-u8-ref bv (fx+ start 1)) SLASH)))
            (let* ((q (first-question bv start end))
-                  (path (pct-encode (range-copy bv start q) path-keeps?))
+                  (path (encoded bv start q path-keeps?))
                   (location (if (fx<? q end)
-                                (join-query path (pct-encode (range-copy bv (fx+ q 1) end) query-keeps?))
+                                (join-query path (encoded bv (fx+ q 1) end query-keeps?))
                                 path)))
              (and (fx>? (bytevector-length location) (fx- end start))
                   (not (target-fault judge method (make-span location 0 (bytevector-length location))))
                   location)))))
+
+  ;; encoded : Bytevector Nat Nat (Octet -> Boolean) -> Bytevector
+  ;; [start, end) percent-encoded, keeping the bytes `keeps?` accepts.
+  ;; `pct-encode` takes a whole bytevector, so the range is copied first: the
+  ;; redirect is a refusal, off the hot path, and builds a fresh Location
+  ;; anyway (accepted without an ask, decision 0008's note of 2026-09-24).
+  (define (encoded bv start end keeps?)
+    (pct-encode (span->bytevector (make-span bv start end)) keeps?))
 
   ;; path-keeps? / query-keeps? : Octet -> Boolean
   ;; The bytes the redirect leaves as they are: all but "|" in a path, all but
@@ -183,11 +189,10 @@
          (let-values (((host-start host-end) (authority-host-span authority)))
            (fx>? host-start 0))))
 
-  ;; authority-form-fault : Bytevector Nat Nat -> (U #f Symbol)
-  ;; The strict validator takes a whole bytevector; CONNECT is rare, so the
-  ;; target is copied and parsed fresh (design §7.5).
-  (define (authority-form-fault bv start end)
-    (let ((target (make-bytevector (fx- end start))))
-      (bytevector-copy! bv start target 0 (fx- end start))
-      (let ((r (uri-parse-authority-form-validate target)))
-        (if (uri-parse-ok? r) #f (uri-parse-error-code r))))))
+  ;; authority-form-fault : Span -> (U #f Symbol)
+  ;; The strict validator parses a whole bytevector fresh, so the target is
+  ;; copied first.  Accepted without an ask: CONNECT is rare, and the fresh
+  ;; parse, not the copy, is most of what it costs (design §7.5).
+  (define (authority-form-fault target)
+    (let ((r (uri-parse-authority-form-validate (span->bytevector target))))
+      (if (uri-parse-ok? r) #f (uri-parse-error-code r)))))
