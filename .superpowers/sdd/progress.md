@@ -535,4 +535,56 @@ Watched to fail (m2-mutations.md): each new check was red before its code, and m
 
 M2.3 DONE and MERGED: its last PR, #17, landed as ab6725d. `make test` green: seventeen suites, 303 expected passes, exit 0. Against the 250 after M2.2, the new target suite adds 35, connection-head gains 13, trace-lane 3 and connection-allocation 2. `make check-imports` is clean. The four steps are 476, 262, 361 and 377 inserted lines, and each tree passes on its own: 252, 276, 287 and 303 expected passes. uriparse #21 is still open, and the copy it would remove is carried.
 
+UPSTREAM LANDED (2026-09-24, evening): uriparse v0.5.0 is tagged (4d95118, 20:12 -0400; its CHANGELOG dates the release 2026-09-25, UTC). #21 closed via PR #22 (bb8392a); the release is PR #23. `validate-component` on `(uri charset)` now takes an optional start and end, `Symbol Bytevector [Nat [Nat]] -> (values (Option Symbol) (Option Nat))`:
+- the verdict on `bv[start, end)` is the verdict on those bytes alone, and nothing outside the range is read;
+- a `%` whose HEXDIGs lie past `end` is malformed, and the index is relative to `start`;
+- the two-argument call is unchanged, misuse diagnostics included (its decision 0034).
+
+The release states no new conformance claim (its decision 0035): upstream 77/77, on macOS arm64 only. Between the two tags only `src/uri/charset.sls` changed under `src/`, and the byte-machine gitlink is still 0245db3. The local checkout's `main` is at e0aa810, the tag plus its ledger close-out, with `src/` identical to the tag.
+
+The pin moves from v0.4.0 to the v0.5.0 tag, on a commit of its own (global-constraints): `vendor/uriparse` is at 4d95118, which `git describe --exact-match` names v0.5.0. Watched to fail, twice:
+- with the checkout moved and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2);
+- with the Makefile moved and the gitlink not yet staged, `make test`'s submodule step checked 611b04b back out, and `check-pins` refused that in turn.
+
+Found in review, and now a check: `make check-pins` also holds uriparse to the byte-machine on the library path (uriparse's own gitlink, `git rev-parse HEAD:vendor/byte-machine`, against `BYTE_MACHINE_PIN`), and refuses a vendored checkout with local edits to tracked files. A uriparse release on another byte-machine would otherwise pass, and so would a mutation left in a vendored file. Both watched to fail before and after:
+- with `BYTE_MACHINE_PIN` given as forty zeros, the old check named only chez-httparse's copy; the new one names uriparse's as well (exit 2);
+- with a line appended to `vendor/uriparse/src/uri/charset.sls`, the old check passed (exit 0); the new one answers `PIN DIRTY` (exit 2). The file was restored by sha256 (9cc2e325782d…).
+
+The new comparison failed on its first run against a clean tree: a Makefile variable keeps the spaces before a trailing comment, so it compares `$(strip …)`.
+
+Smoke evidence (`.plans/research/spike/smoke-uriparse-v050.sps`, Darwin arm64, Chez 10.4.1, `chez --libdirs vendor/uriparse/src:vendor/chez-httparse/vendor/byte-machine/src --program`, exit 0 on both runs, `out/smoke-uriparse-v050.run{1,2}.txt`; run 1 in full, and run 2's byte counts are identical):
+
+    --- #21: ranged verdict == the verdict on a copy (expect agree in every component)
+    / (path (#f #f) (#f #f) agree) no-query
+    /api/v1/items/12345?fields=name,price&limit=50 (path (#f #f) (#f #f) agree) (query (#f #f) (#f #f) agree)
+    //a@b:c/d (path (#f #f) (#f #f) agree) no-query
+    /a<b>?q=1 (path (invalid-pchar 2) (invalid-pchar 2) agree) (query (#f #f) (#f #f) agree)
+    /ok?q=a"b (path (#f #f) (#f #f) agree) (query (invalid-query 3) (invalid-query 3) agree)
+    /x?a[]=1&b=| (path (#f #f) (#f #f) agree) (query (invalid-query 1) (invalid-query 1) agree)
+    /p%zz (path (invalid-pct-encoded 2) (invalid-pct-encoded 2) agree) no-query
+    --- a '%' whose HEXDIGs lie past end is malformed, though the bytes after end complete it
+    whole /a%41: (#f #f) range [0,4) /a%4: (invalid-pct-encoded 2) range [1,5) a%41: (#f #f)
+    --- 200000 origin-form targets judged per pass, path and query: in place vs on a copy
+    in-place: 2 bytes-per-target 0 ns 25
+    on-copy:  2 bytes-per-target 16 ns 30
+    in-place: 46 bytes-per-target 0 ns 360
+    on-copy:  46 bytes-per-target 80 ns 375
+    in-place: 500 bytes-per-target 0 ns 3880
+    on-copy:  500 bytes-per-target 512 ns 3920
+    in-place: 2 bytes-per-target 0 ns 25
+    on-copy:  2 bytes-per-target 16 ns 35
+    in-place: 46 bytes-per-target 0 ns 355
+    on-copy:  46 bytes-per-target 80 ns 375
+    in-place: 500 bytes-per-target 0 ns 3900
+    on-copy:  500 bytes-per-target 512 ns 3945
+    done
+
+Reading:
+1. The server can judge an origin-form target's path and query in place, inside the delivery the parser handed it, and get the verdict the copy got. All seven targets agree in code and index, `//a@b:c/d` and decision 0009's `[` among them.
+2. The copy was the only per-request cost that grew with the target: 16, 80 and 512 B at 2, 46 and 500 bytes. The ranged call costs nothing.
+3. Nothing filed is open upstream: all fifteen asks are closed and released.
+4. No check went red when the pin moved, although decision 0008 asks for one when upstream makes a workaround redundant. The #21 copy's allocation check held the copy's cost, which moving the pin does not change. Recorded in 0008, with the probe that would have met the rule.
+
+`make test` at the moved pin, the copy still in place: seventeen suites, 303 expected passes, exit 0, and the CPS workload still costs 2,640 B. Updated: the Makefile (the pin, and `check-pins`), global-constraints (the pin), decision 0008 (row #21 and a dated note), the research README, and `tests/test-integration.sps` (its version comments).
+
 NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after ab6725d, when the owner asks.
