@@ -288,3 +288,28 @@ Each mutant ran from a scratch copy of `src/http-server/target.sls` placed first
 | M2.3-AK | target, head | an empty host counts as a host | target exit 1; 37 passes, 2 failures — both no-host rows. Head exit 1; 30 passes, 2 failures — both new rows |
 
 `make test` was green afterwards: seventeen suites, 310 expected passes (target 39, connection-head 32), exit 0.
+
+### Host header rules (2026-09-25)
+
+Red before green:
+- test-limits.sps exited 255 before the switch existed (`limits-require-host?` unbound), and test-host.sps before the library did.
+- The head suite failed its five refusal rows, each request served instead of refused. Its three served rows held: a valid Host, the switch off, and HTTP/1.0 with none. The decisions suite failed its reasons row: `invalid-host` had no status.
+- At the wiring, the table's H4 went red, since its head had no Host. So did the trace lane, with the switch still on: 54 fixtures' traces changed and 7 listed fixtures were refused for their Host, 61 in all, the count measured before.
+- The allocation lane's 500-byte Host check held from the start, since the value was judged in place from the first; AP is the mutation it exists for.
+
+Each mutant ran from a scratch copy of the mutated file placed first on the library path, against every suite.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.3-AL | host, head | a second Host line is not refused | host exit 1; 9 passes, 2 failures — "the Host name matches in any case", through its two-line case, and "more than one Host is refused". Head exit 1; 1 failure — "two Host lines are refused with 400" |
+| M2.3-AM | host, head, trace | the judge ignores the switch | host exit 1; 1 failure — "unless the requirement is off". Head exit 1; 17 passes, 23 failures — every row under `minimal`. Trace exit 1; both property-1 checks, 61 fixtures |
+| M2.3-AN | host, head | HTTP/1.0 must send a Host too | host exit 1; 1 failure — "HTTP/1.0 and 0.9 with no Host pass". Head exit 1; 1 failure — "an HTTP/1.0 request with no Host is served" |
+| M2.3-AO | host, head | a Host with userinfo is not refused | host exit 1; 1 failure — "a Host with userinfo is refused". Head exit 1; 1 failure — its userinfo row |
+| M2.3-AP | allocation | the Host value is copied before it is judged | allocation exit 1; 11 passes, 1 failure — "a 500-byte Host value costs what a short one does"; the CPS workload rose to 2,640 B |
+| M2.3-AQ | host, head, entry, allocation, trace | the Host value is judged to its line's end | host exit 1; 4 passes, 7 failures. Head exit 1; 2 failures. Entry exit 1; 6 failures. Allocation exit 1; 2 failures — no request is served. Trace exit 1; both property-1 checks, 23 fixtures |
+| M2.3-AR | head, allocation | the Host is judged after the target | head exit 1; 1 failure — "a redirectable target with no Host is refused with 400, not redirected". The allocation lane's absolute-form check also failed, because this mutant judges an accepted target twice |
+| M2.3-AS | head, trace | the core ignores the switch | head exit 1; 23 failures. Trace exit 1; both property-1 checks, 61 fixtures |
+| M2.3-AT | limits | any value but "false" keeps the requirement on | limits exit 1; 25 passes, 1 failure — "any other Host requirement value is refused" |
+| M2.3-AU | trace | the corpus lane runs with the requirement on | trace exit 1; both property-1 checks, 61 fixtures: 54 traces changed, and 7 listed refusals refused for their Host |
+
+`make test` was green afterwards: eighteen suites, 333 expected passes (host 11, connection-head 40, limits 26, connection-allocation 12), exit 0.

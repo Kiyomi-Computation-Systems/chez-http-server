@@ -20,6 +20,8 @@
 ;;;     each cost what a short target does (every request here arrives in one
 ;;;     delivery: a target split across deliveries is joined once by the core,
 ;;;     as a header is);
+;;;   - nor with the length of the Host value: it is judged in place, by
+;;;     uriparse's ranged `validate-authority` (v0.6.0, uriparse #24);
 ;;;   - an absolute-form target costs one parse by a reused uriparse collector
 ;;;     more: the collector is the connection's, made once, never one per
 ;;;     request (M2.3, design §7.5);
@@ -94,8 +96,8 @@
 
 (define cps (b "GET /a HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n"))
 ;; The same request with a 500-byte User-Agent; with a 500-byte target, all
-;; path; with a 500-byte target, nearly all query; and with its target in
-;; absolute-form.
+;; path; with a 500-byte target, nearly all query; with a 500-byte Host value;
+;; and with its target in absolute-form.
 (define cps-long-header
   (b (string-append "GET /a HTTP/1.1\r\nHost: x\r\nUser-Agent: " (repeat "s" 500)
                     "\r\nAccept: */*\r\n\r\n")))
@@ -105,6 +107,9 @@
 (define cps-long-query
   (b (string-append "GET /a?" (repeat "q" 497)
                     " HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n")))
+(define cps-long-host
+  (b (string-append "GET /a HTTP/1.1\r\nHost: " (repeat "h" 500)
+                    "\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n")))
 (define cps-absolute
   (b "GET http://x/a HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n"))
 
@@ -138,17 +143,19 @@
           (long-header (measure (lambda () (per-request cps-long-header))))
           (long-target (measure (lambda () (per-request cps-long-target))))
           (long-query (measure (lambda () (per-request cps-long-query))))
+          (long-host (measure (lambda () (per-request cps-long-host))))
           (absolute (measure (lambda () (per-request cps-absolute)))))
-      (test-eq "every request on the five connections is served" 'served
-               (if (for-all number? (list short long-header long-target long-query absolute))
+      (test-eq "every request on the six connections is served" 'served
+               (if (for-all number? (list short long-header long-target long-query long-host absolute))
                    'served 'refused))
-      (when (for-all number? (list short long-header long-target long-query absolute))
+      (when (for-all number? (list short long-header long-target long-query long-host absolute))
         (diag (string-append "connection-allocation: the CPS workload "
                              (number->string short) " B/request (ratchet "
                              (number->string gate) " B); with a 500-byte header "
                              (number->string long-header) ", with a 500-byte target "
                              (number->string long-target) ", with a 500-byte query "
-                             (number->string long-query) ", in absolute-form "
+                             (number->string long-query) ", with a 500-byte Host "
+                             (number->string long-host) ", in absolute-form "
                              (number->string absolute)))
         (test-eq "a keep-alive request costs something" 'allocates
                  (if (> short 0) 'allocates 'free))
@@ -159,6 +166,8 @@
         ;; where it arrived: the path, and the query after the "?".
         (test-eqv "a 500-byte target costs what a short one does" short long-target)
         (test-eqv "a 500-byte target with a query costs what a short one does" short long-query)
+        ;; The Host value is judged where it arrived, as the target is.
+        (test-eqv "a 500-byte Host value costs what a short one does" short long-host)
         ;; An absolute-form target costs one parse by a reused collector more:
         ;; uriparse's own, measured on the same target.
         (let* ((c (make-uri-collector 'uri))

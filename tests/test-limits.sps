@@ -1,7 +1,9 @@
 #!r6rs
 ;;; (http-server limits): decision 0005's defaults and the environment
 ;;; overrides.  Oracle: decision 0005 (the nginx-style bounded defaults) and
-;;; the documented override convention (seconds for timeouts).
+;;; the documented override convention (seconds for timeouts), and its
+;;; amendment of 2026-09-25: the Host requirement is on unless
+;;; CHEZ_HTTP_REQUIRE_HOST is exactly "false".
 (import (rnrs) (srfi :64) (testing) (http-server limits))
 
 ;; Every accessor, in field order.
@@ -10,7 +12,8 @@
         limits-body-inactivity-timeout-ms limits-max-header-bytes
         limits-max-header-count limits-max-header-field-bytes
         limits-max-header-value-bytes limits-max-target-bytes
-        limits-max-body-bytes limits-pipeline-cap limits-read-buffer-size))
+        limits-max-body-bytes limits-pipeline-cap limits-read-buffer-size
+        limits-require-host?))
 
 (run-suite "limits"
   (lambda ()
@@ -27,6 +30,7 @@
               (or (limits-max-body-bytes default-limits) 'unbounded))
     (test-eqv "pipeline cap 1"            1     (limits-pipeline-cap default-limits))
     (test-eqv "read buffer 16 KiB"        16384 (limits-read-buffer-size default-limits))
+    (test-eq  "an HTTP/1.1 Host is required" #t   (limits-require-host? default-limits))
 
     ;; --- default-limits is exactly the empty environment (one code path) ---
     ;; Every field, so a default that moves in one place and not the other is
@@ -43,7 +47,7 @@
                   "CHEZ_HTTP_MAX_HEADER_COUNT" "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"
                   "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES" "CHEZ_HTTP_MAX_TARGET_BYTES"
                   "CHEZ_HTTP_MAX_BODY_BYTES" "CHEZ_HTTP_PIPELINE_CAP"
-                  "CHEZ_HTTP_READ_BUFFER_SIZE")
+                  "CHEZ_HTTP_READ_BUFFER_SIZE" "CHEZ_HTTP_REQUIRE_HOST")
                 limits-environment-variables)
 
     ;; --- overrides: timeouts are seconds -> ms; sizes/counts as given ---
@@ -72,6 +76,22 @@
                  (if (string=? name "CHEZ_HTTP_MAX_BODY_BYTES") "unbounded" #f)))))
       (test-eq "unbounded clears the body cap" 'cleared
                (or (limits-max-body-bytes L) 'cleared)))
+
+    ;; --- the Host requirement: "true" or "false", nothing else ---
+    (let ((host (lambda (value)
+                  (limits-require-host?
+                   (limits-from-environment
+                    (lambda (name) (and (string=? name "CHEZ_HTTP_REQUIRE_HOST") value)))))))
+      (test-equal "false turns the Host requirement off, true keeps it"
+                  '(#f #t) (list (host "false") (host "true"))))
+    (test-equal "any other Host requirement value is refused"
+                '(faulted faulted faulted)
+                (map (lambda (value)
+                       (guard (e (#t 'faulted))
+                         (limits-from-environment
+                          (lambda (name) (and (string=? name "CHEZ_HTTP_REQUIRE_HOST") value)))
+                         'no-fault))
+                     '("0" "no" "False")))
 
     ;; --- a malformed value faults rather than silently defaulting ---
     (test-eq "a negative pipeline cap is refused" 'faulted

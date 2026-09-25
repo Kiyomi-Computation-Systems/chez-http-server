@@ -48,6 +48,11 @@ Every connection limit has a bounded default and an environment override — see
 Which request-targets the server accepts, refuses or redirects — see
 [[file:docs/request-targets.org][docs/request-targets.org]].
 
+** The Host header
+
+Which ~Host~ lines the server refuses, and the switch for HTTP/1.1 requests
+with none — see [[file:docs/host-header.org][docs/host-header.org]].
+
 ** License
 
 © [[https://kiyomicomputation.systems/][Kiyomi Computation Systems LLC]]. Licensed under BSD 3-Clause — see

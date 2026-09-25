@@ -19,10 +19,15 @@ refused rather than silently ignored.
 | ~CHEZ_HTTP_MAX_BODY_BYTES~          | unbounded | request-body cap (~unbounded~ disables)  |
 | ~CHEZ_HTTP_PIPELINE_CAP~            | 1         | in-flight pipelined requests             |
 | ~CHEZ_HTTP_READ_BUFFER_SIZE~        | 16384     | per-connection read buffer               |
+| ~CHEZ_HTTP_REQUIRE_HOST~            | true      | HTTP/1.1 requests must send ~Host~       |
 
 A request over any of the four header limits gets ~431~, and one whose target
 is over its limit gets ~414~. Either way the connection closes. What else a
 target must be is in [[file:request-targets.org][request-targets.org]].
+
+~CHEZ_HTTP_REQUIRE_HOST~ is ~true~ or ~false~, nothing else. With ~false~, an
+HTTP/1.1 request with no ~Host~ is served instead of getting ~400~. The other
+~Host~ rules always apply: see [[file:host-header.org][host-header.org]].
 
 These are nginx-style bounded defaults (decision 0005). They live in the pure
 library ~(http-server limits)~: the shell reads the environment and hands the

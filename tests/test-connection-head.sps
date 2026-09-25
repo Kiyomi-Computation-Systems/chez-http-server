@@ -25,6 +25,13 @@
 ;;;   - except the narrow case decision 0009 redirects: a GET or HEAD whose
 ;;;     target's only faults are bracket params and pipes is answered 301,
 ;;;     `Location` the target encoded, when that target is within the limit;
+;;;   - RFC 9112 §3.2's Host rules (2026-09-25): two Host lines, an invalid
+;;;     Host value, and no Host on HTTP/1.1 are refused with 400, the last
+;;;     unless decision 0005's switch is off.  The Host is judged before the
+;;;     target, so a request the RFC says MUST get 400 is never redirected.
+;;;     The rows about other rules send minimal requests with no Host, under
+;;;     `minimal`, the defaults with the switch off; the Host rows run under
+;;;     the defaults;
 ;;;   - a parser error with no refusal is still a 400.
 ;;;
 ;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
@@ -37,8 +44,9 @@
 
 (define (b s) (string->utf8 s))
 
-;; with-limits : (Listof (Pair Symbol Nat)) -> Limits
-;; default-limits with the named header and target limits replaced.
+;; with-limits : (Listof (Pair Symbol Any)) -> Limits
+;; default-limits with the Host requirement off and the named limits
+;; replaced: header and target sizes, or 'require-host.
 (define (with-limits overrides)
   (let ((get (lambda (key default) (cond ((assq key overrides) => cdr) (else default))))
         (L default-limits))
@@ -50,7 +58,12 @@
                  (get 'value (limits-max-header-value-bytes L))
                  (get 'target (limits-max-target-bytes L))
                  (limits-max-body-bytes L)
-                 (limits-pipeline-cap L) (limits-read-buffer-size L))))
+                 (limits-pipeline-cap L) (limits-read-buffer-size L)
+                 (get 'require-host #f))))
+
+;; minimal : Limits — the defaults, with no Host required, for the rows that
+;; send minimal requests to test another rule.
+(define minimal (with-limits '()))
 
 ;; render-request : Request -> Datum — the request as its bytes.
 (define (render-request r)
@@ -171,13 +184,13 @@
                                      '("X-Empty" . "") '("Accept" . "*/*")))
                           'idle #f))
                 (every-size (b "GET /a/b?c=1 HTTP/1.1\r\nHost: example.com\r\nX-Empty:\r\nAccept: */*\r\n\r\n")
-                            default-limits))
+                            minimal))
     (test-equal "a POST with a body, every delivery size"
                 (list (ok (list (req 'POST "/u" 1 1 '("Content-Length" . "5"))) 'idle #f))
-                (every-size (b "POST /u HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello") default-limits))
+                (every-size (b "POST /u HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello") minimal))
     (test-equal "method numbers become llhttp's names, DELETE (0) and M-SEARCH included"
                 '(DELETE M-SEARCH OPTIONS)
-                (map (lambda (text) (car (car (car (drive (b text) 1000 default-limits)))))
+                (map (lambda (text) (car (car (car (drive (b text) 1000 minimal)))))
                      '("DELETE /x HTTP/1.1\r\n\r\n" "M-SEARCH /x HTTP/1.1\r\n\r\n"
                        "OPTIONS * HTTP/1.1\r\n\r\n")))
 
@@ -185,7 +198,7 @@
     (test-equal "keep-alive, one request each: 1.1, 1.1 close, 1.0, 1.0 keep-alive"
                 '((idle #f) (closing not-keep-alive) (closing not-keep-alive) (idle #f))
                 (map (lambda (text)
-                       (let ((o (drive (b text) 1000 default-limits)))
+                       (let ((o (drive (b text) 1000 minimal)))
                          (list (caddr o) (cadddr o))))
                      '("GET / HTTP/1.1\r\n\r\n"
                        "GET / HTTP/1.1\r\nConnection: close\r\n\r\n"
@@ -197,12 +210,12 @@
                 (list (ok (list (req 'GET "/1" 1 1) (req 'GET "/2" 1 1 '("Connection" . "close")))
                           'closing 'not-keep-alive))
                 (every-size (b "GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\nConnection: close\r\n\r\nGET /3 HTTP/1.1\r\n\r\n")
-                            default-limits))
+                            minimal))
     (test-equal "pipelined 1.0, every delivery size: keep-alive, then the default close"
                 (list (ok (list (req 'GET "/1" 1 0 '("Connection" . "keep-alive")) (req 'GET "/2" 1 0))
                           'closing 'not-keep-alive))
                 (every-size (b "GET /1 HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /2 HTTP/1.0\r\n\r\nGET /3 HTTP/1.0\r\n\r\n")
-                            default-limits))
+                            minimal))
 
     ;; --- the four header limits: at the limit, and one past it ------------------
     ;; A refusal is the parser's own failure with the core's reason as its code,
@@ -249,30 +262,61 @@
                 (list (list (ok (list (req 'OPTIONS "*" 1 1)) 'idle #f))
                       (list (ok (list (req 'GET "//a@b:c/d" 1 1)) 'idle #f))
                       (list (ok (list (req 'GET "http://example.com/p?q=1" 1 1)) 'idle #f)))
-                (map (lambda (text) (every-size (b text) default-limits))
+                (map (lambda (text) (every-size (b text) minimal))
                      '("OPTIONS * HTTP/1.1\r\n\r\n" "GET //a@b:c/d HTTP/1.1\r\n\r\n"
                        "GET http://example.com/p?q=1 HTTP/1.1\r\n\r\n")))
     (test-equal "an origin-form byte outside RFC 3986's set is refused with 400"
                 (list (refused 'invalid-target 400))
-                (every-size (b "GET /a\"b HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "GET /a\"b HTTP/1.1\r\n\r\n") minimal))
     (test-equal "* is refused with 400 unless the method is OPTIONS"
                 (list (refused 'invalid-target 400))
-                (every-size (b "GET * HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "GET * HTTP/1.1\r\n\r\n") minimal))
     (test-equal "an absolute-form target with a fragment is refused with 400"
                 (list (refused 'invalid-target 400))
-                (every-size (b "GET http://h/p#f HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "GET http://h/p#f HTTP/1.1\r\n\r\n") minimal))
     (test-equal "an absolute-form target with userinfo is refused with 400"
                 (list (refused 'invalid-target 400))
-                (every-size (b "GET http://u@h/p HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "GET http://u@h/p HTTP/1.1\r\n\r\n") minimal))
     (test-equal "a CONNECT target without a port is refused with 400"
                 (list (refused 'invalid-target 400))
-                (every-size (b "CONNECT example.com HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "CONNECT example.com HTTP/1.1\r\n\r\n") minimal))
     (test-equal "an http target with no host is refused with 400"
                 (list (refused 'invalid-target 400))
-                (every-size (b "GET http:///x HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "GET http:///x HTTP/1.1\r\n\r\n") minimal))
     (test-equal "a CONNECT target with an empty host is refused with 400"
                 (list (refused 'invalid-target 400))
-                (every-size (b "CONNECT :443 HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "CONNECT :443 HTTP/1.1\r\n\r\n") minimal))
+
+    ;; --- the Host header (RFC 9112 §3.2; 2026-09-25) --------------------------------
+    ;; Judged at on-headers-complete, before the target; a refusal is the
+    ;; parser's own failure, answered 400 and closing after.
+    (test-equal "a request with one valid Host is served"
+                (list (ok (list (req 'GET "/" 1 1 '("Host" . "example.com:8080"))) 'idle #f))
+                (every-size (b "GET / HTTP/1.1\r\nHost: example.com:8080\r\n\r\n") default-limits))
+    (test-equal "an HTTP/1.1 request with no Host is refused with 400"
+                (list (refused 'invalid-host 400))
+                (every-size (b "GET / HTTP/1.1\r\n\r\n") default-limits))
+    (test-equal "with the requirement off, it is served"
+                (list (ok (list (req 'GET "/" 1 1)) 'idle #f))
+                (every-size (b "GET / HTTP/1.1\r\n\r\n") minimal))
+    (test-equal "an HTTP/1.0 request with no Host is served"
+                (list (ok (list (req 'GET "/" 1 0)) 'closing 'not-keep-alive))
+                (every-size (b "GET / HTTP/1.0\r\n\r\n") default-limits))
+    (test-equal "two Host lines are refused with 400"
+                (list (refused 'invalid-host 400))
+                (every-size (b "GET / HTTP/1.1\r\nHost: a\r\nHost: a\r\n\r\n") default-limits))
+    (test-equal "a Host value uriparse refuses is refused with 400"
+                (list (refused 'invalid-host 400))
+                (every-size (b "GET / HTTP/1.1\r\nHost: a b\r\n\r\n") default-limits))
+    (test-equal "a Host with userinfo is refused with 400"
+                (list (refused 'invalid-host 400))
+                (every-size (b "GET / HTTP/1.1\r\nHost: u@h\r\n\r\n") default-limits))
+    ;; The 400 is RFC 9112 §3.2's MUST; the 301 is only §3.2's alternative to a
+    ;; 400 for a bad target.  So a target decision 0009 would redirect still
+    ;; gets 400 when its Host is wrong.
+    (test-equal "a redirectable target with no Host is refused with 400, not redirected"
+                (list (refused 'invalid-host 400))
+                (every-size (b "GET /s?ids[]=1 HTTP/1.1\r\n\r\n") default-limits))
 
     ;; --- the narrow redirect (decision 0009) ------------------------------------
     ;; Bracket params and pipes, the bytes browsers send unencoded, get a 301 to
@@ -280,14 +324,14 @@
     ;; status the core originates (design §6.5).
     (test-equal "a GET with bracket params and a pipe is redirected: 301, Location encoded"
                 (list (redirected "/s?ids%5B%5D=1%7C2"))
-                (every-size (b "GET /s?ids[]=1|2 HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "GET /s?ids[]=1|2 HTTP/1.1\r\n\r\n") minimal))
     (test-equal "a POST with a pipe is refused with 400, not redirected"
                 (list (refused 'invalid-target 400))
-                (every-size (b "POST /a|b HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "POST /a|b HTTP/1.1\r\n\r\n") minimal))
     ;; Location: //evil.example/... would send the client to another host.
     (test-equal "a path that begins // is refused with 400, never redirected off-host"
                 (list (refused 'invalid-target 400))
-                (every-size (b "GET //evil.example/a|b HTTP/1.1\r\n\r\n") default-limits))
+                (every-size (b "GET //evil.example/a|b HTTP/1.1\r\n\r\n") minimal))
     ;; The Location is always a target this server accepts, its limit included:
     ;; "/a?b=|" is 6 bytes and "/a?b=%7C" 8.
     (test-equal "a redirect to a target at max-target-bytes is made"
@@ -301,7 +345,7 @@
     (test-equal "an invalid header token: 400, closing after"
                 (list (list '() (list 'invalid-header-token (list (status-write 400)))
                             'responding 'parser-error))
-                (every-size (b "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n") default-limits))
+                (every-size (b "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n") minimal))
 
     ;; --- bytes-arrived feeds the parser in every reading state -----------------
     (let ((bv (b "abcd")))
@@ -310,7 +354,7 @@
                         (list (list 'feed-parser bv 0 4)) '())
                   (map (lambda (phase)
                          (call-with-values
-                          (lambda () (conn-step (make-conn-state phase #f #f 0 #f #f default-limits)
+                          (lambda () (conn-step (make-conn-state phase #f #f 0 #f #f minimal)
                                                 (list 'bytes-arrived bv 0 4)))
                           (lambda (s actions) actions)))
                        '(idle head body handling))))

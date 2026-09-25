@@ -23,10 +23,11 @@
 
 ;; state : Symbol . Plist -> ConnState
 ;; A synthetic state: the phase, plus any of deadline / close-after /
-;; outstanding / pending / request / target; every field not named takes its
-;; default, and the limits are decision 0005's defaults.  The head is the
-;; core's own, so a target (a string) is read into it the way the parser
-;; delivers one: on-url-data, then on-url-complete.
+;; outstanding / pending / request / target / host; every field not named
+;; takes its default, and the limits are decision 0005's defaults.  The head
+;; is the core's own, so a target (a string) is read into it the way the
+;; parser delivers one, on-url-data then on-url-complete, and a host (a
+;; string) likewise, as a Host header line.
 (define (state phase . plist)
   (define (get key default)
     (let loop ((p plist))
@@ -36,11 +37,19 @@
   (let ((s (make-conn-state phase
                             (get 'deadline #f) (get 'close-after #f) (get 'outstanding 0)
                             (get 'pending #f) (get 'request #f) default-limits))
-        (target (get 'target #f)))
+        (target (get 'target #f))
+        (host (get 'host #f)))
     (when target
       (let ((tbv (b target)))
         (let*-values (((s1 a1) (conn-parser-step s 'on-url-data tbv 0 (bytevector-length tbv)))
                       ((s2 a2) (conn-parser-step s 'on-url-complete)))
+          #t)))
+    (when host
+      (let ((line (b (string-append "Host: " host))))
+        (let*-values (((s1 a1) (conn-parser-step s 'on-header-field-data line 0 4))
+                      ((s2 a2) (conn-parser-step s 'on-header-field-complete))
+                      ((s3 a3) (conn-parser-step s 'on-header-value-data line 6 (bytevector-length line)))
+                      ((s4 a4) (conn-parser-step s 'on-header-value-complete)))
           #t)))
     s))
 
@@ -107,9 +116,11 @@
    ;; on-headers-complete carries the five parser fields read inside it
    ;; (0002 item 4): here llhttp's method 1 (GET), HTTP/1.1, no flags, no
    ;; content-length.  The head holds a target, as every parsed one does,
-   ;; since the target is judged here (M2.3).
+   ;; since the target is judged here (M2.3), and a Host, as every HTTP/1.1
+   ;; one must (RFC 9112 §3.2, 2026-09-25).
    (row 'H4 "head, on-headers-complete -> body: continue, disarm, arm body"
-        (i (state 'head 'deadline 'header 'target "/") '(parser-event on-headers-complete 1 1 1 0 0)
+        (i (state 'head 'deadline 'header 'target "/" 'host "x")
+           '(parser-event on-headers-complete 1 1 1 0 0)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    (row 'H5 "body, on-body-data -> body: continue, deliver-body, arm body"
