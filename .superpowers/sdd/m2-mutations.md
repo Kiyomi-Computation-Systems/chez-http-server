@@ -374,3 +374,14 @@ On this tree the earlier mutants reach the lane:
 - I survives the lane and dies in the loop suite. Feeds are not in the outcome, and the parser's error after a close is not answered.
 
 `make test` was green afterwards: twenty suites, 362 expected passes (outcome-lane 6, ratchet 8), exit 0.
+
+### Fourth step: the pipeline cap
+
+Red before green: test-limits.sps failed "a pipeline cap of 1 is accepted; 2 and 8 are refused", since "2" and "8" were accepted.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.4-O | limits | the cap check never fires: any parsed cap is accepted | limits exit 1; 25 passes, 1 failure — the new row |
+| M2.4-P | limits | the cap check refuses 1, the default | limits exit 2 — a harness error after 12 passes: the suite's first read of an empty environment, outside any test, raised |
+
+`make test` was green afterwards: twenty suites, 362 expected passes (limits 26), exit 0.

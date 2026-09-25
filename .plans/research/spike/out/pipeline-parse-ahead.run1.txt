@@ -1,0 +1,5 @@
+(buffer 960 bytes 16 requests)
+(paused at each end:  requests 320000 ns-per-request 1521 bytes-per-request 1624)
+(never paused:        requests 320000 ns-per-request 1471 bytes-per-request 1240)
+(paused at each end:  requests 320000 ns-per-request 1521 bytes-per-request 1624)
+(never paused:        requests 320000 ns-per-request 1471 bytes-per-request 1240)

@@ -78,3 +78,11 @@ behind a switch:
 It is the one field that is not a bound. It rides here because the core reads
 every connection setting from this record, and the shell fills it from the
 environment the same way.
+
+## Amendment (2026-09-25) — the pipeline cap accepts only 1
+
+The table's `max-pipeline` row, shipped as `pipeline-cap`, is no longer a bound anyone
+can raise. Decision 0004's amendment of the same day makes v1 serial by design, so
+`CHEZ_HTTP_PIPELINE_CAP` accepts 1 and refuses any other value at startup, as a
+malformed value is refused. The field stays in the record, so a future parse-ahead
+design keeps its name.
