@@ -435,3 +435,26 @@ Red before green:
 | #47-F1 | flag-pins, decisions | the generated parser's CONNECT check (`bhc-check-connect`, `%s278`) compares method 6, so a CONNECT's `upgrade` is 0 | flag-pins exit 1; 9 passes, 1 failure — "the parser's upgrade field is 1 in exactly those, at on-headers-complete": the four CONNECT fixtures are unmarked. Decisions exit 1; 1 failure — "at the pin, a CONNECT tunnel hands off (the pause channel)" |
 
 `make test` was green afterwards: twenty suites, 386 expected passes (entry 30, connection-table 78, decisions 18, flag-pins 10), exit 0. At 'full, the outcome lane held 135 of 135 in 9,394 runs, and the trace lane and the ratchet held.
+
+## M2 exit — libhtp's pipelining and multi-packet streams (2026-09-25)
+
+Each mutant ran from a scratch copy of the mutated file, placed first on the library path under an absolute root. It ran against the tree at feat/m2-exit-libhtp (uncommitted, cut from main at a801894): the core's mutants against every suite, the lane's against test-libhtp-lane and test-ratchet.
+
+Red before green:
+- `(libhtp-lane)` first ran with a runner that returned nothing. test-libhtp-lane passed 2 checks, the count and the scope, and failed all 12 expectations.
+- With the twelve promoted in ratchet.txt and the lane's comparator in place, the ratchet reported 12 violations, "marked passing but does not pass". Both suites went green with the runner.
+- The scope check was green from the start: the strict parser's count over all 102 streams gives exactly the twelve. L8 is its red.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| L1 | all | the core never keeps a connection alive | libhtp-lane exit 1; 5 passes, 9 failures — the nine streams that keep alive (04, 07, 08, 10, 20, 27, 39, 61, 66); 09, 35 and 67 held, since they close anyway. Also red: allocation (exit 2), entry 4, head 13, table 5, loop 9, outcome lane 2, ratchet |
+| L2 | all | the core keeps an HTTP/1.0 connection alive, as if 1.1 | libhtp-lane exit 1; 3 failures — exactly 09, 35 and 67, the HTTP/1.0 streams. Head 3, table 1 (U1's HTTP/1.0 instance), ratchet 3. 17 suites held |
+| L3 | all | the rest of a delivery is dropped at the pause, so a request pipelined in the same packet is lost | libhtp-lane exit 1; 1 failure — 07 alone: 08 and 61 send their second request in a packet of its own. Also red: head 2, table P1, loop 5, outcome lane 2, and the ratchet's outcome entries connection.md#2, #5 and pipelining.md#1. 15 held |
+| L4 | all | the core refuses an absolute-form request that carries a Host, where RFC 9112 §3.2.2 says to ignore the Host | libhtp-lane exit 1; 1 failure — 20. Also red: allocation 1 ("every request on the six connections is served": its workload's absolute-form request carries a Host), ratchet 1. 18 held. No table or head row pins §3.2.2's rule: 20 is its guard |
+| L5 | all | each body delivery loses its first byte | libhtp-lane exit 1; 5 failures — the five streams with a body: 04, 20, 27, 35 and 66. Table 1 (H5), ratchet 5. 18 held |
+| L6 | libhtp-lane, ratchet | the lane never delivers the client's eof | libhtp-lane exit 1; 9 failures — the nine streams that keep alive end reading, not closed; 09, 35 and 67 close before any eof. Ratchet 9 |
+| L7 | libhtp-lane, ratchet | the lane joins a stream's packets into one delivery | SURVIVED, both green. A scope statement, not a gap: the outcome does not depend on how the bytes are split, which is the outcome lane's property (design §8.1 property 2). The lane delivers the recorded packets for fidelity; it adds no split-dependence check |
+| L8 | libhtp-lane, ratchet | the table loses 39-auto-destroy-crash.t's expectation | libhtp-lane exit 1; 2 failures — "twelve streams have an expectation" and the scope check, which still counts 39 as carrying pipelining. Ratchet: 39 is "marked passing but does not pass" |
+
+`make test` was green afterwards: twenty-one suites, 401 expected passes (libhtp-lane 14, ratchet 9), exit 0.
+

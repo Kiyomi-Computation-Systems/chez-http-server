@@ -20,3 +20,4 @@ Plan: [test corpus survey](../2026-09-19-test-corpus-survey.md)
 
 - The corpus lane's `pr` preset runs the `extremes` chunk sizes; `release` runs every size, as chez-httparse does.
 - Our expectations for libhtp files are ours (the `<<<` chunks are a recorded origin's responses, not an oracle), written per file and mutation-witnessed.
+- (2026-09-25, the M2 exit) The first expectations cover twelve libhtp streams, chosen on the owner's word by what they carry rather than their names: two or more requests on one connection (07, 08, 10, 20, 39, 61), or a request split across packets (09, 67 in the head; 04, 27, 35, 66 in the body). They were written from RFC 9112 and the decisions before the lane first ran (`tests/libhtp-lane.sls`), and a strict parser's count over all 102 streams holds the scope (`tests/test-libhtp-lane.sps`).

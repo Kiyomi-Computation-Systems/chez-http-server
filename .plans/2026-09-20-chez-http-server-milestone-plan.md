@@ -441,6 +441,16 @@ The brief's gate, plus measured on the tree:
   naive one as the priors);
 - `m2-mutations.md` complete; `make check-imports` still clean.
 
+*Settled 2026-09-25, on the owner's word:* the pipelining and multi-packet files are
+the twelve whose client packets carry two or more requests, or a request split across
+packets, as a strict parser counts them over all 102:
+- pipelined: 07, 08, 10, 20, 39 and 61;
+- a head across packets: 09 and 67;
+- a body across packets: 04, 27, 35 and 66.
+
+The lane runs like the llhttp lanes, with no Host required. `tests/test-libhtp-lane.sps`
+holds the scope and the expectations.
+
 ---
 
 ## 7. M3 — the response path

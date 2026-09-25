@@ -1042,3 +1042,42 @@ MERGED to main on 2026-09-25, as two stacked PRs landed bottom up on the owner's
 The server now reads the parser's own `upgrade` answer, and nothing filed is open upstream: all seventeen asks are closed and released.
 
 NEXT: the M2 exit (plan §6): our expectations for libhtp's pipelining and multi-packet files, promoted in the ratchet by name, then M2's close-out, on a fresh branch cut from main after bb9aef6, when the owner asks.
+
+M2 EXIT: libhtp's pipelining and multi-packet streams, with our expectations. Branch feat/m2-exit-libhtp, cut from main at a801894; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
+
+MEASURED first. A strict request parser fed each stream's client packets one by one:
+- 27 of the 102 streams send the client side in two or more packets.
+- 12 carry what the exit names:
+  - two or more requests on one connection: 07, 08, 10, 20, 39, 61;
+  - a request head split across packets: 09, 67;
+  - a request body split across packets: 04, 27, 35, 66.
+- The other 15 stop first: at a parse error (bare-LF line endings in 05, 25, 26, 97 and 99; bad chunks; a bad Transfer-Encoding), at a CONNECT (15), or at a request that never completes (63).
+- A dry run of the twelve: each expected outcome was written from RFC 9112 and the decisions first, and all twelve matched.
+
+DECIDED on the owner's word (2026-09-25), by form, both recommended:
+- **Scope: the twelve**, chosen by what the streams carry rather than their names. Weighed: only the three named for it (07, 08, 09), which leaves nine that carry the same thing not-yet; and all 27 multi-packet streams, which adds fifteen whose outcomes test strictness rather than packets.
+- **No Host required**, like the llhttp lanes. Weighed: the server's default, under which the six HTTP/1.1 streams without a Host (07, 08, 61, 04, 27, 66) are one 400 each and their pipelining never runs.
+
+BUILT:
+- `tests/libhtp-lane.sls`, `(libhtp-lane)`: the twelve expectations, each with its reason, and the run they are held to. Each client packet is one `bytes-arrived`; after the last, the client's `eof` arrives if the connection still reads. Every handler answers 200, under `corpus-limits`. The outcome is the outcome lane's record, plus the body delivered, joined.
+- `tests/test-libhtp-lane.sps`: the scope, which a strict parser's count over all 102 streams must equal, and each expectation.
+- The ratchet's libhtp comparator: a stream passes when it has an expectation and meets it. The twelve are promoted by name: libhtp 12 passing, 90 not-yet.
+- `(outcome-lane)` exports `render-request`, so the two lanes render a request alike.
+
+Red before green, then eight mutations (m2-mutations.md, "M2 exit"). Seven were killed, each by the streams it should kill. L7, the lane joining a stream's packets into one delivery, survived by design: the outcome does not depend on the split, which is the outcome lane's property.
+
+Found and recorded:
+- **RFC 9112 §3.2.2 has one guard.** L4 refuses an absolute-form request that carries a Host, and only 20-ambiguous-host.t caught it, besides the allocation suite's workload. No table or head row pins the rule that an origin server "MUST ignore the received Host header field" for absolute-form.
+- **(M6) 63-post-chunked-invalid-1.t declares a 2 GiB chunk** (`80000000`), so the rest of the stream is its body and the request never completes. As designed: decision 0005's `max-body-bytes` is `#f`, since bodies stream to the handler, and only M6's buffering helper takes a limit (1 MiB, 413).
+
+THE M2 EXIT, measured on the tree:
+- the outcome lane holds 135 of 135 at 'extremes and at 'full (9,394 runs);
+- the outcome is chunk-size invariant: the call-handler sequence, the keep-alive decision and the close reason (the outcome lane);
+- libhtp's pipelining and multi-packet streams pass with our expectations, the twelve promoted by name;
+- allocation: 2,512 B per request against the 3 KiB gate;
+- `m2-mutations.md` covers M2.1 to M2.5, chez-httparse #47 and this exit; `make check-imports` is clean.
+
+`make test` green: twenty-one suites, 401 expected passes, exit 0. By suite: libhtp-lane 14 (new), ratchet 9 (was 8).
+
+NEXT: commit and PR on the owner's word. At the merge, M2 is complete. Then M3, the response path (plan §7).
+

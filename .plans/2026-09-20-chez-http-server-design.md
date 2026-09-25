@@ -1004,6 +1004,14 @@ Vendored under `test/vendor/libhtp/` with `LICENSE`, a `PROVENANCE` file (URL, r
 commit, retrieval date, sha256 per file) and a `make corpus-refresh` target that
 re-fetches and re-checksums. Vendored bytes are never edited.
 
+(2026-09-25, the M2 exit) The lane delivers each client packet as one
+`bytes-arrived`. After the last, the client's `eof` arrives if the connection
+still reads. Every handler answers 200, and the lane runs under the llhttp lanes'
+limits, with no Host required. Its outcome is the outcome lane's record plus the
+body delivered. The first expectations cover the twelve streams that carry
+pipelining or a request split across packets (`tests/libhtp-lane.sls`), and the
+ratchet promotes them by name.
+
 ### 8.3 Connection-semantics tables
 
 `(state, event) → (state', actions)` as data, one row per decision in §4.4, each row

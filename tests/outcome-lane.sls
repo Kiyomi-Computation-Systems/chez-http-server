@@ -21,7 +21,7 @@
 ;;; it independent of how the bytes were split.  It runs under the trace
 ;;; lane's `corpus-limits`, with no Host required, for the same reason.
 (library (outcome-lane)
-  (export outcome-at outcome-mismatch)
+  (export outcome-at outcome-mismatch render-request)
   (import (rnrs)
           (httparse test corpus-load)      ; fixture-input-text, fixture-meta-ref
           (httparse test corpus-decode)    ; corpus-decode-input

@@ -14,12 +14,14 @@
 ;;;             trace lane itself rather than trusting the trace suite;
 ;;;   outcome — M2.4's, re-run here (via (outcome-lane)): the connection-level
 ;;;             outcome is the same at every chunk size ('extremes);
-;;;   libhtp  — none until M2 (our expectations are M2's), so all not-yet.
+;;;   libhtp  — the M2 exit's, re-run here (via (libhtp-lane)): a stream passes
+;;;             when it has one of our expectations and meets it.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) directory-list)
         (httparse test ratchet)          ; ratchet-parse, ratchet-entry-id/-status
         (trace-lane)                     ; request-fixtures, fixture-strict?, trace-mismatch
-        (outcome-lane))                  ; outcome-mismatch
+        (outcome-lane)                   ; outcome-mismatch
+        (libhtp-lane))                   ; libhtp-mismatch
 
 (define (read-file-text path)
   (let* ((p (open-file-input-port path)) (b (get-bytevector-all p)))
@@ -73,11 +75,13 @@
    (else 'unknown)))
 
 ;; lane-passes? : String String -> Boolean — the lane's comparator on an
-;; in-scope fixture.  libhtp has none yet.
+;; in-scope fixture.  A libhtp id is "files/<name>".
 (define (lane-passes? lane fid)
   (let ((f (hashtable-ref request-by-id fid #f)))
     (cond ((string=? lane "trace") (and f (not (trace-mismatch f 'extremes))))
           ((string=? lane "outcome") (and f (not (outcome-mismatch f 'extremes))))
+          ((string=? lane "libhtp")
+           (not (libhtp-mismatch (substring fid 6 (string-length fid)))))
           (else #f))))
 
 ;; --- the two-way gate -----------------------------------------------------
@@ -138,13 +142,15 @@
 (run-suite "ratchet"
   (lambda ()
     ;; the per-lane counts: the plan's at the opening, moved only by a
-    ;; reviewed promotion (M2.4: 131 outcomes; M2.5: the 4 upgrades)
+    ;; reviewed promotion (M2.4: 131 outcomes; M2.5: the 4 upgrades; the M2
+    ;; exit: the 12 pipelining and multi-packet streams)
     (test-eqv "trace lane: 135 passing"   135 (lane-count "trace" 'passing))
     (test-eqv "trace lane: 32 deferred"    32 (lane-count "trace" 'deferred))
     (test-eqv "outcome lane: 135 passing" 135 (lane-count "outcome" 'passing))
     (test-eqv "outcome lane: 0 not-yet"     0 (lane-count "outcome" 'not-yet))
     (test-eqv "outcome lane: 32 deferred"  32 (lane-count "outcome" 'deferred))
-    (test-eqv "libhtp lane: 102 not-yet"  102 (lane-count "libhtp" 'not-yet))
+    (test-eqv "libhtp lane: 12 passing"    12 (lane-count "libhtp" 'passing))
+    (test-eqv "libhtp lane: 90 not-yet"    90 (lane-count "libhtp" 'not-yet))
     ;; every fixture in every lane is listed (no missing entry)
     (for-each (lambda (m) (diag (string-append "RATCHET MISSING " m))) missing)
     (test-equal "manifest covers every fixture in every lane" '() missing)
