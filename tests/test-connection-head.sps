@@ -2,12 +2,12 @@
 ;;; (http-server connection): the request head.  M2.2.
 ;;;
 ;;; on-message-begin through on-headers-complete, with chez-httparse driving
-;;; the core through the adapter's bindings, the way a shell will.  The driver
-;;; below delivers each chunk as `bytes-arrived` and feeds the parser only when
-;;; the core asks with `feed-parser`; when the core pauses the parser at
-;;; on-message-complete it runs the handler cycle (handler-responded, then
-;;; write-completed), resumes, and feeds on from `parser-result-next`, and it
-;;; stops once the core closes.  M2.4 builds that loop into the fake shell.
+;;; the core through the adapter's bindings, the way a shell will.  Every row
+;;; runs in the fake shell's message loop (M2.4): each chunk arrives as
+;;; `bytes-arrived` while the connection reads, the parser is fed only when
+;;; the core asks, the handler answers every request, each write completes,
+;;; and the connection runs until it closes or the input ends.  So a refused
+;;; message's response is written and the connection is closed.
 ;;;
 ;;; The rows:
 ;;;   - the request (method, target, version, headers in wire order) is what
@@ -38,9 +38,9 @@
 ;;; rows; design §6.5's 431, 414 and 400; RFC 9112 §3.2's target forms; the
 ;;; limits each row sets.
 (import (rnrs) (srfi :64) (testing)
-        (http-server connection) (http-server private adapter)
+        (http-server connection)
         (http-server request) (http-server response) (http-server span)
-        (http-server limits) (byte-machine runtime))
+        (http-server limits) (fake-shell))
 
 (define (b s) (string->utf8 s))
 
@@ -85,58 +85,27 @@
 
 ;; Outcome: what one connection did with its input.
 ;;   requests  the requests handed to call-handler, rendered, in order
-;;   error     #f, or the parser's error code and the core's answer to it
+;;   error     #f, or the parser's error code and the responses the core
+;;             originated, a status of its own rather than the handler's
 ;;   phase     the state the connection ended in
 ;;   reason    its close-after reason
-(define (outcome requests error s)
-  (list (reverse requests) error (conn-phase s) (conn-close-after s)))
-
 ;; drive : Bytevector Nat Limits -> Outcome
 ;; One connection reading `input` in `size`-byte deliveries.
 (define (drive input size limits)
-  (let* ((queued '())
-         (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f limits)
-                                 (lambda (actions) (set! queued (append queued actions)))))
-         (p (make-conn-parser ctx))
-         (len (bytevector-length input)))
-    (let chunk ((from 0) (requests '()))
-      (if (>= from len)
-          (outcome requests #f (conn-context-state ctx))
-          (let* ((to (min len (+ from size)))
-                 (asked (conn-context-step! ctx (list 'bytes-arrived input from to))))
-            (if (not (member (list 'feed-parser input from to) asked))
-                (outcome requests (list 'not-fed asked) (conn-context-state ctx))
-                (let feed ((at from) (requests requests))
-                  (let* ((r (parser-feed! p input at to))
-                         (taken (let ((q queued)) (set! queued '()) q))
-                         (requests (fold-left (lambda (acc a)
-                                                (if (eq? (car a) 'call-handler)
-                                                    (cons (render-request (cadr a)) acc)
-                                                    acc))
-                                              requests taken)))
-                    (case (parser-result-status r)
-                      ((need-input) (chunk to requests))
-                      ((paused)
-                       ;; The core's pause at on-message-complete: the handler
-                       ;; answers, the write completes, and the parse resumes.
-                       (conn-context-step! ctx (list 'handler-responded resp))
-                       (conn-context-step! ctx '(write-completed 2))
-                       (if (eq? (conn-phase (conn-context-state ctx)) 'closing)
-                           (outcome requests #f (conn-context-state ctx))
-                           (begin (parser-resume! p)
-                                  (feed (parser-result-next r) requests))))
-                      ((error)
-                       (let* ((e (parser-result-error r))
-                              (answer (conn-context-step!
-                                       ctx (list 'parser-result 'error
-                                                 (parser-result-consumed r)
-                                                 (parser-result-next r)
-                                                 (parser-error-code e) #f))))
-                         (outcome requests
-                                  (list (parser-error-code e) (map render-action answer))
-                                  (conn-context-state ctx))))
-                      (else (outcome requests (list 'status (parser-result-status r))
-                                     (conn-context-state ctx))))))))))))
+  (let ((sh (make-fake-connection limits (lambda (request) resp))))
+    (fake-shell-feed-input! sh input size)
+    (let ((s (fake-shell-conn-state sh))
+          (actions (fake-shell-actions sh))
+          (error (find (lambda (ev) (and (eq? (car ev) 'parser-result) (eq? (cadr ev) 'error)))
+                       (fake-shell-events sh))))
+      (list (map (lambda (a) (render-request (cadr a)))
+                 (filter (lambda (a) (eq? (car a) 'call-handler)) actions))
+            (and error
+                 (list (list-ref error 4)
+                       (map render-action
+                            (filter (lambda (a) (and (eq? (car a) 'write) (not (eq? (cadr a) resp))))
+                                    actions))))
+            (conn-phase s) (conn-close-after s)))))
 
 ;; every-size : Bytevector Limits -> (Listof Outcome)
 ;; The distinct outcomes over every delivery size from 1 to the whole input.
@@ -155,20 +124,20 @@
 ;;   req      a rendered request: method, target, version, headers
 ;;   ok       every request handled; the connection ends in `phase`
 ;;   refused  the parser failed with the core's reason as its code, and the
-;;            core answered `status`, closing after; a refusal is a 431
+;;            core answered `status`, then closed; a refusal is a 431
 (define (req method target major minor . headers)
   (list method target major minor headers))
 (define (ok requests phase reason) (list requests #f phase reason))
 (define (refused reason status)
-  (list '() (list reason (list (status-write status))) 'responding reason))
+  (list '() (list reason (list (status-write status))) 'closed reason))
 (define (refusal reason) (refused reason 431))
 ;;   redirected  the parser failed with target-redirect as its code, and the
-;;               core answered 301 with a Location header, closing after
+;;               core answered 301 with a Location header, then closed
 (define (redirected location)
   (list '()
         (list 'target-redirect
               (list (list 'write (list 'response 301 #f (list (cons (b "Location") (b location))) #f))))
-        'responding 'target-redirect))
+        'closed 'target-redirect))
 
 ;; verdict : (-> Any) -> (U 'accepted 'refused)
 (define (verdict thunk)
@@ -198,7 +167,7 @@
 
     ;; --- keep-alive: decision 0006 item 1 -----------------------------------
     (test-equal "keep-alive, one request each: 1.1, 1.1 close, 1.0, 1.0 keep-alive"
-                '((idle #f) (closing not-keep-alive) (closing not-keep-alive) (idle #f))
+                '((idle #f) (closed not-keep-alive) (closed not-keep-alive) (idle #f))
                 (map (lambda (text)
                        (let ((o (drive (b text) 1000 minimal)))
                          (list (caddr o) (cadddr o))))
@@ -210,12 +179,12 @@
     ;; handled, and each message's head holds only its own headers.
     (test-equal "pipelined 1.1, every delivery size: keep, then close, then nothing"
                 (list (ok (list (req 'GET "/1" 1 1) (req 'GET "/2" 1 1 '("Connection" . "close")))
-                          'closing 'not-keep-alive))
+                          'closed 'not-keep-alive))
                 (every-size (b "GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\nConnection: close\r\n\r\nGET /3 HTTP/1.1\r\n\r\n")
                             minimal))
     (test-equal "pipelined 1.0, every delivery size: keep-alive, then the default close"
                 (list (ok (list (req 'GET "/1" 1 0 '("Connection" . "keep-alive")) (req 'GET "/2" 1 0))
-                          'closing 'not-keep-alive))
+                          'closed 'not-keep-alive))
                 (every-size (b "GET /1 HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /2 HTTP/1.0\r\n\r\nGET /3 HTTP/1.0\r\n\r\n")
                             minimal))
 
@@ -302,7 +271,7 @@
                 (list (ok (list (req 'GET "/" 1 1)) 'idle #f))
                 (every-size (b "GET / HTTP/1.1\r\n\r\n") minimal))
     (test-equal "an HTTP/1.0 request with no Host is served"
-                (list (ok (list (req 'GET "/" 1 0)) 'closing 'not-keep-alive))
+                (list (ok (list (req 'GET "/" 1 0)) 'closed 'not-keep-alive))
                 (every-size (b "GET / HTTP/1.0\r\n\r\n") default-limits))
     (test-equal "two Host lines are refused with 400"
                 (list (refused 'invalid-host 400))
@@ -344,9 +313,9 @@
                 (every-size (b "GET /a?b=| HTTP/1.1\r\n\r\n") (with-limits '((target . 7)))))
 
     ;; --- a parser error the core did not ask for is a 400 -------------------------
-    (test-equal "an invalid header token: 400, closing after"
+    (test-equal "an invalid header token: 400, then close"
                 (list (list '() (list 'invalid-header-token (list (status-write 400)))
-                            'responding 'parser-error))
+                            'closed 'parser-error))
                 (every-size (b "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n") minimal))
 
     ;; --- bytes-arrived feeds the parser in every reading state -----------------

@@ -191,3 +191,8 @@ M2.2's fourth step measured. With that copy gone the CPS workload costs 2,512 B 
 request, and an absolute-form request 4,224 B, still one reused collector's parse more
 (measured 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`). The shapes hold: a
 500-byte header value, target, query or Host costs what a short one does.
+
+M2.4's fake shell checks item 3 itself, with one depth counter around `drain!` and
+`parser-feed!`: every action must run from the outermost drain, at depth 1. An action
+run inside a feed or in a nested drain is a violation the shell records, and the
+message-loop suite and the outcome lane fail on it.

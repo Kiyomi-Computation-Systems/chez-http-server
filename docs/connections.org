@@ -1,0 +1,17 @@
+#+TITLE: Connections: one request at a time
+
+A client can send many requests over one connection. The server answers them
+in order, one at a time:
+
+1. It reads a request.
+2. It stops reading while your handler runs, so the next request waits.
+3. It writes your response.
+4. It reads on, starting with any bytes the client already sent.
+
+A client may send several requests without waiting for the answers
+(pipelining). They are still answered one at a time, in the order they were
+sent.
+
+After a request that asks to close the connection (~Connection: close~, or
+HTTP/1.0 without ~Connection: keep-alive~), the server writes its response and
+closes. Anything the client sent after that request is ignored.
