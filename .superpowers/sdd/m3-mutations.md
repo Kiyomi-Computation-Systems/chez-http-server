@@ -42,3 +42,38 @@ to return `#t` outright, it died as above.
 
 Every suite was green afterwards, in the scratch worktree: twenty-two suites,
 440 expected passes (serializer 39), each exit 0.
+
+## M3.1 second step — the wire (2026-09-25)
+
+The mutants ran against the finished tree, uncommitted on feat/m3.1-wire,
+against test-serializer.
+
+Red before green: with the first step's library and a `serialize-response`
+that answered nothing, the suite exited 1 with 56 passes and 85 failures —
+every wire, segment, byte-count and read-back check of the 17 rows, the 13
+status lines and the four refusals. The 56 were the first step's 39 and the
+rows' 17 "no fault" checks.
+
+| # | mutation (`src/http-server/serializer.sls`) | observed |
+|---|---|---|
+| M3.1-A | consecutive bytevector segments are joined into one (plan §7's named mutation) | exit 1; 134 passes, 7 failures — exactly the segment counts of the seven rows with something to join: the six with a body after the head (Content-Length, chunked, close-delimited, the handler's fields, keep-alive, the handler's Connection), and the handler's Date row, whose status line and block meet with no slot between. Every wire, byte count and read-back held: the bytes are identical, and only the count sees the concatenation |
+| M3.1-D | the header block copies a handler's Connection field as well | exit 1; 3 failures — that row's wire, byte count and read-back (the parser reads two Connection fields). Its segment count held: the block is still one segment |
+| M3.1-F | the chunk size is written in decimal | exit 1; 2 failures — the chunked row's wire (`26` for `1a`) and its read-back: the parser read a 38-byte chunk and was still waiting for its data |
+| M3.1-G | a Date slot is left beside a handler's own Date | exit 1; 4 failures — that row's wire, segments, byte count and read-back (two Date fields) |
+
+The first step's ten, re-run on the whole suite:
+
+| # | observed |
+|---|---|
+| M3.1-B, C, E, I, J, K, N | exit 1; the same rows as in the first step, and nothing else: 1, 2, 2, 2, 1, 1 and 1 failures |
+| M3.1-H | exit 1; 6 failures — the fault row, and the wire row's five checks: the refusal stops the write |
+| M3.1-L | exit 1; 6 failures — the fault row, and the span row's five checks, for the same reason |
+| M3.1-M | exit 1; 75 passes, 66 failures — the wire, segments, byte count and read-back of the 13 rows whose connection stays open (52), the 13 status lines, and "no Connection field does not". A response that asks to close cannot be written on a connection that stays open, so the serializer refuses them all, and the loops count each refusal as failed checks rather than ending the suite |
+
+A is the plan's prediction made exact: the wire bytes are identical, and only
+the segment counts go red, which is the assertion earning its place (plan §7).
+The read-back is chez-httparse's strict response parser, a client that is not
+our code; it goes red with the wire in D, F, G, H and L.
+
+`make test` was green afterwards: twenty-two suites, 542 expected passes
+(serializer 141), exit 0.
