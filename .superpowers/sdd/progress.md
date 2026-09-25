@@ -1008,3 +1008,26 @@ Reading: the documented field gives the answer the server transcribed. Over the 
 - the version comments in `tests/test-integration.sps` and `tests/test-corpus-inventory.sps`.
 
 NEXT: the server reads the field, on a branch stacked on this one. The adapter passes `upgrade` into conn-headers-complete-step, the core closes after an upgrade on it, and `request-upgrades?` retires. Then the M2 exit.
+
+THE CORE READS THE PARSER'S UPGRADE FIELD (2026-09-25). Branch refactor/upgrade-field, stacked on chore/pin-httparse-v0.4.1; Darwin arm64, Chez 10.4.1 `tarm64osx`.
+
+The adapter reads a sixth field at on-headers-complete, `upgrade`, and passes it to conn-headers-complete-step. The core marks an upgrade to close after its response when the field is 1, where M2.5 asked `request-upgrades?`. `not-keep-alive` keeps precedence. The field is read there because it becomes this message's answer at on-headers-complete: the parser's reset does not clear it, so before that it holds the previous message's answer (chez-httparse's docs/api.org).
+
+Retired: `request-upgrades?` and its import of the two flag bits, so (http-server decisions) now imports only (rnrs). Its rule rows leave test-decisions.sps. The corpus check moves to test-flag-pins.sps, the pin suite, and now reads the field: the strict fixtures whose llhttp logs pause for an upgrade are nine, and the field is 1 in exactly those.
+
+Tests:
+- entry: the payload has six fields, and the old five-field shape is refused. Its recorder reads `upgrade` too.
+- table: U1 carries the field. Two new instances pin that the field decides: both upgrade flags with `upgrade` 0, and a CONNECT with `upgrade` 0, each with close-after #f.
+- The loop's upgrade rows are unchanged. They catch the adapter's wiring (#47-A1, A2).
+
+Mutations: seven, all killed (m2-mutations.md, "chez-httparse #47").
+
+`make test` green: twenty suites, 386 expected passes (385 at the pin), exit 0. By suite: entry 30 (was 29), connection-table 78 (77), decisions 18 (21), flag-pins 10 (8). At 'full, the outcome lane holds 135 of 135 in 9,394 runs, and the trace lane and the ratchet hold. The CPS workload costs 2,512 B per request, unchanged: the seventh argument allocates nothing.
+
+Updated:
+- the adapter, (http-server connection) and (http-server decisions), with their comments;
+- decision 0002 (item 4, and item 1 of its third amendment) and design §4.2, with dated notes: `upgrade` is read at on-headers-complete too;
+- the mutation log.
+
+NEXT: the two stacked PRs, on the owner's word. Then the M2 exit (plan §6): our expectations for libhtp's pipelining and multi-packet files, promoted in the ratchet by name, then M2's close-out.
+

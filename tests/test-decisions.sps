@@ -7,17 +7,13 @@
 ;;; string, chez-httparse #36 and its docs/api.org); decision 0006 item 2 (the
 ;;; HTTP/2 preface is answered 505) as amended on 2026-09-25; chez-httparse's
 ;;; own table of its error codes (`adapter-error-codes`, from its test
-;;; harness), which fixes the codes the map must cover; the four hand-off rows
-;;; research/spike/smoke-v040.sps ran at the pin (ledger, 2026-09-19 night);
-;;; and llhttp's recorded logs, which say which of the strict fixtures pause
-;;; for an upgrade.
+;;; harness), which fixes the codes the map must cover; and the four hand-off
+;;; rows research/spike/smoke-v040.sps ran at the pin (ledger, 2026-09-19
+;;; night).  Which requests upgrade is the parser's own answer, its `upgrade`
+;;; field (chez-httparse v0.4.1, #47), pinned in test-flag-pins.sps.
 (import (rnrs) (srfi :64) (testing)
         (http-server decisions)
         (httparse test adapter)          ; adapter-error-codes, adapter-trace-names
-        (httparse test corpus-load)      ; fixture-input-text, fixture-expected
-        (httparse test corpus-decode)    ; corpus-decode-input
-        (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE F-CONNECTION-KEEP-ALIVE)
-        (only (trace-lane) strict-request-fixtures)
         (generated httparse-message) (httparse modes) (byte-machine runtime))
 
 ;; verdict : (-> Any) -> (U 'accepted 'refused)
@@ -44,17 +40,15 @@
           (parser-error-status (parser-error-code e) (parser-error-node-name e)))
         'no-error)))
 
-;; request-parser : Outcome (Parser -> Void) -> Parser
+;; request-parser : Outcome -> Parser
 ;; A request parser whose callbacks all continue, except on-message-complete,
-;; which answers `complete`, and on-headers-complete, which first runs
-;; `headers` on the parser.
-(define (request-parser complete headers)
+;; which answers `complete`.
+(define (request-parser complete)
   (make-parser httparse-message-machine
                (map (lambda (row)
                       (list (car row)
                             (case (car row)
                               ((on-message-complete) (lambda (p ctx) complete))
-                              ((on-headers-complete) (lambda (p ctx) (headers p) callback-continue))
                               (else (if (eq? (cadr row) 'span)
                                         (lambda (p ctx bv from to) callback-continue)
                                         (lambda (p ctx) callback-continue))))))
@@ -66,7 +60,7 @@
 ;; `complete`.
 (define (feed-whole text complete)
   (let ((bv (string->utf8 text)))
-    (parser-feed! (request-parser complete (lambda (p) #f)) bv 0 (bytevector-length bv))))
+    (parser-feed! (request-parser complete) bv 0 (bytevector-length bv))))
 
 ;; hands-off? : ParserResult -> Boolean
 ;; result-hands-off-stream? over what the shell's parser-result event carries:
@@ -75,48 +69,6 @@
   (let ((code (lambda (e) (and e (parser-error-code e)))))
     (result-hands-off-stream? (parser-result-status r)
                               (code (parser-result-error r)) (code (parser-result-pause r)))))
-
-;; contains? : String String -> Boolean
-(define (contains? s sub)
-  (let ((n (string-length s)) (m (string-length sub)))
-    (let loop ((i 0))
-      (and (<= (+ i m) n)
-           (or (string=? (substring s i (+ i m)) sub) (loop (+ i 1)))))))
-
-;; upgrading-fixtures : (Parser -> Boolean) -> (Listof String)
-;; The strict fixtures with a message `upgrades?` marks: it is asked at every
-;; on-headers-complete, of a parser fed the fixture whole and resumed past
-;; every pause.
-(define (upgrading-fixtures upgrades?)
-  (filter (lambda (id) id)
-          (map (lambda (pr)
-                 (let* ((marked #f)
-                        (bv (corpus-decode-input (fixture-input-text (cdr pr))))
-                        (len (bytevector-length bv))
-                        (p (request-parser callback-continue
-                                           (lambda (p) (when (upgrades? p) (set! marked #t))))))
-                   (let loop ((at 0))
-                     (let ((r (parser-feed! p bv at len)))
-                       (when (and (eq? (parser-result-status r) 'paused)
-                                  (< (parser-result-next r) len))
-                         (parser-resume! p)
-                         (loop (parser-result-next r)))))
-                   (and marked (car pr))))
-               strict-request-fixtures)))
-
-;; logged-upgrades : -> (Listof String)
-;; The strict fixtures whose recorded llhttp logs pause for an upgrade.  Read
-;; inside the suite, where a raise is a harness error.
-(define (logged-upgrades)
-  (map car (filter (lambda (pr)
-                     (exists (lambda (line)
-                               (contains? (expectation-text line) "Pause on CONNECT/Upgrade"))
-                             (fixture-expected (cdr pr))))
-                   strict-request-fixtures)))
-
-;; llhttp's method numbers for the rows below.
-(define GET 1)
-(define CONNECT 5)
 
 (run-suite "decisions"
   (lambda ()
@@ -191,27 +143,4 @@
     ;; Each code counts only on its own channel.
     (test-equal "a hand-off code on the other channel is no hand-off" '(#f #f)
                 (list (result-hands-off-stream? 'error 'paused-upgrade #f)
-                      (result-hands-off-stream? 'paused #f 'paused-h2-upgrade)))
-
-    ;; --- which requests upgrade (M2.5) ---------------------------------------
-    ;; llhttp's before_headers_complete, for a request: CONNECT, or both
-    ;; upgrade flags (Upgrade, and upgrade among the Connection options).
-    (test-equal "CONNECT, or Connection: upgrade with Upgrade, upgrades; one alone does not"
-                '(#t #t #f #f #f)
-                (list (request-upgrades? CONNECT 0)
-                      (request-upgrades? GET (bitwise-ior F-UPGRADE F-CONNECTION-UPGRADE F-CONNECTION-KEEP-ALIVE))
-                      (request-upgrades? GET F-UPGRADE)
-                      (request-upgrades? GET F-CONNECTION-UPGRADE)
-                      (request-upgrades? GET 0)))
-    ;; The oracle is llhttp's own record: a fixture's log pauses for an
-    ;; upgrade exactly when one of its messages upgrades.
-    (let ((logged (logged-upgrades)))
-      (test-equal "the strict fixtures whose llhttp logs pause for an upgrade are nine"
-                  '("request/connection.md#14" "request/connection.md#18" "request/connection.md#19"
-                    "request/connection.md#20" "request/connection.md#21" "request/method.md#2"
-                    "request/method.md#3" "request/method.md#4" "request/uri.md#9")
-                  logged)
-      (test-equal "request-upgrades? marks exactly those, at on-headers-complete"
-                  logged
-                  (upgrading-fixtures (lambda (p) (request-upgrades? (parser-field-ref p 'method)
-                                                                     (parser-field-ref p 'flags))))))))
+                      (result-hands-off-stream? 'paused #f 'paused-h2-upgrade)))))

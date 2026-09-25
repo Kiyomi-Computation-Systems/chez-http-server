@@ -122,14 +122,14 @@
         (i (state 'head 'deadline 'header) '(parser-event on-header-value-complete)
            '(head #f ((reply-parser continue)))))
 
-   ;; on-headers-complete carries the five parser fields read inside it
+   ;; on-headers-complete carries the six parser fields read inside it
    ;; (0002 item 4): here llhttp's method 1 (GET), HTTP/1.1, no flags, no
-   ;; content-length.  The head holds a target, as every parsed one does,
-   ;; since the target is judged here (M2.3), and a Host, as every HTTP/1.1
-   ;; one must (RFC 9112 §3.2, 2026-09-25).
+   ;; content-length, and an `upgrade` of 0.  The head holds a target, as
+   ;; every parsed one does, since the target is judged here (M2.3), and a
+   ;; Host, as every HTTP/1.1 one must (RFC 9112 §3.2, 2026-09-25).
    (row 'H4 "head, on-headers-complete -> body: continue, disarm, arm body"
         (i (state 'head 'deadline 'header 'target "/" 'host "x")
-           '(parser-event on-headers-complete 1 1 1 0 0)
+           '(parser-event on-headers-complete 1 1 1 0 0 0)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    (row 'H5 "body, on-body-data -> body: continue, deliver-body, arm body"
@@ -265,30 +265,35 @@
 
 ;; ---------------------------------------------------------------------------
 ;; The upgrade door: two rows (M2.5, decided on the owner's word, 2026-09-25).
-;; An upgrade (llhttp's rule: CONNECT, or `Connection: upgrade` with
-;; `Upgrade`) is served like any request and closes the connection after the
-;; response, so the bytes after it are never read (decision 0006's
-;; amendment).  The HTTP/2 preface, a hand-off on the parser's error channel,
-;; is answered 505 (0006 item 2).
+;; An upgrade (the parser's `upgrade` field, llhttp's rule: CONNECT, or
+;; `Connection: upgrade` with `Upgrade`) is served like any request and
+;; closes the connection after the response, so the bytes after it are never
+;; read (decision 0006's amendment).  The HTTP/2 preface, a hand-off on the
+;; parser's error channel, is answered 505 (0006 item 2).
 (define upgrade-flags (bitwise-ior F-UPGRADE F-CONNECTION-UPGRADE))
 
 (define (upgrade-door)
   (list
    ;; on-headers-complete's fields: llhttp's method (5 CONNECT, 1 GET), the
-   ;; version, the flags and the content-length.  A message that closes the
-   ;; connection anyway keeps its own reason.
+   ;; version, the flags, the content-length and the parser's `upgrade`
+   ;; (chez-httparse v0.4.1, #47).  The field decides, whatever the method and
+   ;; flags say, and a message that closes the connection anyway keeps its
+   ;; own reason.
    (row 'U1 "head, on-headers-complete of an upgrade -> body: served, close-after upgrade"
         (i (state 'head 'deadline 'header 'target "example.com:443" 'host "example.com:443")
-           '(parser-event on-headers-complete 5 1 1 0 0)
+           '(parser-event on-headers-complete 5 1 1 0 0 1)
            '(body upgrade ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
         (i (state 'head 'deadline 'header 'target "/chat" 'host "x")
-           `(parser-event on-headers-complete 1 1 1 ,upgrade-flags 0)
+           `(parser-event on-headers-complete 1 1 1 ,upgrade-flags 0 1)
            '(body upgrade ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
         (i (state 'head 'deadline 'header 'target "/chat")
-           `(parser-event on-headers-complete 1 1 0 ,upgrade-flags 0)
+           `(parser-event on-headers-complete 1 1 0 ,upgrade-flags 0 1)
            '(body not-keep-alive ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
         (i (state 'head 'deadline 'header 'target "/chat" 'host "x")
-           `(parser-event on-headers-complete 1 1 1 ,F-UPGRADE 0)
+           `(parser-event on-headers-complete 1 1 1 ,upgrade-flags 0 0)
+           '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+        (i (state 'head 'deadline 'header 'target "example.com:443" 'host "example.com:443")
+           '(parser-event on-headers-complete 5 1 1 0 0 0)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    (row 'U2 "head, parser-result hands off on the error channel (the HTTP/2 preface) -> responding 505, close-after"

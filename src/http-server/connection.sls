@@ -51,7 +51,7 @@
 ;;;   (parser-event name)                  an event callback
 ;;;   (parser-event name bv from to)       a span callback
 ;;;   (parser-event on-headers-complete method http-major http-minor
-;;;                 flags content-length)
+;;;                 flags content-length upgrade)
 ;;;
 ;;; and `conn-step` only unpacks it and calls the entry point, so the
 ;;; transitions live in one place.  Either way, the first action answering a
@@ -106,7 +106,8 @@
 ;;; AN UPGRADE IS SERVED, THEN THE CONNECTION CLOSES (M2.5; decision 0006's
 ;;; amendment, on the owner's word, 2026-09-25).  A request that asks to
 ;;; switch protocols, by llhttp's rule a CONNECT or `Connection: upgrade` with
-;;; `Upgrade` (`request-upgrades?`), reaches the handler like any other, and
+;;; `Upgrade`, which the parser's `upgrade` field answers (chez-httparse
+;;; v0.4.1, #47), reaches the handler like any other, and
 ;;; the connection closes after the response, as a close-marked message's
 ;;; does.  So its pause at on-message-complete is the last: the parser is
 ;;; never resumed onto its own hand-off, and the bytes after the request,
@@ -547,14 +548,17 @@
     (values s (list (list 'reply-parser (list 'fail reason)))))
 
   ;; conn-headers-complete-step :
-  ;;   ConnState Nat Nat Nat Nat Nat -> (values ConnState (Listof Action))
-  ;;   method http-major http-minor flags content-length
-  ;; on-headers-complete, entered with the five parser fields the adapter reads
+  ;;   ConnState Nat Nat Nat Nat Nat Nat -> (values ConnState (Listof Action))
+  ;;   method http-major http-minor flags content-length upgrade
+  ;; on-headers-complete, entered with the six parser fields the adapter reads
   ;; inside the callback (0002 item 4): llhttp's method number, the version,
-  ;; llhttp's flag bits and the content-length.  Read there, content-length is
-  ;; the declared length, since it counts down as the body arrives, and the
-  ;; parser's reset after each message zeroes it and the flags.  Nothing
-  ;; downstream re-reads the parser.  The content-length is the body's, M6's.
+  ;; llhttp's flag bits, the content-length, and `upgrade`, 1 when the message
+  ;; upgrades (chez-httparse v0.4.1 documents it as llhttp's
+  ;; `llhttp_get_upgrade`, #47).  Read there, content-length is the declared
+  ;; length, since it counts down as the body arrives, and the parser's reset
+  ;; after each message zeroes it and the flags; `upgrade` is not reset, and is
+  ;; this message's only from on-headers-complete on.  Nothing downstream
+  ;; re-reads the parser.  The content-length is the body's, M6's.
   ;; The Host lines are judged here first (RFC 9112 §3.2; see (http-server
   ;; host)): a request whose Host is missing on HTTP/1.1 (when the limits
   ;; require one), doubled or invalid is refused as 'invalid-host, answered
@@ -569,9 +573,9 @@
   ;; An accepted target moves head -> body: the request is built from the
   ;; head, the connection is marked to close after the response unless the
   ;; message keeps it alive (decision 0006 item 1), or, when it does, if the
-  ;; request upgrades (M2.5), and the header deadline gives way to the
-  ;; body's.
-  (define (conn-headers-complete-step s method http-major http-minor flags content-length)
+  ;; parser says the request upgrades (M2.5), and the header deadline gives
+  ;; way to the body's.
+  (define (conn-headers-complete-step s method http-major http-minor flags content-length upgrade)
     (case (conn-phase s)
       ((head)
        (let* ((h (conn-head s))
@@ -586,7 +590,7 @@
                                               (reverse (head-fields h)) #f))
            (cond ((not (should-keep-alive? http-major http-minor 'request 0 flags))
                   (conn-close-after-set! s 'not-keep-alive))
-                 ((request-upgrades? method flags)
+                 ((eqv? upgrade 1)
                   (conn-close-after-set! s 'upgrade)))
            (conn-phase-set! s 'body)
            (conn-deadline-set! s 'body)

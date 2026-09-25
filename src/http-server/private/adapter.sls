@@ -6,8 +6,11 @@
 ;;; the parser's user-context argument (design §7.5: a list per connection
 ;;; would cost 1,216 B each).  Each callback enters the core directly, with
 ;;; its own arguments, so nothing is allocated to carry it (0002's third
-;;; amendment); on-headers-complete also reads the five parser fields the
-;;; parser's reset between messages would otherwise lose (0002 item 4).
+;;; amendment); on-headers-complete also reads the parser fields the core
+;;; needs from it (0002 item 4): the five the parser's reset between messages
+;;; would otherwise lose, and `upgrade`, llhttp's answer to whether the message
+;;; upgrades, which is this message's only from on-headers-complete on
+;;; (chez-httparse v0.4.1, #47).
 ;;;
 ;;; The core's first action is its `reply-parser`, and that one is answered
 ;;; here, inside the callback (0002 item 3): continue, pause, or a failure
@@ -82,7 +85,8 @@
                                     (parser-field-ref p 'http-major)
                                     (parser-field-ref p 'http-minor)
                                     (parser-field-ref p 'flags)
-                                    (parser-field-ref p 'content-length))))
+                                    (parser-field-ref p 'content-length)
+                                    (parser-field-ref p 'upgrade))))
                        (answer! ctx s actions))))
                   ((memq name conn-span-callbacks)
                    (lambda (p ctx bv from to)
