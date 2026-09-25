@@ -1,0 +1,24 @@
+--- #21: ranged verdict == the verdict on a copy (expect agree in every component)
+/ (path (#f #f) (#f #f) agree) no-query
+/api/v1/items/12345?fields=name,price&limit=50 (path (#f #f) (#f #f) agree) (query (#f #f) (#f #f) agree)
+//a@b:c/d (path (#f #f) (#f #f) agree) no-query
+/a<b>?q=1 (path (invalid-pchar 2) (invalid-pchar 2) agree) (query (#f #f) (#f #f) agree)
+/ok?q=a"b (path (#f #f) (#f #f) agree) (query (invalid-query 3) (invalid-query 3) agree)
+/x?a[]=1&b=| (path (#f #f) (#f #f) agree) (query (invalid-query 1) (invalid-query 1) agree)
+/p%zz (path (invalid-pct-encoded 2) (invalid-pct-encoded 2) agree) no-query
+--- a '%' whose HEXDIGs lie past end is malformed, though the bytes after end complete it
+whole /a%41: (#f #f) range [0,4) /a%4: (invalid-pct-encoded 2) range [1,5) a%41: (#f #f)
+--- 200000 origin-form targets judged per pass, path and query: in place vs on a copy
+in-place: 2 bytes-per-target 0 ns 25
+on-copy:  2 bytes-per-target 16 ns 30
+in-place: 46 bytes-per-target 0 ns 360
+on-copy:  46 bytes-per-target 80 ns 375
+in-place: 500 bytes-per-target 0 ns 3880
+on-copy:  500 bytes-per-target 512 ns 3920
+in-place: 2 bytes-per-target 0 ns 25
+on-copy:  2 bytes-per-target 16 ns 35
+in-place: 46 bytes-per-target 0 ns 355
+on-copy:  46 bytes-per-target 80 ns 375
+in-place: 500 bytes-per-target 0 ns 3900
+on-copy:  500 bytes-per-target 512 ns 3945
+done

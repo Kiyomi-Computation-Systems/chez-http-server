@@ -1,10 +1,12 @@
 # chez-http-server — canonical entry points.
 #
 # Dependencies are pinned git submodules under vendor/ (global-constraints):
-# chez-libuv v0.6.0, chez-httparse v0.4.0, uriparse v0.4.0, and chez-srfi for
+# chez-libuv v0.6.0, chez-httparse v0.4.0, uriparse v0.5.0, and chez-srfi for
 # the SRFI-64 test framework; byte-machine v0.6.0 arrives transitively under
 # chez-httparse.  `make build` assembles them onto one library path.  A pin is
 # a gitlink; `make check-pins` is the fingerprint check the brief's M0 asks for.
+# It also holds uriparse to the byte-machine on the library path, and refuses a
+# vendored checkout with local edits.
 
 CHEZ ?= chez
 
@@ -17,7 +19,7 @@ BYTE_MACHINE_DIR := $(HTTPARSE_DIR)/vendor/byte-machine
 
 LIBUV_PIN        := ad4c1e9d9f01a54ef9301144c9af94302cf2e5b4  # v0.6.0
 HTTPARSE_PIN     := 1cddba8214227645f5ca831bb055f49818bdfc3a  # v0.4.0
-URIPARSE_PIN     := 611b04b5a5a8eba68c4a964db613e6b89bdd1981  # v0.4.0
+URIPARSE_PIN     := 4d95118096e603aa7eb7717b6c5ca935177454ca  # v0.5.0
 SRFI_PIN         := 7879b527f267f067416552fb989135ad1b4ea436
 BYTE_MACHINE_PIN := 0245db3059504c462b881a550310300fece55216  # v0.6.0
 
@@ -25,7 +27,8 @@ BYTE_MACHINE_PIN := 0245db3059504c462b881a550310300fece55216  # v0.6.0
 # chez-libuv locates its C shim by an absolute path baked into a generated
 # config.sls at *its* build time, so only its src/ is needed here for imports.
 # byte-machine comes from chez-httparse's vendored copy (uriparse pins the same
-# commit, so a second copy is redundant).  `tests` carries the (testing) bridge
+# commit, so a second copy is redundant; check-pins holds uriparse to it).
+# `tests` carries the (testing) bridge
 # and build/scheme-libs carries (srfi :64).
 #
 # The chez-httparse corpus harness ((httparse test ...)) lives under its
@@ -82,6 +85,14 @@ check-pins: ## Verify each submodule sits at its pinned commit (fingerprint chec
 	check_pin $(URIPARSE_DIR) $(URIPARSE_PIN); \
 	check_pin $(SRFI_DIR) $(SRFI_PIN); \
 	check_pin $(BYTE_MACHINE_DIR) $(BYTE_MACHINE_PIN); \
+	nested=$$(git -C $(URIPARSE_DIR) rev-parse HEAD:vendor/byte-machine 2>/dev/null); \
+	if [ "$$nested" != "$(strip $(BYTE_MACHINE_PIN))" ]; then \
+	  echo "PIN MISMATCH: $(URIPARSE_DIR) was released with byte-machine $${nested:-<absent>}, the library path carries $(strip $(BYTE_MACHINE_PIN))" >&2; fail=1; \
+	else echo "pin ok: $(URIPARSE_DIR) was released with byte-machine $$nested"; fi; \
+	for d in $(LIBUV_DIR) $(HTTPARSE_DIR) $(URIPARSE_DIR) $(SRFI_DIR) $(BYTE_MACHINE_DIR); do \
+	  if [ -n "$$(git -C $$d status --porcelain --untracked-files=no 2>/dev/null)" ]; then \
+	    echo "PIN DIRTY: $$d has local edits to tracked files" >&2; fail=1; fi; \
+	done; \
 	exit $$fail
 
 # The pure connection libraries under src/http-server/ (outside private/) must
