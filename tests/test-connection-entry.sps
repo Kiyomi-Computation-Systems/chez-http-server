@@ -58,10 +58,11 @@
 
 (define (fresh phase) (make-conn-state phase (armed phase) #f 0 #f #f default-limits))
 
-;; A span for the span callbacks, and on-headers-complete's five fields for a
-;; keep-alive GET: llhttp's method 1, HTTP/1.1, no flags, no content-length.
+;; A span for the span callbacks, and on-headers-complete's six fields for a
+;; keep-alive GET: llhttp's method 1, HTTP/1.1, no flags, no content-length,
+;; and a parser `upgrade` of 0.
 (define span-bv (make-bytevector 1000 (char->integer #\x)))
-(define head-fields '(1 1 1 0 0))
+(define head-fields '(1 1 1 0 0 0))
 
 ;; payload : Symbol Nat -> (Listof Any)
 ;; The parser-event payload for `name`, with a span `len` bytes long.
@@ -113,7 +114,7 @@
 ;; record-callbacks : Bytevector -> (Listof Payload)
 ;; What chez-httparse fires parsing `input` whole, each as the payload the
 ;; adapter passes: (name), (name bv from to), or on-headers-complete with the
-;; five fields read inside it.
+;; six fields read inside it.
 (define (record-callbacks input)
   (let* ((acc '())
          (push! (lambda (x) (set! acc (cons x acc))))
@@ -128,7 +129,7 @@
                             (lambda (p ctx)
                               (push! (cons name (map (lambda (f) (parser-field-ref p f))
                                                      '(method http-major http-minor
-                                                       flags content-length))))
+                                                       flags content-length upgrade))))
                               callback-continue))
                            (else (lambda (p ctx) (push! (list name)) callback-continue))))))
                adapter-trace-names))
@@ -190,10 +191,10 @@
 ;; entry : Symbol Nat -> (ConnState -> (values ConnState (Listof Action)))
 ;; One callback entered exactly as the adapter enters it, with its arguments
 ;; written out.  `direct` spreads a payload with `apply`, which allocates for
-;; on-headers-complete's six arguments; the adapter never does.
+;; on-headers-complete's seven arguments; the adapter never does.
 (define (entry name len)
   (cond ((eq? name 'on-headers-complete)
-         (lambda (s) (conn-headers-complete-step s 1 1 1 0 0)))
+         (lambda (s) (conn-headers-complete-step s 1 1 1 0 0 0)))
         ((eq? (oracle-kind name) 'span)
          (lambda (s) (conn-parser-step s name span-bv 0 len)))
         (else (lambda (s) (conn-parser-step s name)))))
@@ -285,8 +286,12 @@
              (verdict (lambda () (conn-parser-step (fresh 'head) 'on-headers-complete))))
     (test-eq "an unknown callback as a tagged list is an assertion violation" 'refused
              (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-no-such-thing)))))
-    (test-eq "on-headers-complete as a tagged list needs its five fields" 'refused
+    (test-eq "on-headers-complete as a tagged list needs its six fields" 'refused
              (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-headers-complete)))))
+    ;; The sixth is the parser's `upgrade` (chez-httparse v0.4.1, #47): a payload
+    ;; without it is the shape before the core read it, and is refused.
+    (test-eq "on-headers-complete without the parser's upgrade field is refused" 'refused
+             (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-headers-complete 1 1 1 0 0)))))
 
     ;; --- every callback is answered, in every state --------------------------
     (test-equal "the first action is the reply, for every callback in every state" '()

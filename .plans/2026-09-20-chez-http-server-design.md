@@ -323,6 +323,10 @@ Four facts about them that shape the core:
    `'http-minor` `'flags` `'content-length`, and `content-length` counts *down* as the
    body arrives, so read there it is the declared length and by `on-message-complete`
    it is zero. The event carries them forward; nothing downstream re-reads the parser.
+   (2026-09-25) chez-httparse v0.4.1 also documents `'upgrade` (#47), llhttp's
+   `llhttp_get_upgrade`: 1 when the message upgrades. It is read there too, and the
+   core closes after an upgrade on it. The reset does not clear it, but before
+   `on-headers-complete` it still holds the previous message's answer.
 4. **`on-reset` fires between pipelined messages**, before the next
    `on-message-begin` and never before the first. It is the core's signal to roll the
    request accumulator, not a clock event.

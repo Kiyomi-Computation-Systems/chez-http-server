@@ -413,3 +413,25 @@ Red before green:
 | M2.5-J | decisions | the error map answers `paused-h2-upgrade` 505 again | decisions exit 1; 1 failure — "paused-h2-upgrade is a hand-off, not an error". The core held: its door answers the preface before the map is asked |
 
 `make test` was green afterwards: twenty suites, 385 expected passes (decisions 21, connection-table 77, message-loop 18, connection-head 42, outcome-lane 4), exit 0. The lane at 'full: 135 of 135 in 9,394 runs.
+
+## chez-httparse #47 — the core reads the parser's `upgrade` field (2026-09-25)
+
+Each mutant ran from a scratch copy of the mutated file, placed first on the library path under an absolute root. It ran against every suite of the tree at refactor/upgrade-field (uncommitted, stacked on chore/pin-httparse-v0.4.1). F1 mutates the vendored generated parser, so the runner gained an `out` path to place it; it ran against flag-pins and decisions only.
+
+Red before green:
+- In the entry suite, three rows failed while the core still took five fields. One was "on-headers-complete without the parser's upgrade field is refused": the five-field payload was accepted. The other two were the sweeps that enter every callback with the six-field payload.
+- In the table, H4 and U1's five instances failed: a six-field payload against a five-field entry.
+- The field pin in flag-pins passed at the pin, as a pin must. F1 is its red.
+- After the change, the entry suite's three replay rows failed. Its recorder, the suite's own model of the adapter, still built the five-field payload; it now reads `upgrade` too.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| #47-A1 | all | the adapter passes 0 for `upgrade` | loop exit 1; 13 passes, 5 failures — the WebSocket, CONNECT and `Upgrade: h2c` rows, the frame never delivered, and the second WebSocket row. Outcome lane exit 1 — "every fixture has one outcome at every chunk size". Ratchet exit 1 — connection.md#14, #19, #20 and #21 are marked passing but do not pass. 17 suites held |
+| #47-A2 | all | the adapter passes the flags in `upgrade`'s place | as A1, and head exit 1; 2 failures — the two HTTP/1.0 keep-alive rows, whose flags are 1 (`F-CONNECTION-KEEP-ALIVE`), read as an upgrade. 16 held |
+| #47-C1 | all | the core decides by llhttp's rule again, ignoring the field | table exit 1; 2 failures — U1's two instances where the field and the rule disagree: both upgrade flags with `upgrade` 0, and a CONNECT with `upgrade` 0. 19 held: in every real parse the two agree (`research/spike/smoke-httparse-v041.sps`) |
+| #47-C2 | all | the core never closes after an upgrade | table exit 1; 2 failures — U1's CONNECT and `Connection: upgrade` instances. Loop, outcome lane and ratchet as A1. 16 held |
+| #47-C3 | all | the core reads the field inverted | seven suites red, since every plain request closes as an upgrade: allocation (exit 2), entry 4, head 13, table 5, loop 11, outcome lane 3, ratchet 1 |
+| #47-C4 | all | `upgrade` takes precedence over `not-keep-alive` | table exit 1; 1 failure — U1's HTTP/1.0 instance. 19 held |
+| #47-F1 | flag-pins, decisions | the generated parser's CONNECT check (`bhc-check-connect`, `%s278`) compares method 6, so a CONNECT's `upgrade` is 0 | flag-pins exit 1; 9 passes, 1 failure — "the parser's upgrade field is 1 in exactly those, at on-headers-complete": the four CONNECT fixtures are unmarked. Decisions exit 1; 1 failure — "at the pin, a CONNECT tunnel hands off (the pause channel)" |
+
+`make test` was green afterwards: twenty suites, 386 expected passes (entry 30, connection-table 78, decisions 18, flag-pins 10), exit 0. At 'full, the outcome lane held 135 of 135 in 9,394 runs, and the trace lane and the ratchet held.

@@ -13,7 +13,7 @@ chez-httparse fires its 25 callbacks synchronously inside `parser-feed!` and req
 1. `conn-step : ConnState × Event → (values ConnState (Listof Action))` is pure: it allocates only Scheme data, calls no chez-libuv or byte-machine procedure, and reads no clock (`tick` carries `now`).
 2. Events: `bytes-arrived`, `eof`, `read-error`, `write-completed`, `shutdown-completed`, `closed`, `tick`, `parser-event`, `parser-result`, `handler-responded`, `handler-body-chunk`, `handler-body-end`, `handler-failed`, `body-credit`, `shutdown-requested`. Actions: `reply-parser`, `feed-parser`, `resume-parser`, `write`, `read-stop`, `read-start`, `call-handler`, `deliver-body`, `deliver-body-end`, `notify-producer`, `arm-deadline`, `disarm-deadline`, `shutdown`, `close`, `log`. An unknown event is an assertion violation (a test-caught bug, never a runtime path).
 3. `reply-parser` is the one action consumed synchronously, inside the parser callback that produced it. Every other action is queued while a feed is running and executed after the outermost `dispatch!` returns (run-to-completion, depth-counted around `drain!` as well as `parser-feed!`).
-4. Parser flags, method, version and content-length are read inside `on-headers-complete` and carried in the event, because the inter-message reset zeroes them.
+4. Parser flags, method, version and content-length are read inside `on-headers-complete` and carried in the event, because the inter-message reset zeroes them. (2026-09-25) So is `upgrade`, the parser's own answer to whether the message upgrades, since chez-httparse v0.4.1 documents it (#47). The reset does not zero it, but before `on-headers-complete` it still holds the previous message's answer.
 5. A server-level `server-step` of the same shape owns accept, drain and shutdown.
 
 ## Consequences
@@ -89,7 +89,8 @@ cycle with no event per callback measured 2,032 B. The rules:
    - one for `on-headers-complete`. Its method, version, flags and content-length are
      read by the adapter inside the callback (item 4) and passed as arguments, since
      the core calls no byte-machine procedure. On this path, item 4's "carried in the
-     event" means carried in those arguments.
+     event" means carried in those arguments. (2026-09-25: `upgrade` is a sixth, since
+     chez-httparse v0.4.1; see item 4.)
 2. **It returns what `conn-step` returns**: the state and the action list, with
    `reply-parser` first, as item 3 requires.
 3. **One implementation.** `conn-step`'s `parser-event` arm only unpacks the tagged

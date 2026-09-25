@@ -18,19 +18,18 @@
 ;;; asked what went wrong.  Every originated status closes the connection
 ;;; (design §6.5).
 ;;;
-;;; Two decisions tell a parser result apart before either map is asked
+;;; One decision tells a parser result apart before either map is asked
 ;;; (M2.5): whether it hands the stream off, which the parser reports on two
-;;; channels, and whether a request upgrades, which llhttp decides before
-;;; on-headers-complete and chez-httparse does not export.
+;;; channels.  Whether a request upgrades is not here: it is the parser's own
+;;; answer, its `upgrade` field (chez-httparse v0.4.1, #47), which the core
+;;; reads at on-headers-complete.
 ;;;
-;;; Keep-alive and needs-eof are not here: `should-keep-alive?` and
+;;; Keep-alive and needs-eof are not here either: `should-keep-alive?` and
 ;;; `message-needs-eof?` come from (httparse decisions), which mirrors llhttp.
-;;; PURE: imports only (rnrs) and (httparse decisions)' flag bits.
+;;; PURE: imports only (rnrs).
 (library (http-server decisions)
-  (export reason-status parser-error-status
-          result-hands-off-stream? request-upgrades?)
-  (import (rnrs)
-          (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE))
+  (export reason-status parser-error-status result-hands-off-stream?)
+  (import (rnrs))
 
   ;; reason-status : Symbol -> Nat
   ;; The status of a response the core originates, by the reason the
@@ -95,20 +94,4 @@
   ;; here over the result's parts.  A code counts only on its own channel.
   (define (result-hands-off-stream? status error-code pause-code)
     (or (and (eq? status 'paused) (eq? pause-code 'paused-upgrade))
-        (and (eq? status 'error) (eq? error-code 'paused-h2-upgrade))))
-
-  ;; request-upgrades? : Nat Nat -> Boolean
-  ;;   method flags — llhttp's method number and flag bits, as read inside
-  ;;   on-headers-complete
-  ;; #t when the request asks to switch protocols, so the parser will hand
-  ;; the stream off after it: llhttp's `llhttp__before_headers_complete` for
-  ;; a request (chez-httparse's grammar, `before-headers-complete`), which
-  ;; sets `upgrade` for CONNECT (method 5) whatever its headers, and for a
-  ;; request carrying both `Upgrade` and `upgrade` among its `Connection`
-  ;; options.  chez-httparse exports the flag bits and not this rule, so it
-  ;; is transcribed here; test-decisions.sps holds it to llhttp's recorded
-  ;; logs.
-  (define (request-upgrades? method flags)
-    (or (eqv? method 5)
-        (let ((both (bitwise-ior F-UPGRADE F-CONNECTION-UPGRADE)))
-          (= (bitwise-and flags both) both)))))
+        (and (eq? status 'error) (eq? error-code 'paused-h2-upgrade)))))
