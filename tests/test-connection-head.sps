@@ -19,7 +19,8 @@
 ;;;     refuses one past it with 431, through the parser's own failure;
 ;;;   - so does the target's limit, with 414 (M2.3);
 ;;;   - a target that is not the form its method calls for, or whose bytes
-;;;     uriparse refuses, is refused with 400 (M2.3; the forms are
+;;;     uriparse refuses, or that names no host where RFC 9110 needs one, is
+;;;     refused with 400 (M2.3, and the host 2026-09-25; the forms are
 ;;;     test-target.sps's to table);
 ;;;   - except the narrow case decision 0009 redirects: a GET or HEAD whose
 ;;;     target's only faults are bracket params and pipes is answered 301,
@@ -266,6 +267,12 @@
     (test-equal "a CONNECT target without a port is refused with 400"
                 (list (refused 'invalid-target 400))
                 (every-size (b "CONNECT example.com HTTP/1.1\r\n\r\n") default-limits))
+    (test-equal "an http target with no host is refused with 400"
+                (list (refused 'invalid-target 400))
+                (every-size (b "GET http:///x HTTP/1.1\r\n\r\n") default-limits))
+    (test-equal "a CONNECT target with an empty host is refused with 400"
+                (list (refused 'invalid-target 400))
+                (every-size (b "CONNECT :443 HTTP/1.1\r\n\r\n") default-limits))
 
     ;; --- the narrow redirect (decision 0009) ------------------------------------
     ;; Bracket params and pipes, the bytes browsers send unencoded, get a 301 to

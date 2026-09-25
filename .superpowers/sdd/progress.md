@@ -610,4 +610,43 @@ Found and recorded, for the owner: `CONNECT :443`, an authority-form target with
 
 `make test` green: seventeen suites, 305 expected passes (target 36, connection-allocation 11), exit 0. The trace lane holds at 'full (9,394 runs). `make check-imports` is clean.
 
+EMPTY HOSTS: the first of M2.3's two open RFC rules. Branch fix/empty-host-targets, cut from refactor/target-in-place, the third stacked PR; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
+
+MEASURED first, on the branch:
+- the judge accepted `http:///x`, `http://:80/x`, `https://?q`, `HTTP:///x`, `http:x`, `http:/x` and `CONNECT :443`;
+- uriparse keeps a scheme's case, so `HTTP:///x` arrives as "HTTP";
+- no llhttp or libhtp target has an empty host, so no corpus result changes (libhtp's `CONNECT [:80` is a malformed IP literal that uriparse already refuses);
+- browsers send absolute-form and CONNECT only to proxies.
+
+DECIDED on the owner's word (2026-09-25), asked with the facts above:
+- **An http or https target with no host is refused with 400.** That covers an empty host (RFC 9110 §4.2.1 and §4.2.2: "A recipient that processes such a URI reference MUST reject it as invalid") and a missing authority, which lacks the "//" the http-URI grammar requires. The scheme matches in any case.
+- **A CONNECT target with an empty host is refused with 400.** No RFC sentence requires it, but the target is the tunnel's destination (RFC 9112 §3.2.3), and `:443` names none.
+- **It goes up now**, as a third stacked PR on #19.
+
+The alternatives weighed:
+- the empty host only, the literal §4.2.1 sentence, which leaves `http:x` accepted;
+- leaving absolute-form as it was;
+- leaving CONNECT to the hand-off (M2.5);
+- landing after #18 and #19 merge.
+
+What changed:
+- `(http-server target)` gains a fourth verdict, `'no-host`:
+  - `absolute-form-fault` gives it for an http or https target with no authority or an empty host, after the fragment and userinfo rules;
+  - `authority-form-fault` gives it for a CONNECT target whose host is empty.
+
+  The host is `(uri host)`'s `authority-host-span`, the validator's own split. Both checks run only on the absolute-form and CONNECT paths, after uriparse's parse, and allocate nothing. The core refuses the verdict as `'invalid-target`, 400, like every form rule.
+- Other schemes keep uriparse's verdict: the rule is RFC 9110's, for http and https. Whether to serve `ftp:///x` is M4's routing question.
+- test-target.sps (39) tables:
+  - the six no-host targets;
+  - CONNECT `:443`;
+  - the boundary: `ftp:///x` and `httpx:///x` are accepted.
+- The head suite (32) refuses an http target with no host and a CONNECT with an empty host, each with 400 at every delivery size.
+- docs/request-targets.org lists the rule.
+
+Watched to fail: the four refusal rows were red before the rule. The boundary row held from the start, as it should; mutations AG and AH are the ones it exists for. Mutations AF to AK follow (m2-mutations.md).
+
+Still open, for the owner: RFC 9112 §3.2's Host header rules, the other half of the M2.3 entry.
+
+`make test` green: seventeen suites, 310 expected passes (target 39, connection-head 32), exit 0. The trace lane holds at 'full (9,394 runs). `make check-imports` is clean.
+
 NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after ab6725d, when the owner asks.

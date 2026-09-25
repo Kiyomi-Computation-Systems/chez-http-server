@@ -22,6 +22,8 @@ Your handler gets the target exactly as it arrived.
 - a malformed percent-encoding, such as ~%zz~;
 - a fragment (~#section~), which browsers never send;
 - a user name or password in a full URL (~http://user:pw@host/~);
+- an ~http~ or ~https~ URL with no host (~http:///path~, ~http:path~), or a
+  CONNECT target with no host (~:443~);
 - ~*~ with any method but OPTIONS, or a CONNECT target that is not ~host:port~.
 
 A target longer than ~CHEZ_HTTP_MAX_TARGET_BYTES~ gets 414 instead (see
