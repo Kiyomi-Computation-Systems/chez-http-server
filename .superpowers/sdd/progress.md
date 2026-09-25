@@ -585,9 +585,9 @@ Reading:
 3. Nothing filed is open upstream: all fifteen asks are closed and released.
 4. No check went red when the pin moved, although decision 0008 asks for one when upstream makes a workaround redundant. The #21 copy's allocation check held the copy's cost, which moving the pin does not change. Recorded in 0008, with the probe that would have met the rule.
 
-`make test` at the moved pin, the copy still in place: seventeen suites, 303 expected passes, exit 0, and the CPS workload still costs 2,640 B. Updated: the Makefile (the pin, and `check-pins`), global-constraints (the pin), decision 0008 (row #21 and a dated note), the research README, and `tests/test-integration.sps` (its version comments).
+`make test` at the moved pin, the copy still in place: seventeen suites, 303 expected passes, exit 0, and the CPS workload still costs 2,640 B. The pin MERGED as 6be4722 (PR #18). Updated: the Makefile (the pin, and `check-pins`), global-constraints (the pin), decision 0008 (row #21 and a dated note), the research README, and `tests/test-integration.sps` (its version comments).
 
-M2.3 FOLLOW-UP: origin-form targets are judged in place. 2026-09-24 and 25, Darwin arm64, Chez 10.4.1 `tarm64osx`. Two stacked PRs, so each squash-merges as its own commit and the pin stays alone on main (global-constraints): chore/uriparse-v0.5.0, cut from main at bf6cb06, moves the pin (above); refactor/target-in-place, cut from it, is this entry.
+M2.3 FOLLOW-UP: origin-form targets are judged in place. MERGED as a5eeb55 (PR #19). 2026-09-24 and 25, Darwin arm64, Chez 10.4.1 `tarm64osx`. Two stacked PRs, so each squash-merges as its own commit and the pin stays alone on main (global-constraints): chore/uriparse-v0.5.0, cut from main at bf6cb06, moves the pin (above); refactor/target-in-place, cut from it, is this entry.
 - `(http-server target)` judges an origin-form target in one pass, in place. `validate-component` judges the whole target as a path; "?" is outside the path's set, so a fault at a "?" is where the query begins, and the query after it is judged next. The path is no longer walked twice, once to find the "?" and once to judge it.
 - `range-copy` is gone: the redirect and CONNECT copy through `(http-server span)`'s `span->bytevector`. Both copies are accepted without an ask (0008's dated note): CONNECT's comes ahead of a fresh parse that costs far more (design §7.5), and the redirect's is on a refusal path, because `pct-encode` takes a whole bytevector.
 - The allocation lane is back to the shape decision 0002's second amendment set, as its amendment of 2026-09-24 said it would be:
@@ -610,7 +610,7 @@ Found and recorded, for the owner: `CONNECT :443`, an authority-form target with
 
 `make test` green: seventeen suites, 305 expected passes (target 36, connection-allocation 11), exit 0. The trace lane holds at 'full (9,394 runs). `make check-imports` is clean.
 
-EMPTY HOSTS: the first of M2.3's two open RFC rules. Branch fix/empty-host-targets, cut from refactor/target-in-place, the third stacked PR; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
+EMPTY HOSTS: the first of M2.3's two open RFC rules. MERGED as 01f7a5d (PR #20). Branch fix/empty-host-targets, cut from refactor/target-in-place, the third stacked PR; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`.
 
 MEASURED first, on the branch:
 - the judge accepted `http:///x`, `http://:80/x`, `https://?q`, `HTTP:///x`, `http:x`, `http:/x` and `CONNECT :443`;
@@ -649,4 +649,9 @@ Still open, for the owner: RFC 9112 §3.2's Host header rules, the other half of
 
 `make test` green: seventeen suites, 310 expected passes (target 39, connection-head 32), exit 0. The trace lane holds at 'full (9,394 runs). `make check-imports` is clean.
 
-NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after ab6725d, when the owner asks.
+MERGED to main on 2026-09-25, as three stacked PRs landed bottom up on the owner's "do closing ritual":
+- #18 merged without deleting its branch, since #19 was based on it, and #19 likewise for #20. Each PR above was retargeted to main (`gh pr edit --base main`), rebased onto the squash below it (`git rebase --onto`) and force-pushed with a lease read from the remote. Each rebased tree was identical to the one tested: 4ec070f to 61f1f86, 03a6378 to bfcd38e. Each squash tree was identical to its tip's, and main's final tree (e1ba621) is the tested top of the stack.
+- Every `linux` check executed zero steps, stopped at the billing check: the three PR runs (36123052425, 36123074402, 36123957913) and the two runs on rebased tips (36125173566, 36125232784).
+- #20 merged with `--delete-branch`, which deleted its remote branch but left this checkout on it. So main was fast-forwarded to 01f7a5d by hand, the three branches were deleted local and remote, and refs pruned; no PR is open. `make test` green on main: seventeen suites, 310 expected passes, exit 0.
+
+NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after 01f7a5d, when the owner asks. Also waiting for the owner's word: RFC 9112 §3.2's Host rules, decided on 2026-09-25. A duplicate Host gets 400, and so does a missing one, behind a `CHEZ_HTTP_` switch that the corpus lane turns off; an invalid value waits for uriparse #24, filed that day. Their DECIDED entry opens that branch.
