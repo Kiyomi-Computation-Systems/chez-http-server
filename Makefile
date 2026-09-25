@@ -1,7 +1,7 @@
 # chez-http-server — canonical entry points.
 #
 # Dependencies are pinned git submodules under vendor/ (global-constraints):
-# chez-libuv v0.6.0, chez-httparse v0.4.0, uriparse v0.5.0, and chez-srfi for
+# chez-libuv v0.6.0, chez-httparse v0.4.0, uriparse v0.6.0, and chez-srfi for
 # the SRFI-64 test framework; byte-machine v0.6.0 arrives transitively under
 # chez-httparse.  `make build` assembles them onto one library path.  A pin is
 # a gitlink; `make check-pins` is the fingerprint check the brief's M0 asks for.
@@ -19,7 +19,7 @@ BYTE_MACHINE_DIR := $(HTTPARSE_DIR)/vendor/byte-machine
 
 LIBUV_PIN        := ad4c1e9d9f01a54ef9301144c9af94302cf2e5b4  # v0.6.0
 HTTPARSE_PIN     := 1cddba8214227645f5ca831bb055f49818bdfc3a  # v0.4.0
-URIPARSE_PIN     := 4d95118096e603aa7eb7717b6c5ca935177454ca  # v0.5.0
+URIPARSE_PIN     := 40d645fc3304118575566e21bc526ec6aa46f0f6  # v0.6.0
 SRFI_PIN         := 7879b527f267f067416552fb989135ad1b4ea436
 BYTE_MACHINE_PIN := 0245db3059504c462b881a550310300fece55216  # v0.6.0
 

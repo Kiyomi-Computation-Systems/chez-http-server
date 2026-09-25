@@ -9,8 +9,8 @@
         (httparse decisions)             ; chez-httparse v0.4.0
         (httparse methods)               ; chez-httparse v0.4.0
         (byte-machine runtime)           ; byte-machine v0.6.0 (transitive)
-        (uri collect)                    ; uriparse v0.5.0
-        (uri components))                ; uriparse v0.5.0
+        (uri collect)                    ; uriparse v0.6.0
+        (uri components))                ; uriparse v0.6.0
 
 (run-suite "integration"
   (lambda ()

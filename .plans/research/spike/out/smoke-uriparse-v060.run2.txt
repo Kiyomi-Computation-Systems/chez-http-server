@@ -1,0 +1,30 @@
+--- #24: ranged == on a copy, verdict and host bounds (expect agree in every row)
+"x" verdict (#f #f) (#f #f) host-span (0 1) (0 1) agree
+"example.com" verdict (#f #f) (#f #f) host-span (0 11) (0 11) agree
+"example.com:8080" verdict (#f #f) (#f #f) host-span (0 11) (0 11) agree
+"[::1]:8080" verdict (#f #f) (#f #f) host-span (0 5) (0 5) agree
+"" verdict (#f #f) (#f #f) host-span (0 0) (0 0) agree
+"a b" verdict (invalid-reg-name 1) (invalid-reg-name 1) host-span (0 3) (0 3) agree
+"h:x" verdict (invalid-port 2) (invalid-port 2) host-span (0 1) (0 1) agree
+"[::1" verdict (invalid-ip-literal 0) (invalid-ip-literal 0) host-span (0 4) (0 4) agree
+"u@h" verdict (#f #f) (#f #f) host-span (2 3) (2 3) agree
+"h%zz" verdict (invalid-pct-encoded 1) (invalid-pct-encoded 1) host-span (0 4) (0 4) agree
+"h%4" verdict (invalid-pct-encoded 1) (invalid-pct-encoded 1) host-span (0 3) (0 3) agree
+--- an "@" past the value's end splits nothing: the value "h" of "h@x"
+whole h@x: (2 3) range [0,1) h: (0 1)
+--- validate-component after its range check moved to (uri range)
+path [4,8) /a%4: (invalid-pct-encoded 2) query [9,10) q: (#f #f)
+--- 200000 Host values judged per pass, validity and host bounds: in place vs on a copy
+in-place: 1 bytes-per-value 0 ns 30
+on-copy:  1 bytes-per-value 16 ns 30
+in-place: 16 bytes-per-value 0 ns 170
+on-copy:  16 bytes-per-value 32 ns 170
+in-place: 41 bytes-per-value 0 ns 480
+on-copy:  41 bytes-per-value 64 ns 480
+in-place: 1 bytes-per-value 0 ns 30
+on-copy:  1 bytes-per-value 16 ns 30
+in-place: 16 bytes-per-value 0 ns 170
+on-copy:  16 bytes-per-value 32 ns 170
+in-place: 41 bytes-per-value 0 ns 475
+on-copy:  41 bytes-per-value 64 ns 485
+done
