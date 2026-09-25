@@ -654,4 +654,56 @@ MERGED to main on 2026-09-25, as three stacked PRs landed bottom up on the owner
 - Every `linux` check executed zero steps, stopped at the billing check: the three PR runs (36123052425, 36123074402, 36123957913) and the two runs on rebased tips (36125173566, 36125232784).
 - #20 merged with `--delete-branch`, which deleted its remote branch but left this checkout on it. So main was fast-forwarded to 01f7a5d by hand, the three branches were deleted local and remote, and refs pruned; no PR is open. `make test` green on main: seventeen suites, 310 expected passes, exit 0.
 
+UPSTREAM LANDED (2026-09-25): uriparse v0.6.0 is tagged (40d645f, 10:54 -0400; annotated tag cf7492c). #24, filed that morning when the owner decided RFC 9112 §3.2's Host rules, closed via PR #25 (7d19f9b); the release is PR #26. `validate-authority` and `authority-host-span` on `(uri host)` now take an optional start and end:
+- `validate-authority : Bytevector [Nat [Nat]] -> (values (Option Symbol) (Option Nat))` and `authority-host-span : Bytevector [Nat [Nat]] -> (values Nat Nat)`;
+- the verdict on `bv[start, end)` is the verdict on those bytes alone: an `@`, `]` or `:` past `end` splits, closes or delimits nothing;
+- every number returned is relative to `start`, the fault index and both host bounds, as with `validate-component`;
+- the one-argument calls are unchanged. Refusing a userinfo, which RFC 9110's Host forbids and an RFC 3986 authority allows, is the server's rule: the host starts after 0 exactly when the value holds an `@`.
+
+The release states no new conformance claim (its decision 0037): upstream 77/77, on macOS arm64 only. Between the tags `src/uri/host.sls` gained the ranged forms, `src/uri/range.sls` is new (the one range check every ranged judge shares) and `src/uri/charset.sls` now uses it. The byte-machine gitlink is still 0245db3. The local checkout's `main` is at 90368a7, with `src/` identical to the tag.
+
+The pin moves from v0.5.0 to the v0.6.0 tag, on a commit of its own: `vendor/uriparse` is at 40d645f, which `git describe --exact-match` names v0.6.0. Watched to fail: with the checkout moved and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2). Its nested check held: uriparse v0.6.0 was released with the byte-machine on the library path.
+
+Smoke evidence (`.plans/research/spike/smoke-uriparse-v060.sps`, Darwin arm64, Chez 10.4.1, `chez --libdirs vendor/uriparse/src:vendor/chez-httparse/vendor/byte-machine/src --program`, exit 0 on both runs, `out/smoke-uriparse-v060.run{1,2}.txt`; run 1 in full, and run 2's byte counts are identical):
+
+    --- #24: ranged == on a copy, verdict and host bounds (expect agree in every row)
+    "x" verdict (#f #f) (#f #f) host-span (0 1) (0 1) agree
+    "example.com" verdict (#f #f) (#f #f) host-span (0 11) (0 11) agree
+    "example.com:8080" verdict (#f #f) (#f #f) host-span (0 11) (0 11) agree
+    "[::1]:8080" verdict (#f #f) (#f #f) host-span (0 5) (0 5) agree
+    "" verdict (#f #f) (#f #f) host-span (0 0) (0 0) agree
+    "a b" verdict (invalid-reg-name 1) (invalid-reg-name 1) host-span (0 3) (0 3) agree
+    "h:x" verdict (invalid-port 2) (invalid-port 2) host-span (0 1) (0 1) agree
+    "[::1" verdict (invalid-ip-literal 0) (invalid-ip-literal 0) host-span (0 4) (0 4) agree
+    "u@h" verdict (#f #f) (#f #f) host-span (2 3) (2 3) agree
+    "h%zz" verdict (invalid-pct-encoded 1) (invalid-pct-encoded 1) host-span (0 4) (0 4) agree
+    "h%4" verdict (invalid-pct-encoded 1) (invalid-pct-encoded 1) host-span (0 3) (0 3) agree
+    --- an "@" past the value's end splits nothing: the value "h" of "h@x"
+    whole h@x: (2 3) range [0,1) h: (0 1)
+    --- validate-component after its range check moved to (uri range)
+    path [4,8) /a%4: (invalid-pct-encoded 2) query [9,10) q: (#f #f)
+    --- 200000 Host values judged per pass, validity and host bounds: in place vs on a copy
+    in-place: 1 bytes-per-value 0 ns 30
+    on-copy:  1 bytes-per-value 16 ns 30
+    in-place: 16 bytes-per-value 0 ns 170
+    on-copy:  16 bytes-per-value 32 ns 170
+    in-place: 41 bytes-per-value 0 ns 480
+    on-copy:  41 bytes-per-value 64 ns 485
+    in-place: 1 bytes-per-value 0 ns 25
+    on-copy:  1 bytes-per-value 16 ns 35
+    in-place: 16 bytes-per-value 0 ns 165
+    on-copy:  16 bytes-per-value 32 ns 170
+    in-place: 41 bytes-per-value 0 ns 480
+    on-copy:  41 bytes-per-value 64 ns 485
+    done
+
+Reading:
+1. The server can judge a Host value in place, inside the delivery the parser handed it, and get a copy's verdict and host bounds. All eleven values agree, though the bytes after each hold `@`, `[`, `:` and `]`.
+2. A userinfo shows as a host start after 0 (`u@h`: 2), and an `@` past a value's end is none.
+3. The ranged calls allocate nothing, where judging a copy costs 16, 32 and 64 B for 1-, 16- and 41-byte values.
+4. `validate-component` judges as v0.5.0 did after its range check moved.
+5. Nothing filed is open upstream: all sixteen asks are closed and released.
+
+`make test` at the moved pin: seventeen suites, 310 expected passes, exit 0; the trace lane holds at 'full (9,394 runs). Updated: the Makefile (the pin), global-constraints (the pin), decision 0008 (a row for #24 and a dated note), the research README, and `tests/test-integration.sps` (its version comments).
+
 NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after 01f7a5d, when the owner asks. Also waiting for the owner's word: RFC 9112 §3.2's Host rules, decided on 2026-09-25. A duplicate Host gets 400, and so does a missing one, behind a `CHEZ_HTTP_` switch that the corpus lane turns off; an invalid value waits for uriparse #24, filed that day. Their DECIDED entry opens that branch.
