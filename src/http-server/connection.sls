@@ -85,6 +85,21 @@
 ;;; MUST, so a target the redirect would take never reaches it.
 ;;; (http-server host) holds the rules; the value is judged in place.
 ;;;
+;;; THE PAUSE KEEPS THE REST OF THE DELIVERY (M2.4; decision 0004 item 1).
+;;; At on-message-complete the core pauses the parser, stops reading and
+;;; calls the handler, all in one step, so a delivery carrying two messages
+;;; cannot start a second handler before the first response is written.
+;;; Where the parser stopped is known only once the feed returns, so the
+;;; `parser-result` that follows keeps the delivery's rest, from
+;;; `parser-result-next`, as the pending input, and the resume after the
+;;; response feeds it.  The rest is always the end of the last delivery the
+;;; core fed: reading stops at the pause and the rest is fed before reading
+;;; starts again, so no other delivery comes between.  The core remembers
+;;; that delivery for this.  After a close-marked message the rest is
+;;; dropped, never fed (0004 item 4), so llhttp's "Data after `Connection:
+;;; close`" error cannot fire; an error result after the pause is not
+;;; answered.
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
 ;;; to arm, and carries no time: no event but `tick` carries `now`, so the core
@@ -164,8 +179,9 @@
   ;; conn-state? : Any -> Boolean
   ;; conn-phase / -deadline / -close-after / -outstanding / -pending /
   ;;   -request / -limits : ConnState -> the corresponding field
-  ;; The request head being read is kept in the state too, and so is the
-  ;; connection's target judge (M2.3); neither is exported.
+  ;; The request head being read is kept in the state too, and so are the
+  ;; connection's target judge (M2.3) and the last delivery it fed the
+  ;; parser, `(bv start end)` or #f (M2.4); none of them is exported.
   (define-record-type (conn-state make-conn-state conn-state?)
     (fields (mutable phase       conn-phase       conn-phase-set!)
             (mutable deadline    conn-deadline    conn-deadline-set!)
@@ -175,7 +191,8 @@
             (mutable request     conn-request     conn-request-set!)
             (immutable limits    conn-limits)
             (immutable head      conn-head)
-            (immutable judge     conn-judge))
+            (immutable judge     conn-judge)
+            (mutable delivery    conn-delivery    conn-delivery-set!))
     (protocol
      (lambda (new)
        (lambda (phase deadline close-after outstanding pending request limits)
@@ -184,7 +201,7 @@
          (unless (limits? limits)
            (assertion-violation 'make-conn-state "not a limits record" limits))
          (new phase deadline close-after outstanding pending request limits
-              (make-head) (make-target-judge))))))
+              (make-head) (make-target-judge) #f)))))
 
   ;; The request head being read: the target and the header fields so far,
   ;; and the running sizes the header limits are checked against.  One per
@@ -298,9 +315,14 @@
 
   ;; idle, bytes-arrived -> idle: feed the delivery to the parser.  head and
   ;; body feed it too, for a message that arrives in more than one delivery.
+  ;; The delivery is remembered, sharing the event's `(bv start end)`, for
+  ;; a pause to keep its rest.  No other state reads, so after a close-marked
+  ;; message nothing more is fed (decision 0004 item 4).
   (define (on-bytes-arrived s ev)
     (case (conn-phase s)
-      ((idle head body) (values s (list (cons 'feed-parser (cdr ev)))))
+      ((idle head body)
+       (conn-delivery-set! s (cdr ev))
+       (values s (list (cons 'feed-parser (cdr ev)))))
       (else (values s '()))))
 
   ;; any reading state, eof -> closing: close, with no response.
@@ -571,16 +593,26 @@
   ;; this allocates nothing.
   (define (continue s) (values s '((reply-parser continue))))
 
-  ;; head/body, a parser result: a pause that carries a reason hands the
-  ;; stream off (0006 item 3); an error is answered with a status, then close.
-  ;; Only the pause channel is read here; M2.5 adds the h2c error channel.  An
-  ;; error the core asked for with `fail` is answered with its reason's status
-  ;; (design §6.3); any other is a parser error, 400 until M2.5 reads the
-  ;; parser's code through (http-server decisions)' map.
+  ;; head/body: a pause that carries a reason hands the stream off (0006
+  ;; item 3); an error is answered with a status, then close.  Only the pause
+  ;; channel is read here; M2.5 adds the h2c error channel.  An error the core
+  ;; asked for with `fail` is answered with its reason's status (design §6.3);
+  ;; any other is a parser error, 400 until M2.5 reads the parser's code
+  ;; through (http-server decisions)' map.
+  ;; handling: the core's own answer to on-message-complete paused the
+  ;; parser, a pause with no reason, so the rest of the last delivery, from
+  ;; `next`, is kept as the pending input the resume feeds (decision 0004
+  ;; item 1).  Any other result there is not answered, llhttp's "Data after
+  ;; `Connection: close`" included (0004 item 4).
   (define (on-parser-result s ev)
     (let ((status (list-ref ev 1))
+          (next   (list-ref ev 3))
           (pause  (list-ref ev 5)))
       (case (conn-phase s)
+        ((handling)
+         (when (and (eq? status 'paused) (not pause) (conn-delivery s))
+           (conn-pending-set! s (rest-of (conn-delivery s) next)))
+         (values s '()))
         ((head body)
          (cond
           ((and (eq? status 'paused) pause)
@@ -592,6 +624,12 @@
                              (refusal-headers (conn-head s))))
           (else (values s '()))))
         (else (values s '())))))
+
+  ;; rest-of : (List Bytevector Nat Nat) Nat -> Pending
+  ;; The delivery's bytes from `next` on, or #f when the parser took them all.
+  (define (rest-of delivery next)
+    (let ((end (caddr delivery)))
+      (and (fx<? next end) (list (car delivery) next end))))
 
   ;; handling, handler-responded -> responding: write it, arm the write deadline.
   (define (on-handler-responded s response)

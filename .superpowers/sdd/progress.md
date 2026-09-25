@@ -761,4 +761,29 @@ MERGED to main on 2026-09-25, as two stacked PRs landed bottom up on the owner's
 
 Both of M2.3's open RFC rules are now in: the empty host (#20) and the Host header (#22). Nothing filed is open upstream.
 
-NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after a9b9590, when the owner asks.
+---
+
+M2.4 — THE MESSAGE LOOP: pause, read-stop and pending input (plan §6). Cut from main at 18e6a46; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`. At 571 inserted lines of code and tests before the lane, over plan §1 rule 1's ~400, the slice goes up as three stacked PRs, one per step below, each green on its own: feat/m2.4-pending-input, then feat/m2.4-message-loop and feat/m2.4-outcome-lane, each cut from the one before.
+
+MEASURED first, on main at 18e6a46:
+- `research/spike/pipeline-pause.sps` at the pins: on its three messages, 117 bytes, the parser stops at 51 and then at 98, and fed on past the close-marked second message it answers `closed-connection` at 99. These are the 2026-09-19 figures (`out/pipeline-pause.2026-09-25.run{1,2}.txt`, identical).
+- `research/spike/pause-then-upgrade.sps`, new: with every message's end paused, a CONNECT tunnel and a `Connection: upgrade` request first return `paused` with no reason, the pause at on-message-complete. The hand-off comes only when the parse resumes and is fed from `next`: `paused-upgrade`, 0 bytes consumed. The h2c preface still errors at once, `paused-h2-upgrade` (`out/pause-then-upgrade.run{1,2}.txt`, identical).
+- A scratch prototype of the loop over the 135 strict fixtures: 131 have one outcome at every chunk size, at 'extremes and at 'full; the other 4 are upgrades.
+
+M2.4 FIRST STEP: the pending input (feat/m2.4-pending-input).
+- `(http-server connection)` remembers the last delivery it fed the parser, sharing the event's `(bv start end)`. A `parser-result` that pauses with no reason in `handling` keeps the rest of that delivery, from `parser-result-next`, as the pending input, which H9's resume feeds.
+- Three table rows for decision 0004's pause protocol, counted apart from design §4.4's 10 + 9:
+  - P1 keeps the rest, and nothing when the parser stopped at the delivery's end;
+  - P2: an error after a close-marked message is not answered;
+  - P3: bytes after a close-marked message are not fed, in handling, responding or closing.
+- `(http-server private adapter)`: `make-conn-context` takes the shell's `queue!`, which receives each callback's actions after its reply; `conn-context-take-actions!` is gone. The head suite, the trace lane and the allocation lane pass queues of their own. The CPS workload now costs 2,512 B per request (it was 2,624 B): the 112 B copy M2.2's fourth step found is gone. An absolute-form request costs 4,224 B.
+- Decisions 0004 and 0002 gain dated amendments: the remainder is kept one step after the pause, and item 4's error cannot fire; the shell owns item 3's queue.
+
+Watched to fail (m2-mutations.md): P1 was red before the core kept the rest; P2 and P3 held from the start, as they must. Mutations A, D, E, F and I follow. `make test` green: eighteen suites, 340 expected passes (connection-table 69), exit 0.
+
+Settled in the first step, open to the owner's review:
+1. **The remainder is kept one step after the pause.** Decision 0004 item 1 and design §4.4's H6 keep it at on-message-complete, but the parser says where it stopped only when the feed returns. The `parser-result` that follows the pause arrives before any queued action runs, so the core is still in `handling`. P1 is the row; 0004's amendment records it.
+2. **The rest is always the end of the last delivery.** Reading stops at the pause and the rest is fed before reading starts again, so no other delivery comes between. The core remembers only that delivery, not each feed: re-recording the resume's feed, or forgetting the delivery at each result, changed nothing any test could see.
+3. **The shell owns the action queue.** Design §4.5 has one queue, drained after the outermost dispatch, and the adapter's own list made two, with a copy between them. 0002's amendment records it.
+
+NEXT: M2.4's second step, the message loop, stacked on this one as feat/m2.4-message-loop.

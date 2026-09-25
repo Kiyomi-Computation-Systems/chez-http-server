@@ -132,7 +132,10 @@
   (define (core-trace-at f bv size)
     (let* ((init (strict-init f))
            (r (make-trace-recorder))
-           (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f corpus-limits)))
+           ;; The core's actions are dropped: this driver runs the handler
+           ;; cycle itself, and feeds whatever the recorder saw.
+           (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f corpus-limits)
+                                   (lambda (actions) (values))))
            (harness-paused #f)
            (core-paused #f)
            (core-failed #f)
@@ -172,7 +175,6 @@
           (set! harness-paused #f)
           (set! core-paused #f)
           (let ((res (parser-feed! p bv at to)))
-            (conn-context-take-actions! ctx)
             (if (and (eq? (parser-result-status res) 'paused)
                      (not (parser-error? (parser-result-pause res))))
                 (begin

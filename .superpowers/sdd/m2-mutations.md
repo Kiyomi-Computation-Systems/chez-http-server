@@ -313,3 +313,24 @@ Each mutant ran from a scratch copy of the mutated file placed first on the libr
 | M2.3-AU | trace | the corpus lane runs with the requirement on | trace exit 1; both property-1 checks, 61 fixtures: 54 traces changed, and 7 listed refusals refused for their Host |
 
 `make test` was green afterwards: eighteen suites, 333 expected passes (host 11, connection-head 40, limits 26, connection-allocation 12), exit 0.
+
+## M2.4 — the message loop (2026-09-25)
+
+Each mutant ran from a scratch copy of the mutated file placed first on the library path, against every suite of its step's tree. Each step's tree was a scratch worktree of main at 18e6a46 holding that step's files and the ones below it, with no commits.
+
+### First step: the pending input
+
+Red before green:
+- The table's P1 failed before the core kept the rest. Its first instance got no pending input where `(bv 28 40)` was due.
+- P1's second instance, a pause at the delivery's end, held, as it must; D is its mutation. P2 and P3 held from the start, since nothing answered an error in `handling` or fed after a close-marked message; E and F are theirs.
+- The adapter handing its actions to the shell's queue is a refactor: every suite held, and the allocation lane measured 2,512 B where it had 2,624 B.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.4-A | table | the plan's mutation A: the rest is kept from `parser-result-consumed`, not `-next` | table exit 1; 67 passes, 2 failures — both P1 instances, the rest kept from 18, not 28. Every other suite green; the message-loop suite holds the measured boundary, in the next step |
+| M2.4-D | table | a pause at the delivery's end keeps an empty rest | table exit 1; 1 failure — P1's second instance |
+| M2.4-E | table | an error result after the pause is answered | table exit 1; 1 failure — P2 |
+| M2.4-F | table, head | bytes-arrived feeds in handling, responding and closing | table exit 1; 3 failures — P3's three instances. Head exit 1; 1 failure — "bytes-arrived asks for feed-parser in idle, head and body, not handling" |
+| M2.4-I | table | the rest is fed after a close-marked message | table exit 1; 1 failure — H10 |
+
+`make test` was green afterwards: eighteen suites, 340 expected passes (connection-table 69), exit 0.

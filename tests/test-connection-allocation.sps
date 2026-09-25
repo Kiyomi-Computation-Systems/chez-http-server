@@ -51,7 +51,9 @@
 ;; connection : Bytevector -> (-> Void)
 ;; A keep-alive connection that serves `request` once per call.
 (define (connection request)
-  (let* ((ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f default-limits)))
+  (let* ((queued '())
+         (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f default-limits)
+                                 (lambda (actions) (set! queued (cons actions queued)))))
          (p (make-conn-parser ctx))
          (len (bytevector-length request)))
     (lambda ()
@@ -60,7 +62,7 @@
         (unless (eq? (parser-result-status r) 'paused)
           (assertion-violation 'connection "the core did not pause the parser"
                                (parser-result-status r)))
-        (conn-context-take-actions! ctx)
+        (set! queued '())
         (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed r)
                                       (parser-result-next r) #f #f))
         (conn-context-step! ctx (list 'handler-responded resp))
