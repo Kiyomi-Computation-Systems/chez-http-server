@@ -587,4 +587,27 @@ Reading:
 
 `make test` at the moved pin, the copy still in place: seventeen suites, 303 expected passes, exit 0, and the CPS workload still costs 2,640 B. Updated: the Makefile (the pin, and `check-pins`), global-constraints (the pin), decision 0008 (row #21 and a dated note), the research README, and `tests/test-integration.sps` (its version comments).
 
+M2.3 FOLLOW-UP: origin-form targets are judged in place. 2026-09-24 and 25, Darwin arm64, Chez 10.4.1 `tarm64osx`. Two stacked PRs, so each squash-merges as its own commit and the pin stays alone on main (global-constraints): chore/uriparse-v0.5.0, cut from main at bf6cb06, moves the pin (above); refactor/target-in-place, cut from it, is this entry.
+- `(http-server target)` judges an origin-form target in one pass, in place. `validate-component` judges the whole target as a path; "?" is outside the path's set, so a fault at a "?" is where the query begins, and the query after it is judged next. The path is no longer walked twice, once to find the "?" and once to judge it.
+- `range-copy` is gone: the redirect and CONNECT copy through `(http-server span)`'s `span->bytevector`. Both copies are accepted without an ask (0008's dated note): CONNECT's comes ahead of a fresh parse that costs far more (design §7.5), and the redirect's is on a refusal path, because `pct-encode` takes a whole bytevector.
+- The allocation lane is back to the shape decision 0002's second amendment set, as its amendment of 2026-09-24 said it would be:
+  - the CPS workload costs 2,624 B per request, 85% of the ratchet (it was 2,640 B);
+  - a 500-byte target, all path, costs what a short one does (it was 3,136 B);
+  - so does a new workload, a 500-byte target that is nearly all query;
+  - an absolute-form target costs one reused collector's parse more, 4,336 B (unchanged).
+- test-target.sps judges a query's first byte (`/a?"b`, `/a?|b`, `/a?%zz`, `/?%`), and its "own bytes" row gains a target with no query, inside a delivery.
+
+Watched to fail (m2-mutations.md): against the copying judge, the three allocation checks that name the target were red. The first-byte row and the "own bytes" row pass against the copying judge too, since any correct judge passes them; mutations AA and Z are the ones they exist for. Mutations Y to AE follow.
+
+Found in review (a max-effort code review of this branch, 2026-09-25), and fixed here:
+- the lane had no query workload, so a copy of the query alone went unseen (AD: 3,168 B at a 500-byte query, over the ratchet);
+- no row judged a query's first byte (AA);
+- 0002 still priced absolute-form against the removed copy, and its closing note claimed more than the gate measures.
+
+The first draft's check on a percent-encoding cut short by the target's end is dropped. It passed against the copying judge, uriparse's own suite holds the same case (its decision 0034), and no request can reach it: a target ends at a space, or at the end of the core's join.
+
+Found and recorded, for the owner: `CONNECT :443`, an authority-form target with an empty host, is accepted. It joins the M2.3 entry's empty-host rule: RFC 9110 §4.2.1 covers http and https URIs, and a CONNECT target names the tunnel's destination (RFC 9110 §9.3.6), which an empty host does not.
+
+`make test` green: seventeen suites, 305 expected passes (target 36, connection-allocation 11), exit 0. The trace lane holds at 'full (9,394 runs). `make check-imports` is clean.
+
 NEXT: M2.4, the message loop: pause, read-stop and pending input (plan §6), on a fresh branch cut from main after ab6725d, when the owner asks.

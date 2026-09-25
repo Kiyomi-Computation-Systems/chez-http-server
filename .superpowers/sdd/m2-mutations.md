@@ -245,3 +245,26 @@ Red before green:
 | M2.3-X | head, trace, target | the core refuses what it would redirect | head exit 1; 2 failures — both redirects. Trace exit 1 — the listed `uri.md#5`. Target green |
 
 O through X were each reverted, and each restore was byte-identical by sha256. `make test` was green afterwards: seventeen suites, 303 expected passes (target 35, connection-head 30), exit 0.
+
+### Follow-up: judged in place (uriparse v0.5.0)
+
+Red before green:
+- With the pin moved and the copying judge still in place, `test-connection-allocation.sps` failed the three checks that name the target:
+  - "a 500-byte target costs what a short one does" (3,136 B against 2,640 B);
+  - "a 500-byte target with a query costs what a short one does" (3,152 B);
+  - "an absolute-form target costs one reused collector's parse more" (16 B over: the copy of `/a` that an absolute-form request never makes).
+- The first-byte row and the strengthened "own bytes" row passed against the copying judge, since any correct judge passes them. AA and Z are the mutations they exist for.
+
+Each mutant ran from a scratch copy of `src/http-server/target.sls` placed first on the library path, against every suite, so the tree was never edited.
+
+| # | suites | mutation | observed |
+|---|--------|----------|----------|
+| M2.3-Y | target, head, entry, allocation, trace | the path is judged from the delivery's start | target exit 1; 35 passes, 1 failure — "a target is judged by its own bytes, not its delivery's". Head exit 1; 12 failures. Entry exit 1; 6 failures. Allocation exit 1; 2 failures — no request is served. Trace exit 1; 1 failure — every other trace |
+| M2.3-Z | target, head, entry, allocation, trace | the path is judged to the delivery's end | target exit 1; 35 passes, 1 failure — the same row, through its new target with no query. Before that target was added, the target suite stayed green. Head exit 1; 11 failures. Entry exit 1; 6 failures. Allocation exit 1; 2 failures. Trace exit 1; 1 failure |
+| M2.3-AA | target | the query skips its first byte | target exit 1; 35 passes, 1 failure — "a query's first byte is judged". Every other suite green: no other row, and no corpus fixture, has a bad first query byte |
+| M2.3-AB | target, head, allocation, trace | the query is judged to the delivery's end | target exit 1; 1 failure — the "own bytes" row. Head exit 1; 1 failure. Allocation exit 1; 1 failure — a request is not served. Trace exit 1; 1 failure |
+| M2.3-AC | target, head, allocation, trace | the "?" test is dropped: the path's first fault is the verdict | target exit 1; 28 passes, 8 failures — the rows whose targets carry a query. Head exit 1; 3 failures. Allocation exit 1; 1 failure. Trace exit 1; both property-1 checks |
+| M2.3-AD | allocation | the query is copied before it is judged | allocation exit 1; 10 passes, 1 failure — "a 500-byte target with a query costs what a short one does", at 3,168 B. Every other suite green |
+| M2.3-AE | allocation | the path is copied before it is judged | allocation exit 1; 8 passes, 3 failures — both 500-byte targets and the absolute-form check; the CPS workload costs 2,672 B. Every other suite green |
+
+`make test` was green afterwards: seventeen suites, 305 expected passes (target 36, connection-allocation 11), exit 0.
