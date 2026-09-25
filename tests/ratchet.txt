@@ -13,7 +13,9 @@
 #   outcome -- the connection-level outcome is chunk-size invariant (M2.4, design
 #              §8.1 property 2): the 135 strict fixtures pass, the 4 upgrades
 #              since M2.5; the 32 lenient ones are deferred.
-#   libhtp  -- our per-file expectations hold: ours are M2's, so all not-yet.
+#   libhtp  -- our per-file expectations hold (tests/libhtp-lane.sls): the 12
+#              pipelining and multi-packet streams pass since the M2 exit; the
+#              other 90 are not-yet.
 passing trace/request/connection.md#1
 passing trace/request/connection.md#2
 passing trace/request/connection.md#3
@@ -352,13 +354,13 @@ not-yet libhtp/files/00-adhoc.t
 not-yet libhtp/files/01-get.t
 not-yet libhtp/files/02-header-test-apache2.t
 not-yet libhtp/files/03-post-urlencoded.t
-not-yet libhtp/files/04-post-urlencoded-chunked.t
+passing libhtp/files/04-post-urlencoded-chunked.t
 not-yet libhtp/files/05-expect.t
 not-yet libhtp/files/06-uri-normal.t
-not-yet libhtp/files/07-pipelined-connection.t
-not-yet libhtp/files/08-not-pipelined-connection.t
-not-yet libhtp/files/09-multi-packet-request-head.t
-not-yet libhtp/files/10-host-in-headers.t
+passing libhtp/files/07-pipelined-connection.t
+passing libhtp/files/08-not-pipelined-connection.t
+passing libhtp/files/09-multi-packet-request-head.t
+passing libhtp/files/10-host-in-headers.t
 not-yet libhtp/files/100-auth-bearer.t
 not-yet libhtp/files/100-response-body-data.t
 not-yet libhtp/files/11-response-stream-closure.t
@@ -370,14 +372,14 @@ not-yet libhtp/files/16-connect-extra.t
 not-yet libhtp/files/17-multipart-1.t
 not-yet libhtp/files/18-compressed-response-deflate.t
 not-yet libhtp/files/19-urlencoded-test.t
-not-yet libhtp/files/20-ambiguous-host.t
+passing libhtp/files/20-ambiguous-host.t
 not-yet libhtp/files/21-http09.t
 not-yet libhtp/files/22-php-param-processing.t
 not-yet libhtp/files/23-http09-multiple.t
 not-yet libhtp/files/24-http09-explicit.t
 not-yet libhtp/files/25-small-chunks.t
 not-yet libhtp/files/26-request-headers-raw.t
-not-yet libhtp/files/27-request-trailer-raw.t
+passing libhtp/files/27-request-trailer-raw.t
 not-yet libhtp/files/28-response-headers-raw.t
 not-yet libhtp/files/29-response-trailer-raw.t
 not-yet libhtp/files/30-get-ipv6.t
@@ -385,11 +387,11 @@ not-yet libhtp/files/31-get-request-line-nul.t
 not-yet libhtp/files/32-invalid-hostname.t
 not-yet libhtp/files/33-invalid-hostname.t
 not-yet libhtp/files/34-invalid-hostname.t
-not-yet libhtp/files/35-early-response.t
+passing libhtp/files/35-early-response.t
 not-yet libhtp/files/36-invalid-request-1-invalid-c-l.t
 not-yet libhtp/files/37-invalid-request-2-t-e-and-c-l.t
 not-yet libhtp/files/38-invalid-request-3-invalid-t-e.t
-not-yet libhtp/files/39-auto-destroy-crash.t
+passing libhtp/files/39-auto-destroy-crash.t
 not-yet libhtp/files/40-auth-basic.t
 not-yet libhtp/files/41-auth-digest.t
 not-yet libhtp/files/42-unknown-method_only.t
@@ -411,13 +413,13 @@ not-yet libhtp/files/57-path-utf8-overlong-4.t
 not-yet libhtp/files/58-path-utf8-invalid.t
 not-yet libhtp/files/59-path-utf8-fullwidth.t
 not-yet libhtp/files/60-request-cookies.t
-not-yet libhtp/files/61-empty-line-between-requests.t
+passing libhtp/files/61-empty-line-between-requests.t
 not-yet libhtp/files/62-post-no-body.t
 not-yet libhtp/files/63-post-chunked-invalid-1.t
 not-yet libhtp/files/64-post-chunked-invalid-2.t
 not-yet libhtp/files/65-post-chunked-invalid-3.t
-not-yet libhtp/files/66-post-chunked-split-chunk.t
-not-yet libhtp/files/67-long-request-line.t
+passing libhtp/files/66-post-chunked-split-chunk.t
+passing libhtp/files/67-long-request-line.t
 not-yet libhtp/files/68-invalid-request-header.t
 not-yet libhtp/files/69-long-response-header.t
 not-yet libhtp/files/70-response-invalid-chunk-length.t
