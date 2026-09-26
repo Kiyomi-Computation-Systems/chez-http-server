@@ -120,3 +120,25 @@ It is the thirteenth field of `(http-server limits)`, read from
 nginx's `lingering_time` and Apache's total linger. As with the other durations, the
 core never reads it: it arms the `linger` kind, and M5's wheel turns the kind into an
 instant.
+
+## Amendment (2026-09-26) — the connection cap and the listener, as M4.3 built them
+
+Decided on the owner's word on 2026-09-26, by form (the ledger's M4.3 entry has the
+options weighed).
+
+- **The table's row is unchanged**: `max-connections` 10 000 and `backlog` 511, read
+  from `CHEZ_HTTP_MAX_CONNECTIONS` and `CHEZ_HTTP_BACKLOG`. A refused connection is
+  accepted and closed at once, as nginx closes one its `worker_connections` cannot
+  hold: libuv takes a connection off the socket before the listener's callback runs,
+  and stops watching the listener until it is accepted.
+- **The backlog is at most 2147483647**, the largest C `int`, which is what libuv's
+  `uv_listen` takes; a larger value is refused at startup like a malformed one.
+- **A refusal episode is logged twice at most**: its first refusal, then how many
+  were refused, when a connection is next accepted or the server stops listening. A
+  flood of refused connections cannot fill the log. Weighed: every refusal, as nginx
+  does.
+- **A listener that fails shuts the server down**: the failure is logged, the listener
+  closed, and the server drains, so the process ends once its connections finish and
+  whatever supervises it starts it again. libuv reports such a failure only on Windows,
+  where the listener has already stopped. Weighed: logging only, which leaves a server
+  that runs and never accepts; listening again, which needs M5's timer for a delay.

@@ -1920,3 +1920,34 @@ NEXT: M4.3, the listener and `server-step` (plan §8):
 - the shell's listener, and the reconciliation's other direction: a live handle the table does not know.
 
 Then M4.4, the contract test and the socket lane, with the upload past a refusal; M4.5, the facade (decision 0012); and the M4 exit. It starts on a fresh branch cut from main after this commit, when the owner asks.
+
+M4.3 — THE LISTENER AND `server-step` (plan §8; design §4.6). Branch feat/m4.3-listener, cut from main at 100ae8b; 2026-09-26, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+
+CHECKED first, in libuv 1.52.1's source (chez-libuv vendors it):
+- libuv takes a connection off the socket before it calls the listener's callback, and stops watching the listener until the callback accepts it (`src/unix/stream.c:507-531`). So a connection the server will not serve is accepted and closed at once. That is how nginx refuses one its `worker_connections` cannot hold, and what decision 0005's "refuse in on-connection" comes to; one left unaccepted would stop the listener.
+- On Unix libuv drops a failed accept itself, and when descriptors run out it sheds load by accepting and closing whatever waits (`uv__emfile_trick`). Only on Windows does an accept's error reach the callback, and there the listener has stopped (`src/win/tcp.c:1221-1231`). A `uv_accept` that fails on Unix closes the descriptor and leaves the listener listening (`src/unix/stream.c:535-594`).
+
+Found in review (2026-09-26, `/code-review max`), before the first commit: fifteen findings, eleven confirmed by running them, four plausible. On the owner's word, "Let's work on all of them".
+
+DECIDED on the owner's word (2026-09-26), by form, the recommended answer to each of four questions:
+- **The count of open connections is the table's size.** The shell passes it with each arrival, `(connection-arrived n)`, so the step keeps no count to drift, and nothing reports a close to it for counting. `connection-closed` stays in the vocabulary for M8's drain. Weighed: the step's own count, guarded at each report site.
+- **A refusal episode is logged twice at most:** the first refusal at once, then how many were refused, when a connection is next accepted or the server shuts down. Counted in the pure step. Weighed: every refusal, as nginx does.
+- **A listener that fails shuts the server down:** `listener-failed` is logged, the listener closed, and the server drains, so the process ends once its connections finish and a supervisor restarts it. It is a new event in the step's vocabulary. libuv 1.52.1 reports such a failure only on Windows (`src/win/tcp.c:1221-1231`). Weighed: log only; listen again, which would need M5's timer.
+- **One procedure closes every handle,** and what a close does follows the handle, not the caller: a connection's cleanup runs whoever closes it. The rule is again one `uv-close!` caller, checked by reading the source with Chez's own reader. Weighed: an owner per kind of handle.
+Decision 0005 has an amendment recording the two about refusals and the listener, and the backlog's bound.
+
+M4.3 FIRST STEP — THE TWO LIMITS, `limits-with`, AND `server-step`.
+- `max-connections` (10,000) and `backlog` (511), decision 0005's, arrived with plan §3's four things each: the field, a test of its default, `CHEZ_HTTP_MAX_CONNECTIONS` and `CHEZ_HTTP_BACKLOG` in `limits-environment-variables`, and the drift guard extended. Each is at least 1. The backlog is at most 2147483647, since `uv_listen` takes it as a C `int`; a larger value wrapped negative, or raised an error that named no variable (review, C6).
+- `limits-with` replaces fields by name, in an order it reads from the record type itself. The four hand-written fifteen-argument copies in the tests are gone; two of them could swap the cap and the backlog with no suite noticing (review, C18).
+- `src/http-server/server.sls`, `(http-server server)`, new and pure (`(rnrs)` and the limits):
+  - the vocabulary: five events (design §4.6's four and `listener-failed`), five actions, two phases;
+  - the state is the phase and the refusals of the episode under way, linear as a connection's is. A state whose limits have no connection cap of at least 1 is refused, so `max-connections` = `#f` cannot reach an arrival (review, C3's trigger);
+  - an arrival carries the count of connections open, and is answered first: `accept` below the cap, ending a refusal episode with `(log refused max-connections n)`; `refuse` at it, the episode's first logged `(log refusing max-connections)`; `refuse` while draining, unlogged;
+  - a shutdown, or a failed listener (logged), closes the listener and drains, logging an episode under way; a second asks for nothing;
+  - a tick and a close ask for nothing yet.
+- `tests/test-server.sps`, new, 28 checks: the vocabulary, tied to the step (every event is taken in either phase; no row asks for an action outside the list, read from what the step answers), and a row per transition, held as data.
+- Red before green: the limits suite stopped at load at `limits-with`, then failed the backlog's bound alone until it existed; the server suite stopped at load against the step before the rework.
+- Watched to fail (m4-mutations.md): M4.3-A, the plan's, the step's refusal rows and nothing else in any suite; L1 to L7 and W1 to W3, the limits; B to Y, the step, one or more for every check.
+- Every suite green in a scratch worktree with only this step, cut from main at 100ae8b: thirty suites, 794 expected passes (limits 37, server 28, shell 48), each exit 0. `make check-imports` and main's close-ownership gate are clean there, and the step's mutants ran there with the results they give on the finished tree.
+
+NEXT: the second step, the shell's listener and one procedure that closes every handle, stacked on this one.

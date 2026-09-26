@@ -133,14 +133,7 @@
           (else (make-response 200 #f '() target)))))
 
 ;; limits-with-read-buffer : Nat -> Limits — the defaults, but the buffer.
-(define (limits-with-read-buffer n)
-  (let ((d default-limits))
-    (make-limits (limits-read-header-timeout-ms d) (limits-idle-timeout-ms d)
-                 (limits-body-inactivity-timeout-ms d) (limits-linger-timeout-ms d)
-                 (limits-max-header-bytes d) (limits-max-header-count d)
-                 (limits-max-header-field-bytes d) (limits-max-header-value-bytes d)
-                 (limits-max-target-bytes d) (limits-max-body-bytes d)
-                 (limits-pipeline-cap d) n (limits-require-host? d))))
+(define (limits-with-read-buffer n) (limits-with default-limits (list (cons 'read-buffer-size n))))
 
 ;; --- the loop, the shell, and a listener of the suite's own ---------------------
 

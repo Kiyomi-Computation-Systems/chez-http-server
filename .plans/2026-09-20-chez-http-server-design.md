@@ -506,6 +506,24 @@ code means SIGTERM drain is table-tested with a fake clock exactly as connection
 timeouts are, and the connection table is reconciled against
 `uv-loop-live-handles` at one place in the run loop.
 
+*Noted 2026-09-26 (M4.3):* `(http-server server)` holds it, and the owner settled
+three questions by form. The state is the phase, `listening` or `draining`, and the
+refusals of the episode under way; linear, like a connection's. The step keeps no
+count of connections: the shell hands it the table's size with each arrival,
+`(connection-arrived n)`, so no second count can drift from the table. An arrival is
+always answered first, since libuv has already taken it off the socket and stops
+watching the listener until it is accepted: accepted while fewer than
+`max-connections` are open, otherwise refused, and closed at once, as nginx closes one
+its `worker_connections` cannot hold. A refusal episode is logged twice at most: its
+first refusal, then its count, when a connection is next accepted or the server stops
+listening. `shutdown-requested` closes the listener, and so does a fifth event,
+`listener-failed`: libuv reports a listener's failure only on Windows, where the
+listener has stopped, and the server then shuts down, logged, so a supervisor starts
+it again. A connection that arrives while draining is refused. M8 writes the rest of
+the drain: the connections told to finish, `force-close-all` on a tick at the
+deadline, and the drain's end on `connection-closed`. Until then a tick and a close
+ask for nothing.
+
 ---
 
 ## 5. Callback discipline
