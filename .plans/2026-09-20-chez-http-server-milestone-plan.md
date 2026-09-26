@@ -557,6 +557,26 @@ connection lingers in, and which closes linger. The shell's half is M4.2's.
 - **Mutation:** close at once when the write completes, as M3.4 left it. Expect the
   staged close's rows red.
 
+*Noted 2026-09-26 (M3.5; decision 0011, on the owner's word):*
+- **Measured first, and the premise corrected.** The reset did not erase the 431: M3.4's
+  spike had counted a read that succeeded, then met a reset, as a failure. What a reset
+  does lose, on Darwin and Linux:
+  - a client still sending never reads the status. After a 4 MiB upload was refused,
+    Python and Node read it in 0 of 20 runs, and curl in 20;
+  - the part of a response not yet sent is thrown away. A handler's 4 MiB response,
+    closed at once behind an unread pipelined request, was cut short in 8 of 20 runs
+    and 13 of 20.
+- **Decided by form.** Every close after a response lingers, the core's own statuses
+  and a handler's close alike. There is one limit, `linger-timeout-ms`, 30 000, armed
+  once.
+- **Landed.** The connection lingers in a tenth state, `lingering`, and a state that
+  reads stops reading when it refuses a request. `tests/test-connection-linger.sps`
+  drives the closes a request or a handler asks for, and each way a linger ends. The
+  originated suite follows each status's close to its end.
+- **Mutations.** The plan's mutation turned the staged close's rows red: 78 checks in
+  six suites on the second PR's tree, and 8 of the linger suite's 9 on the third's.
+  The other mutants are in the mutation log, all killed.
+
 ### M3 exit
 
 Brief's gate: table tests; the corpus lane still green; the chunked-to-1.0 mutation

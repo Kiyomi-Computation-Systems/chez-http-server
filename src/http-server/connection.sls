@@ -436,9 +436,10 @@
   ;; outstanding.  Keep waiting while writes are.  On the last one, a
   ;; response that closes the connection is followed by the staged close
   ;; (M3.5): lingering, the write side shut, reading again to drop what
-  ;; arrives, the linger deadline armed.  Otherwise resume parsing what was
-  ;; retained and read again.  After a close-marked message the retained
-  ;; input is dropped, never fed (decision 0004 item 4).
+  ;; arrives, the linger deadline armed, and nothing of the input kept.
+  ;; Otherwise resume parsing what was retained and read again.  After a
+  ;; close-marked message the retained input is dropped, never fed (decision
+  ;; 0004 item 4).
   ;; closing, write-completed: a write the close cut short, after a read
   ;; error in responding, is settled the same way, and nothing more is asked.
   ;; In the other states no write is outstanding, and nothing changes.
@@ -452,6 +453,7 @@
            (conn-deadline-set! s 'write)
            (values s '((arm-deadline write))))
           ((conn-close-after s)
+           (forget-input! s)
            (conn-phase-set! s 'lingering)
            (conn-deadline-set! s 'linger)
            (values s '((shutdown) (read-start) (arm-deadline linger))))
@@ -468,6 +470,18 @@
        (complete-write! s fields)
        (values s '()))
       (else (values s '()))))
+
+  ;; forget-input! : ConnState -> Void
+  ;; Drop all the connection holds of the input it has read: the pause's
+  ;; pending input, the last delivery, the request, and the head, whose spans
+  ;; point into the deliveries.  A lingering connection reads only to drop
+  ;; what arrives, for up to its linger deadline (decision 0011), so it keeps
+  ;; none of them (tests/test-connection-retention.sps).
+  (define (forget-input! s)
+    (conn-pending-set! s #f)
+    (conn-delivery-set! s #f)
+    (conn-request-set! s #f)
+    (head-roll! (conn-head s)))
 
   ;; complete-write! : ConnState (Listof Any) -> Void
   ;; `(nbytes)`, a write-completed's fields: one write and its bytes are no

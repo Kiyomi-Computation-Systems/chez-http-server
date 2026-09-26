@@ -1598,3 +1598,22 @@ M3.5, THE SECOND OF THREE STACKED PRS: THE STAGED CLOSE. Branch feat/m3.5-staged
 - 318 inserted lines of code and tests.
 
 NEXT: the third PR, the linger suite and the input a lingering connection forgets, stacked on this one.
+
+
+M3.5, THE THIRD OF THREE STACKED PRS: THE LINGER SUITE, AND THE INPUT A LINGERING CONNECTION FORGETS. Branch feat/m3.5-linger-suite, stacked on feat/m3.5-staged-close; 2026-09-26, Darwin arm64, Chez 10.4.1 `tarm64osx`. Mutation log: m3-mutations.md.
+- `(http-server connection)`: entering `lingering` forgets the input: the pause's pending input, the last delivery, the request and the head (review).
+- Tests:
+  - `tests/test-connection-linger.sps`, new, with 9 checks:
+    - four closes, each answered with a request pipelined behind it and then closed in stages until the client closes: a request's `Connection: close`, HTTP/1.0, a handler's `Connection: close`, and an upgrade;
+    - a connection kept alive, as the contrast: its client's close is at once;
+    - a linger ended by its deadline, by its deadline with the client still sending, and by a read error, and one that the half-close's completion leaves lingering;
+  - the retention suite checks that a lingering connection holds neither the delivery nor the request (review).
+- Records: plan §7's note for M3.5.
+- Red before green:
+  - against main's core, the linger suite failed 8 of its 9 checks; the keep-alive contrast held. The retention suite failed 3: the second PR's lingering 500, and both new checks;
+  - against the second PR's core, the linger suite passes, since it checks what that PR landed. The retention check failed: the delivery and the request were both held.
+- Mutations (m3-mutations.md, "M3.5, third PR"): RA to RC, run on this tree, all killed; and the second PR's mutants, run on this tree against its two suites.
+- `make test` green: twenty-seven suites, 699 expected passes (connection-linger 9, connection-retention 10), exit 0. `make check-imports` is clean. Allocation: 2,736 B per request, unchanged.
+- 212 inserted lines of code and tests.
+
+NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the M3 exit (plan §7): the brief's gate checked on the merged tree (the table tests, the corpus lane, and the chunked-to-1.0 mutation, M3.2-A), the serializer's segment count (M3.1-A), and the allocation gate re-measured with the response path in the loop; then M3's close-out.

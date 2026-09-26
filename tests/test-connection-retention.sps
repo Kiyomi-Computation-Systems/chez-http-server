@@ -19,8 +19,14 @@
 ;;; response, its body, the write's segment list and its header block.  A
 ;;; weak pair sees it: its car is broken once nothing else holds the object.
 ;;;
-;;; Oracles: design §7.3, and the instrument's calibration below: an object
-;;; still held is seen held, and a dropped one released.
+;;; M3.5: a connection that closes after its response lingers, for up to
+;;; 30 s, reading only to drop what arrives (decision 0011).  So it keeps
+;;; nothing of the input it read: not the delivery, whose rest a pause keeps
+;;; for the next message, and not the request, whose spans point into it.
+;;; The same instrument checks that while it lingers.
+;;;
+;;; Oracles: design §7.3; decision 0011; and the instrument's calibration
+;;; below: an object still held is seen held, and a dropped one released.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?)
         (http-server connection) (http-server private adapter)
@@ -87,6 +93,41 @@
 ;; the Date slot when it has one.
 (define (header-block segments) (find bytevector? (cdr segments)))
 
+;; close-after-pipelined! : ConnContext Parser
+;;   -> (U (Listof (Pair Symbol WeakPair)) Symbol)
+;; Serve a request that asks to close, with another pipelined behind it in
+;; the same delivery, until its write completes, so the connection lingers.
+;; The delivery is made here and nothing else holds it: the core keeps its
+;; rest as the pause's pending input, and the request's spans point into it.
+;; Returns a weak pointer to each, or 'no-write if the core asked for none.
+(define (close-after-pipelined! ctx p)
+  (let* ((delivery (b (string-append "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"
+                                     "GET /2 HTTP/1.1\r\nHost: x\r\n\r\n")))
+         (len (bytevector-length delivery))
+         (r (begin (conn-context-step! ctx (list 'bytes-arrived delivery 0 len))
+                   (parser-feed! p delivery 0 len))))
+    (conn-context-step! ctx (list 'parser-result (parser-result-status r)
+                                  (parser-result-consumed r) (parser-result-next r) #f #f))
+    (let* ((request (conn-request (conn-context-state ctx)))
+           (w (assq 'write (conn-context-step! ctx (list 'handler-responded
+                                                         (make-response 200 #f '() #f))))))
+      (if (not w)
+          'no-write
+          (begin
+            (conn-context-step! ctx (list 'write-completed (caddr w)))
+            (list (weakly 'delivery delivery) (weakly 'request request)))))))
+
+;; lingering : -> (List (U (Listof (Pair Symbol Symbol)) Symbol) Symbol)
+;; What a full collection releases while that connection lingers, and the
+;; phase it was collected in.  The parser is resumed after it, as in served,
+;; so the whole connection lives through the collection.
+(define (lingering)
+  (let-values (((ctx p) (open-connection)))
+    (let ((weak (close-after-pipelined! ctx p)))
+      (let ((seen (if (symbol? weak) weak (after-collection weak))))
+        (parser-resume! p)
+        (list seen (conn-phase (conn-context-state ctx)))))))
+
 ;; served : (-> Response) -> (List (U (Listof (Pair Symbol Symbol)) Symbol) Datum Symbol)
 ;; One request on a fresh connection: what a full collection releases while
 ;; its write is outstanding; the state it was collected in, the phase and
@@ -145,4 +186,11 @@
       (test-equal "a response with a fault: collected in responding, the 500's write outstanding"
                   '(responding 1) (cadr r))
       (test-eq "a response with a fault: the completion starts the staged close"
-               'lingering (caddr r)))))
+               'lingering (caddr r)))
+
+    ;; M3.5: a lingering connection reads only to drop what arrives, so it
+    ;; keeps nothing of the input it read (decision 0011).
+    (let ((r (lingering)))
+      (test-equal "a lingering connection holds none of its input: the delivery and the request"
+                  '((delivery . released) (request . released)) (car r))
+      (test-eq "and it was collected lingering" 'lingering (cadr r)))))
