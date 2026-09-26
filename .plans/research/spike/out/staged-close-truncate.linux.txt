@@ -1,0 +1,2 @@
+4 MiB response, immediate: read 56% of it, then Connection reset by peer 1; read 59% of it, then Connection reset by peer 2; read 88% of it, then Connection reset by peer 1; read 89% of it, then Connection reset by peer 1; read 92% of it, then Connection reset by peer 1; read 94% of it, then Connection reset by peer 1; read 98% of it, then Connection reset by peer 6; read it all 7
+4 MiB response, staged   : read it all 20

@@ -119,7 +119,8 @@
   (define corpus-limits
     (let ((L default-limits))
       (make-limits (limits-read-header-timeout-ms L) (limits-idle-timeout-ms L)
-                   (limits-body-inactivity-timeout-ms L) (limits-max-header-bytes L)
+                   (limits-body-inactivity-timeout-ms L) (limits-linger-timeout-ms L)
+                   (limits-max-header-bytes L)
                    (limits-max-header-count L) (limits-max-header-field-bytes L)
                    (limits-max-header-value-bytes L) (limits-max-target-bytes L)
                    (limits-max-body-bytes L) (limits-pipeline-cap L)

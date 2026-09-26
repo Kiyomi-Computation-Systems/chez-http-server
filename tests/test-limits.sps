@@ -3,13 +3,14 @@
 ;;; overrides.  Oracle: decision 0005 (the nginx-style bounded defaults) and
 ;;; the documented override convention (seconds for timeouts), and its
 ;;; amendment of 2026-09-25: the Host requirement is on unless
-;;; CHEZ_HTTP_REQUIRE_HOST is exactly "false".
+;;; CHEZ_HTTP_REQUIRE_HOST is exactly "false"; and decision 0011's linger
+;;; limit, 30 s, nginx's lingering_time.
 (import (rnrs) (srfi :64) (testing) (http-server limits))
 
 ;; Every accessor, in field order.
 (define all-fields
   (list limits-read-header-timeout-ms limits-idle-timeout-ms
-        limits-body-inactivity-timeout-ms limits-max-header-bytes
+        limits-body-inactivity-timeout-ms limits-linger-timeout-ms limits-max-header-bytes
         limits-max-header-count limits-max-header-field-bytes
         limits-max-header-value-bytes limits-max-target-bytes
         limits-max-body-bytes limits-pipeline-cap limits-read-buffer-size
@@ -21,6 +22,7 @@
     (test-eqv "read-header default 60 s"  60000 (limits-read-header-timeout-ms default-limits))
     (test-eqv "idle default 75 s"         75000 (limits-idle-timeout-ms default-limits))
     (test-eqv "body-inactivity 60 s"      60000 (limits-body-inactivity-timeout-ms default-limits))
+    (test-eqv "linger 30 s (decision 0011)" 30000 (limits-linger-timeout-ms default-limits))
     (test-eqv "max header bytes 16 KiB"   16384 (limits-max-header-bytes default-limits))
     (test-eqv "max header count 100"      100   (limits-max-header-count default-limits))
     (test-eqv "max header field 8 KiB"    8192  (limits-max-header-field-bytes default-limits))
@@ -43,7 +45,8 @@
     ;; --- one variable per field, in field order, all CHEZ_HTTP_ ---
     (test-equal "the environment variables, one per field"
                 '("CHEZ_HTTP_READ_HEADER_TIMEOUT" "CHEZ_HTTP_IDLE_TIMEOUT"
-                  "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT" "CHEZ_HTTP_MAX_HEADER_BYTES"
+                  "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT" "CHEZ_HTTP_LINGER_TIMEOUT"
+                  "CHEZ_HTTP_MAX_HEADER_BYTES"
                   "CHEZ_HTTP_MAX_HEADER_COUNT" "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"
                   "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES" "CHEZ_HTTP_MAX_TARGET_BYTES"
                   "CHEZ_HTTP_MAX_BODY_BYTES" "CHEZ_HTTP_PIPELINE_CAP"
@@ -54,12 +57,14 @@
     (let ((L (limits-from-environment
                (lambda (name)
                  (cond ((string=? name "CHEZ_HTTP_IDLE_TIMEOUT") "30")
+                       ((string=? name "CHEZ_HTTP_LINGER_TIMEOUT") "5")
                        ((string=? name "CHEZ_HTTP_MAX_HEADER_BYTES") "4096")
                        ((string=? name "CHEZ_HTTP_MAX_BODY_BYTES") "1048576")
                        ((string=? name "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES") "256")
                        ((string=? name "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES") "512")
                        (else #f))))))
       (test-eqv "idle 30 s -> 30000 ms" 30000   (limits-idle-timeout-ms L))
+      (test-eqv "linger 5 s -> 5000 ms" 5000    (limits-linger-timeout-ms L))
       (test-eqv "header bytes overridden" 4096   (limits-max-header-bytes L))
       (test-eqv "body cap overridden"     1048576 (limits-max-body-bytes L))
       (test-eqv "header field overridden" 256    (limits-max-header-field-bytes L))

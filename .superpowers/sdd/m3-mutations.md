@@ -386,3 +386,31 @@ Found while writing the mutants:
 
 `make test` was green afterwards: twenty-six suites, 674 expected passes,
 exit 0.
+
+## M3.5, first PR — the limit and the fake shell's shutdown (2026-09-26)
+
+The mutants ran on the first PR's tree (feat/m3.5-linger-groundwork),
+against every suite.
+
+Red before green:
+- the limits suite could not load before the field existed;
+- the fake shell's recovery check failed against the drain that left its
+  depth raised: the next dispatch's shutdown never ran;
+- the write-after-shutdown check is the harness's own, and SN below is its
+  red.
+
+Found while writing the checks: the fake shell's own suite drives it with
+stub actions that are bare symbols. The first version of the
+write-after-shutdown check read each action with `car`, and raised on the
+first one. It now reads only a tagged list.
+
+| # | mutation | observed |
+|---|---|---|
+| SL | the linger default is 5 s, not decision 0011's 30 s (`src/http-server/limits.sls`) | limits 1 (the default). The drift guard holds: both defaults moved together |
+| SM | `CHEZ_HTTP_LINGER_TIMEOUT` is read as milliseconds | limits 1 (the override) |
+| SN | the fake shell lets a write through after the shutdown (`tests/fake-shell.sls`) | fake-shell 2 (the refusal, and the actions after it: the write and its note ran) |
+| RE | the drain restores nothing on a raise, as before the review | fake-shell 1 (the next dispatch never drains) |
+| RF | the drain restores the depth on a raise, but keeps the abandoned queue | fake-shell 1 (the note queued behind the refused write runs first) |
+
+`make test` was green afterwards: twenty-six suites, 679 expected passes,
+exit 0.

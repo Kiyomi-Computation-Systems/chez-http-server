@@ -1,0 +1,12 @@
+refused          8192 B, immediate: read the response, then Connection reset by peer 100
+refused          8192 B, staged   : read the response 100  | linger median 0.05 ms, max 0.33 ms, cut short 0
+refused         65536 B, immediate: read the response, then Connection reset by peer 100
+refused         65536 B, staged   : read the response 100  | linger median 0.05 ms, max 0.08 ms, cut short 0
+late         1 ms apart, immediate: read the response 100
+late         1 ms apart, staged   : read the response 100  | linger median 1.86 ms, max 3.03 ms, cut short 0
+late        10 ms apart, immediate: read the response 100
+late        10 ms apart, staged   : read the response 100  | linger median 12.16 ms, max 16.73 ms, cut short 0
+unread       1 ms apart, immediate: read the response, then Connection reset by peer 100
+unread       1 ms apart, staged   : read the response 100  | linger median 0.18 ms, max 0.99 ms, cut short 0
+unread      10 ms apart, immediate: read the response, then Connection reset by peer 100
+unread      10 ms apart, staged   : read the response 100  | linger median 0.17 ms, max 0.69 ms, cut short 0
