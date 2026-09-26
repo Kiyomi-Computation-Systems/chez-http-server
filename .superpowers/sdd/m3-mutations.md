@@ -452,3 +452,44 @@ delivery size, the helper that knew no staged close answered #f.
 
 `make test` was green afterwards: twenty-six suites, 688 expected passes,
 exit 0.
+
+## M3.5, third PR — the linger suite, and the input a lingering connection forgets (2026-09-26)
+
+The mutants ran on the third PR's tree (feat/m3.5-linger-suite), which is
+M3.5's final tree.
+
+Red before green:
+- against main's core, the linger suite failed 8 of its 9 checks; the
+  keep-alive contrast held. The retention suite failed 3: the second PR's
+  lingering 500, and both new checks;
+- against the second PR's core, the linger suite passes, since it checks what
+  that PR landed. The retention suite's new check failed: the delivery and
+  the request were both held while the connection lingered.
+
+RA to RC ran against every suite.
+
+| # | mutation | observed |
+|---|---|---|
+| RA | entering lingering keeps the pending input and the last delivery (`src/http-server/connection.sls`) | connection-retention 1 |
+| RB | entering lingering keeps the request | connection-retention 1 |
+| RC | entering lingering keeps the head, whose spans point into the delivery | connection-retention 1 |
+
+The second PR's mutants, run on this tree against the two suites this PR
+adds to. SA and SB are restated around `forget-input!`, which this PR puts
+where they cut:
+
+| # | connection-linger | connection-retention |
+|---|---|---|
+| SA | 8 (all but the keep-alive contrast) | 3 |
+| SB | 8 (the four closes, and the four rows that linger after a handler's close) | 2 (a request's close is at once, so the connection is collected closing, still holding its input) |
+| SC | 5 (the four closes, whose client's close is never read, and the half-close row's reading) | 0 |
+| SD | 4 (the four closes) | 0 |
+| SE | 5 (the four closes, and the row that keeps sending) | 0 |
+| SF | 4 (the four closes) | 0 |
+| SG | 2 (the client that never closes, and the one that keeps sending) | 0 |
+| SH, SI, SJ | 0: the table and the originated suite catch them | 0 |
+| SK | 4 (the four closes) | 0 |
+| SO | 1 (the read error while lingering) | 0 |
+
+`make test` was green afterwards: twenty-seven suites, 699 expected passes,
+exit 0.
