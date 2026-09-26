@@ -1,0 +1,5 @@
+--- bytes added per request, by view: (A) path and User-Agent on demand, (B) all copied, (C) spans
+curl's GET, 3 fields         (A) 80   (B) 416   (C) 0
+a JSON POST, 5 fields        (A) 96   (B) 720   (C) 0
+a browser's GET, 11 fields   (A) 192   (B) 1872   (C) 0
+exit=0

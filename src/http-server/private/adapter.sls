@@ -21,8 +21,9 @@
 ;;;
 ;;; Brought forward from M4.1 (milestone plan §8), because M2.2's checks need
 ;;; the core driven by the real parser: the head's tests, and the trace lane
-;;; with these bindings installed.  M4 adds the shell's closures and the
-;;; per-connection allocation assertion.  Imports no chez-libuv.
+;;; with these bindings installed.  The shell's closures are (http-server
+;;; private shell)'s (M4.2), and tests/test-connection-allocation.sps checks
+;;; the list is shared (M4.1).  Imports no chez-libuv.
 (library (http-server private adapter)
   (export make-conn-context conn-context? conn-context-state
           conn-context-step!

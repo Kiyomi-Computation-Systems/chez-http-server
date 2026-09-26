@@ -40,15 +40,23 @@
 ;;;     its Connection value 64 B more, so its total counts its fields.
 ;;; The first shape, per callback, is test-connection-entry.sps's.
 ;;;
+;;; And what a connection costs to open (M4.1): its parser shares the one
+;;; binding list the adapter makes (design §7.5), so it costs what
+;;; byte-machine's make-parser does with a list of twenty-five bindings made
+;;; once, beforehand.
+;;;
 ;;; Oracles: the 3,072 B ratchet and the shapes, from 0002's second amendment;
 ;;; Chez's cumulative allocation counter `sstats-bytes`, calibrated below and
 ;;; never the live heap; and what uriparse's own reused collector costs on
-;;; the same target, read by that counter.
+;;; the same target, and byte-machine's own make-parser on a list made once,
+;;; each read by that counter.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) statistics sstats-bytes)
         (http-server connection) (http-server private adapter)
         (http-server response) (http-server limits)
         (uri collect)
+        (only (generated httparse-message) httparse-message-machine)
+        (only (httparse modes) httparse-message-type-value)
         (byte-machine runtime))
 
 (define (b s) (string->utf8 s))
@@ -274,4 +282,23 @@
       (test-eq "every request on the long connection is served" 'served
                (if (and (number? first) (number? later)) 'served 'refused))
       (when (and (number? first) (number? later))
-        (test-eqv "request 20,000 costs what request 1,000 did" first later)))))
+        (test-eqv "request 20,000 costs what request 1,000 did" first later)))
+
+    ;; A connection's parser shares the adapter's binding list, one for the
+    ;; server (design §7.5; M4.1): it costs what make-parser does with a list
+    ;; of the twenty-five bindings made once, here, before either is measured.
+    (let* ((ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f default-limits)
+                                   (lambda (actions) #f)))
+           (made-once (map (lambda (name)
+                             (list name (if (memq name conn-span-callbacks)
+                                            (lambda (p c bv from to) callback-continue)
+                                            (lambda (p c) callback-continue))))
+                           conn-parser-callbacks))
+           (inits (list (cons 'type (httparse-message-type-value 'request))))
+           (shared (warmed (lambda () (make-parser httparse-message-machine made-once ctx inits))))
+           (opened (warmed (lambda () (make-conn-parser ctx)))))
+      (diag (string-append "connection-allocation: a connection's parser "
+                           (number->string opened) " B; make-parser on a list made once "
+                           (number->string shared) " B"))
+      (test-eqv "a connection's parser costs what one on a binding list made once does"
+                shared opened))))

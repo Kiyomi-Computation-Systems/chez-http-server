@@ -1,0 +1,5 @@
+TCP_NODELAY off  pipelined: 1 1 1 ms
+TCP_NODELAY off  one-at-a-time: 4 4 3 ms
+TCP_NODELAY on   pipelined: 1 1 1 ms
+TCP_NODELAY on   one-at-a-time: 4 4 4 ms
+exit=0
