@@ -1481,3 +1481,15 @@ THE FIX (fix/transfer-encoding-status):
 - 396 inserted lines of code and tests in this PR, stacked on the helpers' 64. Together they come to 460 (303 before the review), over plan §1 rule 1's ~400, so they went up as two PRs, split at the helpers, each green on its own. The first form's estimate was 60–100 lines.
 
 NEXT: the two stacked PRs, merged bottom up on the owner's word. Then M3.5, the staged close (plan §7): after a status the core originates is written, the core asks for `shutdown`, reads on and drops what arrives, and closes when the client closes or a linger deadline passes; measure first, then settle the linger limit and its default by a decision record. Then the M3 exit.
+
+MERGED to main on 2026-09-26, bottom up, on the owner's "do closing ritual":
+- #39, the shared header helpers, as 460f098. Its squash tree (8237a36) is identical to the tested tip's, b2a243c. It merged without deleting its branch, so that #40 stayed open on it.
+- #40, the fix, as 93f3eaf. It was retargeted to main and rebased from b2a243c (b2dd852 -> 003cbb2, tree a556de9 unchanged, proved), then force-pushed with the lease read from the remote. Its squash tree is identical to 003cbb2's.
+- Every run was the billing block, zero steps: 36244236071 (#39), 36244252138 (#40), and 36244343374 (#40's rebased tip).
+- `gh pr merge --delete-branch` switched this checkout to main at 93f3eaf and deleted #40's branch. #39's was deleted by hand, local and remote, and refs were pruned; no PR is open.
+
+`make test` green on main: twenty-six suites, 674 expected passes, exit 0.
+
+THE TRANSFER-ENCODING STATUSES DONE and merged: every parser error is a 400; a coding beside a final chunked is the core's own 501; and a request below HTTP/1.1 with Transfer-Encoding is refused, 400, as faulty framing. Each follows RFC 9112, decided on the owner's word by form. chez-httparse #50 landed in v0.4.2, and the pin stays at v0.4.1.
+
+NEXT: M3.5, the staged close (plan §7): after a status the core originates is written, the core asks for `shutdown`, reads on and drops what arrives, and closes when the client closes or a linger deadline passes. Measure first, then settle the linger limit and its default by a decision record; finish with the plan's mutation, a close at once. On a fresh branch cut from main after this commit, when the owner asks. Then the M3 exit.
