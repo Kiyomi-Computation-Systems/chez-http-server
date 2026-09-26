@@ -58,6 +58,11 @@ with none — see [[file:docs/host-header.org][docs/host-header.org]].
 How one connection carries many requests, answered one at a time, and what a
 request to switch protocols gets — see [[file:docs/connections.org][docs/connections.org]].
 
+** Responses
+
+What the server writes around your handler's response, which bodies it never
+sends, and what it answers 500 instead — see [[file:docs/responses.org][docs/responses.org]].
+
 ** License
 
 © [[https://kiyomicomputation.systems/][Kiyomi Computation Systems LLC]]. Licensed under BSD 3-Clause — see

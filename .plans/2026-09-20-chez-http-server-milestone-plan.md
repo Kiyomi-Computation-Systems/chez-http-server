@@ -628,6 +628,10 @@ stream.
 pause on the last body byte. Both get pinned tests.
 **Exit (brief):** 16 MiB each way against a slow peer with bounded memory; libhtp's
 Expect and early-response files pass.
+*Carried from M3.2 (2026-09-25):* the core closes the connection after a close-delimited
+body (`write-action`, `'close-delimited`), which the framing decision gives only to a body
+of unknown length. No response has one before M6, so no row reaches that arm yet: M6's
+first HTTP/1.0 stream is its row, watched to fail by dropping the arm.
 
 ### M7 — the scheduler and awaiting handlers
 Design §5.2 and §5.3's invariants R1–R5.

@@ -51,11 +51,12 @@
              (request-headers r))))
 
 ;; render-action : Action -> Datum
-;; A request or a response is a record, so it is rendered by its contents.
+;; A request is a record, so it is rendered by its contents; a write, by the
+;; status its segments write.
 (define (render-action a)
   (case (car a)
     ((call-handler hand-off) (list (car a) (render-request (cadr a))))
-    ((write) (list 'write (response-status (cadr a))))
+    ((write) (list 'write (written-status a)))
     (else a)))
 
 ;; connection : Limits [(Request -> Response)] -> (values FakeShell (-> (Listof Pending)))

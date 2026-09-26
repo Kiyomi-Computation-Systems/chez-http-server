@@ -11,8 +11,9 @@
 ;;; actions of decision 0002 item 2, plus the `hand-off` action decision 0006
 ;;; item 3 adds; the 10 + 9 rows of design §4.4's two tables; the three
 ;;; rows of decision 0004's pause protocol that the design's tables fold into
-;;; H6 and H10 (M2.4); and the two rows of the upgrade door, decided on the
-;;; owner's word on 2026-09-25 (M2.5).
+;;; H6 and H10 (M2.4); the two rows of the upgrade door, decided on the
+;;; owner's word on 2026-09-25 (M2.5); and M3.2's two rows for what the
+;;; handler answers, from decision 0010 items 2 and 3.
 ;;;
 ;;; A parser-result event carries its error as the error's code and node,
 ;;; (code . node), because the status of one code splits by node (design
@@ -63,18 +64,29 @@
     s))
 
 ;; render-action : Action -> Datum
-;; A written response is a record, and `equal?` compares records by identity,
-;; so a response the core builds (408, 500, ...) is rendered field by field.
+;; A write's segments are bytes, so it is rendered with each as text; the
+;; Date slot stays the symbol `date` (M3.2).
 (define (render-action a)
-  (if (and (eq? (car a) 'write) (response? (cadr a)))
-      (let ((r (cadr a)))
-        (list 'write (list 'response (response-status r) (response-reason r)
-                           (response-headers r) (response-body r))))
+  (if (eq? (car a) 'write)
+      (list 'write
+            (map (lambda (seg) (if (bytevector? seg) (utf8->string seg) seg)) (cadr a))
+            (caddr a))
       a))
 
-;; An originated status as render-action shows it: no reason (M3 derives the
-;; phrase), no headers (M3's framing adds Connection: close), no body.
-(define (status-write n) `(write (response ,n #f () #f)))
+;; written : (U String 'date) ... -> Datum
+;; A write as render-action shows it: its segments, and the bytes they come
+;; to, the Date slot counted at its 37 (`Date: `, RFC 9110 §5.6.7's
+;; 29-character IMF-fixdate, CRLF; decision 0010 item 4).
+(define (written . segments)
+  (list 'write segments
+        (fold-left (lambda (n seg) (+ n (if (string? seg) (string-length seg) 37))) 0 segments)))
+
+;; An originated status as render-action shows it: RFC 9110 §15's phrase, and
+;; no body, so `Content-Length: 0` and `Connection: close` (decision 0010
+;; item 6; design §6.5: every one closes).
+(define (status-write n phrase)
+  (written (string-append "HTTP/1.1 " (number->string n) " " phrase "\r\n") 'date
+           "Content-Length: 0\r\nConnection: close\r\n\r\n"))
 
 ;; Every action kind any row emitted, for the vocabulary check at the end.
 (define emitted '())
@@ -140,9 +152,12 @@
         (i (state 'body 'deadline 'body 'request req) '(parser-event on-message-complete)
            `(handling #f ((reply-parser pause) (read-stop) (disarm-deadline) (call-handler ,req)))))
 
+   ;; The write is the serializer's segments for the request being answered
+   ;; (M3.2): an HTTP/1.1 GET that keeps the connection.
    (row 'H7 "handling, handler-responded -> responding: write, arm write"
-        (i (state 'handling) `(handler-responded ,resp)
-           `(responding #f (,(render-action (list 'write resp)) (arm-deadline write)))))
+        (i (state 'handling 'request req) `(handler-responded ,resp)
+           `(responding #f (,(written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 6\r\n\r\n" "row H7")
+                            (arm-deadline write)))))
 
    (row 'H8 "responding, write-completed with more outstanding -> responding: arm write"
         (i (state 'responding 'deadline 'write 'outstanding 2) '(write-completed 100)
@@ -188,15 +203,15 @@
    ;; invalid-transfer-encoding node that is a 501 (RFC 9112 §6.1).
    (row 'T3 "head/body, parser-result status=error -> responding: write the status, close-after"
         (i (state 'head 'deadline 'header) '(parser-result error 0 0 (invalid-method . e-bad-method-open) #f)
-           `(responding parser-error (,(status-write 400))))
+           `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write))))
         (i (state 'body 'deadline 'body) '(parser-result error 47 47 (invalid-chunk-size . e-bad-chunk-size) #f)
-           `(responding parser-error (,(status-write 400))))
+           `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write))))
         (i (state 'body 'deadline 'body)
            '(parser-result error 49 49 (invalid-transfer-encoding . e-request-invalid-te) #f)
-           `(responding parser-error (,(status-write 501))))
+           `(responding parser-error (,(status-write 501 "Not Implemented") (arm-deadline write))))
         (i (state 'body 'deadline 'body)
            '(parser-result error 44 44 (invalid-transfer-encoding . e-bad-te-value) #f)
-           `(responding parser-error (,(status-write 400)))))
+           `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write)))))
 
    ;; Deadlines are kinds, not instants: the shell's wheel ticks a connection
    ;; only once the deadline it armed has passed (decision 0005), so "past the
@@ -204,7 +219,7 @@
    ;; second instance is the guard: a tick with nothing armed changes nothing.
    (row 'T4 "head, tick past the header deadline -> responding: write 408, close-after"
         (i (state 'head 'deadline 'header) '(tick 60000)
-           `(responding header-timeout (,(status-write 408))))
+           `(responding header-timeout (,(status-write 408 "Request Timeout") (arm-deadline write))))
         (i (state 'head) '(tick 60000)
            '(head #f ())))
 
@@ -216,7 +231,7 @@
 
    (row 'T6 "handling, handler-failed -> responding: write 500, close-after"
         (i (state 'handling) '(handler-failed boom)
-           `(responding handler-failed (,(status-write 500)))))
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)))))
 
    ;; The pause channel.  In v1 the core's own flow never reaches this row:
    ;; it pauses the parser at every message's end, and serves an upgrade and
@@ -298,7 +313,29 @@
 
    (row 'U2 "head, parser-result hands off on the error channel (the HTTP/2 preface) -> responding 505, close-after"
         (i (state 'head 'deadline 'header) '(parser-result error 24 24 (paused-h2-upgrade . e-pri-upgrade) #f)
-           `(responding http2-preface (,(status-write 505)))))))
+           `(responding http2-preface (,(status-write 505 "HTTP Version Not Supported") (arm-deadline write)))))))
+
+;; ---------------------------------------------------------------------------
+;; M3.2: what handler-responded does with what the handler answers (decision
+;; 0010 items 2 and 3).  A response the serializer cannot write safely is
+;; answered 500, the log naming its fault; a handler's `Connection: close`
+;; closes the connection after its response.  Each enters `responding` with
+;; the write deadline armed, as every entry into it does (design §4.3).
+(define (response-rows)
+  (list
+   (row 'R1 "handling, handler-responded with a fault -> responding 500, close-after: log, write, arm write"
+        (i (state 'handling 'request req)
+           `(handler-responded ,(make-response 200 #f (list (cons (b "Content-Length") (b "5"))) #f))
+           `(responding invalid-response
+                        ((log invalid-response framing-field)
+                         ,(status-write 500 "Internal Server Error")
+                         (arm-deadline write)))))
+   (row 'R2 "handling, handler-responded with Connection: close -> responding, close-after: write, arm write"
+        (i (state 'handling 'request req)
+           `(handler-responded ,(make-response 200 #f (list (cons (b "Connection") (b "close"))) #f))
+           `(responding handler-close
+                        (,(written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 0\r\nConnection: close\r\n\r\n")
+                         (arm-deadline write)))))))
 
 (define (pause-protocol)
   (list
@@ -400,7 +437,8 @@
       (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3
                 (fold-left (lambda (n r) (+ n (run-row r kept))) 0 (pause-protocol)))
-      (test-eqv "M2.5: both upgrade-door rows have a test" 2 (count-rows (upgrade-door))))
+      (test-eqv "M2.5: both upgrade-door rows have a test" 2 (count-rows (upgrade-door)))
+      (test-eqv "M3.2: both response rows have a test" 2 (count-rows (response-rows))))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it but the two body-streaming actions (M6's).

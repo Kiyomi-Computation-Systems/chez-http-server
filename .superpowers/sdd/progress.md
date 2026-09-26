@@ -1226,3 +1226,31 @@ M3.2 SECOND STEP: the serializer's entry for a checked response, and what the re
 - Every suite green in a scratch worktree with the first two steps on 409b886: twenty-two suites, 582 expected passes (serializer 146), each exit 0.
 
 NEXT: the third step, the core writing through the serializer, stacked on this one.
+
+M3.2 THIRD STEP: the core writes through the serializer (feat/m3.2-core-writes, cut from feat/m3.2-checked-entry).
+- `(http-server connection)`: the `write` action is `(write segments nbytes)`: the serializer's segments for one write, the Date slot among them, and the bytes they come to (design §7.3). The framing is the decision's, for the request being answered, and the Connection field says close when the connection closes after the response.
+  - A handler's response with a fault is answered 500, then close, with `(log invalid-response fault)` before the write (decision 0010 item 2). One without is written with `serialize-checked-response`; the core's own responses with `serialize-response`, which reads them for faults as any caller's.
+  - A handler's `Connection: close` closes the connection after its response, as 'handler-close, unless it closes already for a reason of its own (item 3).
+  - A close-delimited body closes the connection after it, as 'close-delimited, when nothing else does (review). The decision gives that mode only to a body of unknown length, which a response first has in M6, so no row reaches the arm yet: plan §9's M6 entry carries its row.
+  - Every entry into `responding` arms the write deadline, the core's own responses included (review; design §4.3, and §4.4's dated note).
+- `tests/fake-shell.sls`: a write fills its Date slot from the fake clock, which counts milliseconds, so with the line for its whole second. It keeps the bytes, and completes with its byte count; a count that is not the bytes' own is an assertion violation. `written-status` reads a write's status from its status line.
+- `tests/test-connection-response.sps`, new, every write read back by the strict response parser. Twenty-two rows through the fake connection:
+  - HTTP/1.1 and 1.0, keeping the connection and closing it, and two pipelined requests;
+  - a HEAD with and without the GET's body, and a 204 and a 304 each given a body;
+  - a 2xx to CONNECT and a WebSocket handshake, each closing after;
+  - the handler's `Connection: close` and its own Date;
+  - five faults answered 500 with their logs, one of them a HEAD's, which gets no Content-Length, and a sixth with a request behind it, never answered (review);
+  - a HEAD redirected before its request is built: 301 with `Content-Length: 0` (review).
+  Beside them, the Date filled from the clock at RFC 9110 §5.6.7's example instant.
+- The suites that record a write read its new shape:
+  - the table's rows state each write's segments and byte count, the originated ones with RFC 9110's phrases, `Content-Length: 0` and `Connection: close`, each now followed by the write deadline; and M3.2's two rows, R1 and R2, table what handler-responded does with a fault and with the handler's close;
+  - the head suite records each originated write's status and header block;
+  - the message loop and the two lanes record the status alone, so their expectations and the ratchet are unchanged.
+- `docs/responses.org`, new, and a README line: what the server writes around a handler's response, the bodies it never sends, and what it answers 500. Design §4.4 and plan §9's M6 carry dated notes.
+- Red before green, against the second step's core: the new suite exited 1, 0 passes and 23 failures; the table failed 10 (H7, the seven originated writes, R1 and R2), the head suite 40, the outcome lane 3, the libhtp lane 12 and the ratchet 1 (one violation line), and the message loop exited 2 (its fake shell cannot perform the old write).
+- Allocation: 2,736 B per request with the serializer in the loop, 2,512 B before, within the 3,072 B ratchet. Every shape holds.
+- Mutations (m3-mutations.md): M to R, T, W, Y, Z and AA. M, N, O, P, Q, W, Y and Z each turn red exactly their rows: the handler's close, the fault check, the method and version the framing is told, the fault's log, the write deadline, a refused response's close, and the framing of a response to no request. O's HEAD row is seen only by the reader's `bytes-after`. R (never say close) and T (a byte count one off) show which suites read the field and the count. AA, the fault check made twice again, survives every suite: it changes no byte and allocates nothing, so its 270 ns is measured, not tested. The first step's twelve, re-run on the finished tree, go red in the table as before, and B, D, F, I, J and K in the core's rows too.
+- Found by T: test-ratchet.sps ran its lanes outside `run-suite`, and a raise in a libhtp stream exited 255. Fixed on main by PR #33 (e339931), which this branch takes: under T the ratchet now exits 1 and names the streams.
+- `make test` green: twenty-three suites, 608 expected passes (connection-response 23), exit 0. `make check-imports` is clean.
+
+NEXT: the three stacked PRs, on the owner's word. Then M3.3, write accounting: the bytes and writes outstanding, and the check that the core keeps no response bytes once the write is issued.

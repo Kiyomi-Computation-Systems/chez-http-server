@@ -173,3 +173,58 @@ A 1xx alone reads the same with either reader, so that check only pins it.
 
 Every suite was green with the first two steps on 409b886, in a scratch
 worktree: twenty-two suites, 582 expected passes (serializer 146), each exit 0.
+
+## M3.2 third step — the core writes through the serializer (2026-09-25)
+
+The mutants ran against the finished tree, uncommitted on feat/m3.2-framing
+after it took main at 409b886, against the core's suites, and R, T and AA
+against every suite.
+
+Red before green: against the second step's core, which still wrote
+`(write response)`, the new suite exited 1 with 0 passes and 23 failures.
+The table failed 10 (H7, the seven originated writes, R1 and R2), the head
+suite 40, the outcome lane 3, the libhtp lane 12 and the ratchet 1, its
+violation line. The message loop exited 2: its body raised, since the fake
+shell cannot perform the old write. In review, the table's rows for the
+write deadline and R1 failed first against the core without it (8), and the
+two review rows of the new suite opened green: M3.2-Y and Z finish them.
+
+| # | mutation (`src/http-server/connection.sls`) | observed |
+|---|---|---|
+| M3.2-M | the core ignores the handler's `Connection: close` | connection-response exit 1; 2 failures — the two rows with the handler's `Connection: close`. The checked entry still refuses a response that closes on a connection that stays, so each run raises |
+| M3.2-N | the core writes a response without asking for its fault | connection-response exit 1; 6 failures — the six fault rows. The checked entry does not look for faults, so each goes on the wire as the handler gave it: the CR LF splits the response, and the client reads a `Set-Cookie: a=1` the handler never set; the parser refuses the handler's Content-Length beside the server's; the 101 goes out as a protocol switch; the string raises at the record's accessor |
+| M3.2-O | the framing is not told the request's method | connection-response exit 1; 4 failures — the two HEAD rows, the HEAD's refused answer, and the 2xx to CONNECT. A HEAD answered with the GET's body reads back with the right status, fields and body; only the reader's `bytes-after` sees the body written after the head |
+| M3.2-P | the framing takes every request for HTTP/1.1 | connection-response exit 1; 1 failure — "HTTP/1.0 asking to keep alive", which loses its keep-alive. The other 1.0 rows close, and say so either way |
+| M3.2-Q | a refused response is answered with no log | connection-response exit 1; 6 failures — the six fault rows' actions |
+| M3.2-W | the core's own responses arm no write deadline (review) | connection-table exit 1; 8 failures — T3's four, T4, T6, U2 and R1. The new suite held: it records writes and logs, not deadlines |
+| M3.2-Y | a refused response keeps the connection (review) | connection-response exit 1; 6 failures — the six fault rows, each ending idle, and the one with a request behind it writing a second 500; connection-table 1, R1 |
+| M3.2-Z | a response to no request is framed as a HEAD's (review) | connection-response 1 failure — "a HEAD redirected before its request is built"; connection-table 7 (T3's four, T4, T6, U2, whose states hold no request); connection-head 24 (the refusals made before the request is built) |
+| M3.2-R | the Connection field never says close | red in three suites: connection-response 13 failures (every row that closes; the two with the handler's close raise), connection-head 25 (every refusal's header block) and connection-table 9 (T3's four, T4, T6, U2, R1 and R2). The message loop, the two lanes and the ratchet held: they record a write by its status |
+| M3.2-T | a write's byte count is one more than its bytes | the fake shell's count check fires on every write: connection-response 23 failures, connection-head 40, connection-table 10 (H7, the seven originated writes, R1 and R2, whose counts the rows take from their own segments), libhtp-lane 12, outcome-lane 3, message-loop exit 2 (its body raised), and the ratchet exit 1, its one failure naming each violation with the reason its lane gives, "raised fake-shell a write's byte count is not its bytes'" |
+| M3.2-AA | the core reads a handler's response for faults twice again (review) | survived every suite. It changes no byte and allocates nothing: the fault check is 270 ns of `serialize-response`'s ~570 ns for three headers, and 0 B, measured, not tested. A scope statement |
+
+T found a gap outside M3.2: test-ratchet.sps ran its lanes at the top level,
+outside `run-suite`, and a raise in a libhtp stream exited 255, outside the
+status vocabulary. PR #33 (e339931) fixed it on main, and this branch takes
+it: under T the ratchet now exits 1 and names each stream.
+
+The first step's twelve, re-run on the finished tree against the eight
+suites that read a write or the decision (decisions, connection-response,
+-table and -head, message-loop, the outcome and libhtp lanes, ratchet):
+
+| # | observed |
+|---|---|
+| M3.2-A, C, E, G, H, L | exit 1 in test-decisions only, on the same rows as in the first step. The core never passes an unknown length, a HEAD answered 204 or 304, a CONNECT answered 3xx or 4xx, a 199, a 299 or a bad length, so only the table can see them |
+| M3.2-B | test-decisions as before, and connection-response 1 failure: "HTTP/1.0 asking to keep alive" |
+| M3.2-D | test-decisions as before, and connection-response 1 failure: "a 304 with a body" |
+| M3.2-F | test-decisions as before, and connection-response 2 failures: the HEAD answered with no body, and the HEAD's refused answer, the core's own 500 |
+| M3.2-I | test-decisions as before, connection-response 9 failures (every HTTP/1.1 response on a connection that stays, and the Date check, a 1.1 GET) and connection-table 1 (H7) |
+| M3.2-J | test-decisions as before, and connection-response 2 failures: the two 1.0 rows that close |
+| M3.2-K | test-decisions as before, connection-response 6 failures (the six fault rows) and connection-table 1 (R1): `reason-status` refuses invalid-response, so the core raises |
+
+The message loop, the two lanes, the ratchet and the head suite held for all
+twelve: they record a write by its status, and the core's own responses
+close.
+
+`make test` was green afterwards: twenty-three suites, 608 expected passes
+(connection-response 23), exit 0.
