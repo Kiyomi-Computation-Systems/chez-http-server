@@ -152,3 +152,24 @@ the decision's domain, chunked to a 1.0 client could not be told apart.
 
 Every suite was green with this step alone on 409b886, in a scratch
 worktree: twenty-two suites, 577 expected passes (decisions 52), each exit 0.
+
+## M3.2 second step — the serializer's entry for a checked response, and what the reader sees (2026-09-25)
+
+The mutants ran against the finished tree, against test-serializer, and
+against the core's suites (connection-response and -table) to show where
+else each is seen.
+
+Red before green: against a stub `serialize-checked-response` that wrote
+nothing, the suite exited 1 with 144 passes and 2 failures, the entry's two
+checks. Against M3.1's reader, which answered on at a message's end, it
+exited 1 with 144 passes and 2 failures: `bytes-after` and the 100 Continue.
+A 1xx alone reads the same with either reader, so that check only pins it.
+
+| # | mutation | observed |
+|---|---|---|
+| M3.2-U | `serialize-response` no longer asks for a fault (`src/http-server/serializer.sls`) | test-serializer exit 1; 145 passes, 1 failure — "a response with a fault is not serialized". The core's suites held: the core writes a handler's response through the checked entry, and its own have no fault, so the serializer's tripwire lives in this check alone |
+| M3.2-V | the checked entry no longer refuses a close on a connection that stays (`src/http-server/serializer.sls`) | test-serializer exit 1; 3 failures — serialize-response's two refusals of a close on a kept connection, which go through the entry now, and the entry's own. The core's suites held: the core never passes such a response |
+| M3.2-X | the reader stops at an interim response (`tests/response-reader.sls`) | test-serializer exit 1; 1 failure — "the reader reads past a 100 Continue". The core's suites held: no row writes an interim response |
+
+Every suite was green with the first two steps on 409b886, in a scratch
+worktree: twenty-two suites, 582 expected passes (serializer 146), each exit 0.

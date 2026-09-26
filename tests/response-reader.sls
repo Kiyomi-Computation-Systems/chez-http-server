@@ -16,13 +16,19 @@
 
   ;; read-response : Bytevector Boolean Boolean
   ;;                 -> (List Nat String (Listof (Pair String String)) String Symbol)
-  ;;   head? — the response answers a HEAD, so the parser skips its body
+  ;;   head? — the parser skips the body, as a client does for the answer to
+  ;;           a HEAD, or to a CONNECT that succeeded
   ;;   eof?  — the connection ends after these bytes, as a client sees at EOF
   ;; The status, the reason phrase, the headers, the body and the end:
-  ;; 'complete when the message completed, else the status of the parser's
-  ;; last answer ('need-input while a body is still owed, 'error, ...).  With
-  ;; `eof?`, a message the bytes left open is finished with parser-finish!,
-  ;; which completes one delimited by the close and refuses any other.
+  ;; 'complete when the message completed at the last byte, 'bytes-after when
+  ;; it completed with bytes after it (M3.2: a body written where the client
+  ;; reads none), else the status of the parser's last answer ('need-input
+  ;; while a body is still owed, 'error, ...).  The parser pauses at the
+  ;; message's end, so where it stopped is known.  An interim 1xx with bytes
+  ;; after it is read past, as a client reads past it to the final response,
+  ;; which is the one returned; one alone is returned itself.  With `eof?`, a
+  ;; message the bytes left open is finished with parser-finish!, which
+  ;; completes one delimited by the close and refuses any other.
   (define (read-response bv head? eof?)
     (let ((status 0) (reason '()) (field '()) (value '()) (headers '())
           (body '()) (complete #f))
@@ -54,7 +60,7 @@
              (set! status (parser-field-ref p 'status-code))
              (if head? 'skip-body callback-continue)))
           ((on-message-complete)
-           (lambda (p ctx) (set! complete #t) callback-continue))
+           (lambda (p ctx) (set! complete #t) callback-pause))
           (else (lambda (p ctx) callback-continue))))
       (let* ((p (make-parser
                  httparse-message-machine
@@ -65,10 +71,23 @@
                                   (event-callback (car row)))))
                       adapter-trace-names)
                  #f (list (cons 'type (httparse-message-type-value 'response)))))
-             (fed (parser-feed! p bv 0 (bytevector-length bv)))
-             (end (cond (complete 'complete)
-                        ((and eof? (eq? (parser-result-status fed) 'need-input))
-                         (let ((finished (parser-finish! p)))
-                           (if complete 'complete (parser-result-status finished))))
-                        (else (parser-result-status fed)))))
-        (list status (text reason) (reverse headers) (text body) end)))))
+             (len (bytevector-length bv))
+             (end (let read-from ((from 0))
+                    (let ((fed (parser-feed! p bv from len)))
+                      (cond
+                       ((and complete (interim? status) (< (parser-result-next fed) len))
+                        (set! reason '()) (set! headers '()) (set! body '()) (set! complete #f)
+                        (parser-resume! p)
+                        (read-from (parser-result-next fed)))
+                       (complete (if (< (parser-result-next fed) len) 'bytes-after 'complete))
+                       ((and eof? (eq? (parser-result-status fed) 'need-input))
+                        (let ((finished (parser-finish! p)))
+                          (if complete 'complete (parser-result-status finished))))
+                       (else (parser-result-status fed)))))))
+        (list status (text reason) (reverse headers) (text body) end))))
+
+  ;; interim? : Nat -> Boolean
+  ;; A 1xx the final response follows (RFC 9110 §15.2): a client reads on.
+  ;; A 101 is the last HTTP/1 message on the connection, so it is not one.
+  (define (interim? status)
+    (and (<= 100 status 199) (not (= status 101)))))

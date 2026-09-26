@@ -14,6 +14,9 @@
 ;;;     over four centuries of instants;
 ;;;   - the faults: what a handler's response may not carry (decision 0010
 ;;;     item 2), each with its reason.
+;;; And, since M3.2: the reader's own calibration, what it sees after a
+;;; message and past an interim one; and the entry for a response already
+;;; checked for faults, which writes every wire row as serialize-response does.
 ;;; Every slot is filled with RFC 9110 §5.6.7's example line, written out here,
 ;;; so the wire does not depend on the Date line under test.
 (import (rnrs) (srfi :64) (testing)
@@ -310,4 +313,47 @@
     (test-eq "a handler's close on a kept connection is refused" 'refused
              (assertion-raised?
               (lambda () (serialize-response (with-header (b "Connection") (b "close"))
-                                             'content-length 'keep-alive))))))
+                                             'content-length 'keep-alive))))
+
+    ;; The reader, the oracle of these rows and of the core's (M3.2).  One
+    ;; that never saw bytes after a message would pass every row whose body
+    ;; must not be written.  An interim response is not the answer: a client
+    ;; reads on to the final one (RFC 9110 §15.2), and so does the reader;
+    ;; alone, it is what there is.
+    (test-equal "the reader sees a body written after a HEAD's answer"
+                '(200 "OK" (("Content-Length" . "5")) "" bytes-after)
+                (read-response (b "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello") #t #f))
+    (test-equal "the reader reads past a 100 Continue to the final response"
+                '(200 "OK" (("Content-Length" . "2")) "ok" complete)
+                (read-response (b "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                               #f #f))
+    (test-equal "the reader reads a 100 Continue alone as itself"
+                '(100 "Continue" () "" complete)
+                (read-response (b "HTTP/1.1 100 Continue\r\n\r\n") #f #f))
+
+    ;; The entry for a response whose fault the caller has already asked for
+    ;; (M3.2: the core, which answers a fault with 500 before it frames).  It
+    ;; writes what serialize-response writes, and refuses what it refuses but
+    ;; the fault, which it does not look for again.
+    (test-equal "the checked entry writes every row as serialize-response does" '()
+                (filter (lambda (r)
+                          (not (equal? (call-with-values
+                                        (lambda () (serialize-response (row-response r) (row-mode r)
+                                                                       (row-connection r)))
+                                        list)
+                                       (guard (e ((assertion-violation? e) '(refused)))
+                                         (call-with-values
+                                          (lambda () (serialize-checked-response
+                                                      (row-response r) (row-mode r) (row-connection r)))
+                                          list)))))
+                        rows))
+    (test-equal "the checked entry refuses a bad mode, and a close on a kept connection"
+                '(refused refused refused)
+                (list (assertion-raised?
+                       (lambda () (serialize-checked-response (response 200 '() #f) 'identity #f)))
+                      (assertion-raised?
+                       (lambda () (serialize-checked-response (response 200 '() (b "x"))
+                                                              'close-delimited #f)))
+                      (assertion-raised?
+                       (lambda () (serialize-checked-response (with-header (b "Connection") (b "close"))
+                                                              'content-length 'keep-alive)))))))

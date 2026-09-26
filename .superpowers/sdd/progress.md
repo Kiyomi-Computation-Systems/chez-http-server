@@ -1216,3 +1216,13 @@ M3.2 FIRST STEP: the framing decision (feat/m3.2-framing).
 - Every suite green in a scratch worktree with this step alone on 409b886: twenty-two suites, 577 expected passes (decisions 52), each exit 0.
 
 NEXT: the second step, the serializer's entry for a checked response and what the reader sees, stacked on this one.
+
+M3.2 SECOND STEP: the serializer's entry for a checked response, and what the reader sees (feat/m3.2-checked-entry, cut from feat/m3.2-framing).
+- `(http-server serializer)` gains `serialize-checked-response`, for a response whose fault the caller has asked for already, as the core has before it frames a handler's. It does not read the fields for faults again, and checks everything else as `serialize-response` does; `serialize-response` is now the fault check, then it (review: the check was made twice per response).
+- `tests/response-reader.sls`: the parser pauses at each message's end, so the reader reports `bytes-after` when bytes follow the message, the one way to see a body written where a client reads none. And it reads past an interim 1xx to the final response, as a client does (RFC 9110 §15.2), returning one alone as itself (review: it stopped at the 1xx). The serializer's 141 checks are unchanged by either.
+- `tests/test-serializer.sps` gains five checks: the checked entry writes every wire row as serialize-response does, and refuses a bad mode and a close on a kept connection; and the reader's three.
+- Red before green: against a stub checked entry, the suite exited 1, 144 passes and 2 failures, the entry's two checks; against M3.1's reader, exit 1, 144 passes and 2 failures, `bytes-after` and the 100 Continue. A 1xx alone reads the same with either, so that check pins it.
+- Mutations (m3-mutations.md): U, V and X, each on its checks: serialize-response no longer asking for a fault, the checked entry no longer refusing a close on a kept connection, and the reader stopping at an interim response.
+- Every suite green in a scratch worktree with the first two steps on 409b886: twenty-two suites, 582 expected passes (serializer 146), each exit 0.
+
+NEXT: the third step, the core writing through the serializer, stacked on this one.
