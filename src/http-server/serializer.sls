@@ -37,7 +37,7 @@
   (export serialize-response serialize-checked-response response-fault response-closes?
           framing-modes date-line date-line-length)
   (import (rnrs) (http-server response) (http-server span)
-          (only (http-server headers) header-name=?))
+          (only (http-server headers) header-name=? trim-ows range-ci=?))
 
   ;; framing-modes : (Listof Symbol)
   ;; How a response's body goes on the wire, as the framing decision names it
@@ -350,15 +350,10 @@
   ;; The value is the connection option `close`, in any case, with optional
   ;; whitespace around it (RFC 9110 §7.6.1).
   (define (close-option? x)
-    (let* ((bv (bytes-vector x))
-           (start (let loop ((i (bytes-start x)))
-                    (if (and (fx<? i (bytes-end x)) (ows? (bytevector-u8-ref bv i))) (loop (fx+ i 1)) i)))
-           (end (let loop ((i (bytes-end x)))
-                  (if (and (fx>? i start) (ows? (bytevector-u8-ref bv (fx- i 1)))) (loop (fx- i 1)) i))))
-      (and (fx=? (fx- end start) 5)
-           (header-name=? (make-span bv start end) close-token))))
+    (let ((bv (bytes-vector x)))
+      (let-values (((start end) (trim-ows bv (bytes-start x) (bytes-end x))))
+        (range-ci=? bv start end close-token))))
 
-  (define (ows? c) (or (fx=? c 32) (fx=? c 9)))
   (define close-token (string->utf8 "close"))
 
   ;; --- the Date line ------------------------------------------------------------

@@ -1388,3 +1388,20 @@ MERGED to main on 2026-09-26 as 274c08b (PR #38), on the owner's "do closing rit
 M3.4 DONE and merged: every status the core originates is driven end to end, read back by a client's parser, and shown to close the connection, and `originated-reasons` keeps the table whole. The close itself is not yet safe for a client still sending, which a reset makes lose the status: the staged close is decided, and is M3.5.
 
 NEXT: M3.5, the staged close (plan §7, added 2026-09-25): after a status the core originates is written, the core asks for `shutdown`, reads on and drops what arrives, and closes when the client closes or a linger deadline passes. Measure first; settle the linger limit and its default by a decision record, the state the connection lingers in, and which closes linger; finish with the plan's mutation, a close at once. On a fresh branch cut from main after this commit, when the owner asks. Then the M3 exit.
+
+
+THE SHARED HEADER HELPERS (refactor/header-byte-helpers), the first of the Transfer-Encoding fix's two stacked PRs. Cut from main at 5e16b63; 2026-09-26, Darwin arm64, Chez 10.4.1 `tarm64osx`. Mutation log: m3-mutations.md.
+
+The fix's review, whose entry comes with the next PR, found that its new library re-implemented byte helpers the pure libraries already had: `(http-server headers)`' ASCII case folding, and the serializer's OWS test. Measured at 5e16b63: `close-option?`, the serializer's check of a handler's Connection value, trims OWS with loops of its own, and makes a span on each call to compare the value without regard to case. Nothing here was the owner's to decide.
+- `(http-server headers)` exports three helpers:
+  - `ows?`: SP or HTAB (RFC 9110 §5.6.3);
+  - `trim-ows`: the bounds of a range without the OWS at either end;
+  - `range-ci=?`: a range compared with the whole of a token, without regard to ASCII case. `header-name=?` shares its loop.
+- `(http-server serializer)`'s `close-option?` reads with them, and no longer makes a span on each call.
+- `tests/test-headers.sps`: three checks, one per helper. The compare's check covers a range longer than its token, and one shorter.
+- Red before green: against stubs that answered wrongly (`ows?` #f, `trim-ows` the bounds unchanged, `range-ci=?` #f), the three checks failed, and every other suite was green. That run was on the combined tree, before the split.
+- Mutations (m3-mutations.md, "The shared header helpers"): HA to HD, all killed on this tree. Each turns the headers suite's check and the serializer's Connection rows red.
+- `make test` green: twenty-five suites, 652 expected passes (headers 18), exit 0. `make check-imports` is clean. Allocation: 2,736 B per request, unchanged.
+- 64 inserted lines of code and tests.
+
+NEXT: the Transfer-Encoding fix, stacked on this (fix/transfer-encoding-status). Then M3.5, the staged close, and the M3 exit.

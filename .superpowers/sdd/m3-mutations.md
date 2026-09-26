@@ -310,3 +310,20 @@ result changes.
 
 `make test` was green afterwards: twenty-five suites, 649 expected passes
 (connection-originated 18), exit 0.
+
+## The shared header helpers (2026-09-26)
+
+The mutants ran against this PR's tree, uncommitted on
+refactor/header-byte-helpers at 5e16b63, against every suite. HD ran again
+once the compare's check gained a range longer than its token, `chunk`. That
+case reads "different" under HA to HC as well, so their results stand.
+
+| # | mutation (`src/http-server/headers.sls`) | observed |
+|---|---|---|
+| HA | `range-ci=?` compares with regard to case | headers 1 (the compare), serializer 2 (a handler's `Connection: Close`, and its close) |
+| HB | `trim-ows` keeps trailing OWS | headers 1 (the trim), serializer 1 (`Connection: close` with spaces) |
+| HC | `trim-ows` keeps leading OWS | headers 1 (the trim), serializer 1 (`Connection: close` with spaces) |
+| HD | `range-ci=?` matches a token as a prefix | headers 1 (`chunk` against `Chunked`), serializer 1 (a handler's `Connection: close, upgrade` taken for close) |
+
+`make test` was green afterwards: twenty-five suites, 652 expected passes,
+exit 0.
