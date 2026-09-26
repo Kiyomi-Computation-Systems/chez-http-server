@@ -767,6 +767,12 @@ checks:
    importing `(byte-machine private conditions)` by name — and treats any of them as a
    **fatal bug signal**, not a runtime path: log, reconcile the connection table
    against `uv-loop-live-handles`, re-raise.
+
+   > *Noted 2026-09-26 (M4.2):* for a raise inside a callback, the catch-all's type
+   > does not matter. chez-libuv raises it again from `uv-run` composed with
+   > `&uv-callback-error`, an `&error`, so both arms match, and the contract arm
+   > must come first. The shell's run loop has it there. Its mutation log shows a
+   > guard narrowed to `error?` and the two arms swapped each turn the check red.
 2. **The two dependencies disagree about an escaping callback.** byte-machine catches
    nothing and marks the parser `poisoned` on any abnormal exit — its `dynamic-wind`
    exit thunk runs on both paths and only the abnormal one leaves the flag unset

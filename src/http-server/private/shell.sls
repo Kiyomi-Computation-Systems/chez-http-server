@@ -42,12 +42,36 @@
 ;;; A deadline is not acted on: the wheel is M5's.  Bodies (M6) and the
 ;;; hand-off (M8) are never asked for in v1's flow.
 ;;;
+;;; A TRANSPORT FAILURE IS A `read-error` (design §6.3): a read's error, and a
+;;; write's or a shutdown's, whether chez-libuv raises it at the call or
+;;; reports it at the completion.  A failed write is settled too, as
+;;; `write-completed` with its byte count, once the `read-error` has closed
+;;; the connection; the core settles a write a close cut short in `closing`
+;;; (M3.3).  A write the close itself cancels is reported the same way.
+;;;
+;;; A BUG CLOSES ITS CONNECTION.  Whatever raises out of a connection's
+;;; outermost dispatch drops the actions still queued, and one of them may
+;;; have been the close, or the read that would have seen the client go: the
+;;; connection is closed before the raise goes on to chez-libuv and the run
+;;; loop.  An adoption that fails is closed the same way.
+;;;
 ;;; THE DATE is made once a second (decision 0010).  The shell's clock is read
 ;;; when a second of the loop's own time has passed, libuv's cached
 ;;; milliseconds, which cost nothing to read; between readings the second is
 ;;; the last reading plus the loop's time since.  A response reads no clock.
+;;;
+;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
+;;; chez-libuv catches whatever a callback raises, and raises it again from
+;;; uv-run composed with `&uv-callback-error`.  A `&byte-machine-contract` in
+;;; it is a bug that has poisoned a parser: logged, the table reconciled, and
+;;; raised again.  Any other callback error is logged, the table reconciled,
+;;; and the loop runs on.  `&byte-machine-contract` derives from `&condition`,
+;;; not `&error`, but the composition makes every callback's raise an
+;;; `&error`, so what keeps a poisoned parser fatal is that its arm comes
+;;; before the callback-error arm.  The run loop's own logging cannot take the
+;;; failure's place: a log that raises there is ignored.
 (library (http-server private shell)
-  (export make-shell shell? shell-adopt! shell-connections
+  (export make-shell shell? shell-adopt! shell-run! shell-connections
           connection? connection-state connection-tcp connection-violations
           connection-close!
           wall-clock)
@@ -55,6 +79,7 @@
           (only (chezscheme) current-time time-second time-nanosecond)
           (libuv)
           (byte-machine runtime)
+          (only (byte-machine private conditions) byte-machine-contract-condition?)
           (only (http-server connection) make-conn-state)
           (only (http-server limits) limits-read-buffer-size)
           (only (http-server serializer) date-line)
@@ -115,7 +140,8 @@
   ;; the limits' buffer.  Nagle's algorithm would hold a response's last
   ;; partial segment until the client acknowledged the ones before it, and
   ;; the shell writes each response whole, in one write; a socket that
-  ;; refuses the option has already failed, which reading will report.
+  ;; refuses the option has already failed, which reading will report.  A
+  ;; start that raises closes the connection, and the raise goes on.
   (define (shell-adopt! sh tcp)
     (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f)))
       (connection-ctx-set! c (make-conn-context
@@ -128,8 +154,10 @@
       (hashtable-set! (shell-table sh) c #t)
       (guard (e ((transport-condition? e) (values)))
         (uv-tcp-nodelay! tcp #t))
-      (uv-read-start! tcp (connection-on-data c) (connection-on-eof c) (connection-on-error c)
-                      (limits-read-buffer-size (shell-limits sh)))
+      (closing-on-raise c
+        (lambda ()
+          (uv-read-start! tcp (connection-on-data c) (connection-on-eof c) (connection-on-error c)
+                          (limits-read-buffer-size (shell-limits sh)))))
       (connection-reading?-set! c #t)
       c))
 
@@ -137,16 +165,23 @@
 
   ;; dispatch! : Connection Event -> Void
   ;; Step the core with one event and queue its actions, then drain the queue
-  ;; unless a drain or a feed is under way.
+  ;; unless a drain or a feed is under way.  The outermost dispatch closes the
+  ;; connection if anything raises.
   (define (dispatch! c event)
     (if (fx=? (connection-depth c) 0)
-        (begin (step! c event) (drain! c))
+        (closing-on-raise c (lambda () (step! c event) (drain! c)))
         (step! c event)))
 
   ;; step! : Connection Event -> Void — the core's step, its actions queued.
   (define (step! c event)
     (trace! c 'event event)
     (enqueue! c (conn-context-step! (connection-ctx c) event)))
+
+  ;; closing-on-raise : Connection (-> Any) -> Any
+  ;; Run `thunk`; if it raises, close the connection and raise again.
+  (define (closing-on-raise c thunk)
+    (guard (e (#t (connection-close! c) (raise e)))
+      (thunk)))
 
   ;; enqueue! : Connection (Listof Action) -> Void — behind what is queued.
   (define (enqueue! c actions)
@@ -231,16 +266,24 @@
   ;; One uv-write*! of the segments, the Date slot filled.
   (define (write! c segments nbytes)
     (let ((line (current-date-line (connection-shell c))))
-      (uv-write*! (connection-tcp c)
-                  (map (lambda (seg) (if (eq? seg 'date) line seg)) segments)
-                  (write-done c nbytes))))
+      (guard (e ((transport-condition? e) (write-failed! c e nbytes)))
+        (uv-write*! (connection-tcp c)
+                    (map (lambda (seg) (if (eq? seg 'date) line seg)) segments)
+                    (write-done c nbytes)))))
 
   ;; write-done : Connection Nat -> ((U #f Condition) -> Void)
   ;; A write's completion, which keeps the write's byte count and nothing of
   ;; its segments.
   (define (write-done c nbytes)
     (lambda (err)
-      (dispatch! c (list 'write-completed nbytes))))
+      (if err
+          (write-failed! c err nbytes)
+          (dispatch! c (list 'write-completed nbytes)))))
+
+  ;; write-failed! : Connection Condition Nat -> Void
+  (define (write-failed! c err nbytes)
+    (dispatch! c (list 'read-error (errno err)))
+    (dispatch! c (list 'write-completed nbytes)))
 
   ;; read-stop! / read-start! : Connection -> Void
   ;; Reading changes only when it is not already what the action asks.  A
@@ -255,13 +298,16 @@
   (define (read-start! c)
     (unless (or (connection-reading? c) (connection-closing? c))
       (connection-reading?-set! c #t)
-      (uv-read-start! (connection-tcp c)
-                      (connection-on-data c) (connection-on-eof c) (connection-on-error c))))
+      (guard (e ((transport-condition? e) (dispatch! c (list 'read-error (errno e)))))
+        (uv-read-start! (connection-tcp c)
+                        (connection-on-data c) (connection-on-eof c) (connection-on-error c)))))
 
   ;; shutdown! : Connection -> Void — the half-close.
   (define (shutdown! c)
-    (uv-shutdown! (connection-tcp c)
-                  (lambda (err) (dispatch! c '(shutdown-completed)))))
+    (guard (e ((transport-condition? e) (dispatch! c (list 'read-error (errno e)))))
+      (uv-shutdown! (connection-tcp c)
+                    (lambda (err)
+                      (dispatch! c (if err (list 'read-error (errno err)) '(shutdown-completed)))))))
 
   ;; connection-close! : Connection -> Void
   ;; Close the connection's handle, once.  This is the one uv-close! call
@@ -300,4 +346,42 @@
         (unless (eqv? second (shell-date-second sh))
           (shell-date-line-set! sh (date-line second))
           (shell-date-second-set! sh second))
-        (shell-date-line sh)))))
+        (shell-date-line sh))))
+
+  ;; --- the run loop --------------------------------------------------------------
+
+  ;; shell-run! : Shell Symbol -> Boolean
+  ;; One uv-run of the shell's loop in `mode`: whether work remains, as uv-run
+  ;; answers, or #t after a callback's error, logged, so the caller runs
+  ;; again.  A byte-machine contract condition is raised again.
+  (define (shell-run! sh mode)
+    (guard (e ((byte-machine-contract-condition? e)
+               (log-quietly! sh 'contract-violation (list e))
+               (reconcile! sh)
+               (raise e))
+              ((uv-callback-error? e)
+               (log-quietly! sh 'callback-error (list e))
+               (reconcile! sh)
+               #t))
+      (uv-run (shell-loop sh) mode)))
+
+  ;; log-quietly! : Shell Symbol (Listof Any) -> Void
+  ;; Log from the run loop, which is already handling a failure: a raise from
+  ;; the log is dropped, so it cannot take that failure's place.
+  (define (log-quietly! sh what details)
+    (guard (e (#t (values)))
+      (log! sh what details)))
+
+  ;; reconcile! : Shell -> Void
+  ;; Hold the table to the loop: a connection whose handle the loop no longer
+  ;; has, so whose close never reported back, is logged and dropped.
+  (define (reconcile! sh)
+    (let ((live (make-eq-hashtable)))
+      (for-each (lambda (h) (hashtable-set! live h #t))
+                (uv-loop-live-handles (shell-loop sh)))
+      (vector-for-each
+       (lambda (c)
+         (unless (hashtable-contains? live (connection-tcp c))
+           (log-quietly! sh 'reconciled (list c))
+           (hashtable-delete! (shell-table sh) c)))
+       (hashtable-keys (shell-table sh))))))

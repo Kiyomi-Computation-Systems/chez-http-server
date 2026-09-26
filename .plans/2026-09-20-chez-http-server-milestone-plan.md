@@ -653,6 +653,14 @@ The two composition hazards from design §6.4 become checks here:
 - **Mutation B:** remove the `rg` close-ownership gate and add a second `uv-close!`
   caller. Expect the gate red — and note the gate is the test here, not a suite.
 
+*Noted 2026-09-26 (M4.2):* Mutation A's expectation does not hold for a callback's
+raise, which is where every parser feed runs in the direct shell. chez-libuv raises
+it again from `uv-run` composed with `&uv-callback-error`, an `&error`, so a guard
+narrowed to `error?` catches it and runs on. What keeps a poisoned parser fatal is
+the contract arm's place before the callback-error arm. The mutation still turns the
+check red, by running on rather than by escaping (`m4-mutations.md`). M4.2's suite
+listens on a listener of its own; M4.3 brings the server's.
+
 *Carried from M3.3 (2026-09-25):* the write executor holds no reference to the segment
 list once `uv-write*!` has returned: its `on-complete` closure keeps the byte count the
 completion reports, never the segments. M3.3's retention check, run against the real
