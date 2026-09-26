@@ -493,3 +493,27 @@ where they cut:
 
 `make test` was green afterwards: twenty-seven suites, 699 expected passes,
 exit 0.
+
+## The M3 exit (2026-09-26)
+
+The mutants ran against every suite unless a row says otherwise.
+
+The brief's mutation and the plan's, first on M3's merged tree (main at
+160d638), then on the exit's final tree, at chez-httparse v0.4.3:
+
+| # | mutation | observed |
+|---|---|---|
+| M3.2-A | the brief's: an unknown length is chunked whatever the version (`src/http-server/decisions.sls`) | decisions 4 on both trees — the unknown-length rows for 1.0, 0.9 and 2.0, and "every framing mode is some row's answer". Nothing else: the core frames no body of unknown length before M6, so the decision's table is where chunked to a 1.0 client can be seen |
+| M3.1-A | the plan's: consecutive segments joined into one bytevector (`src/http-server/serializer.sls`) | serializer 7, the segment counts as in M3.1, and connection-table 2, H7 and W1, whose rows state the core's write action segment by segment. On the final tree also connection-allocation 1: joining copies the body, so "a 999-byte body costs what a 100-byte one does" fails. Every wire and byte count held |
+
+The exit's checks. Before them, X-SL and X-BC each passed every suite:
+
+| # | mutation | observed |
+|---|---|---|
+| X-SL | every status line is built per response: the table's line is copied (`serializer.sls`) | serializer 1 — "every status line in the table is made once, and shared". Every line's bytes held |
+| X-BC | a body is copied into its segment (`serializer.sls`) | connection-allocation 1 — "a 999-byte body costs what a 100-byte one does". Every wire held |
+| X-GATE | every response's write action carries 1,400 bytes more (`connection.sls`), against the allocation suite | connection-allocation 3 — the ratchet on the CPS workload, the JSON POST and ab -k's GET. The shapes held: the extra cost is the same for every request |
+| the old pin | byte-machine v0.6.0's `runtime.sls` first on the library path, the parser chez-httparse v0.4.1 ran (its generated parser is v0.4.3's, byte for byte), against the allocation suite | connection-allocation 3 — "a 17-byte name costs the same however much of a keyword it matches" (3,024 B against 5,904 B), the JSON POST (6,800 B) and ab -k's GET (5,824 B) |
+
+`make test` was green afterwards: twenty-seven suites, 706 expected passes
+(serializer 147, connection-allocation 18), exit 0.

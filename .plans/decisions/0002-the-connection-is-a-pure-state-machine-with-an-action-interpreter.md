@@ -197,3 +197,52 @@ M2.4's fake shell checks item 3 itself, with one depth counter around `drain!` a
 `parser-feed!`: every action must run from the outermost drain, at depth 1. An action
 run inside a feed or in a nested drain is a violation the shell records, and the
 message-loop suite and the outcome lane fail on it.
+
+## Note (2026-09-26) — the M3 exit: the response path is in the loop, and requests a server meets join the gate
+
+The second amendment's item 2 left this to M3: the gate's anchor wrote no response, so
+M3 re-measures with the response path in the loop and records here whether it fits. It
+fits. The workload is unchanged, answered as a shell will answer it: `handler-responded`,
+the framing decision, the serializer's segments, and `write-completed`. Measured on M3's
+merged tree (main at 160d638; Darwin arm64, Chez 10.4.1 `tarm64osx`):
+- **The gate:** 2,736 B per request, against the 3,072 B ratchet, answering an empty
+  200. It was 2,512 B at the M2 exit, before the core wrote through the serializer, so
+  the response path costs 224 B. A 200 with `Content-Type` and a 13-byte body costs
+  2,784 B.
+- **Two shapes on the response side**, each a check now:
+  - a response's body is a segment of the write, never copied: a 999-byte body costs
+    what a 100-byte one does;
+  - a registered status's line is made once and shared, so a response allocates
+    nothing for it. Only a comment had said so.
+- **What a handler's fields cost.** They are copied once, into the header block, which
+  is one segment by design (M3.1-D). A 500-byte field value costs 3,248 B in all.
+
+**Requests a server meets.** The same measurement over requests a server meets found
+the parser's largest cost, one the gate's workload hid. byte-machine's keyword matcher
+copied the prefix it had matched on every byte, so a field the parser reads by name
+cost 1 to 4.4 KB more, growing with the square of the match. That put:
+- a JSON POST with `Content-Type` and `Content-Length` at 6,800 B;
+- `ab -k`'s HTTP/1.0 keep-alive GET at 5,824 B;
+- a browser's GET, with `Connection: keep-alive`, at 8,144 B.
+
+It was filed as byte-machine #139 on the owner's word, and the owner held M3's close for
+the fix. byte-machine v0.6.1 reads the prefix in place, and the pin moved to it through
+chez-httparse v0.4.3 and uriparse v0.6.1 (decision 0008). At the new pin:
+
+| request | before | after |
+|---|---|---|
+| the gate's GET | 2,736 B | 1,840 B |
+| curl's GET | 2,736 B | 1,840 B |
+| a JSON POST | 6,800 B | 2,384 B |
+| ab -k's GET | 5,824 B | 2,112 B |
+| a browser's GET, eleven fields | 8,144 B | 3,312 B |
+
+On the owner's word (2026-09-26), two requests a server meets join the gate beside the
+CPS workload, each held to the 3,072 B ratchet: the JSON POST, and ab -k's. The owner
+chose three. Review found that curl's GET has the CPS workload's shape, the same three
+fields, so every mutant moved the two checks together. It is printed rather than gated
+twice. The browser's GET is printed too, since its cost counts its fields: eight more than
+the CPS workload's three, at 176 B each (the parser's 64 B and the core's 112 B), and 64 B
+for the keyword table its `Connection` value is read through. A third shape joins the other two: a field name costs the same
+however much of a parser keyword it matches. The research spike
+`research/spike/m3-exit-keyword-alloc.sps` records every number here, at both pins.

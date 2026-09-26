@@ -1692,3 +1692,43 @@ Byte identity between the tags:
 `make test`: twenty-seven suites, 699 expected passes, exit 0. The allocation suite's gate reads 1,840 B.
 
 NEXT: the M3 exit's second part, stacked on the pin.
+
+M3 EXIT, SECOND PART: the checks, and the gate over requests a server meets. Stacked on the pin; 2026-09-26, Darwin arm64, Chez 10.4.1 `tarm64osx`. Mutation log: m3-mutations.md, "The M3 exit".
+
+At the new pin, the gate's GET costs 1,840 B, and curl's GET 1,840 B, a JSON POST 2,384 B, `ab -k` 2,112 B, and a browser-like GET 3,312 B. The browser's is over the 3,072 B ratchet because it carries eleven fields to the gate GET's three. Each of the eight more costs 176 B, the parser's 64 B and the core's 112 B, and its `Connection` value costs 64 B for the keyword table it is read through, which makes the 1,472 B.
+
+DECIDED on the owner's word (2026-09-26), by form, the recommended answer: **three requests a server meets join the gate**, each held to 3,072 B: curl's GET, the JSON POST, and `ab -k`'s. The browser's GET is printed on every run, not gated. Weighed:
+- all four under a 4 KiB gate, set as decision 0002 set the first: the largest measured cost rounded up to the next KiB;
+- all four under 3 KiB, with M3 staying open until each field costs less.
+
+BUILT:
+- `tests/test-serializer.sps`: every status line in the table is made once, and shared.
+- `tests/test-connection-allocation.sps`:
+  - a 999-byte body costs what a 100-byte one does;
+  - a 17-byte field name costs the same however much of a keyword it matches, which was to have been the probe;
+  - the JSON POST and `ab -k`'s GET, each within the ratchet, with curl's GET and the browser's printed;
+  - the harness answers a given response.
+- Records:
+  - decision 0002's note: the response path fits, the finding, and the gate over requests a server meets;
+  - plan §7's M3 exit note and §12's risk row;
+  - the mutation log.
+
+Watched to fail (m3-mutations.md):
+- X-SL, a status line built per response, and X-BC, a body copied, each turn only their own check red. Before these checks they passed every suite.
+- The old pin, byte-machine v0.6.0's `runtime.sls` first on the path, turns three checks red: the name check, the JSON POST and `ab -k`.
+- X-GATE, 1,400 bytes more per response, turns the gate and both requests red.
+- M3.2-A and M3.1-A re-run on the final tree as before. M3.1-A now also turns the body check red, since joining copies the body.
+
+Read as the owner's choice, and flagged:
+- **The two response shapes and the name shape.** "Prefer a check to a comment."
+- **The requests, written from what each client sends:** curl 8.7.1, ApacheBench 2.3 under -k, and a Chromium browser.
+
+Found in review (2026-09-26), and fixed on the owner's word ("fix all findings except the filed issues"):
+- **curl's GET is printed, not gated.** It has the CPS workload's shape, the same three fields, so its check duplicated the ratchet's: every mutant moved the two together.
+- **The browser's GET carries eleven fields, not twelve.** Its cost is now stated exactly, not as about 176 B a field.
+- **The first part's records.** The spike's header named the wrong rows as gated, and the first part's entry cited the probe as though it had landed. Both are corrected in the first part, and the spike's runs were made again at both pins: the old pin was checked out for its two, and the new one restored after.
+- **Left as filed:** byte-machine #139 still says twelve fields.
+
+`make test` green: twenty-seven suites, 706 expected passes (serializer 147, connection-allocation 18), exit 0. `make check-imports` is clean.
+
+NEXT: the two stacked PRs, on the owner's word. At the merge, M3 is complete. Then M4, the libuv shell and the first real server (plan §8).
