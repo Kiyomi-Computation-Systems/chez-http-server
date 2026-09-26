@@ -1254,3 +1254,16 @@ M3.2 THIRD STEP: the core writes through the serializer (feat/m3.2-core-writes, 
 - `make test` green: twenty-three suites, 608 expected passes (connection-response 23), exit 0. `make check-imports` is clean.
 
 NEXT: the three stacked PRs, on the owner's word. Then M3.3, write accounting: the bytes and writes outstanding, and the check that the core keeps no response bytes once the write is issued.
+
+MERGED to main on 2026-09-25, as three stacked PRs landed bottom up on the owner's "do closing ritual":
+- #34, the first step, merged as 859aad0 without deleting its branch, since #35 was based on it. Its squash tree (b826809) is identical to the tested tip's, 845cee8.
+- #35 was retargeted to main, rebased onto 859aad0 and force-pushed with a lease read from the remote. The rebase took 3f46cc5 to 29ca1cc with the tree unchanged (5e93ffa). #35 merged as ba66aa2, again keeping its branch for the PR above; its tree is the tested one, proved against the merge commit gh reports.
+- #36 was retargeted and rebased the same way, from 3f46cc5, the tip it was built on: fc7dfe3 to 2d29b00, the tree unchanged (f15ca23). #36 merged as d563e03, whose tree is the tested one.
+- Every `linux` check executed zero steps, stopped at the billing check: runs 36203983952 (#34), 36203990459 (#35) and 36203993158 (#36), and the rebased tips' 36204781390 (#35) and 36204828633 (#36).
+- `gh pr merge --delete-branch` switched this checkout to main and fast-forwarded it to d563e03. The two lower branches were deleted by hand, local and remote, and refs pruned; no PR is open.
+
+`make test` green on main: twenty-three suites, 608 expected passes, exit 0.
+
+M3.2 DONE and merged: the core writes every response through the framing decision and the serializer. A handler's response goes on the wire framed for the request it answers, with the Connection field its connection's fate calls for and a Date slot the shell fills; one the serializer cannot write safely is answered 500, and the connection closes. The brief's mutation, chunked to a 1.0 client, is witnessed (M3.2-A), one of M3's exit criteria.
+
+NEXT: M3.3, write accounting (plan §7): the bytes and writes outstanding, and the check that the core keeps no response bytes once the write is issued, finished by the plan's mutation, the segment list retained until the completion. On a fresh branch cut from main after this commit, when the owner asks.
