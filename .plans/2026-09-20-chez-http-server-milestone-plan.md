@@ -796,6 +796,52 @@ not built.
 preface 505 itself, so the hook has no v1 user. M8 opens the door at the message's end,
 for a handler that takes upgrades; until then an upgrade is served and the connection
 closed.
+*Noted 2026-09-26 (the WebSocket questions):* WebSocket is a library of its own that
+takes a stream through the door, not code in this repository (0001 items 3 and 4). The
+transport record that 0001 item 4 and 0006 item 3 name does not exist in `src/` yet;
+M8 defines it. The door's shape answers three questions before a taker can use it:
+1. **Who writes the `101`.** The server writes framing, `Connection` and `Date`
+   (0010), so a handler cannot write the `101` itself. The likely shape is a response
+   that carries a take-over procedure, which the server calls after writing the `101`,
+   with the transport and the retained bytes, `parser-result-next` onward (h2o's shape,
+   0006 item 3).
+2. **What the handed-off stream still belongs to.** Whether it counts against
+   `max-connections`; whether the drain waits for it or tells it to close (a WebSocket's
+   1001, "going away") within `drain-timeout-ms`; whether its ping and idle deadlines
+   ride the one tick timer and the wheel (0005) or it brings its own timer; and who
+   owns its close, since `make check-close-ownership` gives each kind of handle one
+   `uv-close!` owner in `src/`, and the taker lives outside it. A door that leaves these
+   open leaks sockets or holds a shutdown.
+3. **What the door hands over.** Recommended: the transport record, a record of verbs
+   (write, start and stop reading with a data callback, close, a deadline) that the
+   server's shell implements over chez-libuv. The taker imports no chez-libuv and is
+   tested against a fake transport. The server keeps the stream's close, its place in
+   `max-connections`, the drain and the wheel, so most of question 2 is answered by the
+   shape, and chez-libuv's loop-thread affinity (`&uv-wrong-thread`, chez-libuv #20)
+   stays the shell's. A TLS layer would be a transport record that wraps one. The cost:
+   the verbs are a public API, and the taker runs inside the shell's callbacks, under
+   0003's rules. The alternative, the raw handle and the loop (h2o's "steal the
+   socket"), has the taker pin chez-libuv and answer question 2 itself.
+
+*Noted 2026-09-26 (behind Caddy):* the owner deploys servers like this one behind Caddy,
+which terminates TLS and HTTP/2. From Caddy's `reverse_proxy` docs, read 2026-09-26:
+- A WebSocket needs no Caddy configuration. Caddy sends the upgrade on and then tunnels
+  the bytes. To a plaintext upstream it speaks HTTP/1.1, so the server sees an HTTP/1.1
+  upgrade, whether the browser came over HTTP/1.1 or over HTTP/2's extended CONNECT
+  (RFC 8441, which Caddy's reverse proxy handles for `websocket` only, caddyserver/caddy
+  #6740, v2.9.0).
+- `versions h2c` in Caddy's upstream transport would open with the HTTP/2 preface,
+  which the core answers 505 (0006's amendment, item 2). The default, `1.1 2`, uses
+  HTTP/2 only over TLS.
+- A Caddy config reload closes every WebSocket, with a close frame to both sides, unless
+  `stream_close_delay` is set. The taker's clients reconnect.
+- `stream_timeout` is off by default, so a dead peer is found by the taker's ping and
+  idle deadlines (question 2).
+- Caddy passes `Origin` on unchecked. The taker's handshake checks it, or any page can
+  open a socket with a user's cookies (cross-site WebSocket hijacking).
+- With Caddy terminating TLS, question 3's TLS argument does not apply there; its
+  others hold.
+
 **Exit (brief):** v0.1.0 tagged with the measured numbers in `CHANGELOG.md`.
 
 ---
