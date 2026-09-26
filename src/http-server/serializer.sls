@@ -26,13 +26,15 @@
 ;;;
 ;;; WHAT CANNOT BE WRITTEN SAFELY is a fault (decision 0010 item 2).
 ;;; `response-fault` names it, and the core answers 500 instead; serializing
-;;; a response with a fault is a caller bug, an assertion violation.  The
+;;; a response with a fault is a caller bug, an assertion violation.  A
+;;; caller that has asked already, as the core has, writes the response with
+;;; `serialize-checked-response`, which does not read it for faults again.  The
 ;;; value bytes refused are the ones llhttp's strict parser refuses in a
 ;;; field value: every control character but HTAB.
 ;;;
 ;;; PURE: imports only (rnrs) and this project's pure libraries.
 (library (http-server serializer)
-  (export serialize-response response-fault response-closes?
+  (export serialize-response serialize-checked-response response-fault response-closes?
           framing-modes date-line date-line-length)
   (import (rnrs) (http-server response) (http-server span)
           (only (http-server headers) header-name=?))
@@ -63,8 +65,17 @@
   (define (serialize-response r mode connection)
     (cond ((response-fault r)
            => (lambda (fault)
-                (assertion-violation 'serialize-response "a response with a fault" fault)))
-          ((not (memq mode framing-modes))
+                (assertion-violation 'serialize-response "a response with a fault" fault))))
+    (serialize-checked-response r mode connection))
+
+  ;; serialize-checked-response :
+  ;;   Response Mode Connection -> (values (Listof Segment) Nat)
+  ;; serialize-response for a response whose response-fault the caller has
+  ;; already found #f, as the core has before it frames a handler's response
+  ;; (M3.2): the fault check reads every byte of every field, so it is not
+  ;; made twice.  Everything else is checked as serialize-response checks it.
+  (define (serialize-checked-response r mode connection)
+    (cond ((not (memq mode framing-modes))
            (assertion-violation 'serialize-response "not a framing mode" mode))
           ((not (memq connection '(close keep-alive #f)))
            (assertion-violation 'serialize-response "not a Connection" connection))
