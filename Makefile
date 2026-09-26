@@ -113,26 +113,15 @@ check-imports: ## Assert pure libraries import no (libuv)/(chezscheme), and src/
 	fi; \
 	echo "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, no test library in src/"
 
-# connection-close! is the only uv-close! call (design §7.6, decision 0003):
-# chez-libuv keeps the callback of a handle's first close alone, so a close
-# from anywhere else would leave the connection's own close callback never
-# run and the connection in the table.  The gate reads the code, not the
-# comments: every uncommented use of the name `uv-close!` in src/ (a call,
-# an alias, an argument to apply) is named with the definition it sits in,
-# and there must be exactly one, in connection-close!.
-check-close-ownership: ## Assert connection-close! is the only uv-close! call in src/
-	@command -v rg >/dev/null 2>&1 || { echo "check-close-ownership: needs ripgrep (rg) on PATH" >&2; exit 2; }; \
-	calls=$$(awk 'FNR == 1 { owner = "(top level)" } \
-	  { code = $$0; sub(/;.*/, "", code); code = " " code " " } \
-	  code ~ /\(define / { s = code; sub(/^.*\(define \(?/, "", s); sub(/[ )].*$$/, "", s); owner = s } \
-	  code ~ /[^-A-Za-z0-9!$$%&*\/:<=>?^_~.+@]uv-close![^-A-Za-z0-9!$$%&*\/:<=>?^_~.+@]/ { print FILENAME ":" FNR ": " owner }' \
-	  $$(rg --files src -g '*.sls') </dev/null); \
-	if [ "$$(printf '%s\n' "$$calls" | awk 'NF' | wc -l | tr -d ' ')" != 1 ] || \
-	   ! printf '%s\n' "$$calls" | rg -q ': connection-close!$$'; then \
-	  echo "CLOSE OWNERSHIP: uv-close! must be called once, from connection-close!; found:" >&2; \
-	  printf '%s\n' "$${calls:-(no call)}" >&2; exit 1; \
-	fi; \
-	echo "close ownership ok: $$calls"
+# One procedure closes every handle: handle-close!, the one use of uv-close!
+# in src/ (design §5.3 and §7.6, decision 0003).  chez-libuv keeps the
+# callback of a handle's first close alone, so a close from anywhere else
+# could run first and leave the shell's own callback never run.  The check is
+# a suite, tests/test-close-ownership.sps, which `make test` runs with the
+# others: it reads the source with Chez's own reader, so a string, a comment
+# or two uses side by side cannot hide one.  This target runs it alone.
+check-close-ownership: build ## Check handle-close! is the one uv-close! use in src/
+	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ) --program tests/test-close-ownership.sps
 
 deps: submodules ## Build the chez-libuv shim and link SRFI-64 onto the path
 	$(MAKE) -C $(LIBUV_DIR) build
@@ -151,7 +140,7 @@ build: deps ## Build dependencies and assemble the one library path
 dev: build ## Start a REPL with everything on the library path
 	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ)
 
-test: build check-pins check-imports check-close-ownership ## Run every tests/test-*.sps (status 0/1/2/3, keep-going)
+test: build check-pins check-imports ## Run every tests/test-*.sps (status 0/1/2/3, keep-going)
 	@test -n "$(TESTS)" || { echo "test: empty selection — no tests/test-*.sps (failure)" >&2; exit 2; }
 	@test -n "$(TIMEOUT_BIN)" || echo "note: no timeout(1) on PATH; a hung suite will not be capped"
 	@fail=0; \

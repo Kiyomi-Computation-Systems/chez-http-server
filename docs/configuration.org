@@ -20,6 +20,8 @@ refused rather than silently ignored.
 | ~CHEZ_HTTP_MAX_BODY_BYTES~          | unbounded | request-body cap (~unbounded~ disables)  |
 | ~CHEZ_HTTP_PIPELINE_CAP~            | 1         | must be 1: one request at a time         |
 | ~CHEZ_HTTP_READ_BUFFER_SIZE~        | 16384     | per-connection read buffer               |
+| ~CHEZ_HTTP_MAX_CONNECTIONS~         | 10000     | connections open at once                 |
+| ~CHEZ_HTTP_BACKLOG~                 | 511       | connections waiting to be accepted       |
 | ~CHEZ_HTTP_REQUIRE_HOST~            | true      | HTTP/1.1 requests must send ~Host~       |
 
 A request over any of the four header limits gets ~431~, and one whose target
@@ -29,6 +31,21 @@ target must be is in [[file:request-targets.org][request-targets.org]].
 When the server closes a connection after a response, it keeps reading, and
 throwing away, what the client still sends, until the client closes or
 ~CHEZ_HTTP_LINGER_TIMEOUT~ passes (see [[file:connections.org][connections.org]]).
+
+A connection that arrives while ~CHEZ_HTTP_MAX_CONNECTIONS~ are open is
+closed at once. The first refusal is logged (~refusing~), and so is how many
+were refused (~refused~), once a connection is accepted again or the server
+stops: two lines, however many are refused.
+
+Each open connection uses a file descriptor, so set the process's open-file
+limit (~ulimit -n~) above ~CHEZ_HTTP_MAX_CONNECTIONS~. On Linux and macOS a
+server out of descriptors closes new connections at once, without a log. On
+Windows its listener stops: the server logs ~listener-failed~ and shuts down,
+so whatever supervises it can start it again.
+
+~CHEZ_HTTP_BACKLOG~ is how many connections the kernel keeps waiting for the
+server to accept them, at most 2147483647; the kernel may cap it lower
+(~somaxconn~).
 
 ~CHEZ_HTTP_PIPELINE_CAP~ must be 1; any other value is refused at startup.
 The server answers the requests on a connection one at a time, in order (see

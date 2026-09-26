@@ -38,14 +38,13 @@ jobs:
           submodules: true
 
       # libuv for the shim (pkg-config path); the X11/ncurses/uuid headers are
-      # what Chez's from-source build needs; ripgrep for `make
-      # check-close-ownership`.
+      # what Chez's from-source build needs.
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config libuv1-dev \
-            libx11-dev libncurses-dev uuid-dev git ripgrep
+            libx11-dev libncurses-dev uuid-dev git
 
       # The OS release for the Chez cache key, read off the machine rather than
       # restated from runs-on (which a bump could forget), so a new image misses

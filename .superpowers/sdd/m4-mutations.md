@@ -159,7 +159,7 @@ finished tree, with the same result; the plan's ran against every suite.
 
 | # | mutation (`src/http-server/server.sls`) | observed |
 |---|---|---|
-| M4.3-A | the plan's: a connection over the cap accepted anyway | server 5 — the three refusal rows ("an arrival with the cap open is refused, and the first refusal logged", "a refusal after the first is counted, not logged", "the cap is the limits': by default 10 000 open are refused"), the episode, and "the step answers with the state it was given, updated". Every other suite green |
+| M4.3-A | the plan's: a connection over the cap accepted anyway | server 5 — the three refusal rows ("an arrival with the cap open is refused, and the first refusal logged", "a refusal after the first is counted, not logged", "the cap is the limits': by default 10 000 open are refused"), the episode, and "the step answers with the state it was given, updated". On the finished tree, shell 3 as well (below). Every other suite green |
 | M4.3-B | the cap off by one, `<=` for `<` | server 5 — the same five |
 | M4.3-C | an episode's first refusal not logged | server 3 — the first-refusal row, the default cap's, and the episode |
 | M4.3-D | every refusal logged, nginx's way | server 2 — "a refusal after the first is counted, not logged", and the episode |
@@ -184,3 +184,66 @@ finished tree, with the same result; the plan's ran against every suite.
 | M4.3-X | a vocabulary event the step does not take | server 4 — "every event is one the step takes, listening or draining", the two tick rows, and "no row asks for an action outside the vocabulary", which the step's raise stopped |
 | M4.3-Y | a stop that asks for an action outside the vocabulary | server 3 — "no row asks for an action outside the vocabulary", and the two shutdown rows |
 
+## M4.3, second step — the shell's listener, and one closer (2026-09-26)
+
+Red before green: the shell suite with the listener's checks stopped at load
+against the first step's shell (`shell-server` unbound, exit 255), and
+`tests/test-close-ownership.sps` failed on a copy of the tree whose shell had
+three `uv-close!` owners, its fixtures green (11 passes, 1 failure). These
+mutants ran on the finished tree.
+
+| # | mutation (`src/http-server/private/shell.sls`) | observed |
+|---|---|---|
+| M4.3-S1 | a close's callback leaves the connection in the table | shell 6 — "when the client closes, the connection closes and leaves the table", the two failed writes' "... closes the connection", "when the client served closes, its place is free", "and the next client is served" (refused: the table still counted the first), and "and the refusals are logged with their count" |
+| M4.3-S2 | `reconcile!` drops nothing | shell 2 — "until the run loop reconciles the table with the loop, logs it, and runs on", and "every connection closes and leaves the table" |
+| M4.3-S3 | a refused handle left open | shell 3 — "two clients over max-connections each read the stream's end, having read nothing", and the end's live handles and counters |
+| M4.3-S4 | the listener listens with 511, not the limits' backlog | shell 3 — "a listener with the limits' backlog of -1 cannot listen, and is closed", and the end's two |
+| M4.3-S5 | a listener that cannot listen left open | shell 5 — the backlog's check, "a listener on a port in use cannot listen, and is closed", "and the shell may listen again", and the end's two |
+| M4.3-S6 | `close-listener` not performed | shell 3 — "a shutdown closes the listener the clients used, and the server drains", and the end's two |
+| M4.3-S7 | a shell that listens on a second listener | shell 4 — "and listens on one listener at a time", the shutdown's check (the second listener took the field, so the shutdown closed it and left the first open), and the end's two |
+| M4.3-S7b | a shell that listens after its server has stopped | shell 3 — "and a server that has stopped listening never listens again", and the end's two |
+| M4.3-S7c | the review's C1b: any listener made refuses the next, closed or not | shell 1 — "and the shell may listen again" |
+| M4.3-S8 | `shell-adopt!` serves a refused connection | shell 2 — the two over-cap checks |
+| M4.3-S9 | the review's C3: a raise before serving leaves the handle open | shell 5 — "when a connection cannot be adopted, its client reads the stream's end", "and the connection is closed and gone, the error logged", "when the server's step raises on an arrival, its client reads the stream's end", and the end's two |
+| M4.3-S12 | the answer's log not run | shell 2 — "the first refusal is logged, the second is not, and one connection is open", and "and the refusals are logged with their count" |
+| M4.3-S13 | the table counted as empty on every arrival | shell 3 — the over-cap checks and the count's log |
+| M4.3-S14 | a raise closes the handle and is dropped | shell 3 — "with no response, the connection closed and gone, the error logged", and the two failed listeners' checks |
+| M4.3-S15 | the listener takes a connection and does not offer it | shell exit 2 — "the server's own listener serves a client", then the suite's body raised before finishing |
+| M4.3-S16 | a raise in the arrival's step answered by serving anyway | shell 2 — "when the server's step raises on an arrival, its client reads the stream's end", and "with nothing read, no connection served, and the error logged" |
+| M4.3-A | the plan's, on the finished tree, against every suite | server 5, as above, and shell 3 — the two over-cap checks and "and the refusals are logged with their count". Every other suite green |
+
+The check that one procedure closes every handle, and its reader:
+
+| # | mutation | observed |
+|---|---|---|
+| M4.3-G1 | a second caller: `reconcile!` closes a stale connection's handle itself | close-ownership 1 — "src/ uses uv-close! once, in handle-close!" |
+| M4.3-G2 | `handle-close!` closes twice, on one line | close-ownership 1 — the same |
+| M4.3-G3 | an alias, `(shut uv-close!)`, bound in `serve!` | close-ownership 1 — the same |
+| M4.3-G4 | a close after a `;` in a string | close-ownership 1 — the same. The awk scan it replaces passed this |
+| M4.3-G5 | two uses one character apart, `(list uv-close! uv-close!)` | close-ownership 1 — the same. The awk scan counted one |
+| M4.3-WA | the walker keeps a form's first use alone (in the suite's walker) | close-ownership 2 — "two calls on one line", "two uses one character apart" |
+| M4.3-WB | the walker names every use by its outermost definition | close-ownership 1 — "a call in a definition inside another" |
+| M4.3-WD | the walker names every use top-level | close-ownership 9 — every fixture with a definition |
+| M4.3-WF | the walker sees calls alone | close-ownership 1 — "two uses one character apart" |
+| M4.3-WG | a string naming `uv-close!` counted as a use | close-ownership 1 — "a string naming it is not a use" |
+| M4.3-WH | the walker skips import clauses | close-ownership 1 — "a rename in an import" |
+
+The G mutants ran the suite from a scratch copy of `src/`, which it reads from
+its working directory; the walker's ran the suite edited.
+
+Two survive, and are scope statements, as is one fixture:
+
+| # | mutation | observed, and why no test |
+|---|---|---|
+| M4.3-S10 | an arrival answered with neither `accept` nor `refuse` runs on | shell green, 62. The shell's assertion answers a bug in the step, and the step's rows pin its answer to every arrival, so no check can provoke it |
+| M4.3-S11 | `server-run!` drops an action it cannot perform | shell green, 62. Likewise: no row asks the shell for one. It was silent before the review (C12) |
+| — | "comments are not uses" | a pin on Chez's reader, which drops comments and datum comments; no mutation of ours can turn it red, as with the flag pins |
+
+Found by the review in the first build's records, and corrected here: its
+M4.3-S7 said the second listener was never closed, where the first was, and its
+shutdown check read the shell's listener field, so it passed under that
+mutant; the check now reads the listener the clients used. Its M4.3-G2 said the
+awk scan now named each call; two uses one character apart still counted as
+one, and a `;` in a string hid a call. That scan is gone.
+
+`make test` afterwards: see the ledger's M4.3 entry.

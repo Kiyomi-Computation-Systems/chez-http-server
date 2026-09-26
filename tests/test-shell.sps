@@ -30,7 +30,15 @@
 ;;;     (design §6.4, the first hazard; decision 0003 item 4);
 ;;;   - a connection whose callback raises is closed, and so is one whose
 ;;;     adoption fails;
-;;;   - the run loop drops a connection whose handle closed behind the shell;
+;;;   - the run loop drops a connection whose handle closed behind the shell,
+;;;     and runs on;
+;;;   - the server's own listener (design §4.6; M4.3) serves a client; refuses
+;;;     those over max-connections, closing each at once, the first refusal
+;;;     logged and the count once a place is free; serves the next then;
+;;;     listens on one listener at a time; closes the listener the clients
+;;;     used at a shutdown, and never listens after it; listens with the
+;;;     limits' backlog; and closes a listener that cannot listen, after which
+;;;     the shell may listen again;
 ;;;   - and at the end every connection was accepted and has closed, and no
 ;;;     handle is left on the loop.
 ;;;
@@ -49,6 +57,7 @@
         (only (generated httparse-message) httparse-message-machine)
         (only (httparse modes) httparse-message-type-value)
         (http-server private shell)
+        (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (response-reader))
@@ -84,14 +93,15 @@
   (if (pair? logged) (car (list-ref logged (- (length logged) 1))) 'nothing-logged))
 
 ;; The verbs the shells ran and the events they dispatched, newest first, as
-;; (connection kind verb): only the verb, so the trace keeps nothing of an
-;; action's bytes.  While `trap` is set, the next `call-handler` a connection
-;; runs raises first, as a bug in the shell would.
+;; (connection kind verb), or (shell kind verb) for the server's: only the
+;; verb, so the trace keeps nothing of an action's bytes.  While `trap` is
+;; (kind . verb), the next trace of that verb, a connection's `action` or the
+;; server's `server-event`, raises first, as a bug in the shell would.
 (define traced '())
 (define trap #f)
 (define (trace! c kind datum)
   (set! traced (cons (list c kind (car datum)) traced))
-  (when (and trap (eq? kind 'action) (eq? (car datum) 'call-handler))
+  (when (and trap (eq? kind (car trap)) (eq? (car datum) (cdr trap)))
     (set! trap #f)
     (raise (make-message-condition "a bug in the shell"))))
 
@@ -132,8 +142,8 @@
            (raise (make-message-condition "the handler failed")))
           (else (make-response 200 #f '() target)))))
 
-;; limits-with-read-buffer : Nat -> Limits — the defaults, but the buffer.
-(define (limits-with-read-buffer n) (limits-with default-limits (list (cons 'read-buffer-size n))))
+;; with : Symbol Any -> Limits — the defaults, but one field.
+(define (with field value) (limits-with default-limits (list (cons field value))))
 
 ;; --- the loop, the shell, and a listener of the suite's own ---------------------
 
@@ -181,22 +191,29 @@
                   (lambda () (client-end-set! cl 'eof))
                   (lambda (e) (client-end-set! cl (err->symbol e)))))
 
-;; open-client! : (U #f Bytevector) [Boolean] -> Client
-;; A client on the loop that connects, writes `request` whole unless it is #f,
-;; and reads unless told to wait.
-(define open-client!
+;; open-client-to! : Nat (U #f Bytevector) [Boolean] -> Client
+;; A client on the loop that connects to `to`, writes `request` whole unless
+;; it is #f, and reads unless told to wait.
+(define open-client-to!
   (case-lambda
-    ((request) (open-client! request #t))
-    ((request read?)
+    ((to request) (open-client-to! to request #t))
+    ((to request read?)
      (let* ((tcp (make-uv-tcp loop)) (cl (make-client tcp)))
        (set! clients (cons cl clients))
-       (connect-loopback! tcp port
+       (connect-loopback! tcp to
                           (lambda (err)
                             (client-connected-set! cl (err->symbol err))
                             (unless err
                               (when read? (client-read! cl))
                               (when request (client-send! cl request)))))
        cl))))
+
+;; open-client! : (U #f Bytevector) [Boolean] -> Client — one to the suite's
+;; own listener.
+(define open-client!
+  (case-lambda
+    ((request) (open-client-to! port request #t))
+    ((request read?) (open-client-to! port request read?))))
 
 (define (client-send! cl bytes) (uv-write! (client-tcp cl) bytes (lambda (err) #f)))
 
@@ -487,7 +504,7 @@
     (set! logged '())
     (let* ((before (newest))
            (cl (open-client! (b "GET /trap HTTP/1.1\r\nHost: x\r\n\r\n"))))
-      (set! trap #t)
+      (set! trap '(action . call-handler))
       (test-eq "when a connection's callback raises, its client reads the stream's end" 'satisfied
                (run-shell-until shell (lambda () (eq? (client-end cl) 'eof))))
       (let ((c (adopted-since before)))
@@ -498,7 +515,7 @@
       (client-close! cl))
 
     ;; An adoption that fails closes the connection.
-    (let ((bad (make-shell loop handler (limits-with-read-buffer 0) clock log! trace!)))
+    (let ((bad (make-shell loop handler (with 'read-buffer-size 0) clock log! trace!)))
       (set! adopting bad)
       (set! logged '())
       (let ((cl (open-client! #f)))
@@ -508,6 +525,23 @@
         (test-equal "and the connection is closed and gone, the error logged" '(() callback-error)
                     (list (shell-connections bad) (first-logged)))
         (client-close! cl)))
+
+    ;; A bug before a connection is served closes its handle: the server's
+    ;; step raises on the arrival, and the client reads the stream's end.
+    (set! logged '())
+    (let* ((before (newest))
+           (cl (open-client! #f)))
+      (set! trap '(server-event . connection-arrived))
+      (test-eq "when the server's step raises on an arrival, its client reads the stream's end"
+               'satisfied
+               (run-shell-until shell (lambda () (eq? (client-end cl) 'eof))))
+      (set! trap #f)
+      (test-equal "with nothing read, no connection served, and the error logged"
+                  '(0 none-served callback-error)
+                  (list (collector-count (client-collector cl))
+                        (if (adopted-since before) 'served 'none-served)
+                        (first-logged)))
+      (client-close! cl))
 
     ;; The run loop drops a connection whose handle closed behind the shell.
     (let* ((before (newest))
@@ -521,12 +555,95 @@
                  'in-table
                  (if (and c (memq c (shell-connections shell))) 'in-table 'gone))
         (set! logged '())
-        (raise-in-callback (make-message-condition "a bug in a callback"))
-        (test-equal "until the run loop reconciles the table with the loop, and logs it" '(gone #t)
-                    (list (if (and c (memq c (shell-connections shell))) 'in-table 'gone)
-                          (let ((entry (assq 'reconciled logged)))
-                            (and entry (pair? (cdr entry)) (eq? (cadr entry) c))))))
+        (let ((outcome (raise-in-callback (make-message-condition "a bug in a callback"))))
+          (test-equal "until the run loop reconciles the table with the loop, logs it, and runs on"
+                      '(gone #t ran-on)
+                      (list (if (and c (memq c (shell-connections shell))) 'in-table 'gone)
+                            (let ((entry (assq 'reconciled logged)))
+                              (and entry (pair? (cdr entry)) (eq? (cadr entry) c)))
+                            outcome))))
       (client-close! cl))
+
+    ;; The server's own listener, at most one connection open.
+    (set! logged '())
+    (let* ((capped (make-shell loop handler (with 'max-connections 1) clock log! trace!))
+           (to (shell-listen! capped "127.0.0.1" 0))
+           (listening (shell-listener capped))
+           (served (lambda (cl) (wait-for (lambda () (= 1 (length (responses (client-bytes cl))))))))
+           (ended (lambda (cl) (wait-for (lambda () (not (eq? (client-end cl) 'open))))))
+           (refusals (lambda ()
+                       (filter (lambda (entry) (memq (car entry) '(refusing refused)))
+                               (reverse logged))))
+           (a (open-client-to! to (b "GET /a HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the server's own listener serves a client" 'satisfied (served a))
+      (test-eq "and listens on one listener at a time" 'refused
+               (guard (e ((assertion-violation? e) 'refused))
+                 (shell-listen! capped "127.0.0.1" 0)
+                 'listened-again))
+      (let* ((over (open-client-to! to #f))
+             (over-end (ended over))
+             (again (open-client-to! to #f))
+             (again-end (ended again)))
+        (test-equal "two clients over max-connections each read the stream's end, having read nothing"
+                    '(satisfied satisfied (eof 0) (eof 0))
+                    (list over-end again-end
+                          (list (client-end over) (collector-count (client-collector over)))
+                          (list (client-end again) (collector-count (client-collector again)))))
+        (test-equal "the first refusal is logged, the second is not, and one connection is open"
+                    '(((refusing max-connections)) 1)
+                    (list (refusals) (length (shell-connections capped))))
+        (client-close! over)
+        (client-close! again))
+      (client-close! a)
+      (test-eq "when the client served closes, its place is free" 'satisfied
+               (wait-for (lambda () (null? (shell-connections capped)))))
+      (let ((next (open-client-to! to (b "GET /next HTTP/1.1\r\nHost: x\r\n\r\n"))))
+        (test-eq "and the next client is served" 'satisfied (served next))
+        (test-equal "and the refusals are logged with their count"
+                    '((refusing max-connections) (refused max-connections 2))
+                    (refusals))
+        (client-close! next)
+        (wait-for (lambda () (null? (shell-connections capped)))))
+      (shell-shutdown! capped)
+      (test-equal "a shutdown closes the listener the clients used, and the server drains"
+                  '(closed draining)
+                  (begin
+                    (wait-for (lambda () (eq? (uv-handle-state listening) 'closed)))
+                    (list (uv-handle-state listening) (server-phase (shell-server capped)))))
+      (test-eq "and a server that has stopped listening never listens again" 'refused
+               (guard (e ((assertion-violation? e) 'refused))
+                 (shell-listen! capped "127.0.0.1" 0)
+                 'listened-again)))
+
+    ;; A listener listens with the limits' backlog, and one that cannot listen
+    ;; is closed, after which the shell may listen again.
+    (let* ((bad (make-shell loop handler (with 'backlog -1) clock log! trace!))
+           (reason (guard (e ((uv-invalid-argument? e) (uv-invalid-argument-reason e)))
+                     (shell-listen! bad "127.0.0.1" 0)
+                     'listening)))
+      (test-equal "a listener with the limits' backlog of -1 cannot listen, and is closed"
+                  '(backlog-out-of-range closed)
+                  (let ((l (shell-listener bad)))
+                    (wait-for (lambda () (and l (eq? (uv-handle-state l) 'closed))))
+                    (list reason (if l (uv-handle-state l) 'no-listener)))))
+    (let* ((holder (make-shell loop handler default-limits clock log! trace!))
+           (taken (shell-listen! holder "127.0.0.1" 0))
+           (retry (make-shell loop handler default-limits clock log! trace!))
+           (in-use (guard (e ((uv-errno-error? e) (uv-errno-error-errno e)))
+                     (shell-listen! retry "127.0.0.1" taken)
+                     'listened))
+           (failed (shell-listener retry)))
+      (test-equal "a listener on a port in use cannot listen, and is closed" '(EADDRINUSE closed)
+                  (begin (wait-for (lambda () (and failed (eq? (uv-handle-state failed) 'closed))))
+                         (list in-use (if failed (uv-handle-state failed) 'no-listener))))
+      (test-eq "and the shell may listen again" 'listening
+               (guard (e ((assertion-violation? e) 'refused))
+                 (shell-listen! retry "127.0.0.1" 0)
+                 'listening))
+      (shell-shutdown! holder)
+      (shell-shutdown! retry)
+      (wait-for (lambda () (for-all (lambda (sh) (eq? (uv-handle-state (shell-listener sh)) 'closed))
+                                    (list holder retry)))))
 
     ;; The end.
     (for-each client-close! clients)

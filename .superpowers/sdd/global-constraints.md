@@ -13,4 +13,4 @@ Every task brief in this project is bound by the following. They are the house r
 - Socket tests bind `127.0.0.1:0`, run clients on the same loop, and cap by iteration count, never wall-clock. Timeout tests drive `(tick now)` with a fake clock.
 - Every count that enters a record is re-measured on the tree at the time of writing, dated and platform-stamped; do not carry numbers forward by arithmetic.
 - Conventional Commits. Run `make test` before every commit; fix failures first. CI is Linux only.
-- Prefer a check to a comment: a load-bearing invariant becomes a make target, a test, or an assertion (`connection-close!` is the only `uv-close!` caller; handler-facing libraries export no `uv-*` name; the pure libraries import no libuv).
+- Prefer a check to a comment: a load-bearing invariant becomes a make target, a test, or an assertion (`handle-close!` is the one `uv-close!` caller, for every kind of handle; handler-facing libraries export no `uv-*` name; the pure libraries import no libuv).
