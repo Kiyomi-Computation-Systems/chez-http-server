@@ -55,18 +55,17 @@
 ;; default-limits with the Host requirement off and the named limits
 ;; replaced: header and target sizes, or 'require-host.
 (define (with-limits overrides)
-  (let ((get (lambda (key default) (cond ((assq key overrides) => cdr) (else default))))
-        (L default-limits))
-    (make-limits (limits-read-header-timeout-ms L) (limits-idle-timeout-ms L)
-                 (limits-body-inactivity-timeout-ms L) (limits-linger-timeout-ms L)
-                 (get 'bytes (limits-max-header-bytes L))
-                 (get 'count (limits-max-header-count L))
-                 (get 'field (limits-max-header-field-bytes L))
-                 (get 'value (limits-max-header-value-bytes L))
-                 (get 'target (limits-max-target-bytes L))
-                 (limits-max-body-bytes L)
-                 (limits-pipeline-cap L) (limits-read-buffer-size L)
-                 (get 'require-host #f))))
+  (limits-with default-limits
+               (append (map (lambda (o)
+                              (cons (cdr (assq (car o) '((bytes . max-header-bytes)
+                                                         (count . max-header-count)
+                                                         (field . max-header-field-bytes)
+                                                         (value . max-header-value-bytes)
+                                                         (target . max-target-bytes)
+                                                         (require-host . require-host?))))
+                                    (cdr o)))
+                            overrides)
+                       '((require-host? . #f)))))
 
 ;; minimal : Limits — the defaults, with no Host required, for the rows that
 ;; send minimal requests to test another rule.

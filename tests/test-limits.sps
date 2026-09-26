@@ -3,18 +3,44 @@
 ;;; overrides.  Oracle: decision 0005 (the nginx-style bounded defaults) and
 ;;; the documented override convention (seconds for timeouts), and its
 ;;; amendment of 2026-09-25: the Host requirement is on unless
-;;; CHEZ_HTTP_REQUIRE_HOST is exactly "false"; and decision 0011's linger
-;;; limit, 30 s, nginx's lingering_time.
+;;; CHEZ_HTTP_REQUIRE_HOST is exactly "false"; decision 0011's linger
+;;; limit, 30 s, nginx's lingering_time; and 0005's connection cap and listen
+;;; backlog, 10 000 and 511, which arrive in M4.3 (milestone plan §3).  The
+;;; backlog reaches libuv's uv_listen as a C int, whose largest value is
+;;; 2147483647 on every platform the project targets (chez-libuv's native.sls
+;;; types it int).  `limits-with` replaces fields by the names below, which
+;;; this suite writes out itself, in make-limits' order.
 (import (rnrs) (srfi :64) (testing) (http-server limits))
 
-;; Every accessor, in field order.
-(define all-fields
-  (list limits-read-header-timeout-ms limits-idle-timeout-ms
-        limits-body-inactivity-timeout-ms limits-linger-timeout-ms limits-max-header-bytes
-        limits-max-header-count limits-max-header-field-bytes
-        limits-max-header-value-bytes limits-max-target-bytes
-        limits-max-body-bytes limits-pipeline-cap limits-read-buffer-size
-        limits-require-host?))
+;; Every field, by name and accessor, in make-limits' order.
+(define named-fields
+  (list (cons 'read-header-timeout-ms limits-read-header-timeout-ms)
+        (cons 'idle-timeout-ms limits-idle-timeout-ms)
+        (cons 'body-inactivity-timeout-ms limits-body-inactivity-timeout-ms)
+        (cons 'linger-timeout-ms limits-linger-timeout-ms)
+        (cons 'max-header-bytes limits-max-header-bytes)
+        (cons 'max-header-count limits-max-header-count)
+        (cons 'max-header-field-bytes limits-max-header-field-bytes)
+        (cons 'max-header-value-bytes limits-max-header-value-bytes)
+        (cons 'max-target-bytes limits-max-target-bytes)
+        (cons 'max-body-bytes limits-max-body-bytes)
+        (cons 'pipeline-cap limits-pipeline-cap)
+        (cons 'read-buffer-size limits-read-buffer-size)
+        (cons 'max-connections limits-max-connections)
+        (cons 'backlog limits-backlog)
+        (cons 'require-host? limits-require-host?)))
+
+(define all-fields (map cdr named-fields))
+
+;; alone? : (Pair Symbol Accessor) -> Boolean — limits-with, given this field
+;; alone, changes it and leaves every other field as default-limits has it.
+(define (alone? named)
+  (let ((L (limits-with default-limits (list (cons (car named) 'changed)))))
+    (for-all (lambda (other)
+               (if (eq? other named)
+                   (eq? ((cdr other) L) 'changed)
+                   (equal? ((cdr other) L) ((cdr other) default-limits))))
+             named-fields)))
 
 (run-suite "limits"
   (lambda ()
@@ -32,6 +58,8 @@
               (or (limits-max-body-bytes default-limits) 'unbounded))
     (test-eqv "pipeline cap 1"            1     (limits-pipeline-cap default-limits))
     (test-eqv "read buffer 16 KiB"        16384 (limits-read-buffer-size default-limits))
+    (test-eqv "max connections 10 000"    10000 (limits-max-connections default-limits))
+    (test-eqv "listen backlog 511"        511   (limits-backlog default-limits))
     (test-eq  "an HTTP/1.1 Host is required" #t   (limits-require-host? default-limits))
 
     ;; --- default-limits is exactly the empty environment (one code path) ---
@@ -50,7 +78,8 @@
                   "CHEZ_HTTP_MAX_HEADER_COUNT" "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"
                   "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES" "CHEZ_HTTP_MAX_TARGET_BYTES"
                   "CHEZ_HTTP_MAX_BODY_BYTES" "CHEZ_HTTP_PIPELINE_CAP"
-                  "CHEZ_HTTP_READ_BUFFER_SIZE" "CHEZ_HTTP_REQUIRE_HOST")
+                  "CHEZ_HTTP_READ_BUFFER_SIZE" "CHEZ_HTTP_MAX_CONNECTIONS"
+                  "CHEZ_HTTP_BACKLOG" "CHEZ_HTTP_REQUIRE_HOST")
                 limits-environment-variables)
 
     ;; --- overrides: timeouts are seconds -> ms; sizes/counts as given ---
@@ -62,6 +91,8 @@
                        ((string=? name "CHEZ_HTTP_MAX_BODY_BYTES") "1048576")
                        ((string=? name "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES") "256")
                        ((string=? name "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES") "512")
+                       ((string=? name "CHEZ_HTTP_MAX_CONNECTIONS") "2048")
+                       ((string=? name "CHEZ_HTTP_BACKLOG") "128")
                        (else #f))))))
       (test-eqv "idle 30 s -> 30000 ms" 30000   (limits-idle-timeout-ms L))
       (test-eqv "linger 5 s -> 5000 ms" 5000    (limits-linger-timeout-ms L))
@@ -69,6 +100,8 @@
       (test-eqv "body cap overridden"     1048576 (limits-max-body-bytes L))
       (test-eqv "header field overridden" 256    (limits-max-header-field-bytes L))
       (test-eqv "header value overridden" 512    (limits-max-header-value-bytes L))
+      (test-eqv "max connections overridden" 2048 (limits-max-connections L))
+      (test-eqv "backlog overridden"      128    (limits-backlog L))
       ;; an untouched field keeps its default
       (test-eqv "untouched read-header keeps default" 60000
                 (limits-read-header-timeout-ms L)))
@@ -113,8 +146,39 @@
                (limits-from-environment
                  (lambda (name) (if (string=? name "CHEZ_HTTP_PIPELINE_CAP") "-3" #f)))
                'no-fault))
+    (let ((backlog (lambda (value)
+                     (guard (e (#t 'faulted))
+                       (limits-backlog
+                        (limits-from-environment
+                         (lambda (name) (and (string=? name "CHEZ_HTTP_BACKLOG") value))))))))
+      (test-equal "a backlog is at most a C int's largest: 2147483647 is accepted, one more refused"
+                  '(2147483647 faulted) (map backlog '("2147483647" "2147483648"))))
+    (test-equal "no connections, or no backlog, is refused" '(faulted faulted)
+                (map (lambda (variable)
+                       (guard (e (#t 'faulted))
+                         (limits-from-environment
+                          (lambda (name) (and (string=? name variable) "0")))
+                         'no-fault))
+                     '("CHEZ_HTTP_MAX_CONNECTIONS" "CHEZ_HTTP_BACKLOG")))
     (test-eq "a non-numeric size is refused" 'faulted
              (guard (e (#t 'faulted))
                (limits-from-environment
                  (lambda (name) (if (string=? name "CHEZ_HTTP_MAX_HEADER_BYTES") "big" #f)))
-               'no-fault))))
+               'no-fault))
+
+    ;; --- limits-with: fields replaced by name, the rest kept ---
+    (test-equal "limits-with replaces each field alone, by name"
+                '(read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
+                  linger-timeout-ms max-header-bytes max-header-count max-header-field-bytes
+                  max-header-value-bytes max-target-bytes max-body-bytes pipeline-cap
+                  read-buffer-size max-connections backlog require-host?)
+                (map car (filter alone? named-fields)))
+    (test-equal "and several at once"
+                '(1 128 #f)
+                (let ((L (limits-with default-limits
+                                      '((require-host? . #f) (max-connections . 1) (backlog . 128)))))
+                  (list (limits-max-connections L) (limits-backlog L) (limits-require-host? L))))
+    (test-eq "a name that is not a field is refused" 'refused
+             (guard (e ((assertion-violation? e) 'refused))
+               (limits-with default-limits '((max-conections . 1)))
+               'accepted))))

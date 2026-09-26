@@ -116,15 +116,7 @@
   ;; corpus-limits : Limits — decision 0005's defaults with the Host
   ;; requirement off, the one limit this lane changes; (outcome-lane) runs
   ;; under it too.
-  (define corpus-limits
-    (let ((L default-limits))
-      (make-limits (limits-read-header-timeout-ms L) (limits-idle-timeout-ms L)
-                   (limits-body-inactivity-timeout-ms L) (limits-linger-timeout-ms L)
-                   (limits-max-header-bytes L)
-                   (limits-max-header-count L) (limits-max-header-field-bytes L)
-                   (limits-max-header-value-bytes L) (limits-max-target-bytes L)
-                   (limits-max-body-bytes L) (limits-pipeline-cap L)
-                   (limits-read-buffer-size L) #f)))
+  (define corpus-limits (limits-with default-limits '((require-host? . #f))))
 
   ;; core-trace-at : Fixture Bytevector Nat -> (values (Listof Bytevector) (U #f Symbol))
   ;; The trace at one chunk size with the core's bindings installed beside the

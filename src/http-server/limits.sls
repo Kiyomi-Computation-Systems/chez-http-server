@@ -14,7 +14,11 @@
 ;;; close), header bytes 16 KiB (-> 431), header count 100, header field and
 ;;; header value 8 KiB each (-> 431; M2, milestone plan §3), target 8 KiB
 ;;; (-> 414), bodies stream unbounded (#f), pipeline cap 1, read buffer
-;;; 16 KiB (standing risk 2).  The pipeline cap accepts only 1: the server
+;;; 16 KiB (standing risk 2), 10 000 connections at once (a connection over
+;;; them is refused as it arrives), and a listen backlog of 511, the kernel's
+;;; queue of connections not yet accepted (M4.3, milestone plan §3).  The
+;;; backlog reaches libuv's uv_listen as a C int, so it is at most 2147483647,
+;;; the largest a C int holds on every platform the project targets.  The pipeline cap accepts only 1: the server
 ;;; answers one request at a time by design (decision 0004's amendment of
 ;;; 2026-09-25), so any other value is refused rather than ignored.  Durations are stored in milliseconds;
 ;;; sizes and buffers in bytes.  Timeout overrides are given in whole
@@ -26,6 +30,7 @@
 (library (http-server limits)
   (export
     make-limits limits?
+    limits-with
     default-limits
     limits-from-environment
     limits-environment-variables
@@ -41,16 +46,19 @@
     limits-max-body-bytes
     limits-pipeline-cap
     limits-read-buffer-size
+    limits-max-connections
+    limits-backlog
     limits-require-host?)
   (import (rnrs))
 
   ;; make-limits :
-  ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Boolean -> Limits
-  ;; The thirteen fields, in declaration order:
+  ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Nat Nat Boolean -> Limits
+  ;; The fifteen fields, in declaration order:
   ;;   read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
   ;;   linger-timeout-ms max-header-bytes max-header-count
   ;;   max-header-field-bytes max-header-value-bytes max-target-bytes
-  ;;   max-body-bytes pipeline-cap read-buffer-size require-host?
+  ;;   max-body-bytes pipeline-cap read-buffer-size max-connections backlog
+  ;;   require-host?
   ;; (make-limits, limits? and the accessors are generated below.)
   (define-record-type limits
     (fields
@@ -66,12 +74,35 @@
       (immutable max-body-bytes             limits-max-body-bytes)
       (immutable pipeline-cap               limits-pipeline-cap)
       (immutable read-buffer-size           limits-read-buffer-size)
+      (immutable max-connections            limits-max-connections)
+      (immutable backlog                    limits-backlog)
       (immutable require-host?              limits-require-host?)))
+
+  ;; limits-with : Limits (Listof (Pair Symbol Any)) -> Limits
+  ;; `base` with the fields named in `overrides` replaced, each as (name .
+  ;; value), the name make-limits gives the field (read-header-timeout-ms ...
+  ;; require-host?).  The order comes from the record type itself, so a new
+  ;; field needs no caller changed.  A name that is not a field is an
+  ;; assertion violation; values are not checked, as make-limits' are not.
+  (define (limits-with base overrides)
+    (let* ((rtd (record-type-descriptor limits))
+           (names (vector->list (record-type-field-names rtd))))
+      (for-each (lambda (o)
+                  (unless (and (pair? o) (memq (car o) names))
+                    (assertion-violation 'limits-with "not a limits field" o)))
+                overrides)
+      (apply make-limits
+             (let fields ((names names) (k 0))
+               (if (null? names)
+                   '()
+                   (cons (let ((o (assq (car names) overrides)))
+                           (if o (cdr o) ((record-accessor rtd k) base)))
+                         (fields (cdr names) (+ k 1))))))))
 
   ;; default-limits : Limits — decision 0005's nginx-style defaults, and
   ;; decision 0011's linger.
   (define default-limits
-    (make-limits 60000 75000 60000 30000 16384 100 8192 8192 8192 #f 1 16384 #t))
+    (make-limits 60000 75000 60000 30000 16384 100 8192 8192 8192 #f 1 16384 10000 511 #t))
 
   ;; limits-environment-variables : (Listof String)
   ;; The environment variables consulted by `limits-from-environment`,
@@ -89,31 +120,40 @@
       "CHEZ_HTTP_MAX_BODY_BYTES"
       "CHEZ_HTTP_PIPELINE_CAP"
       "CHEZ_HTTP_READ_BUFFER_SIZE"
+      "CHEZ_HTTP_MAX_CONNECTIONS"
+      "CHEZ_HTTP_BACKLOG"
       "CHEZ_HTTP_REQUIRE_HOST"))
 
   ;; blank? : (U String #f) -> Boolean — an absent or empty value.
   (define (blank? s)
     (or (not s) (string=? s "")))
 
-  ;; parse-exact : Symbol String String Nat -> Nat
-  ;; Parse a non-negative exact integer >= min, or fault with who/name.
-  (define (parse-exact who name s min)
+  ;; parse-exact : Symbol String String Nat (U Nat #f) -> Nat
+  ;; Parse an exact integer >= min and, unless max is #f, <= max, or fault
+  ;; with who/name.
+  (define (parse-exact who name s min max)
     (let ((n (string->number s 10)))
-      (unless (and n (integer? n) (exact? n) (>= n min))
+      (unless (and n (integer? n) (exact? n) (>= n min) (or (not max) (<= n max)))
         (assertion-violation who
-          "expected an exact integer >= the field minimum" name s min))
+          "expected an exact integer within the field's bounds" name s min max))
       n))
 
-  ;; env-integer : Lookup String Nat Nat -> Nat
-  (define (env-integer lookup name default min)
-    (let ((s (lookup name)))
-      (if (blank? s) default (parse-exact 'limits-from-environment name s min))))
+  ;; c-int-max : Nat — the largest C int, what uv_listen takes a backlog as.
+  (define c-int-max 2147483647)
+
+  ;; env-integer : Lookup String Nat Nat [Nat] -> Nat
+  (define env-integer
+    (case-lambda
+      ((lookup name default min) (env-integer lookup name default min #f))
+      ((lookup name default min max)
+       (let ((s (lookup name)))
+         (if (blank? s) default (parse-exact 'limits-from-environment name s min max))))))
 
   ;; env-seconds->ms : Lookup String Nat -> Nat
   ;; Overrides are whole seconds; the stored value is milliseconds.
   (define (env-seconds->ms lookup name default-ms)
     (let ((s (lookup name)))
-      (if (blank? s) default-ms (* 1000 (parse-exact 'limits-from-environment name s 0)))))
+      (if (blank? s) default-ms (* 1000 (parse-exact 'limits-from-environment name s 0 #f)))))
 
   ;; env-max-body : Lookup String (U Nat #f) -> (U Nat #f)
   ;; The literal "unbounded" clears the cap; otherwise a byte count.
@@ -121,7 +161,7 @@
     (let ((s (lookup name)))
       (cond ((blank? s) default)
             ((string=? s "unbounded") #f)
-            (else (parse-exact 'limits-from-environment name s 0)))))
+            (else (parse-exact 'limits-from-environment name s 0 #f)))))
 
   ;; env-pipeline-cap : Lookup String -> Nat
   ;; 1, the only cap the server serves; a value that parses but is not 1
@@ -162,4 +202,6 @@
       (env-max-body    lookup "CHEZ_HTTP_MAX_BODY_BYTES"          #f)
       (env-pipeline-cap lookup "CHEZ_HTTP_PIPELINE_CAP")
       (env-integer     lookup "CHEZ_HTTP_READ_BUFFER_SIZE"        16384 1)
+      (env-integer     lookup "CHEZ_HTTP_MAX_CONNECTIONS"         10000 1)
+      (env-integer     lookup "CHEZ_HTTP_BACKLOG"                 511   1 c-int-max)
       (env-boolean     lookup "CHEZ_HTTP_REQUIRE_HOST"            #t))))

@@ -131,3 +131,56 @@ red as on the first step's tree, but for these:
 
 `make test` was green afterwards: twenty-nine suites, 757 expected passes
 (connection-allocation 19, shell 48, exports 2), exit 0.
+
+## M4.3, first step — the two limits, `limits-with`, and `server-step` (2026-09-26)
+
+Red before green: `tests/test-limits.sps` stopped at load at its first new
+name (unbound identifier), then, once `limits-with` existed, failed the
+backlog's bound alone (36 passes, 1 failure) until the bound existed;
+`tests/test-server.sps` stopped at load against the step before the review's
+rework (`server-refused` unbound, exit 255). These mutants ran on the first
+step's own tree, a scratch worktree cut from main at 100ae8b, and again on the
+finished tree, with the same result; the plan's ran against every suite.
+
+| # | mutation (`src/http-server/limits.sls`) | observed |
+|---|---|---|
+| M4.3-L1 | max-connections' default moved to 10,001 in `default-limits` alone | limits 2 — "max connections 10 000", and the drift guard, "empty env == default-limits, field by field" |
+| M4.3-L2 | the backlog's default moved to 512 in `limits-from-environment` alone | limits 1 — the drift guard alone |
+| M4.3-L2b | the backlog's default moved to 512 in `default-limits` alone | limits 2 — "listen backlog 511", and the drift guard |
+| M4.3-L3 | max-connections read from a misspelled variable | limits 2 — "max connections overridden", and "no connections, or no backlog, is refused", whose 0 was then never read |
+| M4.3-L3b | the backlog read from a misspelled variable | limits 3 — "backlog overridden", the bound's check, and "no connections, or no backlog, is refused" |
+| M4.3-L4 | a backlog of 0 accepted | limits 1 — "no connections, or no backlog, is refused" |
+| M4.3-L5 | `CHEZ_HTTP_BACKLOG` left out of `limits-environment-variables` | limits 1 — "the environment variables, one per field" |
+| M4.3-L6 | no upper bound on the backlog | limits 1 — "a backlog is at most a C int's largest: 2147483647 is accepted, one more refused" |
+| M4.3-L7 | the bound one short, `<` for `<=` | limits 1 — the same check |
+| M4.3-W1 | `limits-with` takes a name that is not a field | limits 1 — "a name that is not a field is refused" |
+| M4.3-W2 | `limits-with` reads each field one place off | limits 1 — "limits-with replaces each field alone, by name" |
+| M4.3-W3 | `limits-with` applies the first override alone | limits 1 — "and several at once" |
+
+| # | mutation (`src/http-server/server.sls`) | observed |
+|---|---|---|
+| M4.3-A | the plan's: a connection over the cap accepted anyway | server 5 — the three refusal rows ("an arrival with the cap open is refused, and the first refusal logged", "a refusal after the first is counted, not logged", "the cap is the limits': by default 10 000 open are refused"), the episode, and "the step answers with the state it was given, updated". Every other suite green |
+| M4.3-B | the cap off by one, `<=` for `<` | server 5 — the same five |
+| M4.3-C | an episode's first refusal not logged | server 3 — the first-refusal row, the default cap's, and the episode |
+| M4.3-D | every refusal logged, nginx's way | server 2 — "a refusal after the first is counted, not logged", and the episode |
+| M4.3-E | an episode's count not logged at the next accept | server 2 — "an arrival once a place is free is accepted, and the refusals logged with their count", and the episode |
+| M4.3-F | a shutdown that does not stop listening | server 2 — "a shutdown stops listening", and "a shutdown during refusals logs their count" |
+| M4.3-G | a stop that does not log the episode's count | server 2 — the shutdown's and the failed listener's count rows |
+| M4.3-H | an arrival answered with a copy of the state | server 1 — "the step answers with the state it was given, updated" |
+| M4.3-I | a second stop closes the listener again | server 2 — "a second shutdown asks for nothing", and "a listener failure while draining asks for nothing" |
+| M4.3-J | a failed listener logged only | server 3 — its three rows |
+| M4.3-K | a tick that asks to force every connection closed | server 2 — the two tick rows |
+| M4.3-M | an arrival below the cap refused | server 5 — "an arrival with fewer open than the cap is accepted", "so is one that takes the last place", "and 9 999 open are not", the count row, and the episode |
+| M4.3-M2 | the last place never taken | server 4 — "so is one that takes the last place", "and 9 999 open are not", the count row, and the episode |
+| M4.3-M4 | an arrival while draining refused and logged | server 1 — "an arrival while draining is refused, and not logged" |
+| M4.3-M5 | a close that asks for a log | server 2 — the two close rows |
+| M4.3-V | an event outside the vocabulary answered with nothing | server 1 — "an event outside the vocabulary, or an arrival without a count, is a caller bug" |
+| M4.3-V2 | an arrival's count not checked | server 1 — the same check |
+| M4.3-V3 | `listener-failed` left out of the vocabulary | server 2 — the events' list, and "the samples name every event, in order" |
+| M4.3-V4 | `force-close-all` left out of the vocabulary | server 1 — the actions' list |
+| M4.3-V5 | `draining` left out of the phases | server 8 — the phases' list, and every check that starts a server draining |
+| M4.3-P | a state in any phase accepted | server 1 — "a state in no phase, with negative refusals, no limits, or no cap is refused" |
+| M4.3-P2 | a state with no connection cap accepted | server 1 — the same check |
+| M4.3-X | a vocabulary event the step does not take | server 4 — "every event is one the step takes, listening or draining", the two tick rows, and "no row asks for an action outside the vocabulary", which the step's raise stopped |
+| M4.3-Y | a stop that asks for an action outside the vocabulary | server 3 — "no row asks for an action outside the vocabulary", and the two shutdown rows |
+
