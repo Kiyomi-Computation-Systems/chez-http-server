@@ -114,3 +114,41 @@ main's exited 255 ("Exception in trace-lane: a probe raise").
 
 `make test` was green afterwards: twenty-two suites, 543 expected passes
 (libhtp-lane 15), exit 0.
+
+## M3.2 first step — the framing decision (2026-09-25)
+
+The mutants ran against the finished tree, uncommitted on feat/m3.2-framing,
+against test-decisions: nothing else calls the decision in this step. The
+counts are the final tree's, re-measured after review added the status
+check, which is one more pass in each.
+
+Red before green: against a stub that exported `response-framing` and
+`response-connection` and answered nothing, the suite exited 1 with 17 passes
+and 34 failures: every framing and Connection row, the three checks beside
+them, and the reason list, which names invalid-response. The 17 were the
+checks the suite had before. The status check, added in review, failed first
+against the decision without it: 51 passes, 1 failure.
+
+| # | mutation (`src/http-server/decisions.sls`) | observed |
+|---|---|---|
+| M3.2-A | the brief's: an unknown length is chunked whatever the version (the gate before `chunked` dropped) | exit 1; 48 passes, 4 failures — the unknown-length rows for 1.0, 0.9 and 2.0, and "every framing mode is some row's answer": close-delimited is no row's answer any more |
+| M3.2-B | the version gate reads the major version only | exit 1; 4 failures — the unknown-length rows for 1.0 and 2.0, now chunked, and the Connection rows for 1.0 and 2.0, which lose their keep-alive. 0.9 held: its major is 0 |
+| M3.2-C | a HEAD's rule comes before the 1xx, 204, 304 and CONNECT rule | exit 1; 2 failures — "a 204 to a HEAD" and "a 304 to a HEAD", each given the HEAD's Content-Length |
+| M3.2-D | a 304 is framed as usual | exit 1; 2 failures — the 304 with a body, and the 304 to a HEAD |
+| M3.2-E | every status to CONNECT has no body, not only a 2xx | exit 1; 2 failures — the 3xx and the 407 to CONNECT |
+| M3.2-F | a HEAD answered with no body announces a length | exit 1; 1 failure — "a HEAD answered with no body gets neither" |
+| M3.2-G | the 1xx range ends at 198 | exit 1; 1 failure — "the last 1xx gets neither" |
+| M3.2-H | the 2xx range to CONNECT ends at 298 | exit 1; 1 failure — "the last 2xx to CONNECT, of unknown length, gets neither" |
+| M3.2-I | keep-alive is written to HTTP/1.1 too | exit 1; 1 failure — the 1.1 Connection row |
+| M3.2-J | only HTTP/1.1's last response says close | exit 1; 3 failures — the Connection rows for 1.0, 0.9 and 2.0 |
+| M3.2-K | invalid-response has no status of its own | exit 1; 1 failure — the reason list |
+| M3.2-L | any length is taken | exit 1; 1 failure — "a length that is not a count, #f or unknown is refused" |
+| M3.2-S | any status is framed (review) | exit 1; 1 failure — "a status outside 100–599 is refused" |
+
+A is the plan's named mutation, with the plan's expectation met: the 1.0
+table rows, and nothing else. That takes a row whose length is unknown: a
+known length gets Content-Length at every version, so without M6's stream in
+the decision's domain, chunked to a 1.0 client could not be told apart.
+
+Every suite was green with this step alone on 409b886, in a scratch
+worktree: twenty-two suites, 577 expected passes (decisions 52), each exit 0.

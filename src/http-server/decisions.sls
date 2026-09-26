@@ -24,11 +24,16 @@
 ;;; answer, its `upgrade` field (chez-httparse v0.4.1, #47), which the core
 ;;; reads at on-headers-complete.
 ;;;
+;;; The framing decision is here too (M3.2; design §3.1): how a response's
+;;; body goes on the wire, for the request it answers, and the Connection
+;;; field it carries.  (http-server serializer) writes what they decide.
+;;;
 ;;; Keep-alive and needs-eof are not here either: `should-keep-alive?` and
 ;;; `message-needs-eof?` come from (httparse decisions), which mirrors llhttp.
 ;;; PURE: imports only (rnrs).
 (library (http-server decisions)
-  (export reason-status parser-error-status result-hands-off-stream?)
+  (export reason-status parser-error-status result-hands-off-stream?
+          response-framing response-connection)
   (import (rnrs))
 
   ;; reason-status : Symbol -> Nat
@@ -46,6 +51,7 @@
       ((headers-too-large too-many-headers
         header-field-too-large header-value-too-large) 431)
       ((handler-failed) 500)
+      ((invalid-response) 500)               ; one the serializer cannot write (0010 item 2)
       ((http2-preface) 505)                  ; nothing to hand HTTP/2 to (0006 item 2)
       (else (assertion-violation 'reason-status
               "not a reason the core originates a response for" reason))))
@@ -94,4 +100,66 @@
   ;; here over the result's parts.  A code counts only on its own channel.
   (define (result-hands-off-stream? status error-code pause-code)
     (or (and (eq? status 'paused) (eq? pause-code 'paused-upgrade))
-        (and (eq? status 'error) (eq? error-code 'paused-h2-upgrade)))))
+        (and (eq? status 'error) (eq? error-code 'paused-h2-upgrade))))
+
+  ;; response-framing :
+  ;;   (U Symbol #f) Nat Nat Nat (U Nat #f 'unknown) -> Symbol
+  ;;   method http-major http-minor — the request's: the method as llhttp
+  ;;     names it, or #f when the core has read no request to answer (a
+  ;;     refusal before the head was complete), and its version
+  ;;   status — the response's
+  ;;   length — its body's: a count, #f for no body, or 'unknown for a body
+  ;;     whose length is not known before it is written (M6's stream)
+  ;; How the response's body goes on the wire: one of (http-server
+  ;; serializer)'s framing modes.  The rules, first match wins:
+  ;;   - a 1xx, a 204, a 304 and a 2xx to CONNECT: no-body.  A client ends
+  ;;     each at the blank line, whatever its fields say (RFC 9112 §6.3 rules
+  ;;     1 and 2).  A 1xx, a 204 and a 2xx to CONNECT must carry neither
+  ;;     Content-Length nor Transfer-Encoding (RFC 9110 §8.6, §9.3.6; RFC 9112
+  ;;     §6.1).  A 304 may carry the 200's Content-Length, but only a HEAD's
+  ;;     answer announces one (decision 0010).  A body the handler gave one
+  ;;     of these is not written.
+  ;;   - a HEAD's answer: content-length-only when the handler gave the body
+  ;;     a GET would get, no-body when it gave none or its length is unknown.
+  ;;     A HEAD's Content-Length must be the GET's (RFC 9110 §8.6), so it is
+  ;;     written only when known (decision 0010 item 6).
+  ;;   - a known length, a body or none: content-length (RFC 9110 §8.6).
+  ;;   - an unknown length: chunked to HTTP/1.1, close-delimited to any other
+  ;;     version, which must not be sent Transfer-Encoding (RFC 9112 §6.1).
+  ;; A status outside 100–599 (RFC 9110 §15) and a length outside the three
+  ;; kinds are assertion violations.
+  (define (response-framing method http-major http-minor status length)
+    (unless (and (fixnum? status) (fx<=? 100 status 599))
+      (assertion-violation 'response-framing "not a status" status))
+    (unless (or (not length) (eq? length 'unknown)
+                (and (fixnum? length) (fx>=? length 0)))
+      (assertion-violation 'response-framing "not a body length" length))
+    (cond ((or (fx<=? 100 status 199) (fx=? status 204) (fx=? status 304)
+               (and (eq? method 'CONNECT) (fx<=? 200 status 299)))
+           'no-body)
+          ((eq? method 'HEAD) (if (fixnum? length) 'content-length-only 'no-body))
+          ((not (eq? length 'unknown)) 'content-length)
+          ((http/1.1? http-major http-minor) 'chunked)
+          (else 'close-delimited)))
+
+  ;; response-connection : Boolean Nat Nat -> (U 'close 'keep-alive #f)
+  ;;   closes? — the connection closes after this response
+  ;;   http-major http-minor — the request's version
+  ;; The Connection field the server writes (decision 0010 items 3 and 6):
+  ;; `close` on the last response (RFC 9112 §9.6); `keep-alive` on one to any
+  ;; version but HTTP/1.1 that keeps the connection, which only a request
+  ;; that asked to keep it does (should-keep-alive?), and an HTTP/1.0 client
+  ;; persists only when told so (RFC 9112 Appendix C.2.2); and none to
+  ;; HTTP/1.1, which persists by default (RFC 9112 §9.3).
+  (define (response-connection closes? http-major http-minor)
+    (cond (closes? 'close)
+          ((http/1.1? http-major http-minor) #f)
+          (else 'keep-alive)))
+
+  ;; http/1.1? : Nat Nat -> Boolean
+  ;; llhttp's version gate, `major > 0 && minor > 0`, which
+  ;; should-keep-alive? applies too.  Of the versions the strict parser
+  ;; admits (0.9, 1.0, 1.1 and 2.0; measured 2026-09-25) only 1.1 passes,
+  ;; which is RFC 9112 §6.1's "HTTP/1.1 (or later minor revisions)".
+  (define (http/1.1? http-major http-minor)
+    (and (> http-major 0) (> http-minor 0))))

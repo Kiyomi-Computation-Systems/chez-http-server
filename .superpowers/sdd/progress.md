@@ -1187,3 +1187,32 @@ MERGED to main on 2026-09-25 as e339931 (PR #33), on the owner's "do closing rit
 `make test` green on main: twenty-two suites, 543 expected passes, exit 0.
 
 NEXT: M3.2, framing (plan §7), on feat/m3.2-framing, which takes this fix from main. Its four test files merge with it cleanly; the ledger and the mutation log meet only at the end of each file.
+
+
+M3.2 — FRAMING (plan §7). Branch feat/m3.2-framing, cut from main at bd49005 and brought up to 409b886 (PR #33's fix and its reflect) before the first commit; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`. Mutation log: m3-mutations.md.
+
+MEASURED first, on main at bd49005:
+- the request versions a handler can be asked to answer: chez-httparse's strict parser hands 0.9, 1.0, 1.1 and 2.0 to on-headers-complete, and answers 1.2, 1.9, 2.1, 3.0 and 9.9 with 400 (a scratch run through the fake connection). Of the four, only 1.1 passes llhttp's gate, `major > 0 && minor > 0`, so on every version the parser admits the gate is RFC 9112 §6.1's "HTTP/1.1 (or later minor revisions)";
+- the allocation gate: 2,512 B per request, before the serializer is in the loop.
+
+Nothing here was the owner's to decide: the plan, the brief and decision 0010 settle every rule, so there was no form. Read as the owner's choice, and flagged for the PR:
+- a response the core originates is framed by the same decision as a handler's, for the request the core has built, if any. With no body it gets `Content-Length: 0`, unless that request is a HEAD, when it gets none: 0010 item 6's HEAD rule wins over its "Content-Length: 0" default, since a HEAD's Content-Length must be the GET's (RFC 9110 §8.6), which a 500 cannot know. A refusal made before the request is built (a 301, or a 400 for the Host or the target) answers no built request, so a HEAD's gets `Content-Length: 0`: a GET with the same target gets the same response, so the length is the GET's;
+- chunked goes only to a request that passes the gate `should-keep-alive?` applies, so the connection's two version rules agree;
+- a 205 is framed like any status, as Go and Node frame it: with no body it gets `Content-Length: 0`, one of the three framings RFC 9110 §15.3.6 allows;
+- the decision takes a length the server does not know, M6's stream, already: without it, the brief's mutation, chunked to a 1.0 client, has no row to turn red;
+- every entry into `responding` arms the write deadline, the core's own responses included, as design §4.3's state table says. Design §4.4's rows that write a status armed none; they carry a dated note.
+
+REVIEWED before the first commit, at high effort (/code-review), on the owner's "fix all findings": seven findings, all fixed, each below in its step. Two had their stated causes corrected by measurement first. A status that is not a fixnum already raises an assertion in Chez's fixnum comparisons, so the gap was a fixnum outside 100–599, which was framed silently. And the fault check made twice cost 270 ns of `serialize-response`'s ~570 ns for a three-header response, but no bytes.
+
+M3.2 is 662 inserted lines of code and tests, over plan §1 rule 1's ~400, so it goes up as three stacked PRs, one per step below, each green on its own: feat/m3.2-framing (this entry and the first step), feat/m3.2-checked-entry (the second), cut from it, and feat/m3.2-core-writes (the third), cut from that.
+
+M3.2 FIRST STEP: the framing decision (feat/m3.2-framing).
+- `(http-server decisions)` gains `response-framing`, `response-connection` and invalid-response's 500:
+  - `response-framing`: the request's method and version, the response's status, and its body's length (a count, none, or unknown) to one of the serializer's five modes. First match wins: a 1xx, a 204, a 304 and a 2xx to CONNECT get no body and no length; a HEAD's answer announces the GET's length when the handler gave its body, and nothing otherwise; a known length gets Content-Length; an unknown one is chunked to HTTP/1.1 and close-delimited to any other version. A status outside 100–599 and a length outside the three kinds are refused (review);
+  - `response-connection`: `close` on the last response, `keep-alive` to any version but 1.1 when the connection stays, and nothing to 1.1 when it stays.
+- `tests/test-decisions.sps` gains the framing table: 26 rows over the four versions the parser admits, each with its RFC or its item of decision 0010; the checks that every answer is one of the serializer's modes and every mode is some row's answer; the refusals of a length and a status outside their kinds; and the Connection rows, by version.
+- Red before green: against a stub that exported the two names and answered nothing, the suite exited 1, 17 passes and 34 failures: every new check, and the reason list, which now names invalid-response. The status check, added in review, failed first against the decision without it: 51 passes, 1 failure.
+- Mutations (m3-mutations.md): thirteen, A to L and S. A is the brief's: an unknown length chunked whatever the version turns red exactly the rows for 1.0, 0.9 and 2.0, and the check that every mode is some row's answer. The rest break the version gate, the rules' order, 304, CONNECT's 2xx, a HEAD with no body, the 1xx and 2xx ranges' ends, the two Connection answers, invalid-response's status and the length and status checks, each on its rows.
+- Every suite green in a scratch worktree with this step alone on 409b886: twenty-two suites, 577 expected passes (decisions 52), each exit 0.
+
+NEXT: the second step, the serializer's entry for a checked response and what the reader sees, stacked on this one.
