@@ -49,7 +49,7 @@
     (fold-right (lambda (a acc)
                   (case (car a)
                     ((call-handler hand-off) (cons (list (car a) (render-request (cadr a))) acc))
-                    ((write) (cons (list 'write (response-status (cadr a))) acc))
+                    ((write) (cons (list 'write (written-status a)) acc))
                     ((close) (cons a acc))
                     (else acc)))
                 '() actions))

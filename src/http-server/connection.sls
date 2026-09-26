@@ -29,7 +29,7 @@
 ;;;            (shutdown-requested)
 ;;;
 ;;;   actions  (reply-parser continue|pause)  (feed-parser bv start end)
-;;;            (resume-parser)  (write response)  (read-stop)  (read-start)
+;;;            (resume-parser)  (write segments nbytes)  (read-stop)  (read-start)
 ;;;            (call-handler request)  (deliver-body bv start end)
 ;;;            (deliver-body-end)  (notify-producer)  (arm-deadline kind)
 ;;;            (disarm-deadline)  (shutdown)  (close reason)
@@ -118,6 +118,20 @@
 ;;; hand-off (design §4.4's head/body row, `handed-off`) is the door M8 opens
 ;;; for a handler that takes upgrades; the core's own flow never reaches it.
 ;;;
+;;; A RESPONSE IS WRITTEN AS SEGMENTS (M3.2; design §7.3; decision 0010).
+;;; `(write segments nbytes)` is one write: (http-server serializer)'s
+;;; segments, the Date slot among them as the symbol `date` for the shell to
+;;; fill, and the bytes they come to.  The framing is (http-server
+;;; decisions)', for the request being answered: its method, its version and
+;;; the response's status and body.  The Connection field says `close` when
+;;; the connection closes after the response, which a close-delimited body
+;;; always does.  A handler's response the serializer cannot write safely is
+;;; answered 500 instead, then close, with `(log invalid-response fault)`
+;;; before it, and a handler's `Connection: close` closes the connection
+;;; after its response.  The core's own responses are framed the same way,
+;;; with no body.  Every entry into `responding` arms the write deadline
+;;; (design §4.3), the core's own responses included.
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
 ;;; to arm, and carries no time: no event but `tick` carries `now`, so the core
@@ -136,6 +150,8 @@
           (http-server response) (http-server request) (http-server span)
           (http-server limits) (http-server decisions) (http-server target)
           (only (http-server host) host-fault)
+          (only (http-server serializer)
+                serialize-response serialize-checked-response response-fault response-closes?)
           (only (httparse decisions) should-keep-alive?)
           (only (httparse methods) httparse-method-numbers))
 
@@ -397,8 +413,7 @@
            (values s '())))
       ((head)
        (if (eq? (conn-deadline s) 'header)
-           (begin (conn-deadline-set! s #f)
-                  (respond-and-close s 'header-timeout '()))
+           (respond-and-close s 'header-timeout '())
            (values s '())))
       (else (values s '()))))
 
@@ -665,15 +680,55 @@
     (let ((end (caddr delivery)))
       (and (fx<? next end) (list (car delivery) next end))))
 
-  ;; handling, handler-responded -> responding: write it, arm the write deadline.
+  ;; handling, handler-responded -> responding: write it, arm the write
+  ;; deadline.  A response with a fault is answered 500 instead, then close,
+  ;; the log naming the fault (decision 0010 item 2).  A handler's
+  ;; `Connection: close` closes the connection after its response (item 3),
+  ;; unless it closes already for a reason of its own.
   (define (on-handler-responded s response)
     (case (conn-phase s)
       ((handling)
-       (conn-phase-set! s 'responding)
-       (conn-deadline-set! s 'write)
-       (conn-outstanding-set! s (+ (conn-outstanding s) 1))
-       (values s (list (list 'write response) '(arm-deadline write))))
+       (cond
+        ((response-fault response)
+         => (lambda (fault)
+              (let-values (((s actions) (respond-and-close s 'invalid-response '())))
+                (values s (cons (list 'log 'invalid-response fault) actions)))))
+        (else
+         (when (and (not (conn-close-after s)) (response-closes? response))
+           (conn-close-after-set! s 'handler-close))
+         (conn-phase-set! s 'responding)
+         (conn-deadline-set! s 'write)
+         (conn-outstanding-set! s (+ (conn-outstanding s) 1))
+         (values s (list (write-action s response serialize-checked-response)
+                         '(arm-deadline write))))))
       (else (values s '()))))
+
+  ;; write-action : ConnState Response Serializer -> Action
+  ;;   Serializer = serialize-response, or serialize-checked-response for a
+  ;;                handler's response the core has found no fault in, so
+  ;;                that its fields are not read for faults twice
+  ;; `(write segments nbytes)`: the response as the segments of one write,
+  ;; framed for the request being answered, and saying `close` when the
+  ;; connection closes after it (http-server decisions).  A close-delimited
+  ;; body ends only with the connection (RFC 9112 §6.3 rule 8), so it closes
+  ;; the connection after the response when nothing else does; the decision
+  ;; gives that mode only to a body of unknown length, which a response
+  ;; first has in M6.  A response the core originates before a request is
+  ;; built answers none: it has no body and always closes, so the version,
+  ;; which only a body of unknown length or a connection that stays would
+  ;; read, is taken as 1.1.
+  (define (write-action s r serialize)
+    (let* ((req (conn-request s))
+           (major (if req (request-http-major req) 1))
+           (minor (if req (request-http-minor req) 1))
+           (body (response-body r))
+           (mode (response-framing (and req (request-method req)) major minor
+                                   (response-status r) (and body (bytevector-length body)))))
+      (when (and (eq? mode 'close-delimited) (not (conn-close-after s)))
+        (conn-close-after-set! s 'close-delimited))
+      (let-values (((segments bytes)
+                    (serialize r mode (response-connection (and (conn-close-after s) #t) major minor))))
+        (list 'write segments bytes))))
 
   ;; handling, handler-failed -> responding 500, then close.  (The bare close
   ;; for a failure after the head is on the wire needs a streamed body: M6.)
@@ -715,15 +770,20 @@
 
   ;; respond :
   ;;   ConnState Nat Symbol Headers -> (values ConnState (Listof Action))
-  ;; Enter `responding` with `status`, closing afterwards for `reason`.  The
-  ;; record carries no reason phrase, and no headers but `headers`, a
-  ;; redirect's Location: M3's serializer derives the phrase and adds
-  ;; `Connection: close`.
+  ;; Enter `responding` with `status`, closing afterwards for `reason`, and
+  ;; arm the write deadline, as every entry into `responding` does (design
+  ;; §4.3; the deadline armed before, a header or body one, gives way to it).
+  ;; The response has no body and no headers but `headers`, a redirect's
+  ;; Location; the serializer writes its phrase, and its framing and
+  ;; `Connection: close` (decision 0010 item 6).  The core's own response is
+  ;; read for faults as any caller's is.
   (define (respond s status reason headers)
     (conn-phase-set! s 'responding)
+    (conn-deadline-set! s 'write)
     (conn-close-after-set! s reason)
     (conn-outstanding-set! s (+ (conn-outstanding s) 1))
-    (values s (list (list 'write (make-response status #f headers #f)))))
+    (values s (list (write-action s (make-response status #f headers #f) serialize-response)
+                    '(arm-deadline write))))
 
   ;; refusal-headers : Head -> Headers
   ;; The headers a refused message's response carries: a redirect's

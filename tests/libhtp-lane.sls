@@ -194,7 +194,7 @@
             (if (and (pair? acc) (eq? (caar acc) 'body))
                 (cons (list 'body (string-append text (cadar acc))) (cdr acc))
                 (cons (list 'body text) acc))))
-         ((write) (cons (list 'write (response-status (cadr a))) acc))
+         ((write) (cons (list 'write (written-status a)) acc))
          ((close) (cons a acc))
          (else acc)))
      '() actions))

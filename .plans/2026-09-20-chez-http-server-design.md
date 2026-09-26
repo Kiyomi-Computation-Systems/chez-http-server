@@ -417,6 +417,16 @@ Termination and error rows:
 > state `body` (`research/spike/upgrade-door.sps`). The error channel's hand-off, the
 > HTTP/2 preface, arrives in `head` and is answered `505`, then close.
 
+> *Amended 2026-09-25 (M3.2):* every entry into `responding` arms the write deadline, as
+> §4.3's state table says, the rows above that write a status included: each is
+> `write`, then `arm-deadline write`, which takes the place of a header or body deadline
+> still armed. A response is written when a handler's comes back or when the core writes
+> its own, and a client that stops reading is bounded either way (0005's
+> `write-timeout-ms`, M5). M3.2 adds the rows for what a handler answers: a response
+> the serializer cannot write safely is answered 500, then close, after
+> `log invalid-response`, and a handler's `Connection: close` closes the connection after
+> its response (decision 0010 items 2 and 3).
+
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with
 `parser-result-pause` code `paused-upgrade`; the h2c preface `PRI * HTTP/2.0` arrives

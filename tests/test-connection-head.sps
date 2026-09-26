@@ -74,12 +74,12 @@
                                (utf8->string (span->bytevector (cdr h)))))
              (request-headers r))))
 
-;; render-action : Action -> Datum — a written response as its fields.
+;; render-action : Action -> Datum
+;; A write as its status and its header block, the segment after the Date
+;; slot, as text (M3.2).
 (define (render-action a)
-  (if (and (eq? (car a) 'write) (response? (cadr a)))
-      (let ((r (cadr a)))
-        (list 'write (list 'response (response-status r) (response-reason r)
-                           (response-headers r) (response-body r))))
+  (if (eq? (car a) 'write)
+      (list 'write (written-status a) (utf8->string (caddr (cadr a))))
       a))
 
 (define resp (make-response 200 #f '() (b "ok")))
@@ -105,7 +105,7 @@
             (and error
                  (list (car (list-ref error 4))
                        (map render-action
-                            (filter (lambda (a) (and (eq? (car a) 'write) (not (eq? (cadr a) resp))))
+                            (filter (lambda (a) (and (eq? (car a) 'write) (not (= (written-status a) 200))))
                                     actions))))
             (conn-phase s) (conn-close-after s)))))
 
@@ -118,9 +118,11 @@
         (let ((o (drive input size limits)))
           (loop (+ size 1) (if (member o seen) seen (cons o seen)))))))
 
-;; An originated status as render-action shows it (design §6.5: every one
-;; closes; M3's serializer derives the phrase and the headers).
-(define (status-write n) (list 'write (list 'response n #f '() #f)))
+;; An originated status as render-action shows it: no body, so
+;; `Content-Length: 0`, and `Connection: close` (decision 0010 item 6;
+;; design §6.5: every one closes).
+(define originated-block "Content-Length: 0\r\nConnection: close\r\n\r\n")
+(define (status-write n) (list 'write n originated-block))
 
 ;; The outcomes the rows expect.
 ;;   req      a rendered request: method, target, version, headers
@@ -138,7 +140,7 @@
 (define (redirected location)
   (list '()
         (list 'target-redirect
-              (list (list 'write (list 'response 301 #f (list (cons (b "Location") (b location))) #f))))
+              (list (list 'write 301 (string-append "Location: " location "\r\n" originated-block))))
         'closed 'target-redirect))
 
 ;; verdict : (-> Any) -> (U 'accepted 'refused)

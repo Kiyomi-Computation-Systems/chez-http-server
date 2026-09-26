@@ -35,7 +35,9 @@
 ;;;   resume-parser   parser-resume!
 ;;;   call-handler    the handler's response as `handler-responded`, or
 ;;;                   `handler-failed` if it raises
-;;;   write           completes on a later turn, as `write-completed`
+;;;   write           fills the Date slot from the fake clock, keeps the bytes
+;;;                   as the client would read them, and completes on a later
+;;;                   turn, as `write-completed` with the write's byte count
 ;;;   read-stop/-start  whether the next delivery is read
 ;;;   close           stops reading; `closed` arrives on a later turn
 ;;;
@@ -52,10 +54,12 @@
           fake-shell-actions fake-shell-events fake-shell-violations
           fake-shell-advance! fake-shell-deliver! fake-shell-tick! fake-shell-run!
           make-fake-connection fake-shell-conn-state fake-shell-reading?
-          fake-shell-settle! fake-shell-feed-input!)
+          fake-shell-settle! fake-shell-feed-input!
+          fake-shell-writes written-status)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state)
+          (only (http-server serializer) date-line)
           (http-server private adapter))
 
   ;; make-fake-shell : Step State Nat [Perform] -> FakeShell
@@ -75,21 +79,25 @@
             (mutable later)                   ; events for a later turn, in order
             (mutable parser)
             (mutable reading?)
-            (mutable dispatches))
+            (mutable dispatches)
+            (mutable writes-rev))             ; the bytes of each write, newest first
     (protocol (lambda (new)
                 (case-lambda
-                  ((step state0 now0) (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0))
+                  ((step state0 now0) (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '()))
                   ((step state0 now0 perform)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0))))))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '()))))))
 
   ;; fake-shell-actions / -violations : FakeShell -> (Listof Action)
   ;; fake-shell-events : FakeShell -> (Listof Event)
-  ;; The actions run, the actions run anywhere but the outermost drain, and
-  ;; the events dispatched, each in arrival order (the fields hold them
+  ;; fake-shell-writes : FakeShell -> (Listof Bytevector)
+  ;; The actions run, the actions run anywhere but the outermost drain, the
+  ;; events dispatched, and the bytes of each write a connection performed,
+  ;; its Date slot filled, each in arrival order (the fields hold them
   ;; reversed, appended to as they arrive).
   (define (fake-shell-actions s) (reverse (fake-shell-actions-rev s)))
   (define (fake-shell-events s) (reverse (fake-shell-events-rev s)))
   (define (fake-shell-violations s) (reverse (fake-shell-violations-rev s)))
+  (define (fake-shell-writes s) (reverse (fake-shell-writes-rev s)))
 
   ;; fake-shell-advance! : FakeShell Nat -> Nat
   ;; Move the injected clock forward by `dt` and return the new now; it never
@@ -206,12 +214,41 @@
        (let ((answer (guard (e (#t (list 'handler-failed e)))
                        (list 'handler-responded (handler (cadr a))))))
          (fake-shell-deliver! s answer)))
-      ;; The count is the bytes written; M3's serializer gives a response bytes.
-      ((write) (later! s '(write-completed 0)))
+      ((write) (write! s (cadr a) (caddr a)))
       ((read-stop) (fake-shell-reading?-set! s #f))
       ((read-start) (fake-shell-reading?-set! s #t))
       ((close) (fake-shell-reading?-set! s #f) (later! s '(closed)))
       (else (values))))
+
+  ;; write! : FakeShell (Listof Segment) Nat -> Void
+  ;; Perform `(write segments nbytes)` as a shell does (decision 0010 item 4):
+  ;; the Date slot becomes the line for the fake clock's second (the clock
+  ;; counts milliseconds, decision 0005's unit), the bytes are kept, and the
+  ;; write completes on a later turn with its byte count.  The count must be
+  ;; the bytes' own, which the serializer promises: one that is not is an
+  ;; assertion violation, never a quiet pass.
+  (define (write! s segments nbytes)
+    (let* ((line (date-line (div (fake-shell-now s) 1000)))
+           (parts (map (lambda (seg) (if (eq? seg 'date) line seg)) segments))
+           (wire (make-bytevector (fold-left (lambda (n bv) (+ n (bytevector-length bv))) 0 parts))))
+      (fold-left (lambda (at bv)
+                   (bytevector-copy! bv 0 wire at (bytevector-length bv))
+                   (+ at (bytevector-length bv)))
+                 0 parts)
+      (unless (= nbytes (bytevector-length wire))
+        (assertion-violation 'fake-shell "a write's byte count is not its bytes'"
+                             nbytes (bytevector-length wire)))
+      (fake-shell-writes-rev-set! s (cons wire (fake-shell-writes-rev s)))
+      (later! s (list 'write-completed nbytes))))
+
+  ;; written-status : Action -> Nat
+  ;; The status a `(write segments nbytes)` action writes: the three digits
+  ;; after `HTTP/1.1 ` in its first segment, the status line.
+  (define (written-status a)
+    (let ((line (car (cadr a))))
+      (+ (* 100 (- (bytevector-u8-ref line 9) 48))
+         (* 10 (- (bytevector-u8-ref line 10) 48))
+         (- (bytevector-u8-ref line 11) 48))))
 
   ;; feed! : FakeShell Bytevector Nat Nat -> Void
   ;; Feed the parser bv[start, end), counting the feed in the depth, then

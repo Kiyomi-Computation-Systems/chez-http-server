@@ -1,0 +1,45 @@
+#+TITLE: Responses: what the server writes for you
+
+Your handler returns a response: a status, a reason phrase, headers, and a
+body, which is a bytevector or ~#f~ for none. The server adds the rest:
+
+- the reason phrase (~OK~, ~Not Found~, ...) when you give ~#f~;
+- ~Content-Length~, counted from your body;
+- ~Connection: close~ when the connection closes after this response, and
+  ~Connection: keep-alive~ to an HTTP/1.0 client that asked to keep it open;
+- ~Date~, unless you set your own.
+
+To close the connection after your response, add ~Connection: close~.
+
+* Bodies that are not sent
+
+A client reads no body in these answers, so the server sends none, even if
+you gave one:
+
+| Answer                   | On the wire                           |
+|--------------------------+---------------------------------------|
+| to a ~HEAD~ request      | your body's ~Content-Length~, no body |
+| ~204 No Content~         | no ~Content-Length~, no body          |
+| ~304 Not Modified~       | no ~Content-Length~, no body          |
+| a ~2xx~ to a ~CONNECT~   | no ~Content-Length~, no body          |
+
+Give a ~HEAD~ the body a ~GET~ would get, and the client learns its length.
+Give it ~#f~, and no length is sent.
+
+* What gets 500
+
+The server will not write a response that could confuse the client. It
+answers ~500 Internal Server Error~ instead, logs why, and closes the
+connection:
+
+- a status outside 200–599 (a ~1xx~ is never a final answer);
+- a reason phrase that is not a bytevector, or has a control character;
+- a header name with a character names cannot have, such as a space or a
+  colon, or a value with a control character (a CR or LF could split your
+  response in two);
+- a ~Content-Length~ or ~Transfer-Encoding~ header: the server writes those;
+- a ~Connection~ header other than ~close~;
+- a body that is not a bytevector or ~#f~, or an answer that is not a
+  response.
+
+Decision 0010 in ~.plans/decisions/~ records why.
