@@ -228,3 +228,43 @@ close.
 
 `make test` was green afterwards: twenty-three suites, 608 expected passes
 (connection-response 23), exit 0.
+
+## M3.3 — write accounting (2026-09-25)
+
+The mutants ran against the finished tree, uncommitted on
+feat/m3.3-write-accounting at c39bcf6, after the review's fixes, against
+every suite; A, A2, B and L again against the retention suite once its
+driver took a refused completion as a failing check.
+
+Red before green: against a stub that exported `conn-outstanding-bytes` and
+took it in `make-conn-state`, with no accounting, the table exited 1 with 82
+passes and 10 failures, every instance of W1 to W4 as they stood. The
+retention suite was green there, 8 passes: the core already keeps nothing
+of a response, so its red is the plan's mutation, A. The review's checks
+failed first against the core before its fixes: the table exited 1, 92
+passes and 4 failures (the constructor's check, W4's completion without a
+count and with no write outstanding, and W5).
+
+Found by the first run of A: the runner, `mut.py`, read each edit's file from
+the tree afresh, so a spec with several edits to one file kept only the last,
+and A and A2 failed to compile. It now applies them in turn. No earlier spec
+had two edits to one file, so no recorded result changes.
+
+| # | mutation (`src/http-server/connection.sls`) | observed |
+|---|---|---|
+| M3.3-A | the plan's: the state keeps the write's segment list until its completion | connection-retention exit 1; 2 failures, one per case. A handler's response: its body, the segment list and the header block held, the response record released. A fault's: the 500's segment list and header block held, the handler's response and body released, since they are never written. Every other suite green, every wire test among them: the bytes written are the same |
+| M3.3-A2 | the state keeps the handler's response until the completion | connection-retention exit 1; 1 failure: a handler's response, the response and its body held, the segment list and header block released. The fault's case held: its response never reaches that line |
+| M3.3-B | a write's bytes are not counted when it is issued | connection-table 3 failures, W1's three. Every completion is then more than is outstanding, so the core refuses it wherever a write completes: connection-response 23, connection-head 40, connection-entry 3 (the replays), connection-retention 2 (the two completions; nothing is kept), libhtp-lane 12, outcome-lane 3, the ratchet 1 (each violation "raised conn-step a completion the core did not ask for"), and exit 2 in connection-allocation, message-loop and trace-lane, whose bodies raised |
+| M3.3-C | a completion does not take its bytes off | connection-table 4 failures: W2, W3's two and W5. A connection's second completion is then fewer bytes than are outstanding on its last write, so every connection that answers twice is refused: connection-response 1 (two requests in one delivery), connection-head 2 (the pipelined rows), connection-entry 1, message-loop 9, libhtp-lane 6 (the pipelined and multi-request files), outcome-lane 3, the ratchet 1, and exit 2 in connection-allocation and trace-lane |
+| M3.3-D | the completion's check is gone | connection-table 6 failures, W4's six; nothing else |
+| M3.3-E | the last write may leave bytes outstanding | connection-table 1 failure: W4's last completion one byte short, which leaves idle with 1 byte outstanding |
+| M3.3-F | a completion may report one byte more than is outstanding | connection-table 1 failure: W4's completion over by one, which leaves -1 bytes outstanding |
+| M3.3-G | the count is not checked to be a fixnum | connection-table 2 failures: W4's `ten` and its completion without a count, on each of which Chez's `fx<=?` raises before the core can refuse it. The row takes a refusal only from conn-step: `fx<=?`'s is an assertion violation too, so a row that took any would let G survive |
+| M3.3-H | a completion in closing is ignored again (review) | connection-table 2 failures: W5, and W4's completion with no write outstanding, which closing then accepts |
+| M3.3-I | a completion with no write outstanding is not refused (review) | connection-table 1 failure: W4's 0-byte completion in closing, which would leave -1 writes outstanding |
+| M3.3-J | the state's counts are not checked when it is made (review) | connection-table 1 failure: the constructor's check, a write with no bytes and bytes with no write among its four refusals |
+| M3.3-K | the count is read when the event arrives, in any state (review) | connection-table 1 failure: W4's completion without a count, on which `car` raises before the core can refuse it |
+| M3.3-L | a handler's response gets no write (review: the retention driver) | connection-retention exit 1; 3 failures, the handler's case: 'no-write, the phase it stopped in, and no completion. The suite's checks fail; its body does not raise |
+
+`make test` was green afterwards: twenty-four suites, 631 expected passes
+(connection-table 96, connection-retention 8), exit 0.

@@ -12,8 +12,9 @@
 ;;; item 3 adds; the 10 + 9 rows of design §4.4's two tables; the three
 ;;; rows of decision 0004's pause protocol that the design's tables fold into
 ;;; H6 and H10 (M2.4); the two rows of the upgrade door, decided on the
-;;; owner's word on 2026-09-25 (M2.5); and M3.2's two rows for what the
-;;; handler answers, from decision 0010 items 2 and 3.
+;;; owner's word on 2026-09-25 (M2.5); M3.2's two rows for what the handler
+;;; answers, from decision 0010 items 2 and 3; and M3.3's five rows for the
+;;; writes and bytes outstanding, from design §7.3 and decision 0010 item 5.
 ;;;
 ;;; A parser-result event carries its error as the error's code and node,
 ;;; (code . node), because the status of one code splits by node (design
@@ -33,7 +34,8 @@
 
 ;; state : Symbol . Plist -> ConnState
 ;; A synthetic state: the phase, plus any of deadline / close-after /
-;; outstanding / pending / request / target / host; every field not named
+;; outstanding / outstanding-bytes / pending / request / target / host;
+;; every field not named
 ;; takes its default, and the limits are decision 0005's defaults.  The head
 ;; is the core's own, so a target (a string) is read into it the way the
 ;; parser delivers one, on-url-data then on-url-complete, and a host (a
@@ -46,7 +48,8 @@
             (else (loop (cddr p))))))
   (let ((s (make-conn-state phase
                             (get 'deadline #f) (get 'close-after #f) (get 'outstanding 0)
-                            (get 'pending #f) (get 'request #f) default-limits))
+                            (get 'outstanding-bytes 0) (get 'pending #f) (get 'request #f)
+                            default-limits))
         (target (get 'target #f))
         (host (get 'host #f)))
     (when target
@@ -160,19 +163,21 @@
                             (arm-deadline write)))))
 
    (row 'H8 "responding, write-completed with more outstanding -> responding: arm write"
-        (i (state 'responding 'deadline 'write 'outstanding 2) '(write-completed 100)
+        (i (state 'responding 'deadline 'write 'outstanding 2 'outstanding-bytes 300)
+           '(write-completed 100)
            '(responding #f ((arm-deadline write)))))
 
    (row 'H9 "responding, last write-completed, keep-alive -> idle: resume, feed pending, read-start, arm idle"
-        (i (state 'responding 'deadline 'write 'outstanding 1 'pending (list bv 10 20))
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
+                  'pending (list bv 10 20))
            '(write-completed 100)
            `(idle #f ((resume-parser) (feed-parser ,bv 10 20) (read-start) (arm-deadline idle)))))
 
    ;; The pending remainder is dropped, not fed: after a close-marked message
    ;; the core stops feeding (decision 0004 item 4).
    (row 'H10 "responding, last write-completed, close-after -> closing: close"
-        (i (state 'responding 'deadline 'write 'outstanding 1 'close-after 'not-keep-alive
-                  'pending (list bv 10 20))
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
+                  'close-after 'not-keep-alive 'pending (list bv 10 20))
            '(write-completed 100)
            '(closing not-keep-alive ((close not-keep-alive)))))))
 
@@ -194,7 +199,8 @@
            '(closing #f ((log read-error ECONNRESET) (close read-error))))
         (i (state 'handling) '(read-error ECONNRESET)
            '(closing #f ((log read-error ECONNRESET) (close read-error))))
-        (i (state 'responding 'deadline 'write 'outstanding 1) '(read-error EPIPE)
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100)
+           '(read-error EPIPE)
            '(closing #f ((log read-error EPIPE) (close read-error))))
         (i (state 'draining) '(read-error ECONNRESET)
            '(closing #f ((log read-error ECONNRESET) (close read-error)))))
@@ -337,6 +343,78 @@
                         (,(written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 0\r\nConnection: close\r\n\r\n")
                          (arm-deadline write)))))))
 
+;; ---------------------------------------------------------------------------
+;; M3.3: the writes and bytes outstanding (design §7.3; decision 0010 item 5).
+;; Every write the core asks for is outstanding, with the bytes it comes to,
+;; until the shell reports it completed: in `responding`, or in `closing`
+;; for a write a close cut short.  W1's writes are the rows' own above: H7's,
+;; T4's 408 and R1's 500.  A completion the core did not ask for is the
+;; shell's bug, refused as an assertion violation.
+
+;; accounted : ConnState Event
+;;   -> (U (List Phase CloseAfter (Listof Datum) Nat Nat) 'refused 'crashed)
+;; One step's outcome, and the writes and bytes the state holds outstanding
+;; after it; or 'refused when the core refuses the event, an assertion
+;; violation of its own, and 'crashed for one raised by anything else, such
+;; as a fixnum operation handed a symbol.
+(define (accounted s ev)
+  (guard (e ((assertion-violation? e)
+             (if (and (who-condition? e) (eq? (condition-who e) 'conn-step)) 'refused 'crashed)))
+    (let* ((o (outcome s ev)))
+      (append o (list (conn-outstanding s) (conn-outstanding-bytes s))))))
+
+;; nbytes : Datum -> Nat — the byte count of a write as render-action shows it.
+(define (nbytes w) (caddr w))
+
+(define (accounting-rows)
+  (list
+   (row 'W1 "handling -> responding: the write is outstanding, and its bytes"
+        (let ((w (written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 6\r\n\r\n" "row H7")))
+          (i (state 'handling 'request req) `(handler-responded ,resp)
+             `(responding #f (,w (arm-deadline write)) 1 ,(nbytes w))))
+        (let ((w (status-write 408 "Request Timeout")))
+          (i (state 'head 'deadline 'header) '(tick 60000)
+             `(responding header-timeout (,w (arm-deadline write)) 1 ,(nbytes w))))
+        (let ((w (status-write 500 "Internal Server Error")))
+          (i (state 'handling 'request req)
+             `(handler-responded ,(make-response 200 #f (list (cons (b "Content-Length") (b "5"))) #f))
+             `(responding invalid-response
+                          ((log invalid-response framing-field) ,w (arm-deadline write))
+                          1 ,(nbytes w)))))
+   (row 'W2 "responding, write-completed with more outstanding: its bytes are no longer outstanding"
+        (i (state 'responding 'deadline 'write 'outstanding 2 'outstanding-bytes 300)
+           '(write-completed 100)
+           '(responding #f ((arm-deadline write)) 1 200)))
+   (row 'W3 "responding, the last write-completed: nothing is outstanding"
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100)
+           '(write-completed 100)
+           '(idle #f ((resume-parser) (read-start) (arm-deadline idle)) 0 0))
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
+                  'close-after 'not-keep-alive)
+           '(write-completed 100)
+           '(closing not-keep-alive ((close not-keep-alive)) 0 0)))
+   ;; Each instance breaks one condition: more bytes than are outstanding, a
+   ;; last write that leaves some, a count that is not one, no count at all,
+   ;; and no write outstanding.
+   (row 'W4 "write-completed that the core did not ask for: refused"
+        (i (state 'responding 'deadline 'write 'outstanding 2 'outstanding-bytes 100)
+           '(write-completed 101) 'refused)
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100)
+           '(write-completed 99) 'refused)
+        (i (state 'responding 'deadline 'write 'outstanding 2 'outstanding-bytes 100)
+           '(write-completed -1) 'refused)
+        (i (state 'responding 'deadline 'write 'outstanding 2 'outstanding-bytes 100)
+           '(write-completed ten) 'refused)
+        (i (state 'responding 'deadline 'write 'outstanding 2 'outstanding-bytes 100)
+           '(write-completed) 'refused)
+        (i (state 'closing) '(write-completed 0) 'refused))
+   ;; A read error while a write is outstanding closes the connection (T2).
+   ;; libuv still reports the write the close cut short, and its completion
+   ;; settles it; how the shell reports a cancelled write is M4's.
+   (row 'W5 "closing, write-completed for a write the close cut short -> closing: nothing outstanding, nothing asked"
+        (i (state 'closing 'outstanding 1 'outstanding-bytes 100) '(write-completed 100)
+           '(closing #f () 0 0)))))
+
 (define (pause-protocol)
   (list
    ;; bv[10, 40) was fed and the parser stopped at 28, 18 bytes in: the rest
@@ -360,7 +438,8 @@
    (row 'P3 "after a close-marked message, bytes-arrived -> no feed-parser"
         (i (state 'handling 'close-after 'not-keep-alive) `(bytes-arrived ,bv 0 5)
            '(handling not-keep-alive () #f))
-        (i (state 'responding 'deadline 'write 'outstanding 1 'close-after 'not-keep-alive)
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
+                  'close-after 'not-keep-alive)
            `(bytes-arrived ,bv 0 5)
            '(responding not-keep-alive () #f))
         (i (state 'closing 'close-after 'not-keep-alive) `(bytes-arrived ,bv 0 5)
@@ -425,6 +504,17 @@
              (verdict (lambda () (conn-step (state 'idle) 'eof))))
     (test-eq "a state outside the nine is refused" 'refused
              (verdict (lambda () (state 'no-such-state))))
+    ;; The writes and bytes outstanding are counts, zero together: every
+    ;; write has bytes, a status line at least, and bytes are outstanding
+    ;; only in a write (M3.3).
+    (test-equal "writes and bytes outstanding that are not counts, or not zero together, are refused"
+                '(accepted refused refused refused refused)
+                (map (lambda (plist) (verdict (lambda () (apply state 'responding plist))))
+                     '((outstanding 1 outstanding-bytes 100)
+                       (outstanding 1)
+                       (outstanding-bytes 100)
+                       (outstanding -1 outstanding-bytes 100)
+                       (outstanding 1 outstanding-bytes many))))
 
     ;; --- the table ------------------------------------------------------
     ;; A row with no instance is absent from the count, and the count is the
@@ -438,7 +528,9 @@
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3
                 (fold-left (lambda (n r) (+ n (run-row r kept))) 0 (pause-protocol)))
       (test-eqv "M2.5: both upgrade-door rows have a test" 2 (count-rows (upgrade-door)))
-      (test-eqv "M3.2: both response rows have a test" 2 (count-rows (response-rows))))
+      (test-eqv "M3.2: both response rows have a test" 2 (count-rows (response-rows)))
+      (test-eqv "M3.3: all 5 accounting rows have a test" 5
+                (fold-left (lambda (n r) (+ n (run-row r accounted))) 0 (accounting-rows))))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it but the two body-streaming actions (M6's).

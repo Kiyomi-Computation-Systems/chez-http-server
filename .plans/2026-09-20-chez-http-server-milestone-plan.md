@@ -504,6 +504,12 @@ response bytevectors until completion. Accounting tracks bytes, not buffers.
   retention assertion red and every wire test green — the same shape as M2.3, and the
   reason both are worth writing.
 
+*Noted 2026-09-25 (M3.3):* the check is the core's half, as decision 0010 item 5 words
+it. A connection as the shell holds one (the core's state in the adapter's context, and
+its parser) keeps no part of a response once its write is issued. Weak pointers see it
+across a full collection (`tests/test-connection-retention.sps`). The write executor
+itself is M4.2's shell, which carries the other half.
+
 ### M3.4 — the eight originated statuses
 
 Every status in design §6.5 — 400, 408, 413, 414, 431, 500, 501, 505 — produced
@@ -568,6 +574,11 @@ The two composition hazards from design §6.4 become checks here:
   `&byte-machine-contract` to escape uncaught.
 - **Mutation B:** remove the `rg` close-ownership gate and add a second `uv-close!`
   caller. Expect the gate red — and note the gate is the test here, not a suite.
+
+*Carried from M3.3 (2026-09-25):* the write executor holds no reference to the segment
+list once `uv-write*!` has returned: its `on-complete` closure keeps the byte count the
+completion reports, never the segments. M3.3's retention check, run against the real
+shell, is its test, watched to fail by a closure that captures the segments.
 
 ### M4.3 — the listener and `server-step`
 

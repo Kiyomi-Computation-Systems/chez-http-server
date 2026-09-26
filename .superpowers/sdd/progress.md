@@ -1267,3 +1267,52 @@ MERGED to main on 2026-09-25, as three stacked PRs landed bottom up on the owner
 M3.2 DONE and merged: the core writes every response through the framing decision and the serializer. A handler's response goes on the wire framed for the request it answers, with the Connection field its connection's fate calls for and a Date slot the shell fills; one the serializer cannot write safely is answered 500, and the connection closes. The brief's mutation, chunked to a 1.0 client, is witnessed (M3.2-A), one of M3's exit criteria.
 
 NEXT: M3.3, write accounting (plan §7): the bytes and writes outstanding, and the check that the core keeps no response bytes once the write is issued, finished by the plan's mutation, the segment list retained until the completion. On a fresh branch cut from main after this commit, when the owner asks.
+
+
+M3.3 — WRITE ACCOUNTING (plan §7). Branch feat/m3.3-write-accounting, cut from main at c39bcf6; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`. Mutation log: m3-mutations.md.
+
+MEASURED first, on main at c39bcf6:
+- what the core keeps once a write is issued: nothing. A scratch probe stepped a handler's response through `conn-step`, dropped the write action, and ran a full collection: the response, its body, the segment list and the header block were all released. The same probe holding the segments in a variable saw them held, but only once the program read that variable afterwards. A variable that is only assigned is compiled away, so a calibration must read what it holds after the collection;
+- the core counted writes outstanding already (`conn-outstanding`, since M2.1), and `write-completed` carried a byte count (design §4.1) that nothing read;
+- four drivers completed writes with counts of their own: the table's H8 to H10 (100), the entry suite's replay (10), the trace lane (1) and the allocation suite (the request's length);
+- the allocation gate: 2,736 B per request.
+
+Nothing here was the owner's to decide: the plan, design §7.3 and decision 0010 item 5 settle it, so there was no form. Read as the owner's choice, and flagged for the PR:
+- the retention check is the core's half, as decision 0010 item 5 words it: a connection as the shell holds one, the core's state in the adapter's context, with its parser. The plan's "write executor" is M4.2's shell, which carries the other half (plan §8, dated note);
+- a completion the core did not ask for is the shell's bug, an assertion violation, as a fake shell's count that is not its bytes' is: with no write outstanding, without a count or with one that is not a count, for more bytes than are outstanding, or for fewer than the last write left;
+- a write a close cut short, when a read error closes the connection while it is outstanding, is settled by its completion in `closing` (review). In the other states no write is outstanding, and a completion changes nothing, as before. How the shell reports a cancelled write is M4's.
+
+REVIEWED before the first commit, at high effort (/code-review), on the owner's "fix all findings": seven findings, all fixed, each premise checked against the code first.
+- The accounting never settled once a read error closed a connection with a write outstanding: the cancelled write's completion in `closing` was ignored. It is settled there now (W5).
+- The library header's contract said only an event outside the vocabulary raises. It now names an event the state says cannot have happened, and so does conn-step's comment.
+- The count was read when the event arrived, in any state, so a completion without one raised `car`'s error, not the core's, even in idle. It is read where it is accounted, and its absence is the core's own refusal.
+- `make-conn-state` checked neither count, and T2's and P3's synthetic states held a write with no bytes. The counts must be counts, zero together, and the two states carry bytes.
+- The retention driver ended the suite, exit 2, when the core did not pause, asked for no write, or refused the completion, and it assumed where the header block sits. Each is now a failing check, and the header block is the first bytevector after the status line.
+- The retention driver copied a write as the fake shell does. The fake shell now exports that, `write-wire`, and both use it.
+- The accounting rows' step copied the table's `outcome`. It is built on it now, as the pause protocol's `kept` is, so the rows state each step's actions too.
+Red before green for the review's checks: against the core before the fixes, the table exited 1, 92 passes and 4 failures: the constructor's check, W4's completion without a count and with no write outstanding, and W5.
+
+M3.3: the writes and bytes outstanding, and the check that the core keeps no response bytes (feat/m3.3-write-accounting).
+- `(http-server connection)`: the state counts the bytes outstanding beside the writes, read by `conn-outstanding-bytes`. `make-conn-state` takes them after the writes and checks that both are counts, zero together, since every write has bytes. A write is counted where it is made, in `write-action`, with its bytes. `(write-completed nbytes)` settles one, in `responding` or, for a write a close cut short, in `closing`, and one the core did not ask for is refused.
+- `tests/test-connection-table.sps`: five rows, W1 to W5, each stating the step's outcome and the counts after it:
+  - a write outstanding once issued, with its bytes: a handler's, the core's 408 and a fault's 500, each counted from the row's own write above;
+  - a completion with more outstanding;
+  - the last completion;
+  - six completions refused, each breaking one condition. A refusal counts only if conn-step raises it, not a fixnum operation or `car`;
+  - a write a close cut short, settled in closing.
+  H8 to H10's, T2's and P3's states carry the bytes their writes come to, and the constructor's check has its own test.
+- `tests/test-connection-retention.sps`, new. A connection as the shell holds one serves a request, and its write is performed as uv-write*! performs it. With the write outstanding, a full collection must release the response, its body, the segment list and the header block: a handler's response, and one with a fault, answered 500. The instrument is calibrated first: a held object is seen held, a dropped one released. Whatever goes wrong on the way is a failing check, not the suite's end.
+- `tests/fake-shell.sls` exports `write-wire`, a write's bytes as a client reads them, which its own writes and the retention suite share.
+- The drivers complete each write with its own byte count: the entry suite's replay, the trace lane and the allocation suite.
+- Plan §7's M3.3 and §8's M4.2, and design §7.3, carry dated notes.
+- Red before green: against a stub that exported the field with no accounting, the table exited 1, 82 passes and 10 failures, every W instance as they stood. The retention suite was green there, 8 passes, since the core already keeps nothing: its red is the plan's mutation.
+- Allocation: 2,736 B per request, unchanged.
+- Mutations (m3-mutations.md): A to L, and A2, on the finished tree after the review.
+  - A is the plan's: the state keeps the segment list until the completion. Only the retention suite goes red, both cases, and every wire test holds. A2 keeps the handler's response instead, and only its case goes red.
+  - D to G, and the review's H, I and K, each break the completion's check, and each turns exactly its W4 or W5 instances red. J drops the constructor's check, and only its test goes red. L asks for no write, and the retention suite fails its checks, exit 1.
+  - B and C break the counting itself. W1, and W2 and W3 with W5, go red, and so does every suite that completes a write (B) or answers twice on one connection (C): the check refuses the completion.
+- Found by A's first run: the mutation runner kept only the last of several edits to one file. It now applies them in turn, and no earlier spec had two.
+- `make test` green: twenty-four suites, 631 expected passes (connection-table 96, connection-retention 8), exit 0. `make check-imports` is clean.
+- 348 inserted lines of code and tests, under plan §1 rule 1's ~400: one PR.
+
+NEXT: the PR, on the owner's word. Then M3.4, the originated statuses end to end (plan §7): each of design §6.5's statuses, and decision 0009's 301, produced through the serializer and closing the connection; 413 through the serializer alone.

@@ -9,8 +9,10 @@
 ;;;
 ;;; PURE BY CONTRACT (0002 item 1; design §6.1): a step allocates only Scheme
 ;;; data, calls no chez-libuv or byte-machine procedure, reads no clock, and
-;;; never raises on a well-formed event.  An event outside the vocabulary is a
-;;; caller bug and an assertion violation — never a runtime path.
+;;; never raises on a well-formed event.  An event outside the vocabulary, or
+;;; one the state says cannot have happened, such as a completion for bytes
+;;; the core did not write (M3.3), is a caller bug and an assertion violation
+;;; — never a runtime path.
 ;;;
 ;;; THE STATE IS LINEAR.  `conn-step` updates the state it is given in place
 ;;; and returns it, so a caller threads the returned state and never reuses
@@ -132,6 +134,15 @@
 ;;; with no body.  Every entry into `responding` arms the write deadline
 ;;; (design §4.3), the core's own responses included.
 ;;;
+;;; A WRITE IS COUNTED, NOT KEPT (M3.3; design §7.3; decision 0010 item 5).
+;;; Each write is outstanding, with the bytes it comes to, until the shell
+;;; reports `(write-completed nbytes)`, in `responding` or, for a write a
+;;; close cut short, in `closing`.  A completion the core did not ask for is
+;;; an assertion violation.  M6's write watermarks will read
+;;; the bytes outstanding.  The core keeps nothing of the response itself:
+;;; chez-libuv copies the segments when the write is issued, so nothing
+;;; needs them after that (tests/test-connection-retention.sps checks it).
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body or write (design §4.3) —
 ;;; to arm, and carries no time: no event but `tick` carries `now`, so the core
@@ -144,7 +155,7 @@
           conn-parser-callbacks conn-span-callbacks
           make-conn-state conn-state?
           conn-phase conn-deadline conn-close-after conn-outstanding
-          conn-pending conn-request conn-limits
+          conn-outstanding-bytes conn-pending conn-request conn-limits
           conn-step conn-parser-step conn-headers-complete-step)
   (import (rnrs)
           (http-server response) (http-server request) (http-server span)
@@ -200,19 +211,22 @@
       on-chunk-extension-name-data on-chunk-extension-value-data))
 
   ;; make-conn-state :
-  ;;   Phase Deadline CloseAfter Nat Pending Request Limits -> ConnState
+  ;;   Phase Deadline CloseAfter Nat Nat Pending Request Limits -> ConnState
   ;;   Phase      = one of conn-states (anything else is an assertion violation)
   ;;   Deadline   = (U #f 'idle 'header 'body 'write) — the kind armed, if any
   ;;   CloseAfter = (U #f Symbol) — #f keeps the connection after the response;
   ;;                a symbol closes it once the response is written, naming why
-  ;;   Nat        = writes issued and not yet completed
+  ;;   Nat, Nat   = the writes issued and not yet completed, and the bytes
+  ;;                they come to: counts, zero together, since every write
+  ;;                has bytes, a status line at least (anything else is an
+  ;;                assertion violation)
   ;;   Pending    = (U #f (List Bytevector Nat Nat)) — input retained at a pause
   ;;   Request    = (U #f Request) — the request in flight
   ;;   Limits     = the policy the core enforces (decision 0005); anything but
   ;;                a limits record is an assertion violation
   ;; conn-state? : Any -> Boolean
-  ;; conn-phase / -deadline / -close-after / -outstanding / -pending /
-  ;;   -request / -limits : ConnState -> the corresponding field
+  ;; conn-phase / -deadline / -close-after / -outstanding / -outstanding-bytes
+  ;;   / -pending / -request / -limits : ConnState -> the corresponding field
   ;; The request head being read is kept in the state too, and so are the
   ;; connection's target judge (M2.3) and the last delivery it fed the
   ;; parser, `(bv start end)` or #f (M2.4); none of them is exported.
@@ -221,6 +235,7 @@
             (mutable deadline    conn-deadline    conn-deadline-set!)
             (mutable close-after conn-close-after conn-close-after-set!)
             (mutable outstanding conn-outstanding conn-outstanding-set!)
+            (mutable outstanding-bytes conn-outstanding-bytes conn-outstanding-bytes-set!)
             (mutable pending     conn-pending     conn-pending-set!)
             (mutable request     conn-request     conn-request-set!)
             (immutable limits    conn-limits)
@@ -229,12 +244,18 @@
             (mutable delivery    conn-delivery    conn-delivery-set!))
     (protocol
      (lambda (new)
-       (lambda (phase deadline close-after outstanding pending request limits)
+       (lambda (phase deadline close-after outstanding outstanding-bytes pending request limits)
          (unless (memq phase conn-states)
            (assertion-violation 'make-conn-state "not a connection state" phase))
          (unless (limits? limits)
            (assertion-violation 'make-conn-state "not a limits record" limits))
-         (new phase deadline close-after outstanding pending request limits
+         (unless (and (fixnum? outstanding) (fx>=? outstanding 0)
+                      (fixnum? outstanding-bytes) (fx>=? outstanding-bytes 0)
+                      (eq? (fxzero? outstanding) (fxzero? outstanding-bytes)))
+           (assertion-violation 'make-conn-state
+             "not writes and bytes outstanding, counts that are zero together"
+             outstanding outstanding-bytes))
+         (new phase deadline close-after outstanding outstanding-bytes pending request limits
               (make-head) (make-target-judge) #f)))))
 
   ;; The request head being read: the target and the header fields so far,
@@ -324,13 +345,14 @@
   ;; One event in, the state it leaves (the same object, updated) and the
   ;; actions to perform, in order.  A vocabulary event with no transition from
   ;; the current state changes nothing and asks for nothing, except that a
-  ;; parser callback is always answered.
+  ;; parser callback is always answered.  An event the state says cannot
+  ;; have happened is an assertion violation (see the header).
   (define (conn-step s ev)
     (case (and (pair? ev) (car ev))
       ((bytes-arrived)      (on-bytes-arrived s ev))
       ((eof)                (on-eof s))
       ((read-error)         (on-read-error s (cadr ev)))
-      ((write-completed)    (on-write-completed s))
+      ((write-completed)    (on-write-completed s (cdr ev)))
       ((tick)               (on-tick s))
       ((parser-event)       (on-parser-event s (cadr ev) (cddr ev)))
       ((parser-result)      (on-parser-result s ev))
@@ -372,15 +394,19 @@
        (close s 'read-error (list (list 'log 'read-error errno))))
       (else (values s '()))))
 
-  ;; responding, write-completed: keep waiting while writes are outstanding;
-  ;; on the last one, close if the response closes the connection, otherwise
-  ;; resume parsing what was retained and read again.  After a close-marked
-  ;; message the retained input is dropped, never fed (decision 0004 item 4).
-  (define (on-write-completed s)
+  ;; responding, write-completed: the write and its bytes are no longer
+  ;; outstanding.  Keep waiting while writes are; on the last one, close if
+  ;; the response closes the connection, otherwise resume parsing what was
+  ;; retained and read again.  After a close-marked message the retained
+  ;; input is dropped, never fed (decision 0004 item 4).
+  ;; closing, write-completed: a write the close cut short, after a read
+  ;; error in responding, is settled the same way, and nothing more is asked.
+  ;; In the other states no write is outstanding, and nothing changes.
+  (define (on-write-completed s fields)
     (case (conn-phase s)
       ((responding)
-       (let ((left (- (conn-outstanding s) 1)))
-         (conn-outstanding-set! s left)
+       (complete-write! s fields)
+       (let ((left (conn-outstanding s)))
          (cond
           ((> left 0)
            (conn-deadline-set! s 'write)
@@ -399,7 +425,26 @@
                          ,@(if pending (list (cons 'feed-parser pending)) '())
                          (read-start)
                          (arm-deadline idle))))))))
+      ((closing)
+       (complete-write! s fields)
+       (values s '()))
       (else (values s '()))))
+
+  ;; complete-write! : ConnState (Listof Any) -> Void
+  ;; `(nbytes)`, a write-completed's fields: one write and its bytes are no
+  ;; longer outstanding.  A completion with no write outstanding, with no
+  ;; count or one that is not a count, for more bytes than are outstanding,
+  ;; or for fewer than the last write left, is the shell's bug: an assertion
+  ;; violation.
+  (define (complete-write! s fields)
+    (let ((nbytes (and (pair? fields) (car fields)))
+          (writes (conn-outstanding s))
+          (bytes (conn-outstanding-bytes s)))
+      (unless (and (fixnum? nbytes) (fx>? writes 0) (fx<=? 0 nbytes bytes)
+                   (or (fx>? writes 1) (fx=? nbytes bytes)))
+        (assertion-violation 'conn-step "a completion the core did not ask for" fields bytes))
+      (conn-outstanding-set! s (fx- writes 1))
+      (conn-outstanding-bytes-set! s (fx- bytes nbytes))))
 
   ;; A tick means the wheel found this connection's armed deadline expired
   ;; (0005).  idle past the idle deadline -> closing, with no response; head
@@ -698,7 +743,6 @@
            (conn-close-after-set! s 'handler-close))
          (conn-phase-set! s 'responding)
          (conn-deadline-set! s 'write)
-         (conn-outstanding-set! s (+ (conn-outstanding s) 1))
          (values s (list (write-action s response serialize-checked-response)
                          '(arm-deadline write))))))
       (else (values s '()))))
@@ -716,7 +760,8 @@
   ;; first has in M6.  A response the core originates before a request is
   ;; built answers none: it has no body and always closes, so the version,
   ;; which only a body of unknown length or a connection that stays would
-  ;; read, is taken as 1.1.
+  ;; read, is taken as 1.1.  The write is outstanding, with its bytes, until
+  ;; the shell reports it completed (M3.3).
   (define (write-action s r serialize)
     (let* ((req (conn-request s))
            (major (if req (request-http-major req) 1))
@@ -728,6 +773,8 @@
         (conn-close-after-set! s 'close-delimited))
       (let-values (((segments bytes)
                     (serialize r mode (response-connection (and (conn-close-after s) #t) major minor))))
+        (conn-outstanding-set! s (+ (conn-outstanding s) 1))
+        (conn-outstanding-bytes-set! s (+ (conn-outstanding-bytes s) bytes))
         (list 'write segments bytes))))
 
   ;; handling, handler-failed -> responding 500, then close.  (The bare close
@@ -781,7 +828,6 @@
     (conn-phase-set! s 'responding)
     (conn-deadline-set! s 'write)
     (conn-close-after-set! s reason)
-    (conn-outstanding-set! s (+ (conn-outstanding s) 1))
     (values s (list (write-action s (make-response status #f headers #f) serialize-response)
                     '(arm-deadline write))))
 

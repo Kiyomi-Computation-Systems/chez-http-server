@@ -340,11 +340,11 @@
                         (list (list 'feed-parser bv 0 4)) '())
                   (map (lambda (phase)
                          (call-with-values
-                          (lambda () (conn-step (make-conn-state phase #f #f 0 #f #f minimal)
+                          (lambda () (conn-step (make-conn-state phase #f #f 0 0 #f #f minimal)
                                                 (list 'bytes-arrived bv 0 4)))
                           (lambda (s actions) actions)))
                        '(idle head body handling))))
 
     ;; --- the state holds its limits ------------------------------------------------
     (test-eq "a state without a limits record is refused" 'refused
-             (verdict (lambda () (make-conn-state 'idle #f #f 0 #f #f #f))))))
+             (verdict (lambda () (make-conn-state 'idle #f #f 0 0 #f #f #f))))))

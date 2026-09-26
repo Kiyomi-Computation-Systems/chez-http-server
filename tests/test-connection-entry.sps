@@ -56,7 +56,7 @@
 (define (armed phase)
   (case phase ((idle) 'idle) ((head) 'header) ((body) 'body) (else #f)))
 
-(define (fresh phase) (make-conn-state phase (armed phase) #f 0 #f #f default-limits))
+(define (fresh phase) (make-conn-state phase (armed phase) #f 0 0 #f #f default-limits))
 
 ;; A span for the span callbacks, and on-headers-complete's six fields for a
 ;; keep-alive GET: llhttp's method 1, HTTP/1.1, no flags, no content-length,
@@ -180,7 +180,8 @@
            (let ((acc (cons (snapshot s actions) acc)))
              (if (eq? (caar cs) 'on-message-complete)
                  (let*-values (((s a1) (conn-step s (list 'handler-responded resp)))
-                               ((s a2) (conn-step s '(write-completed 10))))
+                               ((s a2) (conn-step s (list 'write-completed
+                                                          (caddr (assq 'write a1))))))
                    (loop s (cdr cs) (cons (snapshot s a2) (cons (snapshot s a1) acc))))
                  (loop s (cdr cs) acc))))))))
 
