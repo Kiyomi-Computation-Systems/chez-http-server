@@ -421,6 +421,10 @@ Parser errors map through design §6.5; `invalid-transfer-encoding` splits by
 `parser-error-node-name` (`e-request-invalid-te` → 501, every other node → 400), never
 by reason string.
 
+*Amended 2026-09-26, on the owner's word:* the split is gone. Every parser error is a
+400, and the 501 is the core's own refusal of a coding before a final `chunked` (design
+§6.3's amendment).
+
 - **Check added:** the four hand-off rows verified at the pin by
   `research/spike/smoke-v040.sps` (ledger, 2026-09-19 night) become tests: CONNECT,
   Upgrade and h2c answer `#t`, the plain pipelining pause answers `#f`.

@@ -3,8 +3,9 @@
 ;;; (design §6.5).
 ;;;
 ;;; Oracles: design §6.5's table of originated statuses; design §6.3's parser
-;;; map (`invalid-transfer-encoding` splits by node name, never by reason
-;;; string, chez-httparse #36 and its docs/api.org); decision 0006 item 2 (the
+;;; map, every parser error a 400, as amended on the owner's word, 2026-09-26:
+;;; a request's Transfer-Encoding the parser refuses leaves the body's length
+;;; undetermined, which RFC 9112 §6.3 answers 400; decision 0006 item 2 (the
 ;;; HTTP/2 preface is answered 505) as amended on 2026-09-25; chez-httparse's
 ;;; own table of its error codes (`adapter-error-codes`, from its test
 ;;; harness), which fixes the codes the map must cover; and the four hand-off
@@ -46,7 +47,7 @@
   (let* ((r (feed-whole text callback-continue)))
     (if (eq? (parser-result-status r) 'error)
         (let ((e (parser-result-error r)))
-          (parser-error-status (parser-error-code e) (parser-error-node-name e)))
+          (parser-error-status (parser-error-code e)))
         'no-error)))
 
 ;; request-parser : Outcome -> Parser
@@ -155,15 +156,17 @@
     ;; item 2).
     (test-equal "each reason the core closes with after a response, and its status"
                 '((target-redirect . 301) (invalid-target . 400)
-                  (invalid-host . 400) (header-timeout . 408) (target-too-large . 414)
+                  (invalid-host . 400) (faulty-framing . 400)
+                  (header-timeout . 408) (target-too-large . 414)
                   (headers-too-large . 431) (too-many-headers . 431)
                   (header-field-too-large . 431) (header-value-too-large . 431)
-                  (handler-failed . 500) (invalid-response . 500) (http2-preface . 505))
+                  (handler-failed . 500) (invalid-response . 500)
+                  (unsupported-transfer-coding . 501) (http2-preface . 505))
                 (map (lambda (r) (cons r (reason-status r)))
-                     '(target-redirect invalid-target invalid-host header-timeout
+                     '(target-redirect invalid-target invalid-host faulty-framing header-timeout
                        target-too-large headers-too-large too-many-headers
                        header-field-too-large header-value-too-large handler-failed
-                       invalid-response http2-preface)))
+                       invalid-response unsupported-transfer-coding http2-preface)))
     ;; A connection that closes with no response has no status to give, and
     ;; one that closes after the handler's response (an upgrade, M2.5; the
     ;; handler's own `Connection: close`, or a body the close ends, M3.2)
@@ -179,33 +182,36 @@
 
     ;; --- the parser's codes (design §6.3) ---------------------------------
     (test-eqv "chez-httparse's error channel carries 18 codes" 18 (length error-channel-codes))
-    (test-equal "every code but the split one and the hand-off is a 400, whatever its node" '()
+    ;; invalid-transfer-encoding among them, at whichever node the parser
+    ;; refused: none leaves the body's length known (RFC 9112 §6.3).  The
+    ;; 501 for a coding the server does not implement is the core's own
+    ;; reason, unsupported-transfer-coding, above.
+    (test-equal "every code but the hand-off is a 400" '()
                 (filter (lambda (c)
-                          (and (not (memq c '(invalid-transfer-encoding paused-h2-upgrade)))
-                               (not (= 400 (parser-error-status c 'any-node)))))
+                          (and (not (eq? c 'paused-h2-upgrade))
+                               (not (= 400 (parser-error-status c)))))
                         error-channel-codes))
-    (test-eqv "invalid-transfer-encoding at e-request-invalid-te is a 501"
-              501 (parser-error-status 'invalid-transfer-encoding 'e-request-invalid-te))
-    (test-eqv "invalid-transfer-encoding at any other node is a 400"
-              400 (parser-error-status 'invalid-transfer-encoding 'e-bad-te-value))
     ;; Both hand-off codes are refused: a hand-off is answered by the core's
     ;; own reason (http2-preface, above), never as a parser error (M2.5).
     (test-eq "paused-h2-upgrade is a hand-off, not an error" 'refused
-             (verdict (lambda () (parser-error-status 'paused-h2-upgrade 'e-pri-upgrade))))
+             (verdict (lambda () (parser-error-status 'paused-h2-upgrade))))
     (test-eq "paused-upgrade is a pause reason, not an error" 'refused
-             (verdict (lambda () (parser-error-status 'paused-upgrade 'upgrade-pause))))
+             (verdict (lambda () (parser-error-status 'paused-upgrade))))
     (test-eq "a code outside chez-httparse's vocabulary is refused" 'refused
-             (verdict (lambda () (parser-error-status 'no-such-code 'e-none))))
+             (verdict (lambda () (parser-error-status 'no-such-code))))
     (test-eq "the core's own callback code is not a parser code" 'refused
-             (verdict (lambda () (parser-error-status 'too-many-headers 'e-callback))))
+             (verdict (lambda () (parser-error-status 'too-many-headers))))
 
-    ;; The split keys on a node name, and a node name can move upstream, so the
-    ;; map is checked against the parser at the pin: the two cases
-    ;; chez-httparse's docs/api.org and the design's smoke run name.
-    (test-eqv "a real Transfer-Encoding: pigeons request maps to 501" 501
+    ;; The map is checked against the parser at the pin.  With no chunked, or
+    ;; a coding after it, the parser refuses the request: a 400.  A coding
+    ;; before a final chunked it lets through, for the core to answer 501
+    ;; ((http-server transfer-coding)).
+    (test-eqv "a real Transfer-Encoding: pigeons request maps to 400" 400
               (parse-error-status "POST / HTTP/1.1\r\nTransfer-Encoding: pigeons\r\n\r\n"))
     (test-eqv "a real Transfer-Encoding: chunked,deflate request maps to 400" 400
               (parse-error-status "POST / HTTP/1.1\r\nTransfer-Encoding: chunked,deflate\r\n\r\n"))
+    (test-eq "at the pin, a coding before a final chunked is no parser error" 'no-error
+             (parse-error-status "POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n"))
 
     ;; --- the hand-off, on either channel (design §4.4; M2.5) -----------------
     ;; chez-httparse's docs/api.org: a CONNECT tunnel, `Connection: upgrade`
@@ -246,4 +252,9 @@
                 (test-equal (car row) (list-ref row 3)
                             (list (response-connection #t (list-ref row 1) (list-ref row 2))
                                   (response-connection #f (list-ref row 1) (list-ref row 2)))))
-              connection-rows)))
+              connection-rows)
+    ;; The gate the rows above turn on, which (http-server transfer-coding)
+    ;; reads too: of the versions the strict parser admits, only 1.1 passes.
+    (test-equal "llhttp's version gate passes 1.1 alone"
+                '(#t #f #f #f)
+                (map (lambda (v) (if (http/1.1? (car v) (cadr v)) #t #f)) '((1 1) (1 0) (0 9) (2 0))))))

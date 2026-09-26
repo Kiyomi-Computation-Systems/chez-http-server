@@ -327,3 +327,62 @@ case reads "different" under HA to HC as well, so their results stand.
 
 `make test` was green afterwards: twenty-five suites, 652 expected passes,
 exit 0.
+
+## The transfer-encoding statuses, by RFC 9112 (2026-09-26)
+
+The mutants ran against the finished tree, uncommitted on
+fix/transfer-encoding-status at 5e16b63, against every suite. That tree
+includes the review's fixes and the owner's 400 for HTTP/1.0 with
+Transfer-Encoding. Earlier sets ran on the trees before the review and
+before the 400. The review redesigned the check, and the 400 turned a close
+into a refusal, so the set below replaces them for the tree committed.
+
+Red before green, in three rounds:
+- before the review, 19 checks failed in five suites against a stub, every
+  one on the transfer codings: connection-head 4, connection-originated 3,
+  connection-table 1, decisions 4 and transfer-coding 7. In that stub the new
+  library refused nothing, and `invalid-transfer-encoding` was answered 501
+  at every node, as the old split answered its no-chunked node;
+- for the review's fixes, 8 checks failed in four suites. The stub gave the
+  new API with the old behaviour: the order-bound check, no close for
+  HTTP/1.0, and header helpers that answered wrongly. The failures were
+  connection-response 1, connection-table 1, headers 3 and
+  transfer-coding 2;
+- for the owner's 400, 6 checks failed in three suites against the tree that
+  closed after the response: connection-head 3, connection-originated 2 and
+  decisions 1. The unit suite could not load until the rule had its new
+  name.
+
+Found while writing the mutants:
+- the first set's scan past the value would have survived the unit suite's
+  first helper. Its lines went on "\r\nX: gzip, chunked", and a scan past a
+  value never met a clean chunked there. The helper now puts ", gzip"
+  straight after the value;
+- the review's rewrite needed a row the suite lacked, the two lines in the
+  other order, for TG.
+
+| # | mutation | observed |
+|---|---|---|
+| TA | `parser-error-status` answers `invalid-transfer-encoding` 501 again (`src/http-server/decisions.sls`) | connection-head 2 (pigeons, `chunked, deflate`), connection-originated 1 (the 400 with no chunked), connection-table 1 (T3), decisions 3 |
+| TB | the core never asks about the codings (`src/http-server/connection.sls`) | connection-head 2 (another coding beside chunked, on one line and on two), connection-originated 1 (the 501) |
+| TC | the codings are judged before the target | connection-head 1 (the invalid target's 400), and the trace lane 1: transfer-encoding.md#21 and #22 are refused as unsupported-transfer-coding, not invalid-target |
+| TD | the codings are judged before the Host, and so before the framing | connection-head 3 (the missing Host's 400, the invalid target's, and HTTP/1.0 with `gzip, chunked`, which turns 501), and the trace lane 1 (#21 and #22) |
+| TE | the F-CHUNKED gate is gone: the codings are read for every request (`src/http-server/transfer-coding.sls`) | connection-head 1 and connection-originated 1 (pigeons turns 501), transfer-coding 1, and the trace lane 1: the core refuses transfer-encoding.md#13 before the parser does |
+| TF | the gate reads F-TRANSFER-ENCODING, not F-CHUNKED | the same as TE |
+| TG | only the first Transfer-Encoding line in the list is read | connection-head 1 (two lines: the core keeps its fields newest first), transfer-coding 1 (two lines, in either order) |
+| TH | `range-ci=?` compares with regard to case (`src/http-server/headers.sls`) | headers 1, serializer 2 (a handler's `Connection: Close`), transfer-coding 1 |
+| TI | `trim-ows` keeps trailing OWS | headers 1, serializer 1 (`Connection: close` with spaces), transfer-coding 1, and the trace lane 1: transfer-encoding.md#27 and #29 send `chunked` with a trailing space |
+| TJ | `trim-ows` keeps leading OWS | headers 1, serializer 1, transfer-coding 2 |
+| TK | an empty element counts as a coding | transfer-coding 1 (`, chunked` and `chunked, , chunked`) |
+| TL | `range-ci=?` matches a token as a prefix | headers 1 (`chunk` against `Chunked`), serializer 1 (a handler's `Connection: close, upgrade` taken for close), transfer-coding 1 (`chunkedchunked, chunked`). Run again once the PR below gave the compare's check its prefix case |
+| TM | the scan runs past the value to the end of its bytevector | transfer-coding 4, and every chunked request end to end, whose value runs on into the rest of the delivery: connection-entry 1, connection-head 1, libhtp-lane 3, outcome-lane 1, the ratchet 1, the trace lane 1 |
+| TN | the HTTP/1.0 rule is never asked (`src/http-server/connection.sls`) | connection-head 3 (HTTP/1.0 with Transfer-Encoding, twice, and the framing's order), connection-originated 1 (its 400) |
+| TO | the rule's version gate is inverted | transfer-coding 2, and every HTTP/1.1 request with Transfer-Encoding is refused 400 while HTTP/1.0 passes: connection-head 8, connection-originated 3, connection-entry 1, libhtp-lane 3, the ratchet 1, the trace lane 2 |
+| TP | the rule reads F-CHUNKED, not F-TRANSFER-ENCODING | transfer-coding 1 (HTTP/1.0 with Transfer-Encoding and no chunked framing). Nothing end to end: the parser refuses every Transfer-Encoding it does not frame as chunked, so the two flags refuse the same requests |
+| TQ | `unsupported-transfer-coding` is answered 400 (`src/http-server/decisions.sls`) | connection-head 2, connection-originated 1, decisions 1 (the reasons' table) |
+| TR | the framing is judged after the target (`src/http-server/connection.sls`) | connection-head 1 (the framing before the target: an HTTP/1.0 target with a fragment turns invalid-target) |
+| TS | the framing is judged before the Host | connection-head 1 (two Hosts on HTTP/1.0 with Transfer-Encoding turn faulty-framing) |
+| TU | `faulty-framing` is answered 500 (`src/http-server/decisions.sls`) | connection-head 3, connection-originated 1, decisions 1 (the reasons' table) |
+
+`make test` was green afterwards: twenty-six suites, 674 expected passes,
+exit 0.
