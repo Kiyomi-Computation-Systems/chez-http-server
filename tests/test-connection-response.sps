@@ -15,7 +15,9 @@
 ;;; the status, the reason, each field in order, the body, and whether the
 ;;; message ended at the write's last byte, which test-serializer.sps
 ;;; calibrates.  Then the logs and writes the core asked for, in order, the
-;;; state the connection ended in, and why it closed.
+;;; state the connection ended in, and why it closes: one that closes after
+;;; its response lingers, closing when the client does (decision 0011), and
+;;; no client closes here.
 ;;;
 ;;; Oracles: the framing rules (RFC 9112 §6, RFC 9110 §8.6, tabled in
 ;;; test-decisions.sps) and decision 0010; each request's own bytes; RFC 9110
@@ -79,7 +81,7 @@
    (row "HTTP/1.1 asking to close: Connection: close, then the close"
         "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" (answer 200) #f
         (list (message 200 "OK" (list epoch (content-length "5") close) "hello"))
-        wrote-200 'closed 'not-keep-alive)
+        wrote-200 'lingering 'not-keep-alive)
    (row "two requests in one delivery: two responses, in order, and it stays"
         (string-append get get) (answer 200) #f
         (list (message 200 "OK" (list epoch (content-length "5")) "hello")
@@ -90,7 +92,7 @@
    (row "HTTP/1.0: Content-Length and Connection: close, then the close"
         "GET / HTTP/1.0\r\n\r\n" (answer 200) #f
         (list (message 200 "OK" (list epoch (content-length "5") close) "hello"))
-        wrote-200 'closed 'not-keep-alive)
+        wrote-200 'lingering 'not-keep-alive)
    (row "HTTP/1.0 asking to keep alive: Connection: keep-alive, and it stays"
         http/1.0-keep-alive (answer 200) #f
         (list (message 200 "OK" (list epoch (content-length "5") keep-alive) "hello"))
@@ -112,22 +114,22 @@
    ;; amendment): v1 has no tunnel and nothing to hand a WebSocket to.
    (row "a 2xx to CONNECT: neither field and no body, and Connection: close"
         "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n" (answer 200) #t
-        (list (message 200 "OK" (list epoch close) "")) wrote-200 'closed 'upgrade)
+        (list (message 200 "OK" (list epoch close) "")) wrote-200 'lingering 'upgrade)
    (row "a WebSocket handshake answered 200: Connection: close, then the close"
         "GET /chat HTTP/1.1\r\nHost: x\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n"
         (answer 200) #f
         (list (message 200 "OK" (list epoch (content-length "5") close) "hello"))
-        wrote-200 'closed 'upgrade)
+        wrote-200 'lingering 'upgrade)
    ;; A handler's Connection: close is honoured, and the field written once
    ;; (decision 0010 item 3).
    (row "the handler's Connection: close: written once, and the request after it never answered"
         (string-append get get) (answer 200 '("Connection" . "close")) #f
         (list (message 200 "OK" (list epoch (content-length "5") close) "hello"))
-        wrote-200 'closed 'handler-close)
+        wrote-200 'lingering 'handler-close)
    (row "the handler's Connection: close to HTTP/1.0 asking to keep alive: close"
         http/1.0-keep-alive (answer 200 '("Connection" . "close")) #f
         (list (message 200 "OK" (list epoch (content-length "5") close) "hello"))
-        wrote-200 'closed 'handler-close)
+        wrote-200 'lingering 'handler-close)
    (row "the handler's own Date is written in its place, and no slot is left"
         get (answer 200 '("Date" . "Sun, 06 Nov 1994 08:49:37 GMT")) #f
         (list (message 200 "OK" (list '("Date" . "Sun, 06 Nov 1994 08:49:37 GMT") (content-length "5"))
@@ -137,25 +139,25 @@
    ;; names why (decision 0010 item 2).
    (row "a handler's own Content-Length is refused: 500, then the close"
         get (answer 200 '("Content-Length" . "5")) #f
-        (list internal-error) (refused 'framing-field) 'closed 'invalid-response)
+        (list internal-error) (refused 'framing-field) 'lingering 'invalid-response)
    (row "a CR LF in a value, which would split the response in two, is refused"
         get (answer 200 '("X-A" . "1\r\nSet-Cookie: a=1")) #f
-        (list internal-error) (refused 'invalid-header-value) 'closed 'invalid-response)
+        (list internal-error) (refused 'invalid-header-value) 'lingering 'invalid-response)
    (row "a 101, interim and never an answer, is refused"
         get (make-response 101 #f '() #f) #f
-        (list internal-error) (refused 'invalid-status) 'closed 'invalid-response)
+        (list internal-error) (refused 'invalid-status) 'lingering 'invalid-response)
    (row "an answer that is not a response is refused"
         get "hello" #f
-        (list internal-error) (refused 'not-a-response) 'closed 'invalid-response)
+        (list internal-error) (refused 'not-a-response) 'lingering 'invalid-response)
    (row "a refused answer closes the connection: the request after it is never answered"
         (string-append get get) (answer 200 '("Content-Length" . "5")) #f
-        (list internal-error) (refused 'framing-field) 'closed 'invalid-response)
+        (list internal-error) (refused 'framing-field) 'lingering 'invalid-response)
    ;; A HEAD's Content-Length must be the GET's (RFC 9110 §8.6), which the
    ;; core's own 500 cannot know: the HEAD rule of decision 0010 item 6.
    (row "a HEAD's refused answer: 500 with no Content-Length"
         head (answer 200 '("Content-Length" . "5")) #t
         (list (message 500 "Internal Server Error" (list epoch close) ""))
-        (refused 'framing-field) 'closed 'invalid-response)
+        (refused 'framing-field) 'lingering 'invalid-response)
    ;; A refusal made before the request is built answers no request the core
    ;; has read, so a HEAD's gets `Content-Length: 0`: a GET with the same
    ;; target gets the same 301, so the length is the GET's (RFC 9110 §8.6).
@@ -163,7 +165,7 @@
         "HEAD /s?ids[]=1 HTTP/1.1\r\nHost: x\r\n\r\n" (answer 200) #t
         (list (message 301 "Moved Permanently"
                        (list epoch '("Location" . "/s?ids%5B%5D=1") (content-length "0") close) ""))
-        '((write 301)) 'closed 'target-redirect)))
+        '((write 301)) 'lingering 'target-redirect)))
 
 (run-suite "connection-response"
   (lambda ()

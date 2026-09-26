@@ -414,3 +414,41 @@ first one. It now reads only a tagged list.
 
 `make test` was green afterwards: twenty-six suites, 679 expected passes,
 exit 0.
+
+## M3.5, second PR — the staged close (2026-09-26)
+
+The mutants ran on the second PR's tree (feat/m3.5-staged-close), against
+every suite.
+
+Red before green: against the first PR's core, which is main's, 78 checks
+failed in six suites, and one suite ended in a harness error:
+- connection-head 37;
+- connection-originated 16;
+- connection-response 13;
+- message-loop 8;
+- connection-table 3 (ten states, H10 twice), then a harness error: the
+  synthetic `lingering` state was refused, so the rows after T2 never ran;
+- connection-retention 1.
+
+The spike's `serial?` check held there, since a close at once never reads
+again. Its red was the helper's, in the review: against the spike, at every
+delivery size, the helper that knew no staged close answered #f.
+
+| # | mutation | observed |
+|---|---|---|
+| SA | the plan's mutation: close at once when the last write completes, as M3.4 left it (`src/http-server/connection.sls`) | 78 checks in the red's six suites: connection-head 37, connection-originated 16, connection-response 13, message-loop 8, connection-table 3 (H10 twice, W3), connection-retention 1. The lanes hold: a connection that closes at once no longer reads, so the eof they send is never delivered |
+| SB | only the core's own statuses linger; a request's or a handler's close is at once | connection-head 4, connection-response 6, message-loop 6, connection-table 2 (H10's `not-keep-alive`, W3). The originated suite holds |
+| SC | no `read-start` when lingering starts | connection-originated 16 (the client's close is never read), connection-table 3, message-loop 2 (the bytes after the last message are never read), outcome-lane 2 (the instrument), libhtp-lane 3 and the ratchet 1 (streams 09, 35 and 67 end lingering) |
+| SD | no `shutdown` when lingering starts | connection-originated 16, connection-table 3, message-loop 1 (the spike's `serial?` check: with no shutdown, the helper sees a read-start inside a response) |
+| SE | every delivery while lingering re-arms the linger deadline | connection-originated 16 (each sees an `arm-deadline` for the request sent while lingering), connection-table 1 (L1) |
+| SF | the client's close while lingering is ignored | connection-originated 16, connection-table 1 (L2), libhtp-lane 3, outcome-lane 2, the ratchet 1 |
+| SG | the linger deadline is ignored | connection-table 1 (L3) |
+| SH | the idle deadline's close, with no response, lingers too | connection-table 3 (T5, and the fake shell's idle close, twice) |
+| SI | a refusal keeps reading while its status is written, as M3.4 left it | connection-originated 14 (every refusal; the two 500s hold), connection-table 6 (T3 three times, T4, U2, W1's 408) |
+| SJ | a status written from handling stops reading again | connection-originated 2 (the two 500s), connection-table 3 (T6, R1, W1's 500) |
+| SK | the close after a linger names the client's end, not why the connection closes | connection-originated 16, connection-table 1 (L2), libhtp-lane 3, outcome-lane 2, the ratchet 1 |
+| SO | a read error while lingering is ignored | connection-table 1 (T2's lingering instance) |
+| RD | a lingering connection feeds the parser what arrives | message-loop 10, the spike's `serial?` check among them; connection-originated 16, connection-head 2, connection-table 1 (L1), outcome-lane 2, the ratchet 1 (four fixtures raise `&byte-machine-contract` a byte at a time) |
+
+`make test` was green afterwards: twenty-six suites, 688 expected passes,
+exit 0.

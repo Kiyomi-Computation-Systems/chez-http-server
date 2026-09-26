@@ -154,13 +154,32 @@
 ;;; chez-libuv copies the segments when the write is issued, so nothing
 ;;; needs them after that (tests/test-connection-retention.sps checks it).
 ;;;
+;;; A CONNECTION CLOSES IN STAGES (M3.5; RFC 9112 §9.6; decided on the
+;;; owner's word, 2026-09-26, decision 0011).  Once the last write of a
+;;; response that closes the connection completes, the core asks for
+;;; `shutdown`, the half-close, so the client reads the response and then the
+;;; stream's end, and it lingers: it reads again, drops what arrives, and
+;;; closes when the client closes, when a read fails, or when the linger
+;;; deadline passes.  Closing at once while the client still sends makes the
+;;; server's TCP stack reset the connection, which fails a client's send
+;;; before it reads the response and throws away what of the response the
+;;; kernel has not yet sent.  Every close after a response lingers, the
+;;; core's own statuses and a handler's close alike; a close with no response
+;;; (the client's end, a read error, the idle deadline) is at once.  The
+;;; deadline is armed once, so a client that keeps sending cannot hold the
+;;; connection past it, and the close names the reason the connection closes
+;;; after its response.  A state that reads stops reading when it refuses a
+;;; request, as design §4.3 says `responding` does, so the client's end
+;;; waits in the kernel for the linger, and nothing has to remember it.
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
-;;; the connection's one deadline — idle, header, body or write (design §4.3) —
-;;; to arm, and carries no time: no event but `tick` carries `now`, so the core
-;;; cannot turn a duration into an instant.  The shell's timing wheel does,
-;;; from the limits (decision 0005, M5), and ticks a connection only once the
-;;; deadline it armed has passed.  The state records the armed kind, so a tick
-;;; is acted on only while the core still has a deadline of that kind armed.
+;;; the connection's one deadline — idle, header, body, write (design §4.3) or
+;;; linger (decision 0011) — to arm, and carries no time: no event but `tick`
+;;; carries `now`, so the core cannot turn a duration into an instant.  The
+;;; shell's timing wheel does, from the limits (decision 0005, M5), and ticks
+;;; a connection only once the deadline it armed has passed.  The state records
+;;; the armed kind, so a tick is acted on only while the core still has a
+;;; deadline of that kind armed.
 (library (http-server connection)
   (export conn-states conn-events conn-actions
           conn-parser-callbacks conn-span-callbacks
@@ -179,10 +198,12 @@
           (only (httparse methods) httparse-method-numbers))
 
   ;; conn-states : (Listof Symbol)
-  ;; The nine connection states, design §4.3.  Only `idle`, `head` and `body`
-  ;; read from the socket; `closed` is terminal.
+  ;; The ten connection states: design §4.3's nine, and `lingering`, where a
+  ;; connection that closes after its response waits for the client to close
+  ;; (decision 0011).  Only `idle`, `head`, `body` and `lingering` read from
+  ;; the socket; `closed` is terminal.
   (define conn-states
-    '(idle head body handling responding draining handed-off closing closed))
+    '(idle head body handling responding lingering draining handed-off closing closed))
 
   ;; conn-events : (Listof Symbol)
   ;; The fifteen event kinds, decision 0002 item 2 — the closed set `conn-step`
@@ -225,7 +246,7 @@
   ;; make-conn-state :
   ;;   Phase Deadline CloseAfter Nat Nat Pending Request Limits -> ConnState
   ;;   Phase      = one of conn-states (anything else is an assertion violation)
-  ;;   Deadline   = (U #f 'idle 'header 'body 'write) — the kind armed, if any
+  ;;   Deadline   = (U #f 'idle 'header 'body 'write 'linger) — the kind armed, if any
   ;;   CloseAfter = (U #f Symbol) — #f keeps the connection after the response;
   ;;                a symbol closes it once the response is written, naming why
   ;;   Nat, Nat   = the writes issued and not yet completed, and the bytes
@@ -372,8 +393,9 @@
       ((handler-failed)     (on-handler-failed s))
       ((shutdown-requested) (on-shutdown-requested s))
       ((closed)             (on-closed s))
-      ;; No M2.1 row reads these: body streaming (M6) and the drain lifecycle
-      ;; (M8) give them transitions.
+      ;; No row reads these: body streaming (M6) and the drain lifecycle (M8)
+      ;; give them transitions.  The half-close's completion changes
+      ;; nothing: the client's close, not it, ends a linger (M3.5).
       ((shutdown-completed handler-body-chunk handler-body-end body-credit)
        (values s '()))
       (else (assertion-violation 'conn-step "not a connection event" ev))))
@@ -384,8 +406,9 @@
   ;; idle, bytes-arrived -> idle: feed the delivery to the parser.  head and
   ;; body feed it too, for a message that arrives in more than one delivery.
   ;; The delivery is remembered, sharing the event's `(bv start end)`, for
-  ;; a pause to keep its rest.  No other state reads, so after a close-marked
-  ;; message nothing more is fed (decision 0004 item 4).
+  ;; a pause to keep its rest.  In every other state nothing is fed, so after
+  ;; a close-marked message nothing more is (decision 0004 item 4); lingering
+  ;; reads, and drops what arrives (M3.5).
   (define (on-bytes-arrived s ev)
     (case (conn-phase s)
       ((idle head body)
@@ -393,22 +416,27 @@
        (values s (list (cons 'feed-parser (cdr ev)))))
       (else (values s '()))))
 
-  ;; any reading state, eof -> closing: close, with no response.
+  ;; idle, head or body, eof -> closing: close, with no response.
+  ;; lingering, eof -> closing: the client closed, so close, for the reason
+  ;; the connection closes after its response (M3.5).
   (define (on-eof s)
     (case (conn-phase s)
       ((idle head body) (close s 'eof '()))
+      ((lingering) (close s (conn-close-after s) '()))
       (else (values s '()))))
 
   ;; any live state, read-error -> closing: log it, close, no response.
   (define (on-read-error s errno)
     (case (conn-phase s)
-      ((idle head body handling responding draining)
+      ((idle head body handling responding lingering draining)
        (close s 'read-error (list (list 'log 'read-error errno))))
       (else (values s '()))))
 
   ;; responding, write-completed: the write and its bytes are no longer
-  ;; outstanding.  Keep waiting while writes are; on the last one, close if
-  ;; the response closes the connection, otherwise resume parsing what was
+  ;; outstanding.  Keep waiting while writes are.  On the last one, a
+  ;; response that closes the connection is followed by the staged close
+  ;; (M3.5): lingering, the write side shut, reading again to drop what
+  ;; arrives, the linger deadline armed.  Otherwise resume parsing what was
   ;; retained and read again.  After a close-marked message the retained
   ;; input is dropped, never fed (decision 0004 item 4).
   ;; closing, write-completed: a write the close cut short, after a read
@@ -424,10 +452,9 @@
            (conn-deadline-set! s 'write)
            (values s '((arm-deadline write))))
           ((conn-close-after s)
-           => (lambda (reason)
-                (conn-phase-set! s 'closing)
-                (conn-deadline-set! s #f)
-                (values s (list (list 'close reason)))))
+           (conn-phase-set! s 'lingering)
+           (conn-deadline-set! s 'linger)
+           (values s '((shutdown) (read-start) (arm-deadline linger))))
           (else
            (let ((pending (conn-pending s)))
              (conn-phase-set! s 'idle)
@@ -460,8 +487,9 @@
 
   ;; A tick means the wheel found this connection's armed deadline expired
   ;; (0005).  idle past the idle deadline -> closing, with no response; head
-  ;; past the header deadline -> responding 408.  A tick with no deadline of
-  ;; that kind armed changes nothing.
+  ;; past the header deadline -> responding 408; lingering past the linger
+  ;; deadline -> closing, for the reason it closes after its response (M3.5).
+  ;; A tick with no deadline of that kind armed changes nothing.
   (define (on-tick s)
     (case (conn-phase s)
       ((idle)
@@ -471,6 +499,10 @@
       ((head)
        (if (eq? (conn-deadline s) 'header)
            (respond-and-close s 'header-timeout '())
+           (values s '())))
+      ((lingering)
+       (if (eq? (conn-deadline s) 'linger)
+           (close s (conn-close-after s) '())
            (values s '())))
       (else (values s '()))))
 
@@ -843,16 +875,21 @@
   ;; Enter `responding` with `status`, closing afterwards for `reason`, and
   ;; arm the write deadline, as every entry into `responding` does (design
   ;; §4.3; the deadline armed before, a header or body one, gives way to it).
+  ;; From head or body, which read, reading stops with the write, since
+  ;; `responding` does not read; from handling it stopped at the pause (M3.5).
   ;; The response has no body and no headers but `headers`, a redirect's
   ;; Location; the serializer writes its phrase, and its framing and
   ;; `Connection: close` (decision 0010 item 6).  The core's own response is
   ;; read for faults as any caller's is.
   (define (respond s status reason headers)
-    (conn-phase-set! s 'responding)
-    (conn-deadline-set! s 'write)
-    (conn-close-after-set! s reason)
-    (values s (list (write-action s (make-response status #f headers #f) serialize-response)
-                    '(arm-deadline write))))
+    (let ((reading? (memq (conn-phase s) '(head body))))
+      (conn-phase-set! s 'responding)
+      (conn-deadline-set! s 'write)
+      (conn-close-after-set! s reason)
+      (let ((w (write-action s (make-response status #f headers #f) serialize-response)))
+        (values s (if reading?
+                      (list w '(read-stop) '(arm-deadline write))
+                      (list w '(arm-deadline write)))))))
 
   ;; refusal-headers : Head -> Headers
   ;; The headers a refused message's response carries: a redirect's

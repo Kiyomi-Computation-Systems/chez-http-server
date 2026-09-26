@@ -10,6 +10,11 @@
 ;;;   - the responses written, by status;
 ;;;   - the close and its reason, and the state the connection ended in.
 ;;;
+;;; The client closes once its input is sent: a connection still reading
+;;; then gets its eof, as the libhtp lane's streams end.  One kept alive
+;;; closes for `eof`; one that lingers after a response that closes it
+;;; (decision 0011) closes for the response's reason.
+;;;
 ;;; That is §8.1's call-handler sequence, keep-alive decision and close
 ;;; reason: the keep-alive decision shows as whether a close follows a
 ;;; response.  Every action must also have run from the outermost drain (the
@@ -55,12 +60,16 @@
                 '() actions))
 
   ;; outcome-at : Bytevector Nat -> Datum
-  ;; What one connection did reading `bv` in `size`-byte deliveries: the
-  ;; decisive actions in order, the phase and close-after it ended with, and
-  ;; the actions run anywhere but the outermost drain.
+  ;; What one connection did reading `bv` in `size`-byte deliveries, then
+  ;; the client's eof if it still reads: the decisive actions in order, the
+  ;; phase and close-after it ended with, and the actions run anywhere but
+  ;; the outermost drain.
   (define (outcome-at bv size)
     (let ((sh (make-fake-connection corpus-limits (lambda (request) ok))))
       (fake-shell-feed-input! sh bv size)
+      (when (fake-shell-reading? sh)
+        (fake-shell-deliver! sh '(eof))
+        (fake-shell-settle! sh))
       (let ((s (fake-shell-conn-state sh)))
         (list (decisive (fake-shell-actions sh))
               (conn-phase s) (conn-close-after s)

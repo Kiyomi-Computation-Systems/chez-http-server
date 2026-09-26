@@ -1,6 +1,7 @@
 #!r6rs
 ;;; (http-server connection): every status the server originates, end to
-;;; end, and each one closes the connection.  M3.4.
+;;; end, and each one closes the connection, in stages.  M3.4, and M3.5's
+;;; staged close.
 ;;;
 ;;; Design §6.5's statuses, and decision 0009's 301, each provoked on a fake
 ;;; connection the way a client provokes it: a request the core refuses, a
@@ -13,13 +14,17 @@
 ;;; after it cannot be read safely.  So each row checks that
 ;;;   - the response says `Connection: close`, with no body and
 ;;;     `Content-Length: 0` (decision 0010 item 6);
+;;;   - the connection stops reading when it refuses a request, as
+;;;     `responding` does not read (design §4.3); a handler's 500 comes after
+;;;     reading stopped at the pause;
+;;;   - once the write completes, the connection closes in stages (RFC 9112
+;;;     §9.6; decision 0011): it shuts its write side, reads again, drops
+;;;     what arrives, and closes when the client closes;
 ;;;   - nothing the client sent after the offending request is fed to the
 ;;;     parser or answered.  Every row but the 408, whose head never ends,
-;;;     sends a request behind it in the same delivery.  Another is
-;;;     delivered while the write is outstanding, if the connection still
-;;;     reads then; after a handler's 500 it does not, since reading stopped
-;;;     at the pause, and nothing may start it again before the close;
-;;;   - the connection closes once the write completes, for the row's reason.
+;;;     sends a request behind it in the same delivery, and every row sends
+;;;     another while the connection lingers;
+;;;   - the connection closes for the row's reason.
 ;;; A row states all of it: each write as the client reads it, the actions
 ;;; from the core's own response on, and the state and reason it ends with.
 ;;;
@@ -52,16 +57,29 @@
 ;; redirect's Location), `Content-Length: 0` and `Connection: close`.
 (define (at date . own) (cons date (append own (list (content-length "0") close))))
 
-;; originated : Nat String Symbol (Listof Field) Action ... -> Outcome
+;; closes : Nat String Symbol (Listof Field) (Listof Action) (Listof Action)
+;;          -> Outcome
 ;; What the connection does with a status it originates: one write, read
 ;; back as `status` and `reason` with `fields`; from the core's response on,
-;; `before` (the log naming a refused response's fault), the write, the
-;; write deadline and the close, and nothing else; and it ends closed, for
-;; `why`.
-(define (originated status reason why fields . before)
+;; `before` (the log naming a refused response's fault), the write, `stop`
+;; (the read-stop of a connection still reading), the write deadline, then
+;; the staged close, and nothing else; and it ends closed, for `why`.
+(define (closes status reason why fields before stop)
   (list (list (message status reason fields ""))
-        (append before (list (list 'write status) '(arm-deadline write) (list 'close why)))
+        (append before (list (list 'write status)) stop
+                (list '(arm-deadline write) '(shutdown) '(read-start) '(arm-deadline linger)
+                      (list 'close why)))
         'closed why))
+
+;; refused : Nat String Symbol (Listof Field) -> Outcome
+;; A status for a request the core refuses as it reads it: reading stops
+;; with the write.
+(define (refused status reason why fields) (closes status reason why fields '() '((read-stop))))
+
+;; failed : Nat String Symbol (Listof Field) Action ... -> Outcome
+;; A status in place of a handler's answer, after reading stopped at the
+;; pause; `before` is the log naming a fault.
+(define (failed status reason why fields . before) (closes status reason why fields before '()))
 
 (define get "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
 
@@ -72,12 +90,9 @@
 (define (frames-itself request)
   (make-response 200 #f (list (cons (b "Content-Length") (b "2"))) (b "ok")))
 
-;; deliver! : FakeShell Bytevector -> Any — one delivery, all of it.
-(define (deliver! sh bv) (fake-shell-deliver! sh (list 'bytes-arrived bv 0 (bytevector-length bv))))
-
 ;; sent : String -> (FakeShell -> Any)
 ;; The client sends `text` in one delivery.
-(define (sent text) (lambda (sh) (deliver! sh (b text))))
+(define (sent text) (lambda (sh) (send! sh text)))
 
 ;; stalled : String -> (FakeShell -> Any)
 ;; The client sends `text`, a head it never finishes; a minute passes, and
@@ -86,31 +101,25 @@
 ;; the Date shows the minute.
 (define (stalled text)
   (lambda (sh)
-    (deliver! sh (b text))
+    (send! sh text)
     (fake-shell-advance! sh 60000)
     (fake-shell-tick! sh)))
 
-;; from-response : (Listof Action) -> (Listof Datum)
-;; The actions from the core's own response on: from its write, or from the
-;; log before it naming a fault.  A write shows as its status.
-(define (from-response actions)
-  (cond ((null? actions) '())
-        ((memq (caar actions) '(log write))
-         (map (lambda (a) (if (eq? (car a) 'write) (list 'write (written-status a)) a)) actions))
-        (else (from-response (cdr actions)))))
-
 ;; drive : (Request -> Response) (FakeShell -> Any) -> Outcome
 ;; One connection under decision 0005's defaults, with `handler`: the
-;; client's moves, then another request, delivered while the connection
-;; still reads and before any write has completed, then every later turn.
-;; The outcome: each write read back, the actions from the core's own
-;; response on, and the phase and reason the connection ended with; or
-;; `(raised)` if the run raised.
+;; client's moves, then every later turn; then, as a client does once it has
+;; read a response that closes, another request and its close, each
+;; delivered only while the connection reads, as libuv delivers them; then
+;; every later turn.  The outcome: each write read back, the actions from
+;; the core's own response on, and the phase and reason the connection
+;; ended with; or `(raised)` if the run raised.
 (define (drive handler provoke)
   (guard (e (#t '(raised)))
     (let ((sh (make-fake-connection default-limits handler)))
       (provoke sh)
-      (when (fake-shell-reading? sh) (deliver! sh (b get)))
+      (fake-shell-settle! sh)
+      (send! sh get)
+      (client-close! sh)
       (fake-shell-settle! sh)
       (let ((s (fake-shell-conn-state sh)))
         (list (map (lambda (w) (read-response w #f #f)) (fake-shell-writes sh))
@@ -133,76 +142,76 @@
    ;; is redirected to the target encoded (decision 0009).
    (row "301: bracket params in a GET, redirected to the target encoded"
         answers (sent (string-append "GET /s?ids[]=1 HTTP/1.1\r\nHost: x\r\n\r\n" get))
-        (originated 301 "Moved Permanently" 'target-redirect (at epoch '("Location" . "/s?ids%5B%5D=1"))))
+        (refused 301 "Moved Permanently" 'target-redirect (at epoch '("Location" . "/s?ids%5B%5D=1"))))
    ;; 400: a target or a Host the core refuses, and a parser error.
    (row "400: a target with a fragment, which no request-target form allows"
         answers (sent (string-append "GET /a#b HTTP/1.1\r\nHost: x\r\n\r\n" get))
-        (originated 400 "Bad Request" 'invalid-target (at epoch)))
+        (refused 400 "Bad Request" 'invalid-target (at epoch)))
    (row "400: HTTP/1.1 with no Host"
         answers (sent (string-append "GET / HTTP/1.1\r\n\r\n" get))
-        (originated 400 "Bad Request" 'invalid-host (at epoch)))
+        (refused 400 "Bad Request" 'invalid-host (at epoch)))
    (row "400: a parser error, a space in a field name"
         answers (sent (string-append "GET / HTTP/1.1\r\nHo st: x\r\n\r\n" get))
-        (originated 400 "Bad Request" 'parser-error (at epoch)))
+        (refused 400 "Bad Request" 'parser-error (at epoch)))
    ;; HTTP/1.0 has no Transfer-Encoding, so a request below 1.1 that carries
    ;; it has faulty framing (RFC 9112 §6.1; decided on the owner's word,
    ;; 2026-09-26).
    (row "400: an HTTP/1.0 request with Transfer-Encoding"
         answers (sent (string-append "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n" get))
-        (originated 400 "Bad Request" 'faulty-framing (at epoch)))
+        (refused 400 "Bad Request" 'faulty-framing (at epoch)))
    ;; With no chunked coding the body's length cannot be known (RFC 9112
    ;; §6.3), and the parser refuses the request.
    (row "400: a parser error, a Transfer-Encoding with no chunked"
         answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: pigeons\r\n\r\n" get))
-        (originated 400 "Bad Request" 'parser-error (at epoch)))
+        (refused 400 "Bad Request" 'parser-error (at epoch)))
    ;; 408: the header deadline passes with the head unfinished.
    (row "408: a head still unfinished when the header deadline passes"
         answers (stalled "GET / HTTP/1.1\r\nHo")
-        (originated 408 "Request Timeout" 'header-timeout (at a-minute-on)))
+        (refused 408 "Request Timeout" 'header-timeout (at a-minute-on)))
    ;; 414 and 431: one past a limit.
    (row "414: a target one byte past max-target-bytes"
         answers (sent (string-append "GET /" (make-string max-target #\a) " HTTP/1.1\r\nHost: x\r\n\r\n" get))
-        (originated 414 "URI Too Long" 'target-too-large (at epoch)))
+        (refused 414 "URI Too Long" 'target-too-large (at epoch)))
    (row "431: a field name one byte past max-header-field-bytes"
         answers (sent (string-append "GET / HTTP/1.1\r\nHost: x\r\n" (make-string (+ max-field 1) #\n)
                                      ": v\r\n\r\n" get))
-        (originated 431 "Request Header Fields Too Large" 'header-field-too-large (at epoch)))
+        (refused 431 "Request Header Fields Too Large" 'header-field-too-large (at epoch)))
    (row "431: a field value one byte past max-header-value-bytes"
         answers (sent (string-append "GET / HTTP/1.1\r\nHost: x\r\nX: " (make-string (+ max-value 1) #\v)
                                      "\r\n\r\n" get))
-        (originated 431 "Request Header Fields Too Large" 'header-value-too-large (at epoch)))
+        (refused 431 "Request Header Fields Too Large" 'header-value-too-large (at epoch)))
    (row "431: one field past max-header-count"
         answers (sent (string-append "GET / HTTP/1.1\r\nHost: x\r\n" (lines max-count "X: v\r\n")
                                      "\r\n" get))
-        (originated 431 "Request Header Fields Too Large" 'too-many-headers (at epoch)))
+        (refused 431 "Request Header Fields Too Large" 'too-many-headers (at epoch)))
    ;; Three 6,000-byte values: each within max-header-value-bytes, together
    ;; past max-header-bytes (16,384).
    (row "431: a header section past max-header-bytes, each field within its own limit"
         answers (sent (string-append "GET / HTTP/1.1\r\nHost: x\r\n"
                                      (lines 3 (string-append "X: " (make-string 6000 #\v) "\r\n"))
                                      "\r\n" get))
-        (originated 431 "Request Header Fields Too Large" 'headers-too-large (at epoch)))
+        (refused 431 "Request Header Fields Too Large" 'headers-too-large (at epoch)))
    ;; 500: the handler raised, or answered what cannot be written safely.
    ;; Its request was read whole, so the one behind it in the delivery is
    ;; the pause's pending input, never fed.
    (row "500: the handler raised"
         raises (sent (string-append get get))
-        (originated 500 "Internal Server Error" 'handler-failed (at epoch)))
+        (failed 500 "Internal Server Error" 'handler-failed (at epoch)))
    (row "500: the handler answered with its own Content-Length"
         frames-itself (sent (string-append get get))
-        (originated 500 "Internal Server Error" 'invalid-response (at epoch)
+        (failed 500 "Internal Server Error" 'invalid-response (at epoch)
                     '(log invalid-response framing-field)))
    ;; 501: a coding before a final chunked, which the server does not
    ;; implement (RFC 9112 §6.1).
    (row "501: Transfer-Encoding: gzip, chunked"
         answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
                                      "0\r\n\r\n" get))
-        (originated 501 "Not Implemented" 'unsupported-transfer-coding (at epoch)))
+        (refused 501 "Not Implemented" 'unsupported-transfer-coding (at epoch)))
    ;; 505: HTTP/2's preface; there is nothing to hand it to (decision 0006
    ;; item 2).
    (row "505: the HTTP/2 preface"
         answers (sent (string-append "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" get))
-        (originated 505 "HTTP Version Not Supported" 'http2-preface (at epoch)))))
+        (refused 505 "HTTP Version Not Supported" 'http2-preface (at epoch)))))
 
 ;; serialized : Nat -> (Listof Datum)
 ;; The response the core would originate with `status`, read back: no body,

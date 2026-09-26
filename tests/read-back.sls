@@ -2,13 +2,18 @@
 ;;; (read-back) — what a write looks like read back by (response-reader), for
 ;;; a row's expected value: the suites that drive the core and read its
 ;;; writes back share it (test-connection-response.sps, M3.2, and
-;;; test-connection-originated.sps, M3.4).
+;;; test-connection-originated.sps, M3.4).  M3.5 adds what the originated
+;;; and linger suites share besides: a client's two moves on a fake
+;;; connection, and the actions from the core's own response on.
 ;;;
 ;;; A field is a (name . value) pair of strings, as read-response returns it.
 ;;; The Date is the fake shell's: its clock starts at the epoch.
 (library (read-back)
-  (export message epoch content-length close keep-alive)
-  (import (rnrs))
+  (export message epoch content-length close keep-alive
+          send! client-close! from-response)
+  (import (rnrs)
+          (only (fake-shell) written-status fake-shell-feed-input! fake-shell-reading?
+                fake-shell-deliver!))
 
   ;; message : Nat String (Listof (Pair String String)) String -> Datum
   ;; read-response's answer for a write holding one whole message, which
@@ -23,4 +28,25 @@
 
   ;; close, keep-alive : (Pair String String) — the Connection fields.
   (define close '("Connection" . "close"))
-  (define keep-alive '("Connection" . "keep-alive")))
+  (define keep-alive '("Connection" . "keep-alive"))
+
+  ;; send! : FakeShell String -> Nat
+  ;; The client sends `text` in one delivery, delivered only while the
+  ;; connection reads, as libuv delivers it, with every later turn around it
+  ;; (fake-shell-feed-input!).  Returns how many bytes were delivered.
+  (define (send! sh text)
+    (let ((bv (string->utf8 text))) (fake-shell-feed-input! sh bv (bytevector-length bv))))
+
+  ;; client-close! : FakeShell -> Any
+  ;; The client closes: its eof, delivered only while the connection reads.
+  (define (client-close! sh)
+    (when (fake-shell-reading? sh) (fake-shell-deliver! sh '(eof))))
+
+  ;; from-response : (Listof Action) -> (Listof Datum)
+  ;; The actions from the core's own response on: from its write, or from the
+  ;; log before it naming a fault.  A write shows as its status.
+  (define (from-response actions)
+    (cond ((null? actions) '())
+          ((memq (caar actions) '(log write))
+           (map (lambda (a) (if (eq? (car a) 'write) (list 'write (written-status a)) a)) actions))
+          (else (from-response (cdr actions))))))

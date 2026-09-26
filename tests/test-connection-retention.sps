@@ -144,5 +144,5 @@
                   released (car r))
       (test-equal "a response with a fault: collected in responding, the 500's write outstanding"
                   '(responding 1) (cadr r))
-      (test-eq "a response with a fault: the completion closes the connection"
-               'closing (caddr r)))))
+      (test-eq "a response with a fault: the completion starts the staged close"
+               'lingering (caddr r)))))

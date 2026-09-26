@@ -7,7 +7,9 @@
 ;;; `bytes-arrived` while the connection reads, the parser is fed only when
 ;;; the core asks, the handler answers every request, each write completes,
 ;;; and the connection runs until it closes or the input ends.  So a refused
-;;; message's response is written and the connection is closed.
+;;; message's response is written, and the connection lingers: it closes in
+;;; stages, when the client closes (decision 0011), and no client closes
+;;; here.  A row that ends in `lingering` closes after its response.
 ;;;
 ;;; The rows:
 ;;;   - the request (method, target, version, headers in wire order) is what
@@ -132,20 +134,20 @@
 ;;   req      a rendered request: method, target, version, headers
 ;;   ok       every request handled; the connection ends in `phase`
 ;;   refused  the parser failed with the core's reason as its code, and the
-;;            core answered `status`, then closed; a refusal is a 431
+;;            core answered `status`, then lingered; a refusal is a 431
 (define (req method target major minor . headers)
   (list method target major minor headers))
 (define (ok requests phase reason) (list requests #f phase reason))
 (define (refused reason status)
-  (list '() (list reason (list (status-write status))) 'closed reason))
+  (list '() (list reason (list (status-write status))) 'lingering reason))
 (define (refusal reason) (refused reason 431))
 ;;   redirected  the parser failed with target-redirect as its code, and the
-;;               core answered 301 with a Location header, then closed
+;;               core answered 301 with a Location header, then lingered
 (define (redirected location)
   (list '()
         (list 'target-redirect
               (list (list 'write 301 (string-append "Location: " location "\r\n" originated-block))))
-        'closed 'target-redirect))
+        'lingering 'target-redirect))
 
 ;; verdict : (-> Any) -> (U 'accepted 'refused)
 (define (verdict thunk)
@@ -175,7 +177,7 @@
 
     ;; --- keep-alive: decision 0006 item 1 -----------------------------------
     (test-equal "keep-alive, one request each: 1.1, 1.1 close, 1.0, 1.0 keep-alive"
-                '((idle #f) (closed not-keep-alive) (closed not-keep-alive) (idle #f))
+                '((idle #f) (lingering not-keep-alive) (lingering not-keep-alive) (idle #f))
                 (map (lambda (text)
                        (let ((o (drive (b text) 1000 minimal)))
                          (list (caddr o) (cadddr o))))
@@ -187,12 +189,12 @@
     ;; handled, and each message's head holds only its own headers.
     (test-equal "pipelined 1.1, every delivery size: keep, then close, then nothing"
                 (list (ok (list (req 'GET "/1" 1 1) (req 'GET "/2" 1 1 '("Connection" . "close")))
-                          'closed 'not-keep-alive))
+                          'lingering 'not-keep-alive))
                 (every-size (b "GET /1 HTTP/1.1\r\n\r\nGET /2 HTTP/1.1\r\nConnection: close\r\n\r\nGET /3 HTTP/1.1\r\n\r\n")
                             minimal))
     (test-equal "pipelined 1.0, every delivery size: keep-alive, then the default close"
                 (list (ok (list (req 'GET "/1" 1 0 '("Connection" . "keep-alive")) (req 'GET "/2" 1 0))
-                          'closed 'not-keep-alive))
+                          'lingering 'not-keep-alive))
                 (every-size (b "GET /1 HTTP/1.0\r\nConnection: keep-alive\r\n\r\nGET /2 HTTP/1.0\r\n\r\nGET /3 HTTP/1.0\r\n\r\n")
                             minimal))
 
@@ -279,7 +281,7 @@
                 (list (ok (list (req 'GET "/" 1 1)) 'idle #f))
                 (every-size (b "GET / HTTP/1.1\r\n\r\n") minimal))
     (test-equal "an HTTP/1.0 request with no Host is served"
-                (list (ok (list (req 'GET "/" 1 0)) 'closed 'not-keep-alive))
+                (list (ok (list (req 'GET "/" 1 0)) 'lingering 'not-keep-alive))
                 (every-size (b "GET / HTTP/1.0\r\n\r\n") default-limits))
     (test-equal "two Host lines are refused with 400"
                 (list (refused 'invalid-host 400))
@@ -323,17 +325,17 @@
     ;; --- a parser error the core did not ask for (design §6.3) ------------------
     (test-equal "an invalid header token: 400, then close"
                 (list (list '() (list 'invalid-header-token (list (status-write 400)))
-                            'closed 'parser-error))
+                            'lingering 'parser-error))
                 (every-size (b "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n") minimal))
     ;; With no chunked, or a coding after it, the body's length cannot be
     ;; known, and the parser refuses the request: a 400 (RFC 9112 §6.3).
     (test-equal "Transfer-Encoding: pigeons: 400, then close"
                 (list (list '() (list 'invalid-transfer-encoding (list (status-write 400)))
-                            'closed 'parser-error))
+                            'lingering 'parser-error))
                 (every-size (b "PUT /url HTTP/1.1\r\nTransfer-Encoding: pigeons\r\n\r\n") minimal))
     (test-equal "Transfer-Encoding: chunked, deflate: 400, then close"
                 (list (list '() (list 'invalid-transfer-encoding (list (status-write 400)))
-                            'closed 'parser-error))
+                            'lingering 'parser-error))
                 (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: chunked, deflate\r\n\r\n") minimal))
 
     ;; --- a coding before a final chunked: the core's own 501 ------------------

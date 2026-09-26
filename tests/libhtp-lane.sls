@@ -35,7 +35,8 @@
   ;; keeps alive closes at its eof, with no close-after; an HTTP/1.0 one
   ;; closes after its response, as `not-keep-alive` (RFC 9112 §9.3: 1.1
   ;; persists unless it says close, 1.0 only if it says keep-alive; decision
-  ;; 0006 item 1), and never reads the eof.
+  ;; 0006 item 1), in stages: it lingers, and the eof ends it (decision
+  ;; 0011).
 
   ;; Two GETs on one connection, served in order (RFC 9112 §9.3.2; decision
   ;; 0004: serially).

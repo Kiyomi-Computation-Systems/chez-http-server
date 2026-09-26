@@ -11,6 +11,7 @@ refused rather than silently ignored.
 | ~CHEZ_HTTP_READ_HEADER_TIMEOUT~     | 60 s      | time to receive the whole request head  |
 | ~CHEZ_HTTP_IDLE_TIMEOUT~            | 75 s      | keep-alive idle time between requests    |
 | ~CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT~ | 60 s      | longest gap between body reads           |
+| ~CHEZ_HTTP_LINGER_TIMEOUT~          | 30 s      | how long a close waits for the client    |
 | ~CHEZ_HTTP_MAX_HEADER_BYTES~        | 16384     | all header names and values together     |
 | ~CHEZ_HTTP_MAX_HEADER_COUNT~        | 100       | number of header fields                  |
 | ~CHEZ_HTTP_MAX_HEADER_FIELD_BYTES~  | 8192      | one header name                          |
@@ -24,6 +25,10 @@ refused rather than silently ignored.
 A request over any of the four header limits gets ~431~, and one whose target
 is over its limit gets ~414~. Either way the connection closes. What else a
 target must be is in [[file:request-targets.org][request-targets.org]].
+
+When the server closes a connection after a response, it keeps reading, and
+throwing away, what the client still sends, until the client closes or
+~CHEZ_HTTP_LINGER_TIMEOUT~ passes (see [[file:connections.org][connections.org]]).
 
 ~CHEZ_HTTP_PIPELINE_CAP~ must be 1; any other value is refused at startup.
 The server answers the requests on a connection one at a time, in order (see
