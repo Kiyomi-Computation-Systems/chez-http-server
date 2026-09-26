@@ -1755,3 +1755,104 @@ NEXT: M4, the libuv shell and the first real server (plan §8):
 - then M4.3 and M4.4, with the socket lane's staged-close test.
 
 It starts on a fresh branch cut from main after this commit, when the owner asks.
+
+M4 — THE LIBUV SHELL AND THE FIRST REAL SERVER (plan §8). Branch feat/m4-libuv-shell, cut from main at 76d5a13; 2026-09-26, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. Mutation log: m4-mutations.md, new.
+
+Gathered before the first test, from plan §8 and this ledger:
+- plan §8's four slices:
+  - M4.1, the adapter's check;
+  - M4.2, the shell: close ownership, the depth counter, the two hazards, and two checks carried in: M3.3's retention check, and the staged close's shell half;
+  - M4.3, the listener and `server-step`, with `max-connections` and `backlog` (plan §3);
+  - M4.4, the contract test and the socket lane, with the upload past a refusal (decision 0011);
+- the exit:
+  - curl and ab get correct responses, and the counters return to zero;
+  - the contract test passes;
+  - the connection table is reconciled against `uv-loop-live-handles` at one place in the run loop;
+  - the per-connection budget is re-measured;
+  - and the amendment slicing M5–M8 is written (plan §10);
+- left to M4 by earlier slices:
+  - what handlers see (M2.2);
+  - absolute-form's host (RFC 9112 §3.2.2), an empty Host on origin-form, and whether to serve `ftp:///x` (M2.3);
+  - a facade that builds limits must refuse a pipeline cap other than 1 (M2.4);
+  - how the shell reports a cancelled write (M3.3);
+  - a tracing hook (M2.2, from 0002's third amendment).
+
+Found: no slice holds the facade, `(http-server)` (decision 0001's layout), and the exit needs it, since curl and ab need a server to run. It is M4.5, re-planned here (brief risk 6), after M4.4. What handlers see and the host rules land with it. Two of its questions are the owner's, measured first (below).
+
+MEASURED, for what handlers see: `research/spike/m4-handler-view.sps`, new (`out/m4-handler-view.run{1,2}.txt`, identical, exit 0). It measures the bytes a view adds per request, on top of parser, adapter and core. Three views:
+- (A), the spans read through accessors that copy what is asked: the path and one header's value;
+- (B), every request copied to strings before the handler runs;
+- (C), the spans alone.
+
+| request | (A) | (B) | (C) |
+|---|---|---|---|
+| curl's GET, 3 fields | 80 | 416 | 0 |
+| a JSON POST, 5 fields | 96 | 720 | 0 |
+| a browser's GET, 11 fields | 192 | 1,872 | 0 |
+
+The JSON POST costs 2,384 B through the core (the M3 exit), so (B) would put it at 3,104 B, over the 3,072 B ratchet it is gated at.
+
+DECIDED on the owner's word (2026-09-26), by form, the recommended answers; recorded as decision 0012:
+- **A handler reads the request through accessors that copy what it asks for**: the path, the query, a header's value and the host, as strings, and the method as llhttp's symbol. The host follows RFC 9112 §3.2.2: an absolute-form target's authority, whatever Host says.
+- **The server listens where `CHEZ_HTTP_HOST` and `CHEZ_HTTP_PORT` say**, defaulting to 127.0.0.1 and 8080.
+
+The alternatives weighed:
+- for the view: every request copied to strings first, or the spans alone;
+- for the address: the same variables defaulting to 0.0.0.0, or the platforms' `PORT` beside `CHEZ_HTTP_HOST`.
+
+Read as the owner's choice, and flagged: an empty Host on origin-form is served, and reads empty, since v1 has no configured default (RFC 9112 §3.3 allows either). A target of another scheme, such as `ftp:`, is the handler's routing.
+
+M4.1 — A CONNECTION'S PARSER SHARES ONE BINDING LIST. The adapter came in M2.2, so M4.1 is its check.
+- `tests/test-connection-allocation.sps`: "a connection's parser costs what one on a binding list made once does". Byte-machine's `make-parser` is measured on a list of twenty-five bindings made once, before either is measured, beside `make-conn-parser`: 1,056 B each. Design §7.5 had 1,072 B, at the pins of 2026-09-19.
+- Watched to fail (m4-mutations.md): M4.1-A, the plan's mutation, builds the list per connection. It turns only that check red: 2,640 B against 1,056 B, so a list per connection costs 1,584 B more. §7.5's 1,216 B was a plain list, and the adapter's bindings are closures.
+- The tracing hook is the shell's, not the adapter's. Parser callbacks reach the core directly, and the actions they queue are traced where the shell runs them, which is what M4.4's contract test compares. No consumer needs the parser events themselves.
+
+M4.2 FIRST STEP — THE SHELL SERVES A CONNECTION.
+- `src/http-server/private/shell.sls`, `(http-server private shell)`, new:
+  - a shell holds what a loop's connections share: the handler, the limits, the clock, the Date line, the log, an optional trace, and the connection table;
+  - `shell-adopt!` serves an accepted TCP handle: the core in idle, a parser of its own, Nagle's algorithm off, and reading started with the limits' buffer;
+  - the message loop is the fake shell's: one queue, drained after the outermost dispatch, with the depth counter around `parser-feed!` and the drain, and an action run anywhere else recorded as a violation.
+- The actions, as the shell performs them:
+  - `write` is one `uv-write*!`, its Date slot filled. Its completion keeps the write's byte count and nothing else;
+  - `shutdown` is `uv-shutdown!`, reporting `shutdown-completed`;
+  - `read-stop` and `read-start` change reading only when it is not already what they ask. The first start fixes the buffer at the limits' size;
+  - `close` is `connection-close!`, the one `uv-close!` call. The handle's close takes the connection out of the table and reports `closed`;
+  - a handler's raise is logged and delivered as `handler-failed`;
+  - deadlines are recorded and not acted on: the wheel is M5's.
+- The Date is made once a second (decision 0010). The shell's clock, milliseconds since the epoch, is read when a second of the loop's own time has passed. That time is libuv's cached `uv-now`, which costs nothing to read, where the wall clock costs 48 B a reading (measured 2026-09-26). Between readings the second is the last reading plus the loop's time since.
+- `tests/test-shell.sps`, new, in chez-libuv's `test-echo.sps` shape (design §8.5):
+  - clients on the same loop, and a listener of the suite's own on 127.0.0.1:0, made inside the suite so a failure there is the harness's status 2;
+  - every wait capped by an iteration count;
+  - responses read back by chez-httparse's response parser, and the Date from RFC 9110 §5.6.7's example instant.
+- What it checks:
+  - a GET is answered, dated by the shell's clock, and the connection stays open;
+  - three requests in one write are answered in order, reading the clock fewer times than they are answered, with no action run from anywhere but the outermost drain (design §6.4's second hazard, against the real shell);
+  - the staged close's shell half: the client reads the response, then the stream's end; the connection lingers, reading, while the client holds its end open; it closes and leaves the table when the client closes; its verbs run write, shutdown, read-start, close;
+  - a handler that raises is answered 500, and what it raised is logged;
+  - M3.3's retention check against the real write executor. The client does not read a four-MiB response, and the connection's send buffer is asked to be small, so the write stays outstanding: chez-libuv's write-queue gauge says so before the collection. Then nothing holds the response's body;
+  - at the end, every connection accepted and closed, no handle on the loop, and, where chez-libuv's dev counters are on, no TCP handle, read buffer or write request.
+- `tests/test-exports.sps`, new: no library outside `private/` exports a `uv-` name, read by Chez's own `library-exports` (design §7.6, decision 0003). The facade joins its list once `src/http-server.sls` exists.
+- `make check-close-ownership`, new, a prerequisite of `make test`:
+  - it names every uncommented use of the name `uv-close!` in `src/` (a call, an alias, an argument to `apply`) with the definition it sits in;
+  - it requires exactly one use, in `connection-close!`;
+  - it needs ripgrep, which CI now installs, and without it fails by name.
+- The library path gains chez-libuv's `tests/`, test-only, for `(uv-testing)`: its iteration-capped waits and loopback plumbing, used rather than copied.
+- `make check-imports` now also refuses a test library, `(uv-testing)` or `(httparse test ...)`, anywhere under `src/`. Its note has said since M1.1 that it kept the harness out of shipped libraries, and until now it did not.
+- Red before green: the shell suite stopped at load before the shell existed (exit 255, library not found).
+- Watched to fail (m4-mutations.md):
+  - M4.2-H, the queue drained inside the parser callback: the violation check, and the pipelined answers with it;
+  - M4.2-R, the completion keeping the segments: the retention check alone;
+  - M4.2-S, no half-close: the stream's-end checks;
+  - M4.2-L, no reading while lingering: the close and everything after it;
+  - M4.2-T, the table not updated at the close: its check;
+  - M4.2-D, the Date one second off: its check;
+  - M4.2-K, the clock read for every response: its check;
+  - M4.2-G, a handler's raise not logged: its check;
+  - M4.2-E, a `uv-` export: the export check, every other suite green;
+  - B1–B5, the plan's Mutation B and four more: a second `uv-close!` caller, a second call, the call moved into a helper, an alias, and `apply`. Each turns the gate red, naming each use. With B1 the suites stay green, so the gate is the test.
+- Survives, a scope statement (M4.2-N): Nagle's algorithm left on. chez-libuv has no getter for `TCP_NODELAY`, and what it changes is time on a link with a round trip. On loopback no stall shows either way (`research/spike/m4-nodelay.sps` on Darwin, `m4-nodelay.pl` in Docker's Linux; both twice).
+- Found and fixed: the Makefile's header still named the old pins (chez-httparse v0.4.1, uriparse v0.6.0, byte-machine v0.6.0), which #44 moved without it. It now points at the `*_PIN` lines.
+- A review before the first commit found fourteen things, all fixed on the owner's word. Its record is with the second step, since its fixes fall in both.
+- Every suite green in a scratch worktree with only this step, cut from main at 76d5a13: twenty-nine suites, 736 expected passes (connection-allocation 19, shell 27, exports 2), each exit 0. `make check-imports` and `make check-close-ownership` are clean there, and the step's mutants ran there (m4-mutations.md).
+
+NEXT: the second step, what fails, stacked on this one.

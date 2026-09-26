@@ -625,6 +625,14 @@ whole reason for existing.
 - **Mutation:** build the binding list per connection. Expect the per-connection
   allocation assertion red.
 
+*Noted 2026-09-26 (M4.1):* the adapter came in M2.2, so M4.1 is its check. A
+connection's parser costs what `make-parser` does on a binding list made once,
+1,056 B, and the mutation's list per connection costs 1,584 B more: the adapter's
+bindings are closures, where §7.5's 1,216 B was a plain list. The tracing hook the
+ledger carried here is the shell's. Parser callbacks reach the core directly, and
+the actions they queue are traced where the shell runs them, which is what M4.4's
+contract test compares.
+
 ### M4.2 — the shell: close ownership, depth, and the two hazards
 
 `connection-close!` as the only `uv-close!` caller, with the `rg` gate in `make test`;
@@ -686,6 +694,19 @@ verb sequences only — never on how libuv fragmented the stream, which is kerne
   the contract test red with the differing byte named, and the socket lane green — which
   is exactly what makes the contract test worth having, since the socket lane asserts on
   verb sequences and cannot see it.
+
+### M4.5 — the facade, and what a handler sees (added 2026-09-26)
+
+*Re-planned in the ledger (brief risk 6):* no slice held `(http-server)`, decision
+0001's facade, and the exit needs a server that curl and ab can reach. Decision
+[0012](decisions/0012-a-handler-reads-the-request-through-accessors-and-the-server-listens-where-the-environment-says.md)
+settles its two questions. A handler reads the request through accessors that copy
+what it asks for, with the host by RFC 9112 §3.2.2. The server listens where
+`CHEZ_HTTP_HOST` and `CHEZ_HTTP_PORT` say, defaulting to 127.0.0.1 and 8080. A facade
+that builds limits refuses a pipeline cap other than 1 (ledger, M2.4).
+
+- **Mutation:** an absolute-form request's host read from its Host field. Expect the
+  host row red.
 
 ### M4 exit
 
