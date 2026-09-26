@@ -1316,3 +1316,14 @@ M3.3: the writes and bytes outstanding, and the check that the core keeps no res
 - 348 inserted lines of code and tests, under plan §1 rule 1's ~400: one PR.
 
 NEXT: the PR, on the owner's word. Then M3.4, the originated statuses end to end (plan §7): each of design §6.5's statuses, and decision 0009's 301, produced through the serializer and closing the connection; 413 through the serializer alone.
+
+MERGED to main on 2026-09-25 as 0206728 (PR #37), on the owner's "do closing ritual":
+- The squash tree (77f5166) is identical to the tested tip's, 23da757, proved against the merge commit gh reports.
+- The `linux` check (run 36212535551) executed zero steps, stopped at the billing check.
+- `gh pr merge --delete-branch` switched this checkout to main and fast-forwarded it to 0206728. The branch was deleted local and remote, and refs pruned; no PR is open.
+
+`make test` green on main: twenty-four suites, 631 expected passes, exit 0.
+
+M3.3 DONE and merged: the core counts the writes and the bytes outstanding, settles each write at its completion, refuses a completion it did not ask for, and keeps nothing of a response once its write is issued, which the retention suite checks by liveness. M6's write watermarks will read the bytes outstanding, and M4.2 carries the same check against the real shell's write executor.
+
+NEXT: M3.4, the originated statuses end to end (plan §7): each of design §6.5's statuses (400, 408, 413, 414, 431, 500, 501, 505) and decision 0009's 301, produced through the serializer and closing the connection, 413 through the serializer alone; finished by the plan's mutation, one status that keeps the connection alive. On a fresh branch cut from main after this commit, when the owner asks.
