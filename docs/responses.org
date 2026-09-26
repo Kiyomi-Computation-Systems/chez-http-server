@@ -43,3 +43,22 @@ connection:
   response.
 
 Decision 0010 in ~.plans/decisions/~ records why.
+
+* What the server answers by itself
+
+Some requests never reach your handler. The server answers them itself, with
+no body, and then closes the connection: what the client sends after such a
+request cannot be read safely.
+
+| Answer                                  | When                                                          |
+|-----------------------------------------+---------------------------------------------------------------|
+| ~301 Moved Permanently~                 | brackets or pipes in a GET or HEAD target ([[file:request-targets.org][request-targets.org]]) |
+| ~400 Bad Request~                       | a request, target or ~Host~ the server cannot accept          |
+| ~408 Request Timeout~                   | the headers took longer than ~CHEZ_HTTP_READ_HEADER_TIMEOUT~  |
+| ~414 URI Too Long~                      | a target over ~CHEZ_HTTP_MAX_TARGET_BYTES~                    |
+| ~431 Request Header Fields Too Large~   | headers over one of the four header limits                    |
+| ~500 Internal Server Error~             | your handler raised, or gave an answer listed above           |
+| ~501 Not Implemented~                   | a ~Transfer-Encoding~ with no ~chunked~ in it, such as ~gzip~ |
+| ~505 HTTP Version Not Supported~        | HTTP/2's opening line, ~PRI * HTTP/2.0~                       |
+
+The limits are in [[file:configuration.org][configuration.org]].

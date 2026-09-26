@@ -1327,3 +1327,53 @@ MERGED to main on 2026-09-25 as 0206728 (PR #37), on the owner's "do closing rit
 M3.3 DONE and merged: the core counts the writes and the bytes outstanding, settles each write at its completion, refuses a completion it did not ask for, and keeps nothing of a response once its write is issued, which the retention suite checks by liveness. M6's write watermarks will read the bytes outstanding, and M4.2 carries the same check against the real shell's write executor.
 
 NEXT: M3.4, the originated statuses end to end (plan §7): each of design §6.5's statuses (400, 408, 413, 414, 431, 500, 501, 505) and decision 0009's 301, produced through the serializer and closing the connection, 413 through the serializer alone; finished by the plan's mutation, one status that keeps the connection alive. On a fresh branch cut from main after this commit, when the owner asks.
+
+
+M3.4 — THE ORIGINATED STATUSES END TO END (plan §7). Branch feat/m3.4-originated-statuses, cut from main at b3b1a90; 2026-09-25, Darwin arm64, Chez 10.4.1 `tarm64osx`. Mutation log: m3-mutations.md.
+
+MEASURED first, on main at b3b1a90, by a scratch probe that provoked each status on the fake connection and read every write back with chez-httparse's strict response parser:
+- every status design §6.5 and decision 0009 name, but 413, goes on the wire already: its status line and phrase, the Date, a Location for the 301, `Content-Length: 0`, `Connection: close` and no body, read back whole. The connection closes once the write completes, for the status's reason. M3.2 put the core's own responses through the serializer, and M2 closes after each;
+- 413 has no way in before M6, as recorded at M3's start. Through the serializer alone it reads back the same way;
+- no suite produced a 408 end to end: only the table's rows T4 and W1 make one, from a state they build;
+- a status originated in `head` or `body` is written with the socket still read. Design §4.4's rows for it list no `read-stop`, but §4.3's table says `responding` does not read. The core feeds nothing in `responding`, so what arrives there is dropped. The two 500s are answered in `handling`, after reading stopped at the pause;
+- the allocation gate: 2,736 B per request.
+
+Nothing in the slice was the owner's to decide: the plan and design §6.5 settle it, so there was no form before the first test. How the connection closes after a refusal was put to the owner after the review (below). Read as the owner's choice, and flagged for the PR:
+- reading on in `responding` is left as M2 made it, and written down;
+- `(http-server decisions)` exports its reasons as `originated-reasons`, read from the same table as reason-status, so that the suite can check it has a row for each;
+- 413's row frames and closes its response with the decisions' own procedures, as the core frames a response to no request it has read;
+- the user docs gain one table of the statuses the server sends by itself (docs/responses.org). 413 is left out: the server does not send it yet.
+
+REVIEWED before the first commit, at high effort (/code-review): six findings. On the owner's word ("fix all but the rfc 9112 issue - we need to discuss"), five are fixed, each premise checked first:
+- The docs' 501 row said a Transfer-Encoding whose last coding is not chunked gets 501. Measured through the core: 501 goes to one with no chunked coding in it (gzip, deflate, identity, pigeons, chunkedchunked, and `gzip, deflate`); a coding after chunked (`chunked, deflate`, `chunked, chunked`) and an empty value get 400; chunked last is accepted. The same wrong rule was in the new suite, in `parser-error-status`'s comment and twice in test-connection-head.sps, whose own row below it answers `chunked, deflate` 400. All five now say it as measured.
+- The suite's header comment, and this entry, said every row sends a request behind the offending one and another while the write is outstanding. The 408's head never ends, so nothing is behind it, and a handler's 500 is written after reading stopped. Both now say which rows send what.
+- `(http-server decisions)`' table was said to be in design §6.5's order; it is by status, 0009's 301 first.
+- The 408's row moved the clock by the limits' header timeout but expected the Date for 60 s. It now moves the clock a minute itself: the core reads no clock, and only the Date shows it.
+- The suite copied test-connection-response.sps's read-back helpers. Both now share `(read-back)`, a test library.
+Held for the owner, then decided (below): reading on in `responding` after an originated status has no bound before M5's write deadline, and design §4.3's note called it RFC 9112 §9.6's advice. §9.6 reads on after a half-close, and only until the client closes or the response has surely arrived.
+
+MEASURED for that decision, 2026-09-25, Darwin arm64, over loopback, by a scratch spike (a Python client and server, 100 runs each). The server reads the first 4 KiB of a request, writes a 431, and closes:
+- closing at once, with the rest of the request unread: the client never read the 431. Sending 8 KiB or 64 KiB, its read failed with "Connection reset by peer", though the 431 was written before the close. Sending 4 MiB, its send failed first (a reset 69 times, a broken pipe 31);
+- closing in stages (shut the write side, read and drop until the client closes, then close): the client read the 431 in every run, at every size.
+The core reads on only until the status's write completes, usually on the loop's next turn, and then closes at once. So a client still sending when it is refused most likely reads a reset, not the status: a head over its limit (431), a target over its limit (414), an HTTP/2 client's preface and the frames after it (505), a head the deadline cut short (408), and in M6 a body over its cap (413). The shell reads 16 KiB at a time, so a request that arrives in one read is drained. nginx lingers by default (up to 30 s, and 5 s between reads), and Go waits 500 ms after shutting its write side.
+
+DECIDED on the owner's word (2026-09-25), asked with the measurement above and three options, each with its rough size: the staged close in the core, 200–300 lines; in the shell only (M4.2), about 100; none in v1, about 20. THE STAGED CLOSE GOES IN THE CORE. After a status it originates is written, the core asks for `shutdown`, the half-close, keeps reading and dropping what arrives, and closes when the client closes or a linger deadline passes. It is a timeout policy, tabled with the fake clock like the core's other deadlines, and it needs a new limit, so a decision record. This PR leaves the behaviour as M2 made it, as recommended with the options, and corrects the notes: design §4.3's said the reading on was §9.6's advice, and it is not.
+Read as the owner's choice, and flagged: it lands as its own slice, M3.5, next, before the M3 exit, not in M5, which is not sliced yet (plan §10). M3.5 settles its limit and default, the state the connection lingers in, and which closes linger, measuring first. The shell's half, `uv_shutdown` and reading on until the core closes, is M4.2's, and M4.4's socket lane gets the measurement as a test.
+
+M3.4: every originated status end to end (feat/m3.4-originated-statuses).
+- `(http-server decisions)`: the core's reasons and their statuses are one table, which reason-status reads and `originated-reasons` exports.
+- `tests/test-connection-originated.sps`, new. Fourteen rows, one per reason the core closes with after a status of its own, and one for each of a parser error's two statuses: the 301, three 400s (the target, the Host, the parser), the 408, the 414, the four 431s, the two 500s (a raise, and a response with a fault), the 501 and the 505. Each provokes its status as a client does. Every row but the 408, whose head never ends, sends a request behind it in the same delivery, and another is delivered while the write is outstanding if the connection still reads; after a handler's 500 it does not, since reading stopped at the pause. It states the write as the strict response parser reads it, the actions from the core's response on, and the state and reason the connection ends with. 413 goes through the serializer alone. Three checks keep the table whole: every reason `originated-reasons` lists has a row, every row's reason is one of them or a parser error's, and design §6.5's statuses but 413, and 0009's 301, each have a row.
+- `tests/read-back.sls`, `(read-back)`, new: a write as read-response reads it back, for a row's expected value, which test-connection-response.sps and this suite share.
+- docs/responses.org: what the server answers by itself.
+- Plan §7's M3.4 and §8's M4.2, and design §4.3, carry dated notes, and plan §7 gains M3.5, the staged close.
+- Red before green: the rows opened green, 18 passes, since the core already writes each status and closes after it. Their red is the plan's mutation, run once per reason: A1 to A13 each turn that reason's rows red and no other row.
+- Mutations (m3-mutations.md): A1 to A13, and B to H.
+  - B feeds a delivery in `responding` to the parser: the twelve rows answered while reading go red. C feeds the pending input before a close: the two 500s go red.
+  - D adds a reason with no row, and E empties `originated-reasons`: each turns one coverage check red. H drops the 501 row from the table, and the statuses check goes red.
+  - F gives 413 RFC 7231's phrase: its row and the serializer's go red. G leaves `Connection: close` out of the core's responses: every row driven end to end goes red, and the 413 row holds.
+- Found by H's first run: the mutation runner ran each suite program from the tree, so an edited program was never run. It now runs an edited program from the mutant's root. No earlier spec edited one.
+- Allocation: 2,736 B per request, unchanged.
+- `make test` green: twenty-five suites, 649 expected passes (connection-originated 18), exit 0. `make check-imports` is clean.
+- 288 inserted lines of code and tests after the review (255 before), under plan §1 rule 1's ~400: one PR.
+
+NEXT: the PR, on the owner's word. Then M3.5, the staged close (plan §7, added 2026-09-25): after a status the core originates, the half-close, reading on and dropping what arrives, and the close when the client closes or a linger deadline passes, its limit and default settled by a decision record, measuring first. Then the M3 exit (plan §7): the brief's gate checked on the merged tree (the table tests, the corpus lane, and the chunked-to-1.0 mutation, M3.2-A), the serializer's segment count (M3.1-A), and the allocation gate re-measured with the response path in the loop; then M3's close-out.

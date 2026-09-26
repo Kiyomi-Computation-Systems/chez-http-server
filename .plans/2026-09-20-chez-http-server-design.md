@@ -356,6 +356,18 @@ is entered even for an error response, with a `close-after?` flag in the state r
 than a separate `failing` state, because every error path in §6 ends the same way —
 write a status, then close.
 
+> *Noted 2026-09-25 (M3.4):* a status the core originates from `head` or `body` is
+> written with the socket still being read. §4.4's rows for it list no `read-stop`, and
+> M2 implemented them as written. `responding` feeds the parser nothing and answers
+> nothing, so what arrives there is dropped, and the core closes as soon as the write
+> completes (`tests/test-connection-originated.sps`). That is not RFC 9112 §9.6's staged
+> close, and a client still sending loses the status: closing with its input unread
+> makes the server's TCP stack send a reset (RFC 2525 §2.17), which erased a 431 already
+> written in every run of the ledger's measurement (M3.4, 2026-09-25). On the owner's
+> word the core closes in stages instead: after the status is written it asks for
+> `shutdown`, reads on and drops what arrives, and closes when the client closes or a
+> linger deadline passes. That lands as M3.5 (plan §7).
+
 ### 4.4 The transitions
 
 The rows M2 writes as tables, one row per decision, each watched to fail first. The

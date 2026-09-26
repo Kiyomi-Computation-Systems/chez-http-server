@@ -268,3 +268,45 @@ had two edits to one file, so no recorded result changes.
 
 `make test` was green afterwards: twenty-four suites, 631 expected passes
 (connection-table 96, connection-retention 8), exit 0.
+
+## M3.4 — the originated statuses end to end (2026-09-25)
+
+The mutants ran against the finished tree, uncommitted on
+feat/m3.4-originated-statuses at b3b1a90, against every suite; H against the
+new suite alone. They ran again after the review's fixes, which changed the
+suite's text but no value it expects, and every result was the same.
+
+Red before green: the rows opened green, 18 passes. M3.2 already writes every
+originated status through the serializer, and M2 closes after each, so the
+rows' red is the plan's mutation, A, run once per reason. Every mutant below
+exited 1, and no suite's body raised.
+
+Found by H's first run: the runner puts a mutated library first on the
+library path, but it runs each suite program from the tree, so an edited
+program was never run, and H read green. It now runs an edited program from
+the mutant's root. H is the first spec to edit a program, so no recorded
+result changes.
+
+| # | mutation | observed |
+|---|---|---|
+| M3.4-A1 to A13 | the plan's, once per reason: `respond` keeps the connection alive after the status for one reason, and closes after every other (`src/http-server/connection.sls`) | connection-originated: exactly that reason's rows, one each, and two for A4 (parser-error: the 400 and the 501). The status is written without `Connection: close`. A kept 500 answers the request behind it too, and the connection ends idle. A kept status answered while reading resumes a parser that is not paused, and byte-machine refuses it (`&byte-machine-contract`) |
+| | A1 target-redirect (301) | also connection-head 2 (the redirect rows), connection-response 1 (the HEAD's 301), outcome-lane 1 and the ratchet 1 (`request/uri.md#5`) |
+| | A2 invalid-target (400) | also connection-head 10 (the target rows), outcome-lane 1, the ratchet 1 (four fixtures) |
+| | A3 invalid-host (400) | also connection-head 5 (the Host rows) |
+| | A4 parser-error (400 and 501) | also connection-head 3, connection-table 4 (T3's), outcome-lane 1, the ratchet 1 (four fixtures) |
+| | A5 header-timeout (408) | also connection-table 2 (T4, and W1's 408). Nothing else produced a 408 end to end: this suite's row is the only one |
+| | A6 target-too-large (414) | also connection-head 1 |
+| | A7 to A10, the four 431 reasons | also connection-head 1 each, its own limit's row |
+| | A11 handler-failed (500) | also connection-table 1 (T6), message-loop 1 |
+| | A12 invalid-response (500) | also connection-response 6, connection-table 2 (R1, and W1's 500), connection-retention 1 (the fault's close) |
+| | A13 http2-preface (505) | also connection-table 1 (U2), message-loop 1, outcome-lane 1, the ratchet 1 |
+| M3.4-B | a delivery in `responding` is fed to the parser, as in the reading states | connection-originated 12 failures: every row answered while reading, from `head` or `body` (all but the two 500s, answered after reading stopped at the pause). Also connection-table 1 (P3) |
+| M3.4-C | a response that closes the connection first resumes the parser onto its pending input | connection-originated 2 failures: the two 500s, whose next request was the pause's pending input. Also connection-head 2 (the pipelined rows), connection-table 1 (H10), message-loop 2 |
+| M3.4-D | `(http-server decisions)` gains a reason, `(body-timeout . 408)`, that no row drives | connection-originated 1 failure: every reason has a row. Nothing else |
+| M3.4-E | `originated-reasons` is empty | connection-originated 1 failure: every row's reason is one of them. The first coverage check would pass an empty list, so this one is its guard |
+| M3.4-F | 413's reason phrase is RFC 7231's `Payload Too Large`, not RFC 9110's (`src/http-server/serializer.sls`) | connection-originated 1 failure: the 413, through the serializer. Also serializer 1 (the status line of 413) |
+| M3.4-G | the core's own responses leave out `Connection: close`, and the connection still closes | connection-originated 14 failures, every row driven end to end; the 413 row holds, since it names its connection itself. Also connection-head 25, connection-response 7, connection-table 10 |
+| M3.4-H | the table loses its 501 row (the one mutation made in the test, since the property is the table's) | connection-originated exit 1, 16 passes and 1 failure: design §6.5's statuses each have a row. The reasons' checks hold, since the 400's row carries parser-error too |
+
+`make test` was green afterwards: twenty-five suites, 649 expected passes
+(connection-originated 18), exit 0.

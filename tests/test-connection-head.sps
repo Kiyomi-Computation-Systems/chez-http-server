@@ -33,7 +33,7 @@
 ;;;     `minimal`, the defaults with the switch off; the Host rows run under
 ;;;     the defaults;
 ;;;   - a parser error with no refusal is a 400, except a Transfer-Encoding
-;;;     whose last coding is not chunked, a 501 (M2.5).
+;;;     with no chunked coding in it, a 501 (M2.5).
 ;;;
 ;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
 ;;; rows; design §6.5's 431, 414, 400 and 501; RFC 9112 §3.2's target forms
@@ -322,8 +322,9 @@
                             'closed 'parser-error))
                 (every-size (b "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n") minimal))
     ;; invalid-transfer-encoding splits by the node the parser refused at
-    ;; (M2.5): a Transfer-Encoding whose last coding is not chunked is a 501
-    ;; (RFC 9112 §6.1), and every other one a 400.
+    ;; (M2.5): a Transfer-Encoding with no chunked coding in it is a 501 (RFC
+    ;; 9112 §6.1), and every other invalid one a 400, a coding after chunked
+    ;; among them.
     (test-equal "Transfer-Encoding: pigeons: 501, then close"
                 (list (list '() (list 'invalid-transfer-encoding (list (status-write 501)))
                             'closed 'parser-error))
