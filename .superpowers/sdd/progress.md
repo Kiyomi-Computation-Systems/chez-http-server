@@ -1617,3 +1617,16 @@ M3.5, THE THIRD OF THREE STACKED PRS: THE LINGER SUITE, AND THE INPUT A LINGERIN
 - 212 inserted lines of code and tests.
 
 NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the M3 exit (plan §7): the brief's gate checked on the merged tree (the table tests, the corpus lane, and the chunked-to-1.0 mutation, M3.2-A), the serializer's segment count (M3.1-A), and the allocation gate re-measured with the response path in the loop; then M3's close-out.
+
+MERGED to main on 2026-09-26, bottom up, on the owner's "do closing ritual":
+- #41, the first PR, as 4524622. Its squash tree (ff349d0) is identical to the tested tip's, f4c0f1d. It merged without deleting its branch, so that #42 stayed open on it.
+- #42, the second, as f2cf35b. It was retargeted to main and rebased from f4c0f1d (6a9b687 -> bd31f6b, tree 31e7d4a unchanged, proved), then force-pushed with the lease read from the remote. Its squash tree is identical to bd31f6b's. It too merged without deleting its branch, so that #43 stayed open on it.
+- #43, the third, as 8a524ba. It was retargeted to main and rebased from 6a9b687 (a7a8c8f -> 7ff4380, tree 951fe11 unchanged, proved), then force-pushed the same way. Its squash tree is identical to 7ff4380's.
+- Every run was the billing block, zero steps: 36252934217 (#41), 36252953317 and 36253465031 (#42, and its rebased tip), and 36252970328 and 36253509524 (#43, and its rebased tip).
+- `gh pr merge --delete-branch` switched this checkout to main at 8a524ba and deleted #43's branch. #41's and #42's were deleted by hand, local and remote, and refs were pruned; no PR is open.
+
+`make test` green on main: twenty-seven suites, 699 expected passes, exit 0.
+
+M3.5 DONE and merged: every close after a response is staged. The core half-closes, lingers, reading and dropping what arrives, and closes when the client does, when a read fails, or after 30 s; a lingering connection keeps none of its input. Decided on the owner's word by form (decision 0011). M3.4's reset measurement is corrected: a reset does not erase what the client has received, but it fails a client's send before it reads the status, and it throws away what of a response the kernel has not yet sent.
+
+NEXT: the M3 exit (plan §7): the brief's gate checked on the merged tree (the table tests, the corpus lane, and the chunked-to-1.0 mutation, M3.2-A), the serializer's segment count (M3.1-A), and the allocation gate re-measured with the response path in the loop; then M3's close-out. On a fresh branch cut from main after this commit, when the owner asks. The staged close's shell half is M4.2's, and its socket test M4.4's.
