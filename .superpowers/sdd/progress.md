@@ -1732,3 +1732,26 @@ Found in review (2026-09-26), and fixed on the owner's word ("fix all findings e
 `make test` green: twenty-seven suites, 706 expected passes (serializer 147, connection-allocation 18), exit 0. `make check-imports` is clean.
 
 NEXT: the two stacked PRs, on the owner's word. At the merge, M3 is complete. Then M4, the libuv shell and the first real server (plan §8).
+
+MERGED to main on 2026-09-26, bottom up, on the owner's "do closing ritual":
+- **#44, the pin,** as 8e2c7df, without deleting its branch. The squash tree (e3f1cba) is identical to the tested tip's, 2a38240.
+- **#45, the exit.** Retargeted to main, then rebased from 2a38240 onto 8e2c7df as 06dfcb0, its tree unchanged (009bdd4, the tested ecf72cb's). It was force-pushed with the lease read from `ls-remote`, and merged as 4b65a98, whose tree is 009bdd4 too.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36264311371, 36264322200 and 36264535045.
+- **Branches.** Both are deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: twenty-seven suites, 706 expected passes, exit 0.
+
+M3 COMPLETE and merged (4b65a98, PR #45): the response path. It took fifteen PRs, #31 to #45, merged on 2026-09-25 and 2026-09-26. Among them, #33 is the ratchet's libhtp fix, #39 and #40 the Transfer-Encoding statuses, and #44 the pin carrying byte-machine #139's fix. The exit criteria are met on main:
+- the table tests pass, and the corpus lanes hold at 'full (9,394 runs). The ratchet stands at trace 135, outcome 135 and libhtp 12 passing, unchanged since the M2 exit;
+- the brief's mutation, chunked to a 1.0 client, turns the decision's 1.0 rows red, and the serializer's segment count is asserted (M3.1-A);
+- with the response path in the loop, the allocation gate reads 1,840 B per request, against the 3,072 B ratchet. A JSON POST (2,384 B) and `ab -k`'s GET (2,112 B) are gated beside it;
+- m3-mutations.md is complete, and `make check-imports` is clean.
+
+The suite count went from M2's twenty-one to twenty-seven, adding connection-linger, connection-originated, connection-response, connection-retention, serializer and transfer-coding.
+
+NEXT: M4, the libuv shell and the first real server (plan §8):
+- M4.1, the adapter, and the closures the shell owns;
+- M4.2, the shell: close ownership, the depth counter, and the staged close's shell half (`uv_shutdown`, reading on until the core closes);
+- then M4.3 and M4.4, with the socket lane's staged-close test.
+
+It starts on a fresh branch cut from main after this commit, when the owner asks.
