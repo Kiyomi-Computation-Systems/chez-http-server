@@ -1,0 +1,26 @@
+--- (A) the parser alone, per request
+the gate's GET (Host, User-Agent, Accept)   704 B
++ an ordinary field, Xonnection           +64 B
++ Connection: keep-alive                 +128 B
++ Connection: foo                        +128 B
++ Content-Length: 0                      +80 B
++ Content-Type: text/plain               +64 B
++ Upgrade: foo                           +64 B
++ Transfer-Encoding: chunked, as a POST  +128 B
+--- (B) a 17-byte name matching the first k bytes of Transfer-Encoding
+k=0  xxxxxxxxxxxxxxxxx  +64 B
+k=1  Txxxxxxxxxxxxxxxx  +64 B
+k=2  Trxxxxxxxxxxxxxxx  +64 B
+k=4  Tranxxxxxxxxxxxxx  +64 B
+k=8  Transferxxxxxxxxx  +64 B
+k=12  Transfer-Encxxxxx  +64 B
+k=16  Transfer-Encodinx  +64 B
+--- (C) 97 fields with a 17-byte name, in one request
+xxxxxxxxxxxxxxxxx, a 2162-byte request: 6784 B
+Transfer-Encodinx, a 2162-byte request: 6784 B
+--- (D) the server, per request, answering an empty 200
+curl's GET, the gate's shape                       1840 B
+a browser-like GET, 11 fields, Connection          3312 B
+a JSON POST, Content-Type and Content-Length        2384 B
+ab -k: HTTP/1.0, Connection: Keep-Alive            2112 B
+exit=0

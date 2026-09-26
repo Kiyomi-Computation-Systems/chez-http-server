@@ -1630,3 +1630,65 @@ MERGED to main on 2026-09-26, bottom up, on the owner's "do closing ritual":
 M3.5 DONE and merged: every close after a response is staged. The core half-closes, lingers, reading and dropping what arrives, and closes when the client does, when a read fails, or after 30 s; a lingering connection keeps none of its input. Decided on the owner's word by form (decision 0011). M3.4's reset measurement is corrected: a reset does not erase what the client has received, but it fails a client's send before it reads the status, and it throws away what of a response the kernel has not yet sent.
 
 NEXT: the M3 exit (plan §7): the brief's gate checked on the merged tree (the table tests, the corpus lane, and the chunked-to-1.0 mutation, M3.2-A), the serializer's segment count (M3.1-A), and the allocation gate re-measured with the response path in the loop; then M3's close-out. On a fresh branch cut from main after this commit, when the owner asks. The staged close's shell half is M4.2's, and its socket test M4.4's.
+
+M3 EXIT, FIRST PART: the brief's gate on M3's merged tree, a finding in byte-machine, and the pin that carries its fix. 2026-09-26, Darwin arm64, Chez 10.4.1 `tarm64osx`. The exit's work began on feat/m3-exit, cut from main at 160d638; the pin goes up first, on its own branch, and the exit's checks are stacked on it (the second part, next).
+
+MEASURED first, on main at 160d638:
+- **The table tests:** `make test` green, twenty-seven suites, 699 expected passes, exit 0.
+- **The corpus lanes:** green under `CORPUS=full`. The trace and outcome lanes each ran 9,394 runs at 'full, and the ratchet holds trace 135, outcome 135 and libhtp 12 passing.
+- **The brief's mutation and the plan's**, re-run against all twenty-seven suites:
+  - M3.2-A, chunked to a 1.0 client, turns 4 of the decisions suite's checks red and nothing else. The core frames no body of unknown length before M6.
+  - M3.1-A, the segments joined, turns 7 serializer checks red, the segment counts, and 2 of the connection table's, H7 and W1.
+- **Allocation, with the response path in the loop:** 2,736 B per request, which is 224 B more than the M2 exit's 2,512 B. Other responses:
+  - a 200 with `Content-Type` and a 13-byte body, 2,784 B;
+  - a 100-byte or a 999-byte body, 2,752 B either way;
+  - a 64 KiB body, 2,768 B, since its Content-Length is two digits longer;
+  - a reason given, 2,768 B, since the line is built;
+  - a 500-byte field from the handler, 3,248 B, since it is copied once into the header block.
+- **Two shapes unchecked.** A body copied into its segment (X-BC) and a status line built per response (X-SL) each passed all twenty-seven suites.
+- **FOUND: the fields the parser reads by name.** byte-machine's `byte-machine-keyword-step/v1` (runtime.sls:885, v0.6.0) copied the prefix it had matched on every byte. Five of chez-httparse's states use it: the methods, the protocols, the five header names llhttp reads, `chunked`, and the `Connection` tokens.
+  - The parser alone cost 1,600 B on the gate's GET. One more field added:
+    - an ordinary one, 112 B;
+    - `Connection: keep-alive`, 2,944 B;
+    - `Content-Length: 0`, 2,480 B;
+    - `Transfer-Encoding: chunked`, 4,384 B;
+    - even `Content-Type`, 1,072 B, since its name starts like `content-length`.
+  - The cost grew with the square of the match. A 17-byte name matching k bytes of `Transfer-Encoding` added 112 B at k=0, 1,072 B at k=8 and 3,056 B at k=16.
+  - The worst case: 97 near-miss names in a 2,162-byte request allocated 297,767 B.
+  - Through the core, answering an empty 200: curl's GET 2,736 B, a browser-like GET with `Connection: keep-alive` 8,144 B, a JSON POST 6,800 B, and `ab -k` 5,824 B. `research/spike/m3-exit-keyword-alloc.sps` records these, two identical runs.
+- **A patch that reads the prefix in place,** tried from a scratch copy first on the library path. It stays inside the `/v1` contract, so the parser needs no regeneration.
+  - Each keyword table then costs a flat 64 B.
+  - The four requests cost 1,840, 3,312, 2,384 and 2,112 B, and the worst case 6,784 B.
+  - With it, every one of our suites passes at 'full, and chez-httparse's own `make test` passes 93 of 93. byte-machine's passes 157 of 158. Its mutation lane refuses the one mutation whose anchor the patch rewrites, `(= (length (car (car es))) (length p))`. Re-anchored to the patch's `(= (length (car (car es))) n)`, that mutation is caught, and the lane passes: every mutation accounted for, exit 0.
+
+DECIDED on the owner's word (2026-09-26), by form. The first answer was the recommended one, the second was not:
+- **Filing: I file it.** byte-machine #139 was filed the same day, with the numbers, the growth, the worst case and the patch. Weighed: the owner files it from a draft; or it is recorded only.
+- **M3 is held for the fix.** M3 closes only after byte-machine's fix, a chez-httparse release that vendors it, and the pin move; the requests a server meets then join the gate. Weighed:
+  - record it and close M3 now, the gate staying on the spike's GET (recommended);
+  - print the four requests on every run, with no gate.
+
+LANDED the same day. byte-machine v0.6.1 (5c1cb7e; PR #140, 799870b; release PR #142; its decision 0054) fixes #139 with a walk of its own: one pass over the entries finds the longest prefix any keyword shares with the input, compared in place. It re-anchors the mutation, and its allocation audit holds the shape. chez-httparse v0.4.3 (bdcdfe2; PR #53, release PR #54) vendors it and holds the same shape in its allocation lane.
+
+MEASURED at the new pin, before moving it:
+- **Our suites:** with `vendor/chez-httparse` checked out at v0.4.3, and its byte-machine at v0.6.1, every suite passes at 'full. The one exception was a probe written during the exit's work, a check that a name still cost more the more of a keyword it matched. It failed as it was built to: a name matching 1 byte of a keyword and one matching 16 both cost 2,016 B. The probe never lands; the exit's second part carries it turned round.
+- **The spike:** the numbers are the patch's, exactly. The gate's GET costs 1,840 B, down from 2,736 B.
+- **`make check-pins` refuses the move alone.** With both pins set to the new commits, it answered `PIN MISMATCH: vendor/uriparse was released with byte-machine 0245db3…, the library path carries 5c1cb7e…` (exit 2). The check holds uriparse to the byte-machine on the library path (PR #18).
+- **uriparse runs no changed code.** It calls eight of byte-machine's runtime procedures, and none of them changed. uriparse v0.6.0's own `make test`, with byte-machine v0.6.1 in its vendor directory, passed 77 of 77.
+
+DECIDED on the owner's word (2026-09-26), by form, the recommended answer: **uriparse cuts v0.6.1**, a release that moves its byte-machine to v0.6.1, as chez-httparse v0.4.3 did. One commit then moves byte-machine through both of its carriers, and the check stays as it is. Weighed: an exception recorded now, holding uriparse to its own release's byte-machine until it re-released. uriparse tagged v0.6.1 (88d538f; PR #27) the same day.
+
+THE PIN MOVES, on one commit: chez-httparse v0.4.1 to v0.4.3, and uriparse v0.6.0 to v0.6.1, so byte-machine moves from v0.6.0 to v0.6.1 through both. Updated:
+- the two gitlinks, and the Makefile's `HTTPARSE_PIN`, `URIPARSE_PIN` and `BYTE_MACHINE_PIN`;
+- global-constraints, which now says byte-machine is one pin with two carriers;
+- decision 0008: #139's row, and its two dated bullets;
+- the research README, and the spike's runs at the new pin;
+- the version comments in test-integration and test-corpus-inventory.
+
+Byte identity between the tags:
+- chez-httparse: `src/generated/` and the corpus under `test/vendor/` are byte-identical. On the library path, `src/httparse/grammar.sls` changed only in comments, and the harness's `drive.sls` shares its feeding loop, which it names `drive-run`, and exports `drive-result`. Nothing we import is renamed.
+- byte-machine: under `src/` only `runtime.sls` changed, and in it only the keyword walk.
+- uriparse: `src/`, `tools/` and `test/` are byte-identical. Only the version strings, the changelog, its ledger and the byte-machine gitlink moved.
+
+`make test`: twenty-seven suites, 699 expected passes, exit 0. The allocation suite's gate reads 1,840 B.
+
+NEXT: the M3 exit's second part, stacked on the pin.
