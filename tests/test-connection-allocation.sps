@@ -1,5 +1,6 @@
 #!r6rs
-;;; (http-server connection): what a request costs in allocation.  M2.2, M2.3.
+;;; (http-server connection): what a request costs in allocation.  M2.2, M2.3,
+;;; and the M3 exit.
 ;;;
 ;;; Decision 0002's second amendment: the 3 KiB gate is a regression ratchet
 ;;; counted as a total (parser, adapter and core), and shapes are the real
@@ -26,7 +27,17 @@
 ;;;     more: the collector is the connection's, made once, never one per
 ;;;     request (M2.3, design §7.5);
 ;;;   - the cost stays constant from request to request: later requests on
-;;;     the connection cost what earlier ones did (the third shape).
+;;;     the connection cost what earlier ones did (the third shape);
+;;;   - nor does it grow with the length of the response's body: the body is
+;;;     a segment of the write, never copied (design §7.3; the M3 exit);
+;;;   - a field name costs the same however much of a parser keyword it
+;;;     matches (byte-machine #139, fixed in v0.6.1);
+;;;   - and two requests a server meets are within the ratchet too: a JSON
+;;;     POST, and ab -k's HTTP/1.0 keep-alive GET (the M3 exit).  curl's GET
+;;;     is printed, not gated: its three fields are the CPS workload's shape,
+;;;     which the ratchet already holds.  So is a browser's GET, with eleven
+;;;     fields: each past the CPS workload's three costs 176 B, and reading
+;;;     its Connection value 64 B more, so its total counts its fields.
 ;;; The first shape, per callback, is test-connection-entry.sps's.
 ;;;
 ;;; Oracles: the 3,072 B ratchet and the shapes, from 0002's second amendment;
@@ -48,9 +59,13 @@
 
 (define resp (make-response 200 #f '() #f))
 
-;; connection : Bytevector -> (-> Void)
-;; A keep-alive connection that serves `request` once per call.
-(define (connection request)
+;; with-body : Nat -> Response — a 200 with an `n`-byte body.
+(define (with-body n) (make-response 200 #f '() (make-bytevector n 97)))
+
+;; connection : Bytevector Response -> (-> Void)
+;; A keep-alive connection that serves `request` once per call, answering
+;; `response`.
+(define (connection request response)
   (let* ((queued '())
          (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f default-limits)
                                  (lambda (actions) (set! queued (cons actions queued)))))
@@ -65,7 +80,7 @@
         (set! queued '())
         (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed r)
                                       (parser-result-next r) #f #f))
-        (let ((w (assq 'write (conn-context-step! ctx (list 'handler-responded resp)))))
+        (let ((w (assq 'write (conn-context-step! ctx (list 'handler-responded response)))))
           (conn-context-step! ctx (list 'write-completed (caddr w))))
         (unless (eq? (conn-phase (conn-context-state ctx)) 'idle)
           (assertion-violation 'connection "the connection did not return to idle"
@@ -82,11 +97,16 @@
     (let loop ((i 0)) (when (< i n) (set! hold (thunk)) (loop (+ i 1))))
     (div (- (sstats-bytes (statistics)) before) n)))
 
-;; per-request : Bytevector -> Nat — after a warm-up, over `reps` requests.
-(define (per-request request)
-  (let ((serve (connection request)))
-    (bytes-per-call serve warm)
-    (bytes-per-call serve reps)))
+;; per-request : Bytevector [Response] -> Nat
+;; After a warm-up, over `reps` requests, each answered `resp` unless another
+;; response is given.
+(define per-request
+  (case-lambda
+    ((request) (per-request request resp))
+    ((request response)
+     (let ((serve (connection request response)))
+       (bytes-per-call serve warm)
+       (bytes-per-call serve reps)))))
 
 ;; warmed : (-> Any) -> Nat — the same, for any thunk.
 (define (warmed thunk)
@@ -114,6 +134,30 @@
                     "\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n")))
 (define cps-absolute
   (b "GET http://x/a HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n"))
+;; The same request with one more 17-byte field name, which matches the first
+;; byte of the parser's keyword Transfer-Encoding, or its first 16 (the matcher
+;; that once copied its prefix per byte: byte-machine #139).
+(define (cps-with-name name)
+  (b (string-append "GET /a HTTP/1.1\r\nHost: x\r\n" name ": a\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n")))
+(define cps-keyword-1 (cps-with-name "Txxxxxxxxxxxxxxxx"))
+(define cps-keyword-16 (cps-with-name "Transfer-Encodinx"))
+
+;; Requests a server meets, as their clients send them: curl 8.7.1's GET; a
+;; JSON POST with a 13-byte body; ApacheBench 2.3's GET under -k, HTTP/1.0
+;; kept alive; and a browser's GET, eleven fields, Connection among them.
+(define curl-get
+  (b "GET / HTTP/1.1\r\nHost: localhost:8080\r\nUser-Agent: curl/8.7.1\r\nAccept: */*\r\n\r\n"))
+(define json-post
+  (b (string-append "POST /api HTTP/1.1\r\nHost: localhost:8080\r\nUser-Agent: curl/8.7.1\r\nAccept: */*\r\n"
+                    "Content-Type: application/json\r\nContent-Length: 13\r\n\r\n{\"a\":\"hello\"}")))
+(define ab-keep-alive
+  (b "GET / HTTP/1.0\r\nConnection: Keep-Alive\r\nHost: localhost:8080\r\nUser-Agent: ApacheBench/2.3\r\nAccept: */*\r\n\r\n"))
+(define browser-get
+  (b (string-append "GET /index.html HTTP/1.1\r\nHost: localhost:8080\r\nConnection: keep-alive\r\n"
+                    "sec-ch-ua: \"Chromium\";v=\"128\"\r\nsec-ch-ua-mobile: ?0\r\nsec-ch-ua-platform: \"macOS\"\r\n"
+                    "Upgrade-Insecure-Requests: 1\r\nUser-Agent: Mozilla/5.0 (Macintosh)\r\n"
+                    "Accept: text/html,application/xhtml+xml\r\nSec-Fetch-Site: none\r\n"
+                    "Accept-Encoding: gzip, deflate, br\r\nAccept-Language: en-US,en;q=0.9\r\n\r\n")))
 
 (define (diag line)
   (let ((p (current-error-port))) (put-string p line) (put-char p #\newline) (flush-output-port p)))
@@ -146,11 +190,15 @@
           (long-target (measure (lambda () (per-request cps-long-target))))
           (long-query (measure (lambda () (per-request cps-long-query))))
           (long-host (measure (lambda () (per-request cps-long-host))))
-          (absolute (measure (lambda () (per-request cps-absolute)))))
-      (test-eq "every request on the six connections is served" 'served
-               (if (for-all number? (list short long-header long-target long-query long-host absolute))
+          (absolute (measure (lambda () (per-request cps-absolute))))
+          (body-100 (measure (lambda () (per-request cps (with-body 100)))))
+          (body-999 (measure (lambda () (per-request cps (with-body 999))))))
+      (test-eq "every request on the eight connections is served" 'served
+               (if (for-all number? (list short long-header long-target long-query long-host absolute
+                                          body-100 body-999))
                    'served 'refused))
-      (when (for-all number? (list short long-header long-target long-query long-host absolute))
+      (when (for-all number? (list short long-header long-target long-query long-host absolute
+                                   body-100 body-999))
         (diag (string-append "connection-allocation: the CPS workload "
                              (number->string short) " B/request (ratchet "
                              (number->string gate) " B); with a 500-byte header "
@@ -158,7 +206,9 @@
                              (number->string long-target) ", with a 500-byte query "
                              (number->string long-query) ", with a 500-byte Host "
                              (number->string long-host) ", in absolute-form "
-                             (number->string absolute)))
+                             (number->string absolute) "; answered with a 100-byte body "
+                             (number->string body-100) ", with a 999-byte body "
+                             (number->string body-999)))
         (test-eq "a keep-alive request costs something" 'allocates
                  (if (> short 0) 'allocates 'free))
         (test-eq "and no more than the 3,072 B ratchet" 'within
@@ -179,11 +229,46 @@
                                 (uri-collect-feed! c t 0 (bytevector-length t))
                                 (uri-parse-result-validate (uri-collect-finish! c))))))
           (test-eqv "an absolute-form target costs one reused collector's parse more"
-                    (+ short parse) absolute))))
+                    (+ short parse) absolute))
+        ;; A response's body is a segment of the write, never copied (design
+        ;; §7.3; the M3 exit).  Both lengths take three digits, so the header
+        ;; block is the same size and only the body differs.
+        (test-eqv "a 999-byte body costs what a 100-byte one does" body-100 body-999)))
+
+    ;; A field name costs the same however much of a parser keyword it
+    ;; matches.  byte-machine's matcher once copied the prefix it had matched
+    ;; on every byte, so a name matching 16 bytes of Transfer-Encoding cost
+    ;; 2,880 B more than one matching 1 (byte-machine #139, filed at the M3
+    ;; exit, fixed in v0.6.1 and pinned through chez-httparse v0.4.3).
+    (let ((one (measure (lambda () (per-request cps-keyword-1))))
+          (sixteen (measure (lambda () (per-request cps-keyword-16)))))
+      (test-eq "both near-miss requests are served" 'served
+               (if (and (number? one) (number? sixteen)) 'served 'refused))
+      (when (and (number? one) (number? sixteen))
+        (test-eqv "a 17-byte name costs the same however much of a keyword it matches" one sixteen)))
+
+    ;; Requests a server meets: a JSON POST and ab -k's GET, each within the
+    ;; ratchet; curl's GET, the CPS workload's shape, and a browser's are
+    ;; printed.  On the owner's word, at the M3 exit (2026-09-26).
+    (let ((curl (measure (lambda () (per-request curl-get))))
+          (json (measure (lambda () (per-request json-post))))
+          (ab (measure (lambda () (per-request ab-keep-alive))))
+          (browser (measure (lambda () (per-request browser-get)))))
+      (test-eq "every request a server meets is served" 'served
+               (if (for-all number? (list curl json ab browser)) 'served 'refused))
+      (when (for-all number? (list curl json ab browser))
+        (diag (string-append "connection-allocation: requests a server meets: curl's GET "
+                             (number->string curl) " B/request, a JSON POST "
+                             (number->string json) ", ab -k's GET " (number->string ab)
+                             "; a browser's GET, eleven fields, " (number->string browser)))
+        (test-eq "a JSON POST with Content-Type and Content-Length is within the ratchet" 'within
+                 (if (<= json gate) 'within 'over))
+        (test-eq "ab -k's HTTP/1.0 keep-alive GET is within the ratchet" 'within
+                 (if (<= ab gate) 'within 'over))))
 
     ;; The same connection, twice as long: the requests after the first
     ;; 11,000 cost what those did.
-    (let* ((serve (connection cps))
+    (let* ((serve (connection cps resp))
            (first (measure (lambda () (bytes-per-call serve warm) (bytes-per-call serve reps))))
            (later (measure (lambda () (bytes-per-call serve reps)))))
       (test-eq "every request on the long connection is served" 'served

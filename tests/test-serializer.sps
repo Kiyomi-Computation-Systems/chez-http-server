@@ -9,7 +9,8 @@
 ;;;     concatenated; design §7.3), the byte count the serializer reports, and
 ;;;     what chez-httparse's strict response parser reads back (response-reader),
 ;;;     a client that is not our code;
-;;;   - the status lines: RFC 9110 §15's and RFC 6585's reason phrases;
+;;;   - the status lines: RFC 9110 §15's and RFC 6585's reason phrases, each
+;;;     line made once and shared by every response (the M3 exit);
 ;;;   - the Date line: RFC 9110 §5.6.7's example, and Chez's own UTC calendar
 ;;;     over four centuries of instants;
 ;;;   - the faults: what a handler's response may not carry (decision 0010
@@ -283,6 +284,17 @@
                      (string-append "HTTP/1.1 " (number->string (car p)) " " (cadr p) "\r\n")
                      (bytes->text (car segments)))))
      phrases)
+
+    ;; A registered status's line is made once, so a response allocates
+    ;; nothing for it (the M3 exit; decision 0002's shapes): two responses
+    ;; with the same status write the same bytevector.  A refusal answers a
+    ;; fresh list each time, so it can never pass.
+    (let ((line (lambda (status)
+                  (guard (e ((assertion-violation? e) (list 'refused)))
+                    (let-values (((segments bytes) (serialize-response (response status '() #f) 'no-body #f)))
+                      (car segments))))))
+      (test-equal "every status line in the table is made once, and shared" '()
+                  (map car (filter (lambda (p) (not (eq? (line (car p)) (line (car p))))) phrases))))
 
     (test-equal "RFC 9110 §5.6.7's example" date-text (bytes->text (date-line 784111777)))
     (test-equal "the epoch" "Date: Thu, 01 Jan 1970 00:00:00 GMT\r\n" (bytes->text (date-line 0)))

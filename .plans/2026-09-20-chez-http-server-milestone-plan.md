@@ -583,6 +583,21 @@ Brief's gate: table tests; the corpus lane still green; the chunked-to-1.0 mutat
 witnessed. Plus: the allocation gate re-measured with the response path in the loop, and
 the serializer's segment count asserted rather than assumed.
 
+*Noted 2026-09-26 (the M3 exit):* all of it holds.
+- `make test` passes. The corpus lanes hold at 'full (9,394 runs).
+- The chunked-to-1.0 mutation (M3.2-A) turns the decision's 1.0 rows red, and nothing
+  else can see it before M6. The segment-count mutation (M3.1-A) turns the serializer's
+  counts red, and the core's write rows.
+- The gate fits with the response path in the loop (decision 0002's note of this date).
+  Two response shapes became checks: a body is never copied, and a status line is made
+  once.
+
+Measuring requests a server meets beside the gate's GET found byte-machine #139. Its
+keyword matcher cost a field the parser reads by name 1 to 4.4 KB. On the owner's word,
+M3's close waited for the fix: byte-machine v0.6.1, pinned through chez-httparse v0.4.3
+and uriparse v0.6.1. The gate's GET then costs 1,840 B, and two requests a server meets
+join the gate: a JSON POST, and ab -k's HTTP/1.0 keep-alive GET.
+
 ---
 
 ## 8. M4 — the libuv shell and the first real server
@@ -787,7 +802,7 @@ owns.
 
 | # | Risk | Discharged by |
 |---|---|---|
-| 1 | Allocation per request (gate ≤ 3 KiB) | **M2.3** (the collector) and **M2 exit**, re-measured at **M3 exit** with the response path in the loop |
+| 1 | Allocation per request (gate ≤ 3 KiB) | **M2.3** (the collector) and **M2 exit**, re-measured at **M3 exit** with the response path in the loop, where two requests a server meets joined the gate once byte-machine #139 was fixed (2026-09-26) |
 | 2 | The 64 KiB read buffer dominates per-connection cost | already answered in M0 — `read-buffer-size` defaults to 16,384 — and **re-measured at M4 exit** against the real handle |
 | 3 | Pause protocol edges | **M2.4** (mutation A, against the measured 51/47 boundary) and **M6** (the empty-feed-after-pause case) |
 | 4 | Close-delimited response bodies need `parser-finish!` | **not this server's path** — only the test client and a future proxy see it. Named in **M8**'s black-box lane, where the test client exists |
