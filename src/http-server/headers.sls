@@ -6,10 +6,12 @@
 ;;; core builds a request's headers as spans of the delivery (design §7.1),
 ;;; and a handler may build a response's from bytevectors.  Field-name
 ;;; comparison is ASCII case-insensitive (RFC 9110 §5.1).  Values are kept as
-;;; raw bytes; no decoding here.  PURE: imports only (rnrs) and
-;;; (http-server span).
+;;; raw bytes; no decoding here.  The byte helpers a value's list is read with
+;;; are here too: OWS (RFC 9110 §5.6.3), and a range compared with a token
+;;; without regard to case, each reading the bytes in place.  PURE: imports
+;;; only (rnrs) and (http-server span).
 (library (http-server headers)
-  (export header-name=? headers-ref headers-ref-all)
+  (export header-name=? headers-ref headers-ref-all ows? trim-ows range-ci=?)
   (import (rnrs) (http-server span))
 
   ;; Bytes = (U Bytevector Span)
@@ -24,17 +26,41 @@
   (define (bytes-start x) (if (span? x) (span-start x) 0))
   (define (bytes-end x) (if (span? x) (span-end x) (bytevector-length x)))
 
+  ;; ranges-ci=? : Bytevector Nat Nat Bytevector Nat Nat -> Boolean
+  ;; av[as, ae) and bv[bs, be) hold the same bytes, without regard to ASCII
+  ;; case.
+  (define (ranges-ci=? av as ae bv bs be)
+    (and (= (- ae as) (- be bs))
+         (let loop ((i as) (j bs))
+           (or (= i ae)
+               (and (= (ascii-downcase-byte (bytevector-u8-ref av i))
+                       (ascii-downcase-byte (bytevector-u8-ref bv j)))
+                    (loop (+ i 1) (+ j 1)))))))
+
   ;; header-name=? : Bytes Bytes -> Boolean
   ;; ASCII case-insensitive equality of two field names.
   (define (header-name=? a b)
-    (let ((av (bytes-vector a)) (as (bytes-start a)) (ae (bytes-end a))
-          (bv (bytes-vector b)) (bs (bytes-start b)) (be (bytes-end b)))
-      (and (= (- ae as) (- be bs))
-           (let loop ((i as) (j bs))
-             (or (= i ae)
-                 (and (= (ascii-downcase-byte (bytevector-u8-ref av i))
-                         (ascii-downcase-byte (bytevector-u8-ref bv j)))
-                      (loop (+ i 1) (+ j 1))))))))
+    (ranges-ci=? (bytes-vector a) (bytes-start a) (bytes-end a)
+                 (bytes-vector b) (bytes-start b) (bytes-end b)))
+
+  ;; range-ci=? : Bytevector Nat Nat Bytevector -> Boolean
+  ;; bv[from, to) is `token`, all of it, without regard to ASCII case.
+  (define (range-ci=? bv from to token)
+    (ranges-ci=? bv from to token 0 (bytevector-length token)))
+
+  ;; ows? : Octet -> Boolean — SP or HTAB, optional whitespace (RFC 9110
+  ;; §5.6.3).
+  (define (ows? c) (or (= c 32) (= c 9)))
+
+  ;; trim-ows : Bytevector Nat Nat -> (values Nat Nat)
+  ;; The bounds of bv[from, to) without the OWS at either end.  A range of
+  ;; OWS alone trims to the empty range at its end.
+  (define (trim-ows bv from to)
+    (let* ((start (let loop ((i from))
+                    (if (and (< i to) (ows? (bytevector-u8-ref bv i))) (loop (+ i 1)) i)))
+           (end (let loop ((i to))
+                  (if (and (> i start) (ows? (bytevector-u8-ref bv (- i 1)))) (loop (- i 1)) i))))
+      (values start end)))
 
   ;; headers-ref : (Listof (Pair Bytes Bytes)) Bytes -> (U Bytes #f)
   ;; The value of the first field whose name matches `name`, or #f.

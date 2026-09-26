@@ -1,8 +1,10 @@
 #!r6rs
 ;;; (http-server headers): ASCII case-insensitive field-name operations over a
-;;; header alist.  Oracle: RFC 9110 §5.1 (field names are case-insensitive).
-;;; Names and values are bytevectors or spans: the connection core builds a
-;;; request's headers as spans of the delivery (design §7.1).
+;;; header alist, and the byte helpers a field value's list is read with.
+;;; Oracles: RFC 9110 §5.1 (field names are case-insensitive) and §5.6.3
+;;; (OWS is SP and HTAB).  Names and values are bytevectors or spans: the
+;;; connection core builds a request's headers as spans of the delivery
+;;; (design §7.1).
 (import (rnrs) (srfi :64) (testing) (http-server headers) (http-server span))
 
 (define (b s) (string->utf8 s))
@@ -50,4 +52,20 @@
       (test-eq "name=? compares two spans at different offsets" 'same
                (if (header-name=? (sp 25 28) (sp 33 36)) 'same 'diff))
       (test-eq "name=? on spans is length-sensitive" 'diff
-               (if (header-name=? (sp 25 28) (sp 25 27)) 'same 'diff)))))
+               (if (header-name=? (sp 25 28) (sp 25 27)) 'same 'diff)))
+
+    ;; --- the byte helpers ---------------------------------------------------------
+    (let ((bv (b "x\t Chunked \ty")))
+      (test-equal "OWS is SP and HTAB, and nothing else"
+                  '(#t #t #f #f #f)
+                  (map (lambda (c) (if (ows? c) #t #f)) '(32 9 10 13 120)))
+      (test-equal "trim-ows drops the OWS around a range, and only that"
+                  '((3 10) (3 10) (5 5))
+                  (list (call-with-values (lambda () (trim-ows bv 1 12)) list)
+                        (call-with-values (lambda () (trim-ows bv 3 10)) list)
+                        (call-with-values (lambda () (trim-ows (b "     ") 0 5)) list)))
+      (test-equal "range-ci=? compares a range with a token, all of it, without regard to case"
+                  '(same same diff diff diff)
+                  (map (lambda (r) (if (range-ci=? bv (car r) (cadr r) (b (caddr r))) 'same 'diff))
+                       '((3 10 "chunked") (3 10 "CHUNKED") (3 9 "chunked") (3 10 "chunk")
+                         (3 10 "chunkex")))))))
