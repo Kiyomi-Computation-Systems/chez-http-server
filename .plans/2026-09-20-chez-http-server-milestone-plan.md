@@ -522,6 +522,30 @@ a ninth originated status, 301, which closes too.
 - **Mutation:** make one of them keep the connection alive. Expect the close assertion
   red for that status alone.
 
+*Noted 2026-09-25 (M3.4):* `tests/test-connection-originated.sps` drives each end to
+end: one row per reason the core closes with after a status of its own, and one for each
+of a parser error's two statuses. A row states what the client reads back through
+chez-httparse's strict response parser, that nothing sent after the offending request is
+fed or answered, and the close. `(http-server decisions)` exports its reasons as
+`originated-reasons`, so a reason added without a row fails the suite. The mutation ran
+once per reason, and each turned that reason's rows red and no other row. The 408 had no
+end-to-end test before: only the table's rows made one, from a state they built.
+
+### M3.5 — the staged close
+
+*Added 2026-09-25, on the owner's word (ledger, M3.4).* After a status the core
+originates is written, the connection closes in stages, as RFC 9112 §9.6 describes. The
+core asks for `shutdown`, the half-close, so the client reads the status and then the
+stream's end. It reads on and drops what arrives, and it closes when the client closes or
+a linger deadline passes. Closing at once while the client is still sending makes the
+server's TCP stack send a reset, which erased a 431 already written in every run of the
+measurement behind the decision. The slice settles, measuring first, the linger limit and
+its default (a row in decision 0005's table, by a decision record), the state the
+connection lingers in, and which closes linger. The shell's half is M4.2's.
+
+- **Mutation:** close at once when the write completes, as M3.4 left it. Expect the
+  staged close's rows red.
+
 ### M3 exit
 
 Brief's gate: table tests; the corpus lane still green; the chunked-to-1.0 mutation
@@ -579,6 +603,12 @@ The two composition hazards from design §6.4 become checks here:
 list once `uv-write*!` has returned: its `on-complete` closure keeps the byte count the
 completion reports, never the segments. M3.3's retention check, run against the real
 shell, is its test, watched to fail by a closure that captures the segments.
+
+*Carried from M3.4 (2026-09-25):* the shell's half of M3.5's staged close. The shell
+performs the core's `shutdown` as `uv_shutdown`, reporting `shutdown-completed`, and reads
+on, handing the core what arrives, until the core asks for `close`. M4.4's socket lane
+gets the measurement that decided it (ledger, M3.4) as a test: a client that sends past a
+refusal reads the status back, where a close at once gives it a reset.
 
 ### M4.3 — the listener and `server-step`
 

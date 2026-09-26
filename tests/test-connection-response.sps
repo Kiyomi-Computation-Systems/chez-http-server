@@ -24,19 +24,9 @@
 ;;; 784,111,777 s, reads `Sun, 06 Nov 1994 08:49:37 GMT`.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
-        (fake-shell) (response-reader))
+        (fake-shell) (response-reader) (read-back))
 
 (define (b s) (string->utf8 s))
-
-;; The fields a row expects, as the reader returns them.
-(define epoch '("Date" . "Thu, 01 Jan 1970 00:00:00 GMT"))
-(define (content-length n) (cons "Content-Length" n))
-(define close '("Connection" . "close"))
-(define keep-alive '("Connection" . "keep-alive"))
-
-;; message : Nat String (Listof (Pair String String)) String -> Datum
-;; A write read back whole: the message ended at its last byte.
-(define (message status reason headers body) (list status reason headers body 'complete))
 
 ;; The 500 a refused response is answered with: an originated response, with
 ;; no body (decision 0010 item 6).

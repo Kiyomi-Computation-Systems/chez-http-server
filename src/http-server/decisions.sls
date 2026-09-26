@@ -32,9 +32,22 @@
 ;;; `message-needs-eof?` come from (httparse decisions), which mirrors llhttp.
 ;;; PURE: imports only (rnrs).
 (library (http-server decisions)
-  (export reason-status parser-error-status result-hands-off-stream?
+  (export reason-status originated-reasons parser-error-status result-hands-off-stream?
           response-framing response-connection)
   (import (rnrs))
+
+  ;; The core's own reasons and their statuses, by status.
+  (define reason-statuses
+    '((target-redirect . 301)                ; bracket params and pipes (0009)
+      (invalid-target . 400)                 ; not a form RFC 9112 §3.2 allows
+      (invalid-host . 400)                   ; RFC 9112 §3.2's Host rules
+      (header-timeout . 408)
+      (target-too-large . 414)
+      (headers-too-large . 431) (too-many-headers . 431)
+      (header-field-too-large . 431) (header-value-too-large . 431)
+      (handler-failed . 500)
+      (invalid-response . 500)               ; one the serializer cannot write (0010 item 2)
+      (http2-preface . 505)))                ; nothing to hand HTTP/2 to (0006 item 2)
 
   ;; reason-status : Symbol -> Nat
   ;; The status of a response the core originates, by the reason the
@@ -42,19 +55,14 @@
   ;; idle-timeout, not-keep-alive, upgrade, ...) is an assertion violation,
   ;; and so is parser-error, whose status is the error's (parser-error-status).
   (define (reason-status reason)
-    (case reason
-      ((target-redirect) 301)                ; bracket params and pipes (0009)
-      ((invalid-target) 400)                 ; not a form RFC 9112 §3.2 allows
-      ((invalid-host) 400)                   ; RFC 9112 §3.2's Host rules
-      ((header-timeout) 408)
-      ((target-too-large) 414)
-      ((headers-too-large too-many-headers
-        header-field-too-large header-value-too-large) 431)
-      ((handler-failed) 500)
-      ((invalid-response) 500)               ; one the serializer cannot write (0010 item 2)
-      ((http2-preface) 505)                  ; nothing to hand HTTP/2 to (0006 item 2)
-      (else (assertion-violation 'reason-status
-              "not a reason the core originates a response for" reason))))
+    (cond ((assq reason reason-statuses) => cdr)
+          (else (assertion-violation 'reason-status
+                  "not a reason the core originates a response for" reason))))
+
+  ;; originated-reasons : (Listof Symbol)
+  ;; Every reason reason-status answers, by status: each one a response the
+  ;; core originates, then closes after (M3.4 drives each end to end).
+  (define originated-reasons (map car reason-statuses))
 
   ;; The codes chez-httparse's error channel carries: one per llhttp error
   ;; number (its decision 0013), less paused-upgrade, which arrives as a pause
@@ -70,9 +78,10 @@
   ;; parser-error-status : Symbol Symbol -> Nat
   ;;   code node-name — parser-error-code and parser-error-node-name
   ;; The status for a parser error (design §6.3).  `invalid-transfer-encoding`
-  ;; splits by node, never by reason string: a Transfer-Encoding whose last
-  ;; coding is not chunked arrives at `e-request-invalid-te` and is a 501 (RFC
-  ;; 9112 §6.1; chez-httparse #36, its docs/api.org), every other one is a 400.
+  ;; splits by node, never by reason string: a request's Transfer-Encoding
+  ;; with no chunked coding in it arrives at `e-request-invalid-te` and is a
+  ;; 501 (RFC 9112 §6.1; chez-httparse #36, its docs/api.org), and every other
+  ;; one, a coding after chunked or an empty value, is a 400.
   ;; Every other code is a 400.  The HTTP/2 preface's `paused-h2-upgrade` is a
   ;; hand-off, answered by the core's own reason (see result-hands-off-stream?),
   ;; so it is an assertion violation here, like a code outside the parser's
