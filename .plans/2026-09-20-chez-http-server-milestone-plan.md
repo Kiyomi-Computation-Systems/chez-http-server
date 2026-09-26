@@ -688,6 +688,20 @@ clock in M8 instead of being shell code nobody can test.
 - **Mutation:** make `refuse` accept anyway above the cap. Expect the connection-count
   row red.
 
+*Noted 2026-09-26 (M4.3):* the mutation turns red the step's refusal rows and the
+shell suite's refusal checks, and nothing else. `max-connections` and `backlog` arrived
+with their four things, as `CHEZ_HTTP_MAX_CONNECTIONS` and `CHEZ_HTTP_BACKLOG`, the
+backlog at most a C `int`'s largest, 2147483647, since `uv_listen` takes one. The
+shell listens, offers the step every connection it takes with the table's size, and
+closes the listener at a shutdown. A review before the first commit found fifteen
+things; the owner settled four by form (ledger, M4.3): the step reads the table's size
+rather than keeping a count, a refusal episode is logged twice at most, a listener that
+fails shuts the server down, and one procedure closes every handle. The ledger carried
+a second direction for the reconciliation to this slice, a live handle the table does
+not know. What it guarded against is closed at its source instead: a handle the
+listener takes is served or closed even when something raises before it is served, and
+a check provokes that raise.
+
 ### M4.4 — the contract test, and the socket lane
 
 The gate that keeps the shells honest: the same scripted event stream through the fake
@@ -764,7 +778,8 @@ foreign context trap that decision 0003 exists to avoid.
 **M7's gate is five mutations, not seven.** The two-level proposal carries seven
 invariants; decision 0003 item 2 adopts R1–R5 as M7's checks, and design §5.3 records
 that the other two are already project rules enforced elsewhere — exactly one procedure
-calls `uv-close!` (M4.2's `rg` gate) and v1 is single-threaded (design §7.4). Nothing
+calls `uv-close!` (M4.2's `rg` gate; since M4.3, `handle-close!`, held by
+`tests/test-close-ownership.sps`) and v1 is single-threaded (design §7.4). Nothing
 about the count is open.
 **Exit (brief):** a handler awaiting `uv-getaddrinfo!` inside a pipelined connection
 keeps response order; **each of R1–R5 has a mutation that goes red** — that is the

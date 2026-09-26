@@ -35,12 +35,28 @@
 ;;;                   buffer at the limits' read-buffer-size (design §7.2)
 ;;;   shutdown        uv-shutdown!, the write side (decision 0011); its
 ;;;                   completion reports `shutdown-completed`
-;;;   close           connection-close!, the one uv-close! call; the handle's
-;;;                   close takes the connection out of the table and reports
-;;;                   `closed`
+;;;   close           connection-close!, through handle-close! (below); the
+;;;                   close's callback takes the connection out of the table
+;;;                   and reports `closed`
 ;;;   log             the shell's log
 ;;; A deadline is not acted on: the wheel is M5's.  Bodies (M6) and the
 ;;; hand-off (M8) are never asked for in v1's flow.
+;;;
+;;; THE LISTENER is the server's (design §4.6; M4.3): `server-step` decides,
+;;; and the shell performs.  Each connection the listener takes is offered to
+;;; the server with the count of connections open, the table's size, and is
+;;; served, or refused and closed at once: none is left waiting on the
+;;; listener, and none left open with no one to close it.  A shutdown, or a
+;;; listener that fails, closes the listener, and a shell whose server has
+;;; stopped listening never listens again.
+;;;
+;;; ONE PROCEDURE CLOSES EVERY HANDLE: handle-close!, the one uv-close! call
+;;; (tests/test-close-ownership.sps reads the source to hold it), for a
+;;; connection's handle, the listener, and one the server refused.  What a
+;;; close does follows the handle, not the caller: chez-libuv runs the
+;;; callback of a handle's first close alone, and every close passes the same
+;;; one, so a connection's close takes it out of the table and reports
+;;; `closed` whoever asked for it.
 ;;;
 ;;; A TRANSPORT FAILURE IS A `read-error` (design §6.3): a read's error, and a
 ;;; write's or a shutdown's, whether chez-libuv raises it at the call or
@@ -71,7 +87,8 @@
 ;;; before the callback-error arm.  The run loop's own logging cannot take the
 ;;; failure's place: a log that raises there is ignored.
 (library (http-server private shell)
-  (export make-shell shell? shell-adopt! shell-run! shell-connections
+  (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run!
+          shell-connections shell-server shell-listener
           connection? connection-state connection-tcp connection-violations
           connection-close!
           wall-clock)
@@ -81,7 +98,8 @@
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
           (only (http-server connection) make-conn-state)
-          (only (http-server limits) limits-read-buffer-size)
+          (only (http-server limits) limits-read-buffer-size limits-backlog)
+          (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
           (http-server private adapter))
 
@@ -89,16 +107,25 @@
   ;;   UvLoop (Request -> Response) Limits (-> Nat) (Symbol (Listof Any) -> Any)
   ;;   [(Connection Symbol Any -> Any)] -> Shell
   ;; A shell on `loop`: the handler every connection calls, the limits every
-  ;; connection is held to, the clock (milliseconds since the epoch, read at
-  ;; most once a second for the Date), and the log, called with what happened
-  ;; and its details.  The optional trace is called with each event a
+  ;; connection is held to and the server's cap and backlog, the clock
+  ;; (milliseconds since the epoch, read at most once a second for the
+  ;; Date), and the log, called with what happened and its details.  It
+  ;; serves what it is offered (shell-adopt!), and listens when it is asked
+  ;; to (shell-listen!).  The optional trace is called with each event a
   ;; connection dispatches and each action it runs, as (connection 'event
-  ;; datum) and (connection 'action datum).  The datum is the event or the
+  ;; datum) and (connection 'action datum), and with each event the server
+  ;; steps and each action of its the shell performs, as (shell 'server-event
+  ;; datum) and (shell 'server-action datum).  The datum is the event or the
   ;; action itself, not a copy: a trace that keeps it keeps what it holds, a
   ;; response's body among them.
   ;; shell? : Any -> Boolean
+  ;; shell-server : Shell -> ServerState — the server's state (design §4.6)
+  ;; shell-listener : Shell -> (U #f UvTcp)
+  ;;   the listener the shell last made, open or closed, or #f if none
   (define-record-type (shell %make-shell shell?)
     (fields loop handler limits clock log trace table
+            (mutable server)
+            (mutable listener)
             (mutable read-at) (mutable read-ms)       ; the clock's last reading, and when
             (mutable date-second) (mutable date-line)))
 
@@ -106,7 +133,8 @@
     (case-lambda
       ((loop handler limits clock log) (make-shell loop handler limits clock log #f))
       ((loop handler limits clock log trace)
-       (%make-shell loop handler limits clock log trace (make-eq-hashtable) #f #f #f #f))))
+       (%make-shell loop handler limits clock log trace (make-eq-hashtable)
+                    (make-server-state 'listening 0 limits) #f #f #f #f #f))))
 
   ;; wall-clock : -> Nat — milliseconds since the epoch, UTC: a shell's clock.
   (define (wall-clock)
@@ -114,8 +142,11 @@
       (+ (* 1000 (time-second t)) (div (time-nanosecond t) 1000000))))
 
   ;; shell-connections : Shell -> (Listof Connection)
-  ;; The connections adopted and not yet closed.
-  (define (shell-connections sh) (vector->list (hashtable-keys (shell-table sh))))
+  ;; The connections adopted and not yet closed.  The table maps each one's
+  ;; handle to it.
+  (define (shell-connections sh)
+    (let-values (((handles connections) (hashtable-entries (shell-table sh))))
+      (vector->list connections)))
 
   ;; connection? : Any -> Boolean
   ;; connection-tcp : Connection -> UvTcp
@@ -134,15 +165,132 @@
   ;; connection-state : Connection -> ConnState — the core's state.
   (define (connection-state c) (conn-context-state (connection-ctx c)))
 
-  ;; shell-adopt! : Shell UvTcp -> Connection
+  ;; --- the listener -------------------------------------------------------------
+
+  ;; shell-listen! : Shell String Nat -> Nat
+  ;; Listen on `host`, an IPv4 or IPv6 literal, and `port`, with the limits'
+  ;; backlog, offering each connection the listener takes to the server: the
+  ;; port it listens on, the kernel's choice for port 0.  A shell listens on
+  ;; one listener at a time, and not at all once its server has stopped
+  ;; listening; either is an assertion violation.  A listener that cannot
+  ;; listen is closed, the raise goes on, and the shell may listen again.
+  ;; An error the listener reports in place of a connection means it has
+  ;; stopped (libuv 1.52.1 reports one only on Windows, src/win/tcp.c): the
+  ;; server is told, `listener-failed`, and shuts down.  On Unix libuv drops a
+  ;; failed accept itself, and when descriptors run out it sheds load by
+  ;; accepting and closing whatever waits (src/unix/stream.c).
+  (define (shell-listen! sh host port)
+    (unless (eq? (server-phase (shell-server sh)) 'listening)
+      (assertion-violation 'shell-listen! "the server has stopped listening" sh))
+    (let ((listener (shell-listener sh)))
+      (when (and listener (uv-handle-open? listener))
+        (assertion-violation 'shell-listen! "the shell listens already" sh)))
+    (let ((tcp (make-uv-tcp (shell-loop sh))))
+      (shell-listener-set! sh tcp)
+      (closing-on-raise sh tcp
+        (lambda ()
+          (uv-tcp-bind! tcp host port)
+          (uv-listen! tcp (limits-backlog (shell-limits sh))
+                      (lambda (err)
+                        (if err
+                            (server-dispatch! sh (list 'listener-failed (errno err)))
+                            (let ((client (accept! sh tcp)))
+                              (when client (shell-adopt! sh client))))))
+          (uv-tcp-getsockname-port tcp)))))
+
+  ;; accept! : Shell UvTcp -> (U UvTcp #f)
+  ;; The connection the listener has taken, or #f, logged as `accept-failed`,
+  ;; if libuv could not open it: libuv has closed its descriptor, and the
+  ;; listener listens on (libuv 1.52.1, src/unix/stream.c's uv_accept).
+  (define (accept! sh listener)
+    (guard (e ((transport-condition? e) (log! sh 'accept-failed (list (errno e))) #f))
+      (uv-accept! listener)))
+
+  ;; shell-shutdown! : Shell -> Void
+  ;; Ask the server to shut down: it stops listening, and refuses what it is
+  ;; offered after.  The connections open are served on (M8 drains them).
+  (define (shell-shutdown! sh)
+    (server-dispatch! sh '(shutdown-requested)))
+
+  ;; shell-adopt! : Shell UvTcp -> (U Connection #f)
+  ;; Offer an accepted TCP handle to the server, with the count of
+  ;; connections open: served, as a connection, while fewer than the limits'
+  ;; max-connections are, or refused, closed at once, answering #f, when that
+  ;; many are or the server drains.  The server answers first, `accept` or
+  ;; `refuse`, and anything else is an assertion violation.  If anything
+  ;; raises before the handle is served, it is closed, so none is left open
+  ;; with no one to close it; what the server asks for after its answer, a
+  ;; log, runs once the handle is served or closed.
+  (define (shell-adopt! sh tcp)
+    (let-values (((served rest)
+                  (closing-on-raise sh tcp
+                    (lambda ()
+                      (let ((actions (server-step! sh (list 'connection-arrived
+                                                            (hashtable-size (shell-table sh))))))
+                        (case (and (pair? actions) (caar actions))
+                          ((accept)
+                           (server-trace! sh 'server-action (car actions))
+                           (values (serve! sh tcp) (cdr actions)))
+                          ((refuse)
+                           (server-trace! sh 'server-action (car actions))
+                           (handle-close! sh tcp)
+                           (values #f (cdr actions)))
+                          (else (assertion-violation 'shell-adopt!
+                                  "the server answered an arrival with neither accept nor refuse"
+                                  actions))))))))
+      (run-server-actions! sh rest)
+      served))
+
+  ;; server-step! : Shell Event -> (Listof Action)
+  ;; Step the server with one event, keep the state it leaves, and answer the
+  ;; actions it asks for.
+  (define (server-step! sh event)
+    (server-trace! sh 'server-event event)
+    (let-values (((s actions) (server-step (shell-server sh) event)))
+      (shell-server-set! sh s)
+      actions))
+
+  ;; server-trace! : Shell Symbol Any -> Void
+  (define (server-trace! sh kind datum)
+    (let ((trace (shell-trace sh)))
+      (when trace (trace sh kind datum))))
+
+  ;; server-dispatch! : Shell Event -> Void — an event that brings no handle.
+  (define (server-dispatch! sh event)
+    (run-server-actions! sh (server-step! sh event)))
+
+  ;; run-server-actions! : Shell (Listof Action) -> Void — in order.
+  (define (run-server-actions! sh actions)
+    (unless (null? actions)
+      (server-run! sh (car actions))
+      (run-server-actions! sh (cdr actions))))
+
+  ;; server-run! : Shell Action -> Void
+  ;; A server action that brings no handle: close the listener, or log.  An
+  ;; arrival's `accept` or `refuse` is taken with its handle, in shell-adopt!,
+  ;; and `force-close-all` is M8's; anything else here is an assertion
+  ;; violation, so an action the shell cannot perform is never dropped.
+  (define (server-run! sh a)
+    (server-trace! sh 'server-action a)
+    (case (car a)
+      ((close-listener) (listener-close! sh))
+      ((log) (log! sh (cadr a) (cddr a)))
+      (else (assertion-violation 'server-run! "not an action the shell performs here" a))))
+
+  ;; listener-close! : Shell -> Void — close the listener, if the shell has one.
+  (define (listener-close! sh)
+    (let ((tcp (shell-listener sh)))
+      (when tcp (handle-close! sh tcp))))
+
+  ;; serve! : Shell UvTcp -> Connection
   ;; Serve an accepted TCP handle: the core in idle, a parser of its own, the
   ;; connection in the table, Nagle's algorithm off, and reading started with
   ;; the limits' buffer.  Nagle's algorithm would hold a response's last
   ;; partial segment until the client acknowledged the ones before it, and
   ;; the shell writes each response whole, in one write; a socket that
   ;; refuses the option has already failed, which reading will report.  A
-  ;; start that raises closes the connection, and the raise goes on.
-  (define (shell-adopt! sh tcp)
+  ;; start that raises goes on to shell-adopt!, which closes the handle.
+  (define (serve! sh tcp)
     (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f)))
       (connection-ctx-set! c (make-conn-context
                               (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
@@ -151,13 +299,11 @@
       (connection-on-data-set! c (lambda (bv start end) (dispatch! c (list 'bytes-arrived bv start end))))
       (connection-on-eof-set! c (lambda () (dispatch! c '(eof))))
       (connection-on-error-set! c (lambda (e) (dispatch! c (list 'read-error (errno e)))))
-      (hashtable-set! (shell-table sh) c #t)
+      (hashtable-set! (shell-table sh) tcp c)
       (guard (e ((transport-condition? e) (values)))
         (uv-tcp-nodelay! tcp #t))
-      (closing-on-raise c
-        (lambda ()
-          (uv-read-start! tcp (connection-on-data c) (connection-on-eof c) (connection-on-error c)
-                          (limits-read-buffer-size (shell-limits sh)))))
+      (uv-read-start! tcp (connection-on-data c) (connection-on-eof c) (connection-on-error c)
+                      (limits-read-buffer-size (shell-limits sh)))
       (connection-reading?-set! c #t)
       c))
 
@@ -169,7 +315,8 @@
   ;; connection if anything raises.
   (define (dispatch! c event)
     (if (fx=? (connection-depth c) 0)
-        (closing-on-raise c (lambda () (step! c event) (drain! c)))
+        (closing-on-raise (connection-shell c) (connection-tcp c)
+                          (lambda () (step! c event) (drain! c)))
         (step! c event)))
 
   ;; step! : Connection Event -> Void — the core's step, its actions queued.
@@ -177,10 +324,10 @@
     (trace! c 'event event)
     (enqueue! c (conn-context-step! (connection-ctx c) event)))
 
-  ;; closing-on-raise : Connection (-> Any) -> Any
-  ;; Run `thunk`; if it raises, close the connection and raise again.
-  (define (closing-on-raise c thunk)
-    (guard (e (#t (connection-close! c) (raise e)))
+  ;; closing-on-raise : Shell UvHandle (-> Any ...) -> Any ...
+  ;; Run `thunk`; if it raises, close the handle and raise again.
+  (define (closing-on-raise sh h thunk)
+    (guard (e (#t (handle-close! sh h) (raise e)))
       (thunk)))
 
   ;; enqueue! : Connection (Listof Action) -> Void — behind what is queued.
@@ -309,19 +456,31 @@
                     (lambda (err)
                       (dispatch! c (if err (list 'read-error (errno err)) '(shutdown-completed)))))))
 
-  ;; connection-close! : Connection -> Void
-  ;; Close the connection's handle, once.  This is the one uv-close! call
-  ;; (design §7.6; `make check-close-ownership`): chez-libuv keeps the
-  ;; callback of the first close alone, so a second close from anywhere else
-  ;; would leave this one's never run, and the connection in the table.
+  ;; connection-close! : Connection -> Void — close the connection's handle.
   (define (connection-close! c)
-    (unless (connection-closing? c)
-      (connection-closing?-set! c #t)
-      (connection-reading?-set! c #f)
-      (uv-close! (connection-tcp c)
-                 (lambda ()
-                   (hashtable-delete! (shell-table (connection-shell c)) c)
-                   (dispatch! c '(closed))))))
+    (handle-close! (connection-shell c) (connection-tcp c)))
+
+  ;; handle-close! : Shell UvHandle -> Void
+  ;; Close a handle: a connection's, the listener, or one the server refused.
+  ;; This is the one uv-close! call (design §5.3 and §7.6;
+  ;; tests/test-close-ownership.sps).  chez-libuv runs the callback of a
+  ;; handle's first close alone, and a later close does nothing, so every
+  ;; close passes the same callback, and what it does follows the handle: a
+  ;; connection's handle stops reading at once, and its close takes the
+  ;; connection out of the table and reports `closed`, whoever asked for it.
+  (define (handle-close! sh h)
+    (let ((c (hashtable-ref (shell-table sh) h #f)))
+      (when c
+        (connection-closing?-set! c #t)
+        (connection-reading?-set! c #f)))
+    (uv-close! h (lambda () (handle-closed! sh h))))
+
+  ;; handle-closed! : Shell UvHandle -> Void — a handle's close has completed.
+  (define (handle-closed! sh h)
+    (let ((c (hashtable-ref (shell-table sh) h #f)))
+      (when c
+        (hashtable-delete! (shell-table sh) h)
+        (dispatch! c '(closed)))))
 
   ;; transport-condition? : Any -> Boolean
   ;; What a verb raises when the connection, not the program, has failed.
@@ -374,14 +533,16 @@
 
   ;; reconcile! : Shell -> Void
   ;; Hold the table to the loop: a connection whose handle the loop no longer
-  ;; has, so whose close never reported back, is logged and dropped.
+  ;; has, so whose close never reported back, is logged and dropped, which
+  ;; frees its place, since the server counts the table.
   (define (reconcile! sh)
     (let ((live (make-eq-hashtable)))
       (for-each (lambda (h) (hashtable-set! live h #t))
                 (uv-loop-live-handles (shell-loop sh)))
-      (vector-for-each
-       (lambda (c)
-         (unless (hashtable-contains? live (connection-tcp c))
-           (log-quietly! sh 'reconciled (list c))
-           (hashtable-delete! (shell-table sh) c)))
-       (hashtable-keys (shell-table sh))))))
+      (let-values (((handles connections) (hashtable-entries (shell-table sh))))
+        (vector-for-each
+         (lambda (h c)
+           (unless (hashtable-contains? live h)
+             (log-quietly! sh 'reconciled (list c))
+             (hashtable-delete! (shell-table sh) h)))
+         handles connections)))))

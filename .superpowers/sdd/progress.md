@@ -1950,4 +1950,30 @@ M4.3 FIRST STEP — THE TWO LIMITS, `limits-with`, AND `server-step`.
 - Watched to fail (m4-mutations.md): M4.3-A, the plan's, the step's refusal rows and nothing else in any suite; L1 to L7 and W1 to W3, the limits; B to Y, the step, one or more for every check.
 - Every suite green in a scratch worktree with only this step, cut from main at 100ae8b: thirty suites, 794 expected passes (limits 37, server 28, shell 48), each exit 0. `make check-imports` and main's close-ownership gate are clean there, and the step's mutants ran there with the results they give on the finished tree.
 
-NEXT: the second step, the shell's listener and one procedure that closes every handle, stacked on this one.
+M4.3 SECOND STEP — THE SHELL'S LISTENER, AND ONE CLOSER.
+- `(http-server private shell)`:
+  - `handle-close!` is the one `uv-close!` call, for a connection's handle, the listener, and a refused one. Its callback follows the handle: a connection's close takes it out of the table, now keyed by handle, and reports `closed`, whoever asked for it. `refuse!`, which closed any handle it was given, and let a connection's handle pass the gate, is gone (review, C2);
+  - `shell-adopt!` offers a handle with the table's size and takes the step's first action as its answer, anything but `accept` or `refuse` an assertion violation (C4). If anything raises before the handle is served it is closed, so none is left open with no one to close it (C3);
+  - `shell-listen!` refuses to listen while a listener is open, or once its server has stopped listening, so a listen after a shutdown cannot open a listener nothing closes (C1). A listen that fails is closed and may be retried (C1b);
+  - the listener's error is `listener-failed`, which shuts the server down (C5); a `uv-accept!` that fails is logged as `accept-failed`, and the listener listens on;
+  - `server-run!` refuses an action it cannot perform, where it dropped it (C12); the server's actions run without a closure per call (C17); `closing-on-raise` takes the handle to close, and serves the listener and a connection alike (C19);
+  - the trace also sees the server's events and the actions of its the shell performs;
+  - `reconcile!` drops a connection whose handle is gone, which frees its place; nothing is reported to the server any more, so nothing can raise inside the run loop's handling (C9, C10, C11, C15).
+- `tests/test-close-ownership.sps`, new, replaces the awk scan: it reads src/ with Chez's own reader and requires one use of `uv-close!`, in `handle-close!`. Its fixtures pin what the scan missed: a call after a `;` in a string or a `#\;`, two uses one character apart, a rename in an import (C7, C8). `make check-close-ownership` runs it alone; `make test` runs it with every suite, and CI no longer needs ripgrep.
+- `tests/test-shell.sps`, fourteen checks more than M4.2's 48:
+  - a bug before a connection is served: the trace raises on the arrival, and the client reads the stream's end, no connection served, the error logged;
+  - the reconciliation's drop, and the run loop runs on;
+  - a shell capped at one connection: it serves a client; listens on one listener at a time; two clients over the cap each read the stream's end with nothing before it, the first refusal logged and the second not; once the first client closes the next is served and the count of refusals logged; a shutdown closes the listener the clients used, which the old check did not read (sweep, N1), and the server never listens again;
+  - a backlog of -1 from the limits cannot listen, and the listener is closed; a listener on a port in use cannot listen, is closed, and the shell listens again.
+- Records: `docs/configuration.org` says what a refusal, running out of descriptors and the backlog's bound look like; design §3.3, §4.6 and §7.6, plan §8's M4.3 note and §9's M7 line, and global-constraints say one procedure closes every handle.
+- Red before green: the shell suite with the new checks stopped at load against the first step's shell; the ownership suite failed on a copy of the tree whose shell had three owners.
+- Watched to fail (m4-mutations.md): S1 to S16 but two; G1 to G5, a second caller, a second call, an alias, a call after a `;` in a string, two uses side by side; the walker's own WA to WH; the plan's M4.3-A against every suite.
+- Scope statements:
+  - M4.3-S10 and S11: the shell's assertions on a wrong answer or an unknown action fire only on a bug in the step, whose rows pin every answer; no check can provoke them.
+  - The listener's failure and a failed `uv-accept!` are routed and logged, and not provoked: libuv 1.52.1 reports neither on Unix in a way a test can cause, and Windows is not in CI. The step's rows hold the listener's failure.
+  - "comments are not uses" pins Chez's reader.
+- The review's other findings, fixed: the stale single-owner statements (C14); the untied vocabulary (C13); the S7 record, which said the second listener was never closed where the first was, and the G2 record, which overstated the awk fix (sweep, N1); several checks never watched to fail (sweep, N2), now each reddened by a named mutant. Left as it is: the guard idiom repeated across nine suites (not reported; `(testing)` has no helper for it). Not this slice's: two M8 notes on WebSockets and Caddy appeared in the plan's working copy from outside this session; they are not in M4.3's commits.
+
+`make test` green: thirty-one suites, 820 expected passes (limits 37, server 28, shell 62, close-ownership 12, exports 2), exit 0.
+
+NEXT: two stacked PRs, on the owner's word ("Commit an open the PRs - u don't need to split into 4"). M4.3's code and tests are 896 inserted lines: feat/m4.3-server-step, the first step (444 inserted and 57 deleted), then feat/m4.3-listener, cut from it (452 and 89). Each is a little over plan §1 rule 1's ~400, and the owner kept two rather than four. Then M4.4, the contract test and the socket lane, with the upload past a refusal.

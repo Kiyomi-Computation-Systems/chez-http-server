@@ -223,6 +223,14 @@ or a test rather than a paragraph:
 - `make check-help` fails if any `.PHONY` target is undocumented in `make help`.
 - From M4: an `rg` gate asserting that `connection-close!` is the only `uv-close!`
   caller, and that handler-facing libraries export no `uv-*` name (0003; brief M4).
+  *Amended 2026-09-26 (M4.3, decided by form):* with the listener the shell closes
+  three kinds of handle: a connection's, the listener, and one the server refused.
+  One procedure closes all three, `handle-close!`, the one `uv-close!` call, and what
+  a close does follows the handle, not the caller: a connection's close takes it out
+  of the table and reports `closed`, whoever asked for it. The check is a suite,
+  `tests/test-close-ownership.sps`, which reads the source with Chez's own reader.
+  The `rg` and awk scan it replaces missed a use after a `;` in a string or a `#\;`,
+  and two uses one character apart.
 
 ### 3.4 The test-harness bridge
 
@@ -1041,7 +1049,9 @@ Stated as the invariants `make check-imports` and the M4 `rg` gates enforce:
   block, the handles) is owned by chez-libuv and freed by it.
 - `connection-close!` is the only caller of `uv-close!`; the close callback is
   chez-libuv's sole handle-freeing site, so a double close is a bug in one place rather
-  than everywhere.
+  than everywhere. *Amended 2026-09-26 (M4.3):* the one caller is `handle-close!`,
+  which closes a connection's handle, the listener and a refused one, its callback
+  chosen by the handle (§3.3).
 - Handler-facing libraries export no `uv-*` name.
 
 ---
