@@ -621,6 +621,12 @@ on, handing the core what arrives, until the core asks for `close`. M4.4's socke
 gets the measurement that decided it (ledger, M3.4) as a test: a client that sends past a
 refusal reads the status back, where a close at once gives it a reset.
 
+*Corrected 2026-09-26 (M3.5):* the measurement is decision 0011's. A client that sends
+past a refusal loses the status to an immediate close only while its send is still
+under way, as with a 4 MiB upload; a small remainder is read either way. So the socket
+lane's test uploads past a refusal. The shell performs `read-start` when the core
+lingers, since reading stopped at the refusal or at the pause.
+
 ### M4.3 — the listener and `server-step`
 
 `server-step` with its own events and actions (design §4.6): `accept`, `refuse` over
@@ -664,6 +670,8 @@ sliced** — §10 says why.
 ### M5 — timeouts and limits
 Design §4.3's per-state deadlines, `(http-server wheel)`, §6.3's policy family.
 Limits arriving: `write-timeout-ms`, `tick-ms`.
+*Noted 2026-09-26 (M3.5):* the kinds the wheel turns into instants include `linger`
+(decision 0011), whose duration, `linger-timeout-ms`, arrived in M3.5.
 **Hazard:** the wheel is the first thing whose correctness is a *timing* property, and
 the fake clock is the only reason it is testable at all. A deadline of D ms fires within
 `[D, D + tick-ms]`, so every assertion is an interval, not a point.

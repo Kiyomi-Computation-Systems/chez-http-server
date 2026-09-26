@@ -25,9 +25,14 @@
 ;;;   - a handler that raises is answered 500, then close;
 ;;;   - an upgrade (a WebSocket handshake, a CONNECT, `Upgrade: h2c`) is
 ;;;     served, then the connection closes, and the bytes after it are never
-;;;     read; the HTTP/2 preface is answered 505, then close (M2.5);
+;;;     fed; the HTTP/2 preface is answered 505, then close (M2.5);
 ;;;   - at every delivery size, the same handlers, responses and close, and
 ;;;     every action run from the outermost drain.
+;;; A connection closes after a response in stages (M3.5, decision 0011): it
+;;; lingers, reading and dropping what arrives, until the client closes, and
+;;; no client closes here.  So a row that closes ends in `lingering`, its
+;;; reason the close-after, and the bytes after the last message are read
+;;; once its response is written, and never fed.
 ;;;
 ;;; Oracles: design §4.4's rows in order; the input's own bytes (the spike's
 ;;; three messages are 51, 47 and 19 bytes, so the parser stops at 51 and
@@ -132,9 +137,15 @@
   (map (lambda (a) (list (caddr a) (cadddr a)))
        (filter (lambda (a) (eq? (car a) 'feed-parser)) (fake-shell-actions sh))))
 
+;; fed : FakeShell -> Nat — how many bytes the parser was fed.
+(define (fed sh) (fold-left (lambda (n f) (+ n (- (cadr f) (car f)))) 0 (feeds sh)))
+
 ;; serial? : FakeShell -> Boolean
 ;; From each call-handler to the resume after its response, no feed-parser
 ;; and no read-start, and reading was stopped before the handler was called.
+;; A response that closes the connection has no resume: its staged close
+;; begins with the shutdown (M3.5), after which the socket is read again,
+;; to drop what arrives, but nothing is fed, handled or resumed.
 (define (serial? sh)
   (let loop ((as (fake-shell-actions sh)) (handling #f) (reading #t))
     (cond ((null? as) #t)
@@ -142,10 +153,11 @@
            (let ((kind (car (car as))))
              (case kind
                ((call-handler) (and (not handling) (not reading) (loop (cdr as) #t reading)))
-               ((resume-parser) (loop (cdr as) #f reading))
+               ((resume-parser) (and (not (eq? handling 'closed)) (loop (cdr as) #f reading)))
                ((feed-parser) (and (not handling) (loop (cdr as) handling reading)))
                ((read-stop) (loop (cdr as) handling #f))
-               ((read-start) (and (not handling) (loop (cdr as) handling #t)))
+               ((read-start) (and (not (eq? handling #t)) (loop (cdr as) handling #t)))
+               ((shutdown) (loop (cdr as) 'closed reading))
                (else (loop (cdr as) handling reading))))))))
 
 (run-suite "message-loop"
@@ -182,12 +194,17 @@
 
     ;; --- a close-marked message ends the reading (0004 item 4) -----------------
     ;; GET /c is never fed, so no "Data after `Connection: close`" and no 400.
-    (test-equal "the spike's messages, every delivery size: two handled, then close"
+    (test-equal "the spike's messages, every delivery size: two handled, then the staged close"
                 (list (list (list (list 'call-handler post-a) '(write 200)
-                                  (list 'call-handler get-b) '(write 200)
-                                  '(close not-keep-alive))
-                            'closed))
+                                  (list 'call-handler get-b) '(write 200))
+                            'lingering))
                 (every-size spike default-limits outcome))
+    ;; The close-marked GET's response has no resume: its staged close
+    ;; begins with the shutdown, after which the socket is read again, and
+    ;; nothing is fed, handled or resumed (M3.5).
+    (test-equal "from a call-handler to its resume, or to its staged close, the parser is not fed nor the socket read"
+                '(#t)
+                (every-size spike default-limits serial?))
     (test-equal "the parser never reported an error"
                 '(#f)
                 (every-size spike default-limits
@@ -195,12 +212,15 @@
                               (exists (lambda (ev) (and (eq? (car ev) 'parser-result)
                                                         (eq? (cadr ev) 'error)))
                                       (fake-shell-events sh)))))
-    ;; Delivered a byte at a time, the input after GET /b is never read: the
-    ;; connection stopped reading at its pause and closed after its response.
-    (test-eqv "a byte at a time, the 19 bytes after the close-marked GET are never delivered"
-              98
-              (let-values (((sh seen) (connection default-limits)))
-                (fake-shell-feed-input! sh spike 1)))
+    ;; Delivered a byte at a time, the input after GET /b is read only once
+    ;; its response is written: the connection stopped reading at its pause,
+    ;; and reads again only to linger, dropping what arrives.  So all 117
+    ;; bytes are delivered, and the parser is fed the first 98 alone.
+    (test-equal "a byte at a time, the 19 bytes after the close-marked GET are read only while lingering, never fed"
+                '(117 98 lingering)
+                (let-values (((sh seen) (connection default-limits)))
+                  (let ((delivered (fake-shell-feed-input! sh spike 1)))
+                    (list delivered (fed sh) (conn-phase (fake-shell-conn-state sh))))))
 
     ;; --- one message at a time ------------------------------------------------
     (test-equal "three pipelined GETs, every delivery size: served in order, the connection idle"
@@ -216,10 +236,9 @@
     ;; --- a handler that raises (design §4.4 T6) --------------------------------
     ;; The fake shell answers a raise with handler-failed: a 500, then close,
     ;; and the next message is never handled.
-    (test-equal "a handler that raises: 500, then close, every delivery size"
-                (list (list (list (list 'call-handler (get "1")) '(write 500)
-                                  '(close handler-failed))
-                            'closed))
+    (test-equal "a handler that raises: 500, then the staged close, every delivery size"
+                (list (list (list (list 'call-handler (get "1")) '(write 500))
+                            'lingering))
                 (every-size three default-limits
                             (lambda (sh) (outcome sh))
                             (lambda (request) (raise 'boom))))
@@ -229,31 +248,33 @@
     ;; the response: the bytes after the request are another protocol's, so
     ;; they are never read (decision 0006's amendment).  `Upgrade: h2c`, what
     ;; `curl --http2` sends to an http:// URL, is an upgrade like any other.
-    (test-equal "a WebSocket handshake, every delivery size: served, then close"
+    (test-equal "a WebSocket handshake, every delivery size: served, then the staged close"
                 (list (list (list (list 'call-handler (list 'GET "/chat" 1 1 (list ws-host ws-conn ws-up)))
-                                  '(write 200) '(close upgrade))
-                            'closed))
+                                  '(write 200))
+                            'lingering))
                 (every-size websocket default-limits outcome))
-    (test-eqv "a byte at a time, the frame after the handshake is never delivered"
-              (- (bytevector-length websocket) 5)
-              (let-values (((sh seen) (connection default-limits)))
-                (fake-shell-feed-input! sh websocket 1)))
-    (test-equal "a CONNECT, every delivery size: served, then close"
+    (test-equal "a byte at a time, the frame after the handshake is read only while lingering, never fed"
+                (list (bytevector-length websocket) (- (bytevector-length websocket) 5) 'lingering)
+                (let-values (((sh seen) (connection default-limits)))
+                  (let ((delivered (fake-shell-feed-input! sh websocket 1)))
+                    (list delivered (fed sh) (conn-phase (fake-shell-conn-state sh))))))
+    (test-equal "a CONNECT, every delivery size: served, then the staged close"
                 (list (list (list (list 'call-handler '(CONNECT "example.com:443" 1 1 (("Host" . "example.com:443"))))
-                                  '(write 200) '(close upgrade))
-                            'closed))
+                                  '(write 200))
+                            'lingering))
                 (every-size (b "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\nTUNNEL")
                             default-limits outcome))
-    (test-equal "Upgrade: h2c, every delivery size: served like any upgrade, then close"
-                '(((close upgrade)))
+    (test-equal "Upgrade: h2c, every delivery size: served like any upgrade, then the staged close"
+                '((lingering upgrade))
                 (every-size (b (string-append "GET / HTTP/1.1\r\nHost: x\r\nConnection: Upgrade, HTTP2-Settings\r\n"
                                               "Upgrade: h2c\r\nHTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n\r\n"))
                             default-limits
-                            (lambda (sh) (filter (lambda (a) (eq? (car a) 'close)) (fake-shell-actions sh)))))
+                            (lambda (sh)
+                              (let ((s (fake-shell-conn-state sh))) (list (conn-phase s) (conn-close-after s))))))
     ;; The HTTP/2 preface hands off on the parser's error channel; with no
     ;; HTTP/2 to hand to, it is answered 505 and no handler runs (0006 item 2).
-    (test-equal "the HTTP/2 preface, every delivery size: 505, then close"
-                (list (list (list '(write 505) '(close http2-preface)) 'closed))
+    (test-equal "the HTTP/2 preface, every delivery size: 505, then the staged close"
+                (list (list (list '(write 505)) 'lingering))
                 (every-size (b "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nFRAME") default-limits outcome))
 
     ;; --- run to completion (design §4.5, §6.4) ---------------------------------

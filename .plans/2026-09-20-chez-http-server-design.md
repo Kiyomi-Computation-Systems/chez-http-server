@@ -344,6 +344,7 @@ being read:
 | `body` | yes | `body-inactivity-timeout-ms`, re-armed per `on-body-data` | head complete, body expected |
 | `handling` | **no** | none in v1 | parser paused at `on-message-complete`, handler running |
 | `responding` | **no** | write deadline per completion | segments written, awaiting completions |
+| `lingering` | yes | `linger-timeout-ms`, armed once | the last response written and the write side shut; what arrives is dropped until the client closes (decision 0011, M3.5, 2026-09-26) |
 | `draining` | no | write deadline | last response written, close to follow |
 | `handed-off` | no | none | an upgrade left through the hook; the core emits nothing further (M8's door, 2026-09-25) |
 | `closing` | no | none | `close` issued, awaiting `closed` |
@@ -373,6 +374,12 @@ write a status, then close.
 > failed. Measured again, on Darwin and Linux, the client read it in every run. What a
 > reset does lose is in decision 0011: a client still sending never reads the status,
 > and the part of a response the kernel has not yet sent is thrown away.
+>
+> *Amended 2026-09-26 (M3.5; decision 0011, on the owner's word):* every close after a
+> response is staged, the core's own statuses and a handler's close alike, in a tenth
+> state, `lingering` (the row above). A close with no response is at once. And a state
+> that reads stops reading when it refuses a request, so `responding` never reads, as
+> the table says. The rows are §4.4's amendment below.
 
 ### 4.4 The transitions
 
@@ -444,6 +451,22 @@ Termination and error rows:
 > the serializer cannot write safely is answered 500, then close, after
 > `log invalid-response`, and a handler's `Connection: close` closes the connection after
 > its response (decision 0010 items 2 and 3).
+
+> *Amended 2026-09-26 (M3.5; decision 0011):* the staged close.
+> - **The close row.** `responding`, `write-completed` (last) with `close-after? = #t`
+>   enters `lingering`, not `closing`. Its actions are `shutdown`, `read-start` and
+>   `arm-deadline linger`, and the pending input is still dropped.
+> - **`lingering`'s rows:**
+>   - `bytes-arrived` stays there and asks for nothing, so what arrives is dropped and
+>     the deadline is not re-armed;
+>   - `eof`, and a `tick` past the linger deadline, go to `closing` with `close`, naming
+>     the reason the connection closes after its response;
+>   - `read-error` goes to `closing` with `log` and `close`, as from every live state;
+>   - `shutdown-completed` changes nothing.
+> - **The rows that write a status from `head` or `body`** (a parser error, the header
+>   deadline, the HTTP/2 preface, and every refusal) add `read-stop` after the
+>   `write`, since `responding` does not read. A status written from `handling` does
+>   not: reading stopped at the pause.
 
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with

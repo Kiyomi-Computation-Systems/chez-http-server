@@ -7,14 +7,18 @@
 ;;; synthetic event, with no parser, so the rows are independent: a mutation
 ;;; that breaks one row turns that row red and no other.
 ;;;
-;;; Oracles: the nine states of design §4.3; the fifteen events and fifteen
+;;; Oracles: the nine states of design §4.3, and decision 0011's tenth; the fifteen events and fifteen
 ;;; actions of decision 0002 item 2, plus the `hand-off` action decision 0006
 ;;; item 3 adds; the 10 + 9 rows of design §4.4's two tables; the three
 ;;; rows of decision 0004's pause protocol that the design's tables fold into
 ;;; H6 and H10 (M2.4); the two rows of the upgrade door, decided on the
 ;;; owner's word on 2026-09-25 (M2.5); M3.2's two rows for what the handler
-;;; answers, from decision 0010 items 2 and 3; and M3.3's five rows for the
-;;; writes and bytes outstanding, from design §7.3 and decision 0010 item 5.
+;;; answers, from decision 0010 items 2 and 3; M3.3's five rows for the
+;;; writes and bytes outstanding, from design §7.3 and decision 0010 item 5;
+;;; and M3.5's staged close, from RFC 9112 §9.6 and decision 0011: every
+;;; close after a response lingers in a tenth state, `lingering`, and a state
+;;; that reads stops reading when it refuses a request, as design §4.3's
+;;; table says `responding` does.
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -173,12 +177,19 @@
            `(idle #f ((resume-parser) (feed-parser ,bv 10 20) (read-start) (arm-deadline idle)))))
 
    ;; The pending remainder is dropped, not fed: after a close-marked message
-   ;; the core stops feeding (decision 0004 item 4).
-   (row 'H10 "responding, last write-completed, close-after -> closing: close"
+   ;; the core stops feeding (decision 0004 item 4).  The connection closes in
+   ;; stages (RFC 9112 §9.6; decision 0011): the write side shut, reading on
+   ;; to drop what arrives, the linger deadline armed.  Every close after a
+   ;; response does, a request's own and the core's own status alike.
+   (row 'H10 "responding, last write-completed, close-after -> lingering: shutdown, read-start, arm linger"
         (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
                   'close-after 'not-keep-alive 'pending (list bv 10 20))
            '(write-completed 100)
-           '(closing not-keep-alive ((close not-keep-alive)))))))
+           '(lingering not-keep-alive ((shutdown) (read-start) (arm-deadline linger))))
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
+                  'close-after 'headers-too-large)
+           '(write-completed 100)
+           '(lingering headers-too-large ((shutdown) (read-start) (arm-deadline linger)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Design §4.4, termination and error: nine rows.
@@ -202,26 +213,29 @@
            '(read-error EPIPE)
            '(closing #f ((log read-error EPIPE) (close read-error))))
         (i (state 'draining) '(read-error ECONNRESET)
-           '(closing #f ((log read-error ECONNRESET) (close read-error)))))
+           '(closing #f ((log read-error ECONNRESET) (close read-error))))
+        (i (state 'lingering 'deadline 'linger 'close-after 'headers-too-large) '(read-error ECONNRESET)
+           '(closing headers-too-large ((log read-error ECONNRESET) (close read-error)))))
 
    ;; The status is design §6.5's for a parser error: 400, whatever the code,
    ;; invalid-transfer-encoding among them (RFC 9112 §6.3; amended on the
-   ;; owner's word, 2026-09-26).
-   (row 'T3 "head/body, parser-result status=error -> responding: write the status, close-after"
+   ;; owner's word, 2026-09-26).  Refusing, the connection stops reading, as
+   ;; `responding` does not read (design §4.3; M3.5).
+   (row 'T3 "head/body, parser-result status=error -> responding: write the status, read-stop, close-after"
         (i (state 'head 'deadline 'header) '(parser-result error 0 0 invalid-method #f)
-           `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write))))
+           `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
         (i (state 'body 'deadline 'body) '(parser-result error 47 47 invalid-chunk-size #f)
-           `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write))))
+           `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
         (i (state 'body 'deadline 'body) '(parser-result error 49 49 invalid-transfer-encoding #f)
-           `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write)))))
+           `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write)))))
 
    ;; Deadlines are kinds, not instants: the shell's wheel ticks a connection
    ;; only once the deadline it armed has passed (decision 0005), so "past the
    ;; header deadline" is a tick while the header deadline is armed.  The
    ;; second instance is the guard: a tick with nothing armed changes nothing.
-   (row 'T4 "head, tick past the header deadline -> responding: write 408, close-after"
+   (row 'T4 "head, tick past the header deadline -> responding: write 408, read-stop, close-after"
         (i (state 'head 'deadline 'header) '(tick 60000)
-           `(responding header-timeout (,(status-write 408 "Request Timeout") (arm-deadline write))))
+           `(responding header-timeout (,(status-write 408 "Request Timeout") (read-stop) (arm-deadline write))))
         (i (state 'head) '(tick 60000)
            '(head #f ())))
 
@@ -313,9 +327,10 @@
            '(parser-event on-headers-complete 5 1 1 0 0 0)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
-   (row 'U2 "head, parser-result hands off on the error channel (the HTTP/2 preface) -> responding 505, close-after"
+   (row 'U2 "head, parser-result hands off on the error channel (the HTTP/2 preface) -> responding 505, read-stop, close-after"
         (i (state 'head 'deadline 'header) '(parser-result error 24 24 paused-h2-upgrade #f)
-           `(responding http2-preface (,(status-write 505 "HTTP Version Not Supported") (arm-deadline write)))))))
+           `(responding http2-preface (,(status-write 505 "HTTP Version Not Supported") (read-stop)
+                                       (arm-deadline write)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; M3.2: what handler-responded does with what the handler answers (decision
@@ -370,7 +385,7 @@
              `(responding #f (,w (arm-deadline write)) 1 ,(nbytes w))))
         (let ((w (status-write 408 "Request Timeout")))
           (i (state 'head 'deadline 'header) '(tick 60000)
-             `(responding header-timeout (,w (arm-deadline write)) 1 ,(nbytes w))))
+             `(responding header-timeout (,w (read-stop) (arm-deadline write)) 1 ,(nbytes w))))
         (let ((w (status-write 500 "Internal Server Error")))
           (i (state 'handling 'request req)
              `(handler-responded ,(make-response 200 #f (list (cons (b "Content-Length") (b "5"))) #f))
@@ -388,7 +403,7 @@
         (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
                   'close-after 'not-keep-alive)
            '(write-completed 100)
-           '(closing not-keep-alive ((close not-keep-alive)) 0 0)))
+           '(lingering not-keep-alive ((shutdown) (read-start) (arm-deadline linger)) 0 0)))
    ;; Each instance breaks one condition: more bytes than are outstanding, a
    ;; last write that leaves some, a count that is not one, no count at all,
    ;; and no write outstanding.
@@ -410,6 +425,34 @@
    (row 'W5 "closing, write-completed for a write the close cut short -> closing: nothing outstanding, nothing asked"
         (i (state 'closing 'outstanding 1 'outstanding-bytes 100) '(write-completed 100)
            '(closing #f () 0 0)))))
+
+;; ---------------------------------------------------------------------------
+;; M3.5: the staged close (RFC 9112 §9.6; decision 0011).  A connection that
+;; lingers has written its last response and shut its write side; it reads,
+;; and drops what arrives, until the client closes, a read fails (T2), or the
+;; linger deadline passes.  The deadline is armed once, when lingering
+;; starts, so a client that keeps sending cannot hold the connection past
+;; it.  The close names the reason the connection closes after its response.
+(define (linger-rows)
+  (list
+   (row 'L1 "lingering, bytes-arrived -> lingering: dropped, nothing fed, the deadline not re-armed"
+        (i (state 'lingering 'deadline 'linger 'close-after 'headers-too-large) `(bytes-arrived ,bv 0 5)
+           '(lingering headers-too-large ())))
+   (row 'L2 "lingering, eof -> closing: close, for the reason it closes after its response"
+        (i (state 'lingering 'deadline 'linger 'close-after 'not-keep-alive) '(eof)
+           '(closing not-keep-alive ((close not-keep-alive)))))
+   ;; As T4 and T5: the wheel ticks a connection once its deadline has
+   ;; passed, and a tick with nothing armed changes nothing.
+   (row 'L3 "lingering, tick past the linger deadline -> closing: close"
+        (i (state 'lingering 'deadline 'linger 'close-after 'handler-close) '(tick 30000)
+           '(closing handler-close ((close handler-close))))
+        (i (state 'lingering 'close-after 'handler-close) '(tick 30000)
+           '(lingering handler-close ())))
+   ;; The shell reports that the half-close is done; the client's close,
+   ;; not this, ends the linger.
+   (row 'L4 "lingering, shutdown-completed -> lingering: nothing"
+        (i (state 'lingering 'deadline 'linger 'close-after 'not-keep-alive) '(shutdown-completed)
+           '(lingering not-keep-alive ())))))
 
 (define (pause-protocol)
   (list
@@ -473,8 +516,8 @@
 (run-suite "connection-table"
   (lambda ()
     ;; --- the closed sets -------------------------------------------------
-    (test-equal "nine states (design §4.3)"
-                '(idle head body handling responding draining handed-off closing closed)
+    (test-equal "ten states: design §4.3's nine and decision 0011's lingering"
+                '(idle head body handling responding lingering draining handed-off closing closed)
                 conn-states)
     (test-equal "fifteen events (decision 0002 item 2)"
                 '(bytes-arrived eof read-error write-completed shutdown-completed closed
@@ -498,7 +541,7 @@
              (verdict (lambda () (conn-step (state 'idle) '(no-such-event)))))
     (test-eq "an event that is not a tagged list is an assertion violation" 'refused
              (verdict (lambda () (conn-step (state 'idle) 'eof))))
-    (test-eq "a state outside the nine is refused" 'refused
+    (test-eq "a state outside the ten is refused" 'refused
              (verdict (lambda () (state 'no-such-state))))
     ;; The writes and bytes outstanding are counts, zero together: every
     ;; write has bytes, a status line at least, and bytes are outstanding
@@ -526,7 +569,8 @@
       (test-eqv "M2.5: both upgrade-door rows have a test" 2 (count-rows (upgrade-door)))
       (test-eqv "M3.2: both response rows have a test" 2 (count-rows (response-rows)))
       (test-eqv "M3.3: all 5 accounting rows have a test" 5
-                (fold-left (lambda (n r) (+ n (run-row r accounted))) 0 (accounting-rows))))
+                (fold-left (lambda (n r) (+ n (run-row r accounted))) 0 (accounting-rows)))
+      (test-eqv "M3.5: all 4 linger rows have a test" 4 (count-rows (linger-rows))))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it but the two body-streaming actions (M6's).

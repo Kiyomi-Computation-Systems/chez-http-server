@@ -1559,3 +1559,42 @@ THE FIRST PR (feat/m3.5-linger-groundwork): what the staged close needs before t
 - 85 inserted lines of code and tests. The slice came to 615 after the review (484 before), over plan §1 rule 1's ~400, so it goes up as three stacked PRs, each green on its own: this one; the staged close, 318; and the linger suite with the input a lingering connection forgets, 212.
 
 NEXT: the second PR, the staged close, stacked on this one.
+
+
+M3.5, THE SECOND OF THREE STACKED PRS: THE STAGED CLOSE. Branch feat/m3.5-staged-close, stacked on feat/m3.5-linger-groundwork; 2026-09-26, Darwin arm64, Chez 10.4.1 `tarm64osx`. Measured, decided and reviewed as the first PR's entry records. Mutation log: m3-mutations.md.
+- `(http-server connection)`:
+  - `lingering` is the tenth state. From `responding`, the last `write-completed` with a close-after enters it, asking for `(shutdown) (read-start) (arm-deadline linger)`;
+  - in it, `bytes-arrived` asks for nothing. `eof`, and a `tick` past the linger deadline, close for the close-after reason, and `read-error` logs and closes;
+  - `respond` adds `(read-stop)` after the write when it leaves `head` or `body`.
+- `tests/read-back.sls`: `send!`, `client-close!` and `from-response`, which the originated suite and the third PR's linger suite share (review).
+- Tests:
+  - the table:
+    - H10 and W3 linger, and there are four `lingering` rows, L1 to L4, and T2's lingering instance;
+    - the refusals from `head` or `body` stop reading: T3 three times, T4, U2, and W1's 408;
+    - the closed set is ten states;
+  - the originated suite follows each status's close to its end. A request sent while lingering is dropped, and each refusal stops reading;
+  - in the head, response, message-loop and retention suites, a close after a response ends in `lingering`, since no client closes there. The message-loop's two "never delivered" checks now say that the bytes after the last message are read only while lingering, and never fed. Its `serial?` ends a closing response's handling at the shutdown, and a new check runs it over the spike (review);
+  - the outcome lane delivers the client's end if the connection still reads, as the libhtp lane does. The libhtp lane's comment now says that the eof ends the 1.0 streams' linger.
+- Docs and records:
+  - design §4.3's tenth state and its amendment, and §4.4's amendment;
+  - plan §8's correction for M4.2, and §9's note for M5;
+  - docs/connections.org gains "How the server closes a connection", and docs/configuration.org the variable.
+- Red before green: against the first PR's core, which is main's, 78 checks failed in six suites, and the table suite ended in a harness error:
+  - connection-head 37;
+  - connection-originated 16;
+  - connection-response 13;
+  - message-loop 8;
+  - connection-table 3 (ten states, H10 twice), then the harness error: the synthetic `lingering` state was refused, so the rows after T2 never ran;
+  - connection-retention 1.
+  The spike's `serial?` check held there, since a close at once never reads again; its red was the helper's, in the review.
+- Mutations (m3-mutations.md, "M3.5, second PR"): SA to SK, SO and RD, run on this tree, all killed.
+  - SA is the plan's: a close at once turns the red's 78 checks red again, in the same six suites.
+  - SB lingers only after the core's own statuses.
+  - SC to SG each drop a part of the linger: the read-start, the shutdown, the single arming of its deadline, the close at the client's end, and the close at the deadline.
+  - SH lingers after the idle deadline, a close with no response.
+  - SI and SJ move the read-stop, and SK names the wrong reason.
+  - SO ignores a read error while lingering, and RD feeds what arrives while lingering.
+- `make test` green: twenty-six suites, 688 expected passes (connection-table 103, message-loop 19, connection-originated 20), exit 0. `make check-imports` is clean. Allocation: 2,736 B per request, unchanged.
+- 318 inserted lines of code and tests.
+
+NEXT: the third PR, the linger suite and the input a lingering connection forgets, stacked on this one.
