@@ -1377,3 +1377,14 @@ M3.4: every originated status end to end (feat/m3.4-originated-statuses).
 - 288 inserted lines of code and tests after the review (255 before), under plan §1 rule 1's ~400: one PR.
 
 NEXT: the PR, on the owner's word. Then M3.5, the staged close (plan §7, added 2026-09-25): after a status the core originates, the half-close, reading on and dropping what arrives, and the close when the client closes or a linger deadline passes, its limit and default settled by a decision record, measuring first. Then the M3 exit (plan §7): the brief's gate checked on the merged tree (the table tests, the corpus lane, and the chunked-to-1.0 mutation, M3.2-A), the serializer's segment count (M3.1-A), and the allocation gate re-measured with the response path in the loop; then M3's close-out.
+
+MERGED to main on 2026-09-26 as 274c08b (PR #38), on the owner's "do closing ritual":
+- The squash tree (a29f096) is identical to the tested tip's, bef7cb8, proved against the merge commit gh reports.
+- The `linux` check (run 36238855996) executed zero steps, stopped at the billing check.
+- `gh pr merge --delete-branch` switched this checkout to main and fast-forwarded it to 274c08b. The branch was deleted local and remote, and refs pruned; no PR is open.
+
+`make test` green on main: twenty-five suites, 649 expected passes, exit 0.
+
+M3.4 DONE and merged: every status the core originates is driven end to end, read back by a client's parser, and shown to close the connection, and `originated-reasons` keeps the table whole. The close itself is not yet safe for a client still sending, which a reset makes lose the status: the staged close is decided, and is M3.5.
+
+NEXT: M3.5, the staged close (plan §7, added 2026-09-25): after a status the core originates is written, the core asks for `shutdown`, reads on and drops what arrives, and closes when the client closes or a linger deadline passes. Measure first; settle the linger limit and its default by a decision record, the state the connection lingers in, and which closes linger; finish with the plan's mutation, a close at once. On a fresh branch cut from main after this commit, when the owner asks. Then the M3 exit.
