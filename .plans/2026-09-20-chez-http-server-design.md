@@ -841,6 +841,15 @@ Three consequences for M3:
   block's own footprint is `align-16(uv_req_size(UV_WRITE))` + `N ×
   sizeof(uv_buf_t)` + `max(total, 1)`.
 
+> *Noted 2026-09-25 (M3.3):* the core counts the writes and the bytes outstanding, and
+> settles each at its `write-completed`: in `responding`, or in `closing` for a write
+> a close cut short (a read error while it was outstanding). A completion the core did
+> not ask for is the shell's bug, an assertion violation: with no write outstanding,
+> without a count, for more bytes than are outstanding, or for fewer than the last
+> write left. The second consequence is a check: `tests/test-connection-retention.sps`
+> collects with a write outstanding and finds the response, its body and its segments
+> released.
+
 ### 7.4 The collect-safe rendezvous
 
 At chez-libuv v0.6.0 `uv_run` is `(foreign-procedure __collect_safe "uv_run" …)`

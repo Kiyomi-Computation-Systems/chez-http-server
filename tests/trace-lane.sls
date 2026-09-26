@@ -136,7 +136,7 @@
            (r (make-trace-recorder))
            ;; The core's actions are dropped: this driver runs the handler
            ;; cycle itself, and feeds whatever the recorder saw.
-           (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f corpus-limits)
+           (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f corpus-limits)
                                    (lambda (actions) (values))))
            (harness-paused #f)
            (core-paused #f)
@@ -170,8 +170,9 @@
       ;; feed : Nat Nat -> ParserResult
       ;; One chunk, through every pause nobody outside asked for.  The
       ;; harness's own pause is recorded as the plain driver records it; the
-      ;; core's is followed by the handler cycle (handler-responded, then
-      ;; write-completed); either way the parse resumes where it stopped.
+      ;; core's is followed by the handler cycle (handler-responded, then the
+      ;; write's completion, with its byte count); either way the parse
+      ;; resumes where it stopped.
       (define (feed from to)
         (let again ((at from))
           (set! harness-paused #f)
@@ -183,8 +184,9 @@
                   (when (or harness-paused (not core-paused))
                     (trace-recorder-note-requested-pause! r (parser-stream-offset p)))
                   (when core-paused
-                    (conn-context-step! ctx (list 'handler-responded core-response))
-                    (conn-context-step! ctx '(write-completed 1)))
+                    (let ((w (assq 'write (conn-context-step!
+                                           ctx (list 'handler-responded core-response)))))
+                      (conn-context-step! ctx (list 'write-completed (caddr w)))))
                   (parser-resume! p)
                   (again (parser-result-next res)))
                 res))))

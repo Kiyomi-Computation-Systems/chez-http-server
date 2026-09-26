@@ -55,7 +55,7 @@
           fake-shell-advance! fake-shell-deliver! fake-shell-tick! fake-shell-run!
           make-fake-connection fake-shell-conn-state fake-shell-reading?
           fake-shell-settle! fake-shell-feed-input!
-          fake-shell-writes written-status)
+          fake-shell-writes written-status write-wire)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state)
@@ -193,7 +193,7 @@
   ;; adapter's context; fake-shell-conn-state reads the core's state from it.
   (define (make-fake-connection limits handler)
     (let* ((cell #f)
-           (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f limits)
+           (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f limits)
                                    (lambda (actions) (enqueue! cell actions))))
            (s (make-fake-shell (lambda (ctx event) (values ctx (conn-context-step! ctx event)))
                                ctx 0
@@ -221,14 +221,23 @@
       (else (values))))
 
   ;; write! : FakeShell (Listof Segment) Nat -> Void
-  ;; Perform `(write segments nbytes)` as a shell does (decision 0010 item 4):
-  ;; the Date slot becomes the line for the fake clock's second (the clock
-  ;; counts milliseconds, decision 0005's unit), the bytes are kept, and the
-  ;; write completes on a later turn with its byte count.  The count must be
-  ;; the bytes' own, which the serializer promises: one that is not is an
-  ;; assertion violation, never a quiet pass.
+  ;; Perform `(write segments nbytes)` as a shell does: the bytes are kept as
+  ;; write-wire makes them, for the fake clock's second (the clock counts
+  ;; milliseconds, decision 0005's unit), and the write completes on a later
+  ;; turn with its byte count.
   (define (write! s segments nbytes)
-    (let* ((line (date-line (div (fake-shell-now s) 1000)))
+    (let ((wire (write-wire segments nbytes (div (fake-shell-now s) 1000))))
+      (fake-shell-writes-rev-set! s (cons wire (fake-shell-writes-rev s)))
+      (later! s (list 'write-completed nbytes))))
+
+  ;; write-wire : (Listof Segment) Nat Nat -> Bytevector
+  ;; The bytes `(write segments nbytes)` puts on the wire, copied out of the
+  ;; segments as uv-write*! copies them, with the Date slot filled with the
+  ;; line for `second` (decision 0010 item 4).  The count must be the bytes'
+  ;; own, which the serializer promises: one that is not is an assertion
+  ;; violation, never a quiet pass.
+  (define (write-wire segments nbytes second)
+    (let* ((line (date-line second))
            (parts (map (lambda (seg) (if (eq? seg 'date) line seg)) segments))
            (wire (make-bytevector (fold-left (lambda (n bv) (+ n (bytevector-length bv))) 0 parts))))
       (fold-left (lambda (at bv)
@@ -238,8 +247,7 @@
       (unless (= nbytes (bytevector-length wire))
         (assertion-violation 'fake-shell "a write's byte count is not its bytes'"
                              nbytes (bytevector-length wire)))
-      (fake-shell-writes-rev-set! s (cons wire (fake-shell-writes-rev s)))
-      (later! s (list 'write-completed nbytes))))
+      wire))
 
   ;; written-status : Action -> Nat
   ;; The status a `(write segments nbytes)` action writes: the three digits

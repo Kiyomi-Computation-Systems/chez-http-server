@@ -52,7 +52,7 @@
 ;; A keep-alive connection that serves `request` once per call.
 (define (connection request)
   (let* ((queued '())
-         (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 #f #f default-limits)
+         (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f default-limits)
                                  (lambda (actions) (set! queued (cons actions queued)))))
          (p (make-conn-parser ctx))
          (len (bytevector-length request)))
@@ -65,8 +65,8 @@
         (set! queued '())
         (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed r)
                                       (parser-result-next r) #f #f))
-        (conn-context-step! ctx (list 'handler-responded resp))
-        (conn-context-step! ctx (list 'write-completed len))
+        (let ((w (assq 'write (conn-context-step! ctx (list 'handler-responded resp)))))
+          (conn-context-step! ctx (list 'write-completed (caddr w))))
         (unless (eq? (conn-phase (conn-context-state ctx)) 'idle)
           (assertion-violation 'connection "the connection did not return to idle"
                                (conn-phase (conn-context-state ctx))))
