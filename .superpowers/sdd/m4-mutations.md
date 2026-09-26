@@ -76,3 +76,58 @@ One survives, and is a scope statement:
 | # | mutation | observed, and why no test |
 |---|---|---|
 | M4.2-N | review: Nagle's algorithm left on | shell green, 27. chez-libuv has no getter for `TCP_NODELAY`, and its effect is time on a link with a round trip. On loopback no stall shows either way, on Darwin or Linux (`research/spike/m4-nodelay.*`) |
+
+## M4.2, second step — what fails (2026-09-26)
+
+The runs below are on the finished tree: twenty-nine suites, 757 expected
+passes, shell 48.
+
+The run loop's guard. The plan's Mutation A expected "a raised
+`&byte-machine-contract` to escape uncaught" once the guard was narrowed to
+`error?`. That premise does not hold for a callback's raise: chez-libuv raises
+it again from `uv-run` composed with `&uv-callback-error`
+(`vendor/chez-libuv/src/libuv/loop.sls:39-45`), an `&error`, so `error?`
+catches it. What keeps a poisoned parser fatal is the contract arm's place
+before the callback-error arm. The mutation still fails the check, by another
+path: the condition is caught, logged as a callback error, and the loop runs
+on.
+
+| # | mutation (`shell-run!`'s guard) | observed |
+|---|---|---|
+| M4.2-A | the plan's: one `error?` arm, logging and running on, in place of the two | shell 3 — "the run loop raises a contract condition again" (it ran on), "having logged the contract violation first" (it logged `callback-error`), and "and raises it again when the log raises" |
+| M4.2-A2 | the two arms, callback-error first | shell 3 — the same three |
+
+The review's fixes in this step. Each fix's check was watched to fail against
+the code as it was before the fix, which is what each mutation puts back.
+
+| # | mutation (`src/http-server/private/shell.sls`) | observed |
+|---|---|---|
+| M4.2-X | a raise from the outermost dispatch goes on without closing the connection | shell 5 — "when a connection's callback raises, its client reads the stream's end", "with no response, the connection closed and gone, the error logged", and the end's three, since the connection never closes |
+| M4.2-J | a failed adoption is not closed | shell 4 — "when a connection cannot be adopted, its client reads the stream's end", "and the connection is closed and gone", and the end's live handles and counters |
+| M4.2-C | `reconcile!` drops nothing | shell 2 — "until the run loop reconciles the table with the loop, and logs it", and the end's "every connection closes and leaves the table" |
+| M4.2-Q | the run loop logs a contract violation with the log itself, not quietly | shell 1 — "and raises it again when the log raises" |
+| M4.2-W1 | a failed write settled before its read error | shell 2 — the two "as a read error, then settled" checks: the completion's failure and the call's |
+| M4.2-W2 | a write's completion reads its error as success | shell 1 — "as a read error, then settled, with no half-close". The connection still closed: its client had gone |
+| M4.2-W3 | a write refused at the call is not caught | shell 2 — "a write refused when it is issued closes the connection" and its order check. libuv 1.52.1 refuses a write after `uv_shutdown` at the call, with EPIPE (measured first, 2026-09-26); a libuv that took the write and failed it at the completion would pass the check through the other path |
+
+One survives, and is a scope statement:
+
+| # | mutation | observed, and why no test |
+|---|---|---|
+| M4.2-F1 | a shutdown's failed completion reported as `shutdown-completed` | shell green, 48. `shutdown(2)` fails only if the client resets in the one poll between the write's completion and the shutdown, which a test on one loop cannot order. A lingering connection reads, so a reset still closes it through the read's error |
+
+Found while running them: M4.2-T first also turned the run loop's "and logs
+it first" red, which read the newest log entry, and the reconciliation's own
+entries come after the contract violation's. The log checks now clear the log
+before the raise and read its oldest entry.
+
+The first step's mutants, again on the finished tree, turn the same checks
+red as on the first step's tree, but for these:
+
+| # | observed here |
+|---|---|
+| M4.2-T | shell 3 — "when the client closes, the connection closes and leaves the table", and the two failed writes' "... closes the connection", which ask the same. The end's "every connection closes and leaves the table" held: the run loop's reconciliation dropped the entries whose handles had closed |
+| M4.2-B1 | put where the suites never run it, in `reconcile!`, closing a stale connection's handle: the gate exits 1, naming `shell.sls:321: connection-close!` and `shell.sls:386: reconcile!`; the shell suite stays green, 48 |
+
+`make test` was green afterwards: twenty-nine suites, 757 expected passes
+(connection-allocation 19, shell 48, exports 2), exit 0.

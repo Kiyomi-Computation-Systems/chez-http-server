@@ -1856,3 +1856,46 @@ M4.2 FIRST STEP — THE SHELL SERVES A CONNECTION.
 - Every suite green in a scratch worktree with only this step, cut from main at 76d5a13: twenty-nine suites, 736 expected passes (connection-allocation 19, shell 27, exports 2), each exit 0. `make check-imports` and `make check-close-ownership` are clean there, and the step's mutants ran there (m4-mutations.md).
 
 NEXT: the second step, what fails, stacked on this one.
+
+M4.2 SECOND STEP — WHAT FAILS: THE TRANSPORT, A BUG, A POISONED PARSER (design §6.3, §6.4's first hazard; decision 0003 item 4).
+- Transport failures:
+  - a failed read, write or shutdown is a `read-error` (design §6.3), whether chez-libuv raises it at the call or reports it at the completion;
+  - a failed write is also settled as `write-completed`, after the close, as the core settles a write a close cut short;
+  - so a write the close itself cancels is reported the same way. That is how the shell reports a cancelled write (M3.3's question).
+- A bug closes its connection. Whatever raises out of a connection's outermost dispatch drops the actions still queued, and one of them may have been the close, or the read that would have seen the client go. So the connection is closed before the raise goes on to chez-libuv and the run loop. An adoption whose read cannot start is closed the same way.
+- `shell-run!`: one `uv-run` under a guard.
+  - A `&byte-machine-contract` is a bug that has poisoned a parser: logged, the table reconciled, and raised again.
+  - Any other callback's error is logged, the table reconciled, and the loop runs on.
+  - The run loop logs quietly: a log that raises there cannot take the failure's place.
+  - `reconcile!` drops a connection whose handle the loop no longer has. The other direction, a live handle the table does not know, needs the server's listener, M4.3.
+- `tests/test-shell.sps` checks:
+  - a write that fails at its completion closes the connection as a read error, then is settled, with no half-close. The client goes while four MiB are being written to it;
+  - so does a write libuv refuses at the call. The suite shuts the connection's write side behind the shell's back, and libuv 1.52.1 then refuses the write with EPIPE (measured first);
+  - a real contract condition, provoked: a parser whose on-message-begin feeds it again gives `reentrancy`, and a timer's callback raises it. The run loop raises it again, having logged it first, and still does when the log raises. After an ordinary condition it runs on, having logged it;
+  - a connection whose callback raises is closed, its client reading the stream's end, and so is one whose adoption fails;
+  - a connection whose handle was closed behind the shell's back stays in the table until the run loop reconciles it.
+- Found, and recorded in plan §8 and design §6.4: the plan's Mutation A expected a guard narrowed to `error?` to let a contract condition escape uncaught. It cannot. chez-libuv raises a callback's error again composed with `&uv-callback-error`, an `&error`, so both arms match, and what keeps it fatal is the contract arm's place first.
+- Watched to fail (m4-mutations.md):
+  - M4.2-A, the plan's, one `error?` arm, and M4.2-A2, the arms swapped: the loop runs on, logging a callback error;
+  - M4.2-X, M4.2-J, M4.2-C, M4.2-Q and M4.2-W1 to W3: each puts back the code as it was before the review's fix, and turns that fix's check red.
+- Survives, a scope statement (M4.2-F1): a shutdown's failed completion reported as success. `shutdown(2)` fails only if the client resets in the one poll between the write's completion and the shutdown, which a test on one loop cannot order. A lingering connection reads, so a reset still closes it through the read's error.
+
+Found in review (2026-09-26, `/code-review xhigh`), and fixed on the owner's word ("fix all findings"). Each premise was checked first:
+- **A shutdown's failed completion was dropped**, though the shell's note called it a read error. It is one now. The review said the connection would linger forever; a lingering connection reads, so a reset closes it anyway. What was wrong was the note.
+- **A connection whose callback raised was abandoned**, its queued close or read dropped, and never closed. Now it is closed before the raise goes on.
+- **A failed adoption left the handle open** and in the table. Now it is closed.
+- **Nagle's algorithm was on.** The review said pipelined responses would wait for delayed acknowledgements. Measured on loopback, on Darwin and on Linux, nothing waits, with or without it. The shell turns it off anyway: the mechanism needs a round trip, which loopback does not have, and by default Go's net package turns it off for every TCP connection, and nginx for keep-alive ones. A scope statement, as above.
+- **The failure paths had no test**: a write failing at either end, a handler's raise. Now they have.
+- **The gate matched only calls**, so an alias or `apply` got past it. Now it matches the name.
+- **The gate hung without ripgrep**, awk reading standard input. Now it fails by name, exit 2.
+- **"The listener is listening" could not fail**: it ran before any connection. Now it runs at the end.
+- **The suites' setup ran outside `run-suite`**, so a failed bind exited 255, not the harness's 2. Both suites moved theirs in.
+- **`reconcile!` was quadratic** in the connections. Now it looks each one up in a table of the live handles, and has a check of its own.
+- **Each response read the wall clock**, 48 B a reading. Now the loop's time, which costs nothing, decides when a second has passed.
+- **A log that raised in the run loop took the failure's place.** Now the run loop logs quietly.
+- **The trace hook hands over the actions themselves**, so a trace that keeps them keeps a response's body. `make-shell`'s note now says so.
+- **The Makefile's note said the test-only check covers `src/http-server/`.** It covers all of `src/`.
+
+`make test` green: twenty-nine suites, 757 expected passes (connection-allocation 19, shell 48, exports 2), exit 0. `make check-imports` and `make check-close-ownership` are clean.
+
+NEXT: two stacked PRs, on the owner's word ("commit and open the PRs"). M4.1 and M4.2 are 1,017 inserted lines of code and tests (1,058 with the Makefile and CI), two and a half times plan §1 rule 1's ~400, so each step goes up on its own: feat/m4-libuv-shell (M4.1 and the first step, 716 lines), then feat/m4.2-failures, cut from it (the second, 332 inserted and 31 deleted). The shell and the exchanges it is checked by do not divide further. Then M4.3, the listener and `server-step`.
