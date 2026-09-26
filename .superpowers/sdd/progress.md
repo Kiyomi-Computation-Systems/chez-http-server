@@ -1899,3 +1899,24 @@ Found in review (2026-09-26, `/code-review xhigh`), and fixed on the owner's wor
 `make test` green: twenty-nine suites, 757 expected passes (connection-allocation 19, shell 48, exports 2), exit 0. `make check-imports` and `make check-close-ownership` are clean.
 
 NEXT: two stacked PRs, on the owner's word ("commit and open the PRs"). M4.1 and M4.2 are 1,017 inserted lines of code and tests (1,058 with the Makefile and CI), two and a half times plan §1 rule 1's ~400, so each step goes up on its own: feat/m4-libuv-shell (M4.1 and the first step, 716 lines), then feat/m4.2-failures, cut from it (the second, 332 inserted and 31 deleted). The shell and the exchanges it is checked by do not divide further. Then M4.3, the listener and `server-step`.
+
+MERGED to main on 2026-09-26, bottom up, on the owner's "do closing ritual":
+- **#46, M4.1 and the first step,** as 29c5c32, without deleting its branch. The squash tree (850c147) is identical to the tested tip's, 6e77155.
+- **#47, the second step.** Retargeted to main, then rebased from 6e77155 onto 29c5c32 as 705e532, its tree unchanged (b9d3acb, the tested e5f3a18's). It was force-pushed with the lease read from `ls-remote`, and merged as 48d5ab9, whose tree is b9d3acb too.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36269743318, 36269759615 and 36269874088.
+- **Branches.** Both are deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: twenty-nine suites, 757 expected passes, exit 0.
+
+M4.1 and M4.2 DONE and merged:
+- a connection's parser shares the adapter's one binding list, and a check holds it;
+- the direct libuv shell serves connections: the message loop with its depth counter, the executors, `connection-close!` as the one `uv-close!` call (gated in `make test`), the staged close's shell half, and a Date made once a second;
+- what fails is handled: a transport's failure is a read error, a bug closes its connection, and the run loop stops on a poisoned parser and runs on after any other callback's error;
+- decision 0012 settled M4.5's two questions, by form.
+
+NEXT: M4.3, the listener and `server-step` (plan §8):
+- `server-step`, pure, with design §4.6's events and actions: `accept`, `refuse` over `max-connections`, `close-listener`, `force-close-all`, `log`;
+- `max-connections` (10,000) and `backlog` (511) arrive as limits, each with its four things (plan §3);
+- the shell's listener, and the reconciliation's other direction: a live handle the table does not know.
+
+Then M4.4, the contract test and the socket lane, with the upload past a refusal; M4.5, the facade (decision 0012); and the M4 exit. It starts on a fresh branch cut from main after this commit, when the owner asks.
