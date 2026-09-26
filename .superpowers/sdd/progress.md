@@ -1977,3 +1977,20 @@ M4.3 SECOND STEP — THE SHELL'S LISTENER, AND ONE CLOSER.
 `make test` green: thirty-one suites, 820 expected passes (limits 37, server 28, shell 62, close-ownership 12, exports 2), exit 0.
 
 NEXT: two stacked PRs, on the owner's word ("Commit an open the PRs - u don't need to split into 4"). M4.3's code and tests are 896 inserted lines: feat/m4.3-server-step, the first step (444 inserted and 57 deleted), then feat/m4.3-listener, cut from it (452 and 89). Each is a little over plan §1 rule 1's ~400, and the owner kept two rather than four. Then M4.4, the contract test and the socket lane, with the upload past a refusal.
+
+MERGED to main on 2026-09-26, on the owner's "Do closing ritual":
+- **#48, the first step,** as b79bd85, without deleting its branch. The squash tree (cbf60d8) is identical to the tested tip's, 72a5c2b.
+- **#49, the second step.** Retargeted to main, then rebased from 72a5c2b onto b79bd85 as 1f1655b, its tree unchanged (c586e72, the tested 71585ca's). It was force-pushed with the lease read from `ls-remote`, and merged as 140f5e1, whose tree is c586e72 too.
+- **#50, the M8 notes.** Two notes another session wrote in the shared checkout, on the questions M8's door must answer before a WebSocket library can take a stream through it, and on serving behind Caddy. They were committed on their own, on the owner's "Commit the M8 notes to their own PR". The commit was built from main without touching the checkout, and the checkout's uncommitted copy was dropped once it was proven to be exactly those lines. The notes were rebased from 100ae8b onto 140f5e1 as 0e38c22 with the same patch (patch id bf7c40c), and `make test` is green on that tree. They merged as e290d1a, whose tree is 0e38c22's, 6d4e2ec. One sentence in its question 2 still gives the close-ownership rule of M4.3's working copy before the review, "each kind of handle one `uv-close!` owner"; since #49 it is `handle-close!`, one procedure for every handle.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36279194851 and 36279207840 (#48 and #49 as opened), 36280979170 (#49 rebased), 36280825011 and 36281050335 (#50, as opened and rebased).
+- **Branches.** All three are deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: thirty-one suites, 820 expected passes, exit 0.
+
+M4.3 DONE and merged:
+- `max-connections` (10,000) and `backlog` (511) are limits, the backlog at most a C `int`'s largest; `limits-with` replaces limits by name;
+- `server-step`, pure, decides the listener: accept below the cap, refuse at it; a refusal episode logged twice at most; a shutdown or a failed listener closes the listener and drains;
+- the shell listens, offering each connection with the table's size, and one procedure, `handle-close!`, closes every handle, held by a check that reads the source with Chez's reader;
+- four questions settled by form, and the review's fifteen findings fixed.
+
+NEXT: M4.4, the contract test and the socket lane (plan §8): the same scripted event stream through the fake shell and the direct libuv shell must give identical wire bytes and identical action traces; the socket lane's upload past a refusal (decision 0011's measurement) becomes a test. On a fresh branch cut from main after this commit, when the owner asks. Then M4.5, the facade (decision 0012), and the M4 exit.
