@@ -103,3 +103,20 @@ can never fire. A handler's response is written with reading already stopped (de
 - **M3 keeps the accounting.** Its write action carries the write's byte count, and
   the core tracks the bytes and writes outstanding.
 - The defaults are unchanged.
+
+## Amendment (2026-09-26) — a row for the staged close: linger-timeout-ms
+
+Decided on the owner's word on 2026-09-26
+([decision 0011](0011-every-close-after-a-response-is-staged-lingering-up-to-30-s.md)):
+every close after a response is staged. The connection lingers, reading and dropping
+what arrives, until its client closes or this limit passes.
+
+| Limit | Default | On breach |
+|---|---|---|
+| `linger-timeout-ms` | 30 000, armed once when the connection starts lingering, never re-armed | close |
+
+It is the thirteenth field of `(http-server limits)`, read from
+`CHEZ_HTTP_LINGER_TIMEOUT` in whole seconds, as the other timeouts are. It matches
+nginx's `lingering_time` and Apache's total linger. As with the other durations, the
+core never reads it: it arms the `linger` kind, and M5's wheel turns the kind into an
+instant.

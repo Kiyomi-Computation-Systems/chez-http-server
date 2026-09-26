@@ -1356,6 +1356,7 @@ MEASURED for that decision, 2026-09-25, Darwin arm64, over loopback, by a scratc
 - closing at once, with the rest of the request unread: the client never read the 431. Sending 8 KiB or 64 KiB, its read failed with "Connection reset by peer", though the 431 was written before the close. Sending 4 MiB, its send failed first (a reset 69 times, a broken pipe 31);
 - closing in stages (shut the write side, read and drop until the client closes, then close): the client read the 431 in every run, at every size.
 The core reads on only until the status's write completes, usually on the loop's next turn, and then closes at once. So a client still sending when it is refused most likely reads a reset, not the status: a head over its limit (431), a target over its limit (414), an HTTP/2 client's preface and the frames after it (505), a head the deadline cut short (408), and in M6 a body over its cap (413). The shell reads 16 KiB at a time, so a request that arrives in one read is drained. nginx lingers by default (up to 30 s, and 5 s between reads), and Go waits 500 ms after shutting its write side.
+*Corrected 2026-09-26 (M3.5):* the spike counted a client that read the 431 and then met a reset as one whose read failed. Measured again on Darwin and Linux, the client read the 431 in every run at 8 KiB and 64 KiB, and the reset failed only the read after it. At 4 MiB its send failed first, as above. So a client refused while still sending loses the status only while its send is under way. What else a reset loses is in M3.5's entry below, and in decision 0011.
 
 DECIDED on the owner's word (2026-09-25), asked with the measurement above and three options, each with its rough size: the staged close in the core, 200–300 lines; in the shell only (M4.2), about 100; none in v1, about 20. THE STAGED CLOSE GOES IN THE CORE. After a status it originates is written, the core asks for `shutdown`, the half-close, keeps reading and dropping what arrives, and closes when the client closes or a linger deadline passes. It is a timeout policy, tabled with the fake clock like the core's other deadlines, and it needs a new limit, so a decision record. This PR leaves the behaviour as M2 made it, as recommended with the options, and corrects the notes: design §4.3's said the reading on was §9.6's advice, and it is not.
 Read as the owner's choice, and flagged: it lands as its own slice, M3.5, next, before the M3 exit, not in M5, which is not sliced yet (plan §10). M3.5 settles its limit and default, the state the connection lingers in, and which closes linger, measuring first. The shell's half, `uv_shutdown` and reading on until the core closes, is M4.2's, and M4.4's socket lane gets the measurement as a test.
@@ -1493,3 +1494,68 @@ MERGED to main on 2026-09-26, bottom up, on the owner's "do closing ritual":
 THE TRANSFER-ENCODING STATUSES DONE and merged: every parser error is a 400; a coding beside a final chunked is the core's own 501; and a request below HTTP/1.1 with Transfer-Encoding is refused, 400, as faulty framing. Each follows RFC 9112, decided on the owner's word by form. chez-httparse #50 landed in v0.4.2, and the pin stays at v0.4.1.
 
 NEXT: M3.5, the staged close (plan §7): after a status the core originates is written, the core asks for `shutdown`, reads on and drops what arrives, and closes when the client closes or a linger deadline passes. Measure first, then settle the linger limit and its default by a decision record; finish with the plan's mutation, a close at once. On a fresh branch cut from main after this commit, when the owner asks. Then the M3 exit.
+
+
+M3.5 — THE STAGED CLOSE (plan §7), in three stacked PRs. THE FIRST: THE DECISION, THE LIMIT AND THE FAKE SHELL'S SHUTDOWN. Branch feat/m3.5-linger-groundwork, cut from main at a01364e; 2026-09-26, Darwin arm64, Chez 10.4.1 `tarm64osx`. Mutation log: m3-mutations.md.
+
+MEASURED first, over loopback, on Darwin arm64 and on Linux 6.12.76-linuxkit (Docker's `debian:trixie`). Four Python spikes did it; they are kept as `.plans/research/spike/staged-close-*.py`, with their outputs.
+- M3.4'S MEASUREMENT WAS WRONG, and its entry above carries the correction. Its spike counted a client that read the 431 and then met a reset as one whose read failed. A reset does not erase what the client has received:
+  - a client that sent 8 KiB or 64 KiB past a refusal read the 431 in 100 runs of 100 on both platforms, even when its first read came 50 ms after the reset;
+  - after a 64 KiB head, curl (8.7.1 / 8.14.1), Python's http.client (3.14.5 / 3.13.5) and Node's fetch (20.10.0 / 20.19.2) each reported the 431 in 20 of 20 runs.
+- What a reset does lose, in 20 runs per client per platform:
+  - a 4 MiB upload refused (as M6's 413 will be) and closed at once: Python and Node read the status in 0 of 20 runs on both platforms, and reported a reset or a broken pipe instead; curl read it in 20 of 20. Closed in stages, all three read it in 20 of 20;
+  - a handler's 4 MiB response with `Connection: close`, while a pipelined request sits unread (the core stops reading while a handler runs, decision 0004), closed at once: cut short in 8 of 20 runs on Darwin and 13 of 20 on Linux, with 56–99% read and then a reset or 3 s of nothing. The reset throws away what the server's kernel had not yet sent. Closed in stages, all of it in 20 of 20;
+  - a pipelined request that arrives after the close, once the server has read everything: the response was read in every run. On Darwin, at 10 ms apart, a reset failed the read after it in 10 of 100 runs.
+- How long a staged close lasts with a client that reads and then closes: on loopback, a median of 0.05–0.10 ms after a refusal, and 0.2–0.4 ms with a pipelined request unread. The client's close ends it, not a deadline.
+- What others do, read on master:
+  - nginx lingers when more input may come: an unread body, a header error, input already buffered, the socket readable, or pipelining. Its flag is cleared for a 400. It lingers up to 30 s (`lingering_time`), and 5 s between reads (`lingering_timeout`);
+  - Apache httpd lingers on every close, up to 30 s (`MAX_SECS_TO_LINGER`) and 2 s between reads (`SECONDS_TO_LINGER`), and 2 s in all for a "short" linger;
+  - Go shuts its write side and waits 500 ms without reading (`rstAvoidanceDelay`). It does so after a 431, or after a response whose request body was not all read;
+  - Node does not linger.
+- On main at a01364e, every close that followed a response was at once, when the last write completed:
+  - after a status the core originates: the fourteen reasons of `(http-server decisions)`, and a parser error;
+  - after a response the connection does not keep: `not-keep-alive`, `upgrade`, `handler-close`, and in M6 `close-delimited`.
+  The closes with no response are at the client's end, on a read error, and at the idle deadline.
+- Found in the spikes' first harness: on Linux, closing a listener does not wake a thread blocked in its `accept`. So an old server took the next case's connections and answered some with the other case's status. The harness now polls a stop flag, and every number above comes from the fixed harness.
+
+DECIDED on the owner's word (2026-09-26), by form. The form had the tables above and two questions, each option with its rough size:
+- EVERY CLOSE AFTER A RESPONSE LINGERS, the core's own statuses and a handler's close alike, as RFC 9112 §9.6 describes and Apache does. The closes with no response are at once. The alternatives weighed:
+  - only after the core's own statuses, as M3.4 worded it: about 5 more core lines, and the truncation stays;
+  - nginx's rule, the core's statuses and a response when the core already holds more input: about 15 more. It misses most of the truncations, since a pipelined request waits unseen in the kernel while reading is stopped.
+- ONE LIMIT, 30 S. `linger-timeout-ms` is 30 000, from when the connection starts lingering, and can be overridden by `CHEZ_HTTP_LINGER_TIMEOUT` in whole seconds. It is nginx's `lingering_time` and Apache's total. A client that neither sends nor closes holds its connection up to 30 s, less than the 75 s an idle one already may. The alternatives weighed:
+  - 5 s, one limit: the same code;
+  - nginx's two limits, 30 s in all and 5 s between reads: about 100 more lines, since it needs two deadlines per connection.
+Decision 0011 records both, and decision 0005's table gains the row as a dated amendment.
+
+Read as the owner's choice, and flagged for the PR:
+- the connection lingers in a tenth state, `lingering`. There the write side is shut, the connection reads and drops what arrives, and the linger deadline is armed once and never re-armed, so a client that keeps sending cannot extend it. It closes at the client's end, at the deadline, or on a read error;
+- a state that reads stops reading when it refuses a request, and reads again when it lingers. Design §4.3's table says `responding` does not read, and M2 left it reading (M3.4's note). So an end the client sends while the status is written waits in the kernel for the linger, and no state has to remember it;
+- the limit is a field of `(http-server limits)` now, as the other timeouts are, though only M5's wheel will read it: the core arms deadlines by kind;
+- the close names the reason the connection closes after its response, whichever way the linger ends;
+- the fake shell performs `shutdown`, reporting `shutdown-completed` on a later turn as uv_shutdown's callback will, and refuses a write after it. The core ignores `shutdown-completed`;
+- the outcome lane delivers the client's end once its input is sent, as the libhtp lane does, so every fixture's linger ends, at every chunk size;
+- the Python spikes are kept, with their outputs, as the decision's measurement: a recorded number that was once wrong should be one anyone can re-run.
+
+REVIEWED before the first commit, at high effort (/code-review): six findings. On the owner's "fix all findings", all six are fixed, each premise checked first. Each fix goes up with the PR that carries its code:
+- A lingering connection kept all the input it had read: the pause's pending input, the last delivery, the request, and the head's spans. So it pinned its deliveries for up to 30 s, where the close had released them at once. Measured with the retention suite's weak pointers, the delivery and the request were both held while the connection lingered. Clearing the core's four fields released both, so the parser, the adapter's context and the target judge hold neither. Entering `lingering` now forgets them, and the retention suite checks it (the third PR).
+- The originated suite's header said the 408's row sends nothing while the connection lingers. Its drive sends a request to every row then, so the header now says so (the second PR).
+- The originated and linger suites each had the same one-delivery `deliver!`, and the same walk to the actions from the core's response on. `(read-back)` now shares `send!` and `client-close!`, a client's two moves, delivered only while the connection reads, through `fake-shell-feed-input!`, and `from-response` (the second PR). The linger suite's keep-alive contrast now reads the third answer before its client closes, and so shows that close happen at once (the third PR).
+- The message-loop's `serial?` knew no staged close. A closing response's `read-start` came with no resume, so the helper would call every closing input unserial. Checked: against the spike, at every delivery size, it answered #f. It now ends a response's handling at the shutdown, after which nothing may be fed, handled or resumed. A new check runs it over the spike (the second PR).
+- A raise from the fake shell's write check left the shell's depth raised, so it never drained again. Checked: after a refused write, the next dispatch's shutdown never ran. A raise now abandons its dispatch: the depth is restored, a feed's inside it included, and the actions still queued are dropped (this PR).
+- Plan §3 counted five duration variables in seconds; with the linger's there are six (this PR).
+
+THE FIRST PR (feat/m3.5-linger-groundwork): what the staged close needs before the core changes.
+- `(http-server limits)`: `linger-timeout-ms`, the thirteenth field, 30 000, read from `CHEZ_HTTP_LINGER_TIMEOUT` in whole seconds. Nothing reads it yet: the core will arm its kind, and M5's wheel turn the kind into an instant.
+- `tests/fake-shell.sls`: `shutdown` is performed, `shutdown-completed` arrives on a later turn as uv_shutdown's callback will, and a write after it is an assertion violation. A raise from an action abandons its dispatch (review).
+- Tests: the limits suite checks the default, the override and the variable. The fake shell's suite checks that a write after the shutdown is refused, and that the shell dispatches again after it. The head suite and the trace lane build limits with the new field.
+- Docs and records:
+  - decision 0011, new, and decision 0005's amendment;
+  - plan §3's amendment, and its count of the duration variables in seconds;
+  - design §4.3's correction of M3.4's note, and the correction in M3.4's entry above;
+  - the research README, and the four spikes with their outputs.
+- Red before green: the limits suite could not load before the field existed, and the fake shell's recovery check failed against the drain that left its depth raised. The write-after-shutdown check is the harness's own, and SN is its red.
+- Mutations (m3-mutations.md, "M3.5, first PR"): SL, SM, SN, RE and RF, run on this tree, all killed.
+- `make test` green: twenty-six suites, 679 expected passes (limits 28, fake-shell 18), exit 0. `make check-imports` is clean. Allocation: 2,736 B per request, unchanged.
+- 85 inserted lines of code and tests. The slice came to 615 after the review (484 before), over plan §1 rule 1's ~400, so it goes up as three stacked PRs, each green on its own: this one; the staged close, 318; and the linger suite with the input a lingering connection forgets, 212.
+
+NEXT: the second PR, the staged close, stacked on this one.

@@ -1,0 +1,12 @@
+curl   head, immediate: 431 20
+curl   head, staged   : 431 20
+curl   body, immediate: 413 20
+curl   body, staged   : 413 20
+python head, immediate: 431 20
+python head, staged   : 431 20
+python body, immediate: ConnectionResetError 20
+python body, staged   : 413 20
+node   head, immediate: 431 20
+node   head, staged   : 431 20
+node   body, immediate: error ECONNRESET 20
+node   body, staged   : 413 20

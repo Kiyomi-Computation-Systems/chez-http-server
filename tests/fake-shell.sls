@@ -27,6 +27,13 @@
 ;;; the raise.  Only `reply-parser` is answered inside a parser callback, and
 ;;; the adapter does that without reaching the queue.
 ;;;
+;;; M3.5: A WRITE AFTER THE SHUTDOWN IS REFUSED.  The core shuts the write
+;;; side only once its last write has completed (decision 0011), and nothing
+;;; may be written after it: a `write` action run after a `shutdown` is the
+;;; core's bug, an assertion violation where it happens.  Any raise from an
+;;; action abandons its dispatch, and the shell dispatches the next event as
+;;; it would have.
+;;;
 ;;; `make-fake-connection` is the shell M2.4 drives the core with: the core
 ;;; through the adapter's bindings, one real parser, and a handler that answers
 ;;; at once.  It performs what a v1 shell performs:
@@ -39,6 +46,8 @@
 ;;;                   as the client would read them, and completes on a later
 ;;;                   turn, as `write-completed` with the write's byte count
 ;;;   read-stop/-start  whether the next delivery is read
+;;;   shutdown        shuts the write side; `shutdown-completed` arrives on a
+;;;                   later turn, as uv_shutdown's callback does
 ;;;   close           stops reading; `closed` arrives on a later turn
 ;;;
 ;;; and records the rest (deadlines, logs, body deliveries, a hand-off)
@@ -80,12 +89,13 @@
             (mutable parser)
             (mutable reading?)
             (mutable dispatches)
-            (mutable writes-rev))             ; the bytes of each write, newest first
+            (mutable writes-rev)              ; the bytes of each write, newest first
+            (mutable shut?))                  ; whether a shutdown has run
     (protocol (lambda (new)
                 (case-lambda
-                  ((step state0 now0) (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '()))
+                  ((step state0 now0) (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f))
                   ((step state0 now0 perform)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '()))))))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f))))))
 
   ;; fake-shell-actions / -violations : FakeShell -> (Listof Action)
   ;; fake-shell-events : FakeShell -> (Listof Event)
@@ -143,17 +153,32 @@
            (begin (fake-shell-front-set! s (cdr front)) (car front)))))
 
   ;; drain! : FakeShell -> Void — run the queue, in order, until it is empty.
+  ;; An action that raises abandons the dispatch it came from: the depth is
+  ;; restored, a feed's inside it included, and the actions still queued are
+  ;; dropped, so the shell dispatches the next event as it would have.
   (define (drain! s)
-    (fake-shell-depth-set! s (+ (fake-shell-depth s) 1))
-    (let loop ()
-      (let ((a (dequeue! s)))
-        (when a (run! s a) (loop))))
-    (fake-shell-depth-set! s (- (fake-shell-depth s) 1)))
+    (let ((before (fake-shell-depth s)))
+      (dynamic-wind
+       (lambda () (fake-shell-depth-set! s (+ before 1)))
+       (lambda ()
+         (let loop ()
+           (let ((a (dequeue! s)))
+             (when a (run! s a) (loop)))))
+       (lambda ()
+         (fake-shell-depth-set! s before)
+         (fake-shell-front-set! s '())
+         (fake-shell-back-set! s '())))))
 
   ;; run! : FakeShell Action -> Void
   ;; Record the action, and a violation if it runs anywhere but the outermost
-  ;; drain; then perform it.
+  ;; drain; then perform it.  A write after a shutdown is refused first.  A
+  ;; stub step's action may be any datum, so only a tagged list is read.
   (define (run! s a)
+    (case (and (pair? a) (car a))
+      ((write)
+       (when (fake-shell-shut? s)
+         (assertion-violation 'fake-shell "a write after the write side was shut" a)))
+      ((shutdown) (fake-shell-shut?-set! s #t)))
     (unless (= (fake-shell-depth s) 1)
       (fake-shell-violations-rev-set! s (cons a (fake-shell-violations-rev s))))
     (fake-shell-actions-rev-set! s (cons a (fake-shell-actions-rev s)))
@@ -217,6 +242,7 @@
       ((write) (write! s (cadr a) (caddr a)))
       ((read-stop) (fake-shell-reading?-set! s #f))
       ((read-start) (fake-shell-reading?-set! s #t))
+      ((shutdown) (later! s '(shutdown-completed)))
       ((close) (fake-shell-reading?-set! s #f) (later! s '(closed)))
       (else (values))))
 

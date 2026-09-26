@@ -9,7 +9,9 @@
 ;;; override are exercised with no I/O.
 ;;;
 ;;; Defaults (decision 0005): header-read 60 s, idle 75 s, body-inactivity
-;;; 60 s, header bytes 16 KiB (-> 431), header count 100, header field and
+;;; 60 s, linger 30 s (decision 0011: how long a connection that closes
+;;; after a response reads and drops what arrives, waiting for the client to
+;;; close), header bytes 16 KiB (-> 431), header count 100, header field and
 ;;; header value 8 KiB each (-> 431; M2, milestone plan §3), target 8 KiB
 ;;; (-> 414), bodies stream unbounded (#f), pipeline cap 1, read buffer
 ;;; 16 KiB (standing risk 2).  The pipeline cap accepts only 1: the server
@@ -30,6 +32,7 @@
     limits-read-header-timeout-ms
     limits-idle-timeout-ms
     limits-body-inactivity-timeout-ms
+    limits-linger-timeout-ms
     limits-max-header-bytes
     limits-max-header-count
     limits-max-header-field-bytes
@@ -42,10 +45,10 @@
   (import (rnrs))
 
   ;; make-limits :
-  ;;   Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Boolean -> Limits
-  ;; The twelve fields, in declaration order:
+  ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Boolean -> Limits
+  ;; The thirteen fields, in declaration order:
   ;;   read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
-  ;;   max-header-bytes max-header-count
+  ;;   linger-timeout-ms max-header-bytes max-header-count
   ;;   max-header-field-bytes max-header-value-bytes max-target-bytes
   ;;   max-body-bytes pipeline-cap read-buffer-size require-host?
   ;; (make-limits, limits? and the accessors are generated below.)
@@ -54,6 +57,7 @@
       (immutable read-header-timeout-ms     limits-read-header-timeout-ms)
       (immutable idle-timeout-ms            limits-idle-timeout-ms)
       (immutable body-inactivity-timeout-ms limits-body-inactivity-timeout-ms)
+      (immutable linger-timeout-ms          limits-linger-timeout-ms)
       (immutable max-header-bytes           limits-max-header-bytes)
       (immutable max-header-count           limits-max-header-count)
       (immutable max-header-field-bytes     limits-max-header-field-bytes)
@@ -64,9 +68,10 @@
       (immutable read-buffer-size           limits-read-buffer-size)
       (immutable require-host?              limits-require-host?)))
 
-  ;; default-limits : Limits — decision 0005's nginx-style defaults.
+  ;; default-limits : Limits — decision 0005's nginx-style defaults, and
+  ;; decision 0011's linger.
   (define default-limits
-    (make-limits 60000 75000 60000 16384 100 8192 8192 8192 #f 1 16384 #t))
+    (make-limits 60000 75000 60000 30000 16384 100 8192 8192 8192 #f 1 16384 #t))
 
   ;; limits-environment-variables : (Listof String)
   ;; The environment variables consulted by `limits-from-environment`,
@@ -75,6 +80,7 @@
     '("CHEZ_HTTP_READ_HEADER_TIMEOUT"
       "CHEZ_HTTP_IDLE_TIMEOUT"
       "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT"
+      "CHEZ_HTTP_LINGER_TIMEOUT"
       "CHEZ_HTTP_MAX_HEADER_BYTES"
       "CHEZ_HTTP_MAX_HEADER_COUNT"
       "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"
@@ -147,6 +153,7 @@
       (env-seconds->ms lookup "CHEZ_HTTP_READ_HEADER_TIMEOUT"     60000)
       (env-seconds->ms lookup "CHEZ_HTTP_IDLE_TIMEOUT"            75000)
       (env-seconds->ms lookup "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT" 60000)
+      (env-seconds->ms lookup "CHEZ_HTTP_LINGER_TIMEOUT"          30000)
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_BYTES"        16384 1)
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_COUNT"        100   1)
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"  8192  1)

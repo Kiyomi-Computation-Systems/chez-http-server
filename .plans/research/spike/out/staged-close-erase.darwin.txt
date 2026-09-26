@@ -1,0 +1,6 @@
+    8192 B sent, first read after 0 ms: read the 431, then Connection reset by peer 100
+    8192 B sent, first read after 50 ms: read the 431, then Connection reset by peer 100
+   65536 B sent, first read after 0 ms: read the 431, then Connection reset by peer 100
+   65536 B sent, first read after 50 ms: read the 431, then Connection reset by peer 100
+ 4194304 B sent, first read after 0 ms: send failed: Broken pipe 20; send failed: Connection reset by peer 80
+ 4194304 B sent, first read after 50 ms: send failed: Broken pipe 21; send failed: Connection reset by peer 79

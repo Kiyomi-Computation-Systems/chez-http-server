@@ -169,6 +169,12 @@ and `write-low-water` arrive in **M6**, not M3. In v1 a handler's response is wr
 with reading already stopped, and only one response is outstanding, so their read-stop
 could never fire in M3. M6 streams response bodies, and settles what crossing them does.
 
+*Amended 2026-09-26 (decision 0011, on the owner's word):* a limit 0005's table did not
+have arrived in **M3.5**: `linger-timeout-ms`, 30 000, how long a connection that closes
+after a response waits for its client to close. It came with the four things above, and
+its variable, `CHEZ_HTTP_LINGER_TIMEOUT`, is in whole seconds like the other durations.
+The core arms its kind, `linger`; M5's wheel turns the kind into an instant.
+
 **`tick-ms` is the one duration that cannot take the seconds convention.** Every
 timeout override in `(http-server limits)` is given in whole seconds and stored in
 milliseconds (`env-seconds->ms`, `src/http-server/limits.sls:91-93`). A 250 ms tick has
@@ -176,8 +182,9 @@ no whole-second spelling, so its variable is `CHEZ_HTTP_TICK_MS` and it is read 
 `env-integer` in its stored unit. **The prefix is not the exception — the unit is.**
 `CHEZ_HTTP_` holds for all nine; `tick-ms` is simply the one whose override is given in
 milliseconds. Naming it `CHEZ_HTTP_TICK` would be a trap: it would
-read like the five duration variables that *are* in seconds — the three M0 shipped plus
-`write-timeout` and `drain-timeout` — and mean something else. M5 adds a note to
+read like the duration variables that *are* in seconds — the three M0 shipped,
+`write-timeout` and `drain-timeout`, and since M3.5 `linger-timeout` (six, amended
+2026-09-26) — and mean something else. M5 adds a note to
 [`docs/configuration.org`](../docs/configuration.org) saying so beside the variable.
 
 ---

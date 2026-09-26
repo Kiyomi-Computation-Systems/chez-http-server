@@ -367,6 +367,12 @@ write a status, then close.
 > word the core closes in stages instead: after the status is written it asks for
 > `shutdown`, reads on and drops what arrives, and closes when the client closes or a
 > linger deadline passes. That lands as M3.5 (plan §7).
+>
+> *Corrected 2026-09-26 (M3.5):* the reset did not erase the 431. The measurement's
+> spike counted a client that read the 431 and then met a reset as one whose read
+> failed. Measured again, on Darwin and Linux, the client read it in every run. What a
+> reset does lose is in decision 0011: a client still sending never reads the status,
+> and the part of a response the kernel has not yet sent is thrown away.
 
 ### 4.4 The transitions
 

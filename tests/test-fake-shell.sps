@@ -15,6 +15,14 @@
 ;; call-step : a's actions call b, then note 1; b's action notes 2.
 (define (call-step st ev)
   (values st (case ev ((a) '((call b) (note 1))) ((b) '((note 2))) (else '()))))
+;; shut-step : `shut` asks for the half-close, `write` for a write, and
+;; `write-then-note` for a write with a note queued behind it.
+(define (shut-step st ev)
+  (values st (case ev
+               ((shut) '((shutdown)))
+               ((write) '((write () 0)))
+               ((write-then-note) '((write () 0) (note abandoned)))
+               (else '()))))
 
 (run-suite "fake-shell"
   (lambda ()
@@ -65,4 +73,21 @@
       (test-equal "a dispatch made while draining queues its actions behind the rest"
                   '((call b) (note 1) (note 2)) (fake-shell-actions s))
       (test-equal "both events were dispatched, in order" '(a b) (fake-shell-events s))
-      (test-equal "every action ran from the outermost drain" '() (fake-shell-violations s)))))
+      (test-equal "every action ran from the outermost drain" '() (fake-shell-violations s)))
+
+    ;; M3.5: the core shuts the write side once its last write has completed
+    ;; (decision 0011), so a write after the shutdown is the core's bug,
+    ;; refused where it happens.  The raise abandons the dispatch it came
+    ;; from: the note queued behind the write never runs, and the shell
+    ;; dispatches the next event as it would have.
+    (let ((s (make-fake-shell shut-step 'st 0)))
+      (fake-shell-deliver! s 'write)
+      (fake-shell-deliver! s 'shut)
+      (test-eq "a write after the shutdown is refused" 'refused
+               (guard (e ((assertion-violation? e) 'refused))
+                 (fake-shell-deliver! s 'write-then-note)
+                 'accepted))
+      (fake-shell-deliver! s 'shut)
+      (test-equal "the refused dispatch is abandoned, and the next one runs"
+                  '((write () 0) (shutdown) (shutdown)) (fake-shell-actions s))
+      (test-equal "and from the outermost drain" '() (fake-shell-violations s)))))

@@ -56,7 +56,7 @@
   (let ((get (lambda (key default) (cond ((assq key overrides) => cdr) (else default))))
         (L default-limits))
     (make-limits (limits-read-header-timeout-ms L) (limits-idle-timeout-ms L)
-                 (limits-body-inactivity-timeout-ms L)
+                 (limits-body-inactivity-timeout-ms L) (limits-linger-timeout-ms L)
                  (get 'bytes (limits-max-header-bytes L))
                  (get 'count (limits-max-header-count L))
                  (get 'field (limits-max-header-field-bytes L))
