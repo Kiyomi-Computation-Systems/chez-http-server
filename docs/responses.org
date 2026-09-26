@@ -58,7 +58,7 @@ request cannot be read safely.
 | ~414 URI Too Long~                      | a target over ~CHEZ_HTTP_MAX_TARGET_BYTES~                    |
 | ~431 Request Header Fields Too Large~   | headers over one of the four header limits                    |
 | ~500 Internal Server Error~             | your handler raised, or gave an answer listed above           |
-| ~501 Not Implemented~                   | a ~Transfer-Encoding~ with no ~chunked~ in it, such as ~gzip~ |
+| ~501 Not Implemented~                   | another coding before ~chunked~, as in ~Transfer-Encoding: gzip, chunked~ |
 | ~505 HTTP Version Not Supported~        | HTTP/2's opening line, ~PRI * HTTP/2.0~                       |
 
 The limits are in [[file:configuration.org][configuration.org]].

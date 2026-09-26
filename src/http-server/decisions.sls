@@ -33,7 +33,7 @@
 ;;; PURE: imports only (rnrs).
 (library (http-server decisions)
   (export reason-status originated-reasons parser-error-status result-hands-off-stream?
-          response-framing response-connection)
+          response-framing response-connection http/1.1?)
   (import (rnrs))
 
   ;; The core's own reasons and their statuses, by status.
@@ -41,12 +41,14 @@
     '((target-redirect . 301)                ; bracket params and pipes (0009)
       (invalid-target . 400)                 ; not a form RFC 9112 §3.2 allows
       (invalid-host . 400)                   ; RFC 9112 §3.2's Host rules
+      (faulty-framing . 400)                 ; Transfer-Encoding below HTTP/1.1 (RFC 9112 §6.1)
       (header-timeout . 408)
       (target-too-large . 414)
       (headers-too-large . 431) (too-many-headers . 431)
       (header-field-too-large . 431) (header-value-too-large . 431)
       (handler-failed . 500)
       (invalid-response . 500)               ; one the serializer cannot write (0010 item 2)
+      (unsupported-transfer-coding . 501)    ; a coding before a final chunked (RFC 9112 §6.1)
       (http2-preface . 505)))                ; nothing to hand HTTP/2 to (0006 item 2)
 
   ;; reason-status : Symbol -> Nat
@@ -75,25 +77,24 @@
       invalid-status invalid-eof-state invalid-transfer-encoding
       paused-h2-upgrade cr-expected unexpected-space unexpected-message-type))
 
-  ;; parser-error-status : Symbol Symbol -> Nat
-  ;;   code node-name — parser-error-code and parser-error-node-name
-  ;; The status for a parser error (design §6.3).  `invalid-transfer-encoding`
-  ;; splits by node, never by reason string: a request's Transfer-Encoding
-  ;; with no chunked coding in it arrives at `e-request-invalid-te` and is a
-  ;; 501 (RFC 9112 §6.1; chez-httparse #36, its docs/api.org), and every other
-  ;; one, a coding after chunked or an empty value, is a 400.
-  ;; Every other code is a 400.  The HTTP/2 preface's `paused-h2-upgrade` is a
-  ;; hand-off, answered by the core's own reason (see result-hands-off-stream?),
-  ;; so it is an assertion violation here, like a code outside the parser's
-  ;; vocabulary.
-  (define (parser-error-status code node-name)
+  ;; parser-error-status : Symbol -> Nat
+  ;;   code — parser-error-code
+  ;; The status for a parser error (design §6.3): 400, whatever the code.
+  ;; `invalid-transfer-encoding` is one, at each of its four nodes (decided on
+  ;; the owner's word, 2026-09-26).  No chunked, a coding after chunked and an
+  ;; empty value leave the body's length undetermined, which RFC 9112 §6.3
+  ;; answers 400; a Content-Length before the Transfer-Encoding is a request
+  ;; §6.1 lets a server refuse, then close.  The 501 for a coding the server does
+  ;; not implement is the core's own reason, unsupported-transfer-coding.  The
+  ;; HTTP/2 preface's `paused-h2-upgrade` is a hand-off, answered by the core's
+  ;; own reason (see result-hands-off-stream?), so it is an assertion violation
+  ;; here, like a code outside the parser's vocabulary.
+  (define (parser-error-status code)
     (unless (memq code parser-error-codes)
       (assertion-violation 'parser-error-status "not a chez-httparse error code" code))
-    (case code
-      ((invalid-transfer-encoding) (if (eq? node-name 'e-request-invalid-te) 501 400))
-      ((paused-h2-upgrade)
-       (assertion-violation 'parser-error-status "a hand-off, not an error" code))
-      (else 400)))
+    (when (eq? code 'paused-h2-upgrade)
+      (assertion-violation 'parser-error-status "a hand-off, not an error" code))
+    400)
 
   ;; result-hands-off-stream? : Symbol (U #f Symbol) (U #f Symbol) -> Boolean
   ;;   status error-code pause-code — a ParserResult's status, and the codes

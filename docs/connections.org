@@ -16,6 +16,10 @@ After a request that asks to close the connection (~Connection: close~, or
 HTTP/1.0 without ~Connection: keep-alive~), the server writes its response and
 closes. Anything the client sent after that request is ignored.
 
+An HTTP/1.0 request that uses ~Transfer-Encoding~ gets ~400 Bad Request~, and
+the connection closes. HTTP/1.0 has no ~Transfer-Encoding~, so where such a
+request's body ends cannot be trusted.
+
 A request can ask to switch the connection to another protocol: a WebSocket
 handshake (~Connection: upgrade~ with ~Upgrade: websocket~), ~Upgrade: h2c~,
 or a proxy's ~CONNECT host:port~. This server speaks only HTTP/1.1 and 1.0, so

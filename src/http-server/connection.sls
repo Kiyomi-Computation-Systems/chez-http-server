@@ -37,12 +37,11 @@
 ;;;            (disarm-deadline)  (shutdown)  (close reason)
 ;;;            (log what . details)  (hand-off request)
 ;;;
-;;; A parser-result's `error` is #f or the error's code and the node the parser
-;;; refused at, `(code . node)`, since one code's status splits by node (design
-;;; §6.3); its `pause` is #f or the pause's code.  A span payload `bv start
-;;; end` indexes the delivery the shell handed in; the core never copies it
-;;; (design §7.1).  `reply-parser` is the one action the shell answers inside
-;;; the parser callback that produced it (0002 item 3).
+;;; A parser-result's `error` is #f or the error's code, and its `pause` #f
+;;; or the pause's code.  A span payload `bv start end` indexes the delivery
+;;; the shell handed in; the core never copies it (design §7.1).
+;;; `reply-parser` is the one action the shell answers inside the parser
+;;; callback that produced it (0002 item 3).
 ;;;
 ;;; PARSER CALLBACKS ALSO ENTER DIRECTLY (0002's third amendment).  A tagged
 ;;; list per callback was the largest cost the core added per request, so the
@@ -89,6 +88,18 @@
 ;;; switch is off, are refused as 'invalid-host, answered 400.  The 400 is a
 ;;; MUST, so a target the redirect would take never reaches it.
 ;;; (http-server host) holds the rules; the value is judged in place.
+;;;
+;;; THE TRANSFER-ENCODING IS JUDGED TOO, from the parser's flags (RFC 9112
+;;; §6.1; decided on the owner's word, 2026-09-26).  A request below HTTP/1.1
+;;; that carries it has faulty framing: it is refused as 'faulty-framing,
+;;; answered 400, right after the Host, since both rules are MUSTs.  The
+;;; codings come last, once the target is accepted.  The server implements
+;;; one coding, chunked, so when the parser frames the body by a final
+;;; chunked (its F-CHUNKED flag) and the Transfer-Encoding lists another
+;;; coding beside it, the request is refused as 'unsupported-transfer-coding,
+;;; answered 501.  Every other invalid Transfer-Encoding the parser refuses
+;;; itself, and its error is a 400.  (http-server transfer-coding) holds both
+;;; rules.
 ;;;
 ;;; THE PAUSE KEEPS THE REST OF THE DELIVERY (M2.4; decision 0004 item 1).
 ;;; At on-message-complete the core pauses the parser, stops reading and
@@ -161,6 +172,7 @@
           (http-server response) (http-server request) (http-server span)
           (http-server limits) (http-server decisions) (http-server target)
           (only (http-server host) host-fault)
+          (only (http-server transfer-coding) unsupported-transfer-coding? faulty-framing?)
           (only (http-server serializer)
                 serialize-response serialize-checked-response response-fault response-closes?)
           (only (httparse decisions) should-keep-alive?)
@@ -622,7 +634,9 @@
   ;; The Host lines are judged here first (RFC 9112 §3.2; see (http-server
   ;; host)): a request whose Host is missing on HTTP/1.1 (when the limits
   ;; require one), doubled or invalid is refused as 'invalid-host, answered
-  ;; 400.  Then the target, where the method is known (M2.3; see
+  ;; 400.  Then the framing: a request below HTTP/1.1 with Transfer-Encoding
+  ;; is refused as 'faulty-framing, answered 400 (see (http-server
+  ;; transfer-coding)).  Then the target, where the method is known (M2.3; see
   ;; (http-server target)).  One that is not the form its method calls for,
   ;; or whose bytes uriparse refuses, is refused, and the state stays in head
   ;; until the parser's error arrives:
@@ -630,11 +644,14 @@
   ;;     narrow case decision 0009 redirects: bracket params and pipes in a
   ;;     GET or HEAD, encoded to a target within max-target-bytes;
   ;;   - as 'invalid-target, answered 400, otherwise.
-  ;; An accepted target moves head -> body: the request is built from the
-  ;; head, the connection is marked to close after the response unless the
-  ;; message keeps it alive (decision 0006 item 1), or, when it does, if the
-  ;; parser says the request upgrades (M2.5), and the header deadline gives
-  ;; way to the body's.
+  ;; Then the transfer codings (see (http-server transfer-coding)): when the
+  ;; parser frames the body by a final chunked, another coding beside it is
+  ;; refused as 'unsupported-transfer-coding, answered 501.
+  ;; A request accepted on all four moves head -> body: the request is built
+  ;; from the head, and the header deadline gives way to the body's.  The
+  ;; connection is marked to close after the response unless the message
+  ;; keeps it alive (decision 0006 item 1), or, when it does, if the parser
+  ;; says it upgrades (M2.5).
   (define (conn-headers-complete-step s method http-major http-minor flags content-length upgrade)
     (case (conn-phase s)
       ((head)
@@ -645,7 +662,17 @@
           ((host-fault (head-fields h) http-major http-minor
                        (limits-require-host? (conn-limits s)))
            (refuse s 'invalid-host))
-          ((not (target-fault (conn-judge s) name target))
+          ((faulty-framing? http-major http-minor flags)
+           (refuse s 'faulty-framing))
+          ((target-fault (conn-judge s) name target)
+           (cond ((redirect-location s name target)
+                  => (lambda (location)
+                       (head-location-set! h location)
+                       (refuse s 'target-redirect)))
+                 (else (refuse s 'invalid-target))))
+          ((unsupported-transfer-coding? (head-fields h) flags)
+           (refuse s 'unsupported-transfer-coding))
+          (else
            (conn-request-set! s (make-request name target http-major http-minor
                                               (reverse (head-fields h)) #f))
            (cond ((not (should-keep-alive? http-major http-minor 'request 0 flags))
@@ -654,12 +681,7 @@
                   (conn-close-after-set! s 'upgrade)))
            (conn-phase-set! s 'body)
            (conn-deadline-set! s 'body)
-           (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body))))
-          ((redirect-location s name target)
-           => (lambda (location)
-                (head-location-set! h location)
-                (refuse s 'target-redirect)))
-          (else (refuse s 'invalid-target)))))
+           (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body)))))))
       (else (continue s))))
 
   ;; redirect-location : ConnState Symbol Span -> (U #f Bytevector)
@@ -686,7 +708,7 @@
   ;; and closes after an upgrade.  Any other error is answered with a status,
   ;; then close: one the core asked for with `fail` gets its reason's status
   ;; (design §6.3), and any other the status (http-server decisions) gives
-  ;; its code and node.
+  ;; its code.
   ;; handling: the core's own answer to on-message-complete paused the
   ;; parser, a pause with no reason, so the rest of the last delivery, from
   ;; `next`, is kept as the pending input the resume feeds (decision 0004
@@ -704,7 +726,7 @@
         ((head body)
          (let ((err (list-ref ev 4)))
            (cond
-            ((result-hands-off-stream? status (and err (car err)) pause)
+            ((result-hands-off-stream? status err pause)
              (if (eq? status 'error)
                  (respond-and-close s 'http2-preface '())
                  (begin
@@ -716,7 +738,7 @@
              => (lambda (reason)
                   (respond-and-close s reason (refusal-headers (conn-head s)))))
             (else
-             (respond s (parser-error-status (car err) (cdr err)) 'parser-error '())))))
+             (respond s (parser-error-status err) 'parser-error '())))))
         (else (values s '())))))
 
   ;; rest-of : (List Bytevector Nat Nat) Nat -> Pending
@@ -772,7 +794,8 @@
       (when (and (eq? mode 'close-delimited) (not (conn-close-after s)))
         (conn-close-after-set! s 'close-delimited))
       (let-values (((segments bytes)
-                    (serialize r mode (response-connection (and (conn-close-after s) #t) major minor))))
+                    (serialize r mode (response-connection (and (conn-close-after s) #t)
+                                                           major minor))))
         (conn-outstanding-set! s (+ (conn-outstanding s) 1))
         (conn-outstanding-bytes-set! s (+ (conn-outstanding-bytes s) bytes))
         (list 'write segments bytes))))

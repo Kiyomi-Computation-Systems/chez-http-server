@@ -32,8 +32,12 @@
 ;;;     The rows about other rules send minimal requests with no Host, under
 ;;;     `minimal`, the defaults with the switch off; the Host rows run under
 ;;;     the defaults;
-;;;   - a parser error with no refusal is a 400, except a Transfer-Encoding
-;;;     with no chunked coding in it, a 501 (M2.5).
+;;;   - a parser error with no refusal is a 400, a Transfer-Encoding with no
+;;;     chunked coding in it among them (RFC 9112 §6.3; amended on the
+;;;     owner's word, 2026-09-26);
+;;;   - a Transfer-Encoding that lists a coding before a final chunked, which
+;;;     the parser lets through, is the core's own refusal: 501 (RFC 9112
+;;;     §6.1), judged after the Host and the target.
 ;;;
 ;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
 ;;; rows; design §6.5's 431, 414, 400 and 501; RFC 9112 §3.2's target forms
@@ -103,7 +107,7 @@
       (list (map (lambda (a) (render-request (cadr a)))
                  (filter (lambda (a) (eq? (car a) 'call-handler)) actions))
             (and error
-                 (list (car (list-ref error 4))
+                 (list (list-ref error 4)
                        (map render-action
                             (filter (lambda (a) (and (eq? (car a) 'write) (not (= (written-status a) 200))))
                                     actions))))
@@ -321,18 +325,60 @@
                 (list (list '() (list 'invalid-header-token (list (status-write 400)))
                             'closed 'parser-error))
                 (every-size (b "GET / HTTP/1.1\r\nBad Name: x\r\n\r\n") minimal))
-    ;; invalid-transfer-encoding splits by the node the parser refused at
-    ;; (M2.5): a Transfer-Encoding with no chunked coding in it is a 501 (RFC
-    ;; 9112 §6.1), and every other invalid one a 400, a coding after chunked
-    ;; among them.
-    (test-equal "Transfer-Encoding: pigeons: 501, then close"
-                (list (list '() (list 'invalid-transfer-encoding (list (status-write 501)))
+    ;; With no chunked, or a coding after it, the body's length cannot be
+    ;; known, and the parser refuses the request: a 400 (RFC 9112 §6.3).
+    (test-equal "Transfer-Encoding: pigeons: 400, then close"
+                (list (list '() (list 'invalid-transfer-encoding (list (status-write 400)))
                             'closed 'parser-error))
                 (every-size (b "PUT /url HTTP/1.1\r\nTransfer-Encoding: pigeons\r\n\r\n") minimal))
     (test-equal "Transfer-Encoding: chunked, deflate: 400, then close"
                 (list (list '() (list 'invalid-transfer-encoding (list (status-write 400)))
                             'closed 'parser-error))
                 (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: chunked, deflate\r\n\r\n") minimal))
+
+    ;; --- a coding before a final chunked: the core's own 501 ------------------
+    ;; The parser frames the body by the final chunked; the server implements
+    ;; no other coding, so it cannot decode the rest (RFC 9112 §6.1).
+    (test-equal "Transfer-Encoding: gzip, chunked: 501, then close"
+                (list (refused 'unsupported-transfer-coding 501))
+                (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n")
+                            minimal))
+    (test-equal "gzip and chunked on two lines: 501, then close"
+                (list (refused 'unsupported-transfer-coding 501))
+                (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: gzip\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+                            minimal))
+    (test-equal "chunked alone is read: the body is the handler's"
+                (list (ok (list (req 'POST "/" 1 1 '("Transfer-Encoding" . "chunked"))) 'idle #f))
+                (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n") minimal))
+    ;; --- HTTP/1.0 with Transfer-Encoding: faulty framing, a 400 --------------
+    ;; HTTP/1.0 has no Transfer-Encoding, so where such a request's body ends
+    ;; cannot be trusted (RFC 9112 §6.1; decided on the owner's word,
+    ;; 2026-09-26), whether or not it asks to keep the connection.
+    (test-equal "HTTP/1.0 with Transfer-Encoding: chunked: 400, then close"
+                (list (refused 'faulty-framing 400))
+                (every-size (b "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n") minimal))
+    (test-equal "the same, asking to keep the connection: 400, then close"
+                (list (refused 'faulty-framing 400))
+                (every-size (b "POST / HTTP/1.0\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+                            minimal))
+    ;; The Host is judged first (a MUST), then the framing (a MUST), then the
+    ;; target, then the codings.
+    (test-equal "two Hosts are refused before the framing: 400"
+                (list (refused 'invalid-host 400))
+                (every-size (b "POST / HTTP/1.0\r\nHost: a\r\nHost: b\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+                            minimal))
+    (test-equal "the framing is refused before the target and the codings: 400"
+                (list (refused 'faulty-framing 400) (refused 'faulty-framing 400))
+                (list (car (every-size (b "POST /a#b HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n") minimal))
+                      (car (every-size (b "POST / HTTP/1.0\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n") minimal))))
+    (test-equal "a missing Host is refused before the codings: 400"
+                (list (refused 'invalid-host 400))
+                (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n")
+                            default-limits))
+    (test-equal "an invalid target is refused before the codings: 400"
+                (list (refused 'invalid-target 400))
+                (every-size (b "POST /a#b HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n")
+                            minimal))
 
     ;; --- bytes-arrived feeds the parser in every reading state -----------------
     (let ((bv (b "abcd")))

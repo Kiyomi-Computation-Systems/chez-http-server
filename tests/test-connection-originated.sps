@@ -144,6 +144,17 @@
    (row "400: a parser error, a space in a field name"
         answers (sent (string-append "GET / HTTP/1.1\r\nHo st: x\r\n\r\n" get))
         (originated 400 "Bad Request" 'parser-error (at epoch)))
+   ;; HTTP/1.0 has no Transfer-Encoding, so a request below 1.1 that carries
+   ;; it has faulty framing (RFC 9112 §6.1; decided on the owner's word,
+   ;; 2026-09-26).
+   (row "400: an HTTP/1.0 request with Transfer-Encoding"
+        answers (sent (string-append "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n" get))
+        (originated 400 "Bad Request" 'faulty-framing (at epoch)))
+   ;; With no chunked coding the body's length cannot be known (RFC 9112
+   ;; §6.3), and the parser refuses the request.
+   (row "400: a parser error, a Transfer-Encoding with no chunked"
+        answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: pigeons\r\n\r\n" get))
+        (originated 400 "Bad Request" 'parser-error (at epoch)))
    ;; 408: the header deadline passes with the head unfinished.
    (row "408: a head still unfinished when the header deadline passes"
         answers (stalled "GET / HTTP/1.1\r\nHo")
@@ -181,11 +192,12 @@
         frames-itself (sent (string-append get get))
         (originated 500 "Internal Server Error" 'invalid-response (at epoch)
                     '(log invalid-response framing-field)))
-   ;; 501: a Transfer-Encoding with no chunked coding in it (RFC 9112 §6.1).
-   ;; A coding after chunked, or an empty value, is a 400.
-   (row "501: Transfer-Encoding: pigeons"
-        answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: pigeons\r\n\r\n" get))
-        (originated 501 "Not Implemented" 'parser-error (at epoch)))
+   ;; 501: a coding before a final chunked, which the server does not
+   ;; implement (RFC 9112 §6.1).
+   (row "501: Transfer-Encoding: gzip, chunked"
+        answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+                                     "0\r\n\r\n" get))
+        (originated 501 "Not Implemented" 'unsupported-transfer-coding (at epoch)))
    ;; 505: HTTP/2's preface; there is nothing to hand it to (decision 0006
    ;; item 2).
    (row "505: the HTTP/2 preface"

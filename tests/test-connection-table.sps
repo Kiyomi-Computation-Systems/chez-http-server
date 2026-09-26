@@ -16,10 +16,9 @@
 ;;; answers, from decision 0010 items 2 and 3; and M3.3's five rows for the
 ;;; writes and bytes outstanding, from design §7.3 and decision 0010 item 5.
 ;;;
-;;; A parser-result event carries its error as the error's code and node,
-;;; (code . node), because the status of one code splits by node (design
-;;; §6.3); the node names in the rows are the ones chez-httparse reports at
-;;; the pin for the same failure.
+;;; A parser-result event carries its error as the error's code, one of
+;;; chez-httparse's, whose status never depends on where the parser refused
+;;; (design §6.3, amended 2026-09-26).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server limits) (fake-shell)
@@ -205,18 +204,15 @@
         (i (state 'draining) '(read-error ECONNRESET)
            '(closing #f ((log read-error ECONNRESET) (close read-error)))))
 
-   ;; The status is design §6.5's for the error: 400, except the one
-   ;; invalid-transfer-encoding node that is a 501 (RFC 9112 §6.1).
+   ;; The status is design §6.5's for a parser error: 400, whatever the code,
+   ;; invalid-transfer-encoding among them (RFC 9112 §6.3; amended on the
+   ;; owner's word, 2026-09-26).
    (row 'T3 "head/body, parser-result status=error -> responding: write the status, close-after"
-        (i (state 'head 'deadline 'header) '(parser-result error 0 0 (invalid-method . e-bad-method-open) #f)
+        (i (state 'head 'deadline 'header) '(parser-result error 0 0 invalid-method #f)
            `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write))))
-        (i (state 'body 'deadline 'body) '(parser-result error 47 47 (invalid-chunk-size . e-bad-chunk-size) #f)
+        (i (state 'body 'deadline 'body) '(parser-result error 47 47 invalid-chunk-size #f)
            `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write))))
-        (i (state 'body 'deadline 'body)
-           '(parser-result error 49 49 (invalid-transfer-encoding . e-request-invalid-te) #f)
-           `(responding parser-error (,(status-write 501 "Not Implemented") (arm-deadline write))))
-        (i (state 'body 'deadline 'body)
-           '(parser-result error 44 44 (invalid-transfer-encoding . e-bad-te-value) #f)
+        (i (state 'body 'deadline 'body) '(parser-result error 49 49 invalid-transfer-encoding #f)
            `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write)))))
 
    ;; Deadlines are kinds, not instants: the shell's wheel ticks a connection
@@ -318,7 +314,7 @@
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    (row 'U2 "head, parser-result hands off on the error channel (the HTTP/2 preface) -> responding 505, close-after"
-        (i (state 'head 'deadline 'header) '(parser-result error 24 24 (paused-h2-upgrade . e-pri-upgrade) #f)
+        (i (state 'head 'deadline 'header) '(parser-result error 24 24 paused-h2-upgrade #f)
            `(responding http2-preface (,(status-write 505 "HTTP Version Not Supported") (arm-deadline write)))))))
 
 ;; ---------------------------------------------------------------------------
@@ -431,7 +427,7 @@
    ;; fire; if it did, it is not answered.
    (row 'P2 "handling after a close-marked message, parser-result error -> handling: ignored"
         (i (paused 10 40 'not-keep-alive)
-           '(parser-result error 1 29 (closed-connection . e-data-after-close) #f)
+           '(parser-result error 1 29 closed-connection #f)
            '(handling not-keep-alive () #f)))
 
    ;; The states a close-marked message passes through after its pause.

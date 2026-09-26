@@ -1405,3 +1405,79 @@ The fix's review, whose entry comes with the next PR, found that its new library
 - 64 inserted lines of code and tests.
 
 NEXT: the Transfer-Encoding fix, stacked on this (fix/transfer-encoding-status). Then M3.5, the staged close, and the M3 exit.
+
+
+FIX — THE TRANSFER-ENCODING STATUSES, BY RFC 9112 (a slice of its own, before M3.5). Branch fix/transfer-encoding-status, cut from main at 5e16b63; 2026-09-26, Darwin arm64, Chez 10.4.1 `tarm64osx`. Mutation log: m3-mutations.md.
+
+MEASURED first, after M3.4's merge, when the owner asked whether the server does what nginx and Node do:
+- through the core, on main at 5e16b63:
+  - a Transfer-Encoding with no chunked coding got 501, at the parser's `e-request-invalid-te`: gzip, deflate, identity, pigeons, chunkedchunked, `gzip, deflate`, and `chunked;x=1`;
+  - a coding after chunked got 400, at `e-bad-te-value`: `chunked, deflate`, `chunked, chunked`, chunked on one line and gzip on the next, and `chunked,`. An empty value got 400 too;
+  - a coding before a final chunked was accepted, and its body read as chunked with the other coding never undone. That held on one line or two, in any case, with any OWS, with a parameter and with an empty element: `gzip, chunked`, `gzip, CHUNKED`, `gzip;q=0.5, chunked`, `gzip, , chunked`;
+- Node v20.10.0, measured over loopback here: 400 to every invalid one, the lists with no chunked among them. It accepted a coding before a final chunked;
+- nginx and Go, read on master (nginx's `ngx_http_process_request_header`; Go's net/http `determineBodyLength` and its server's 501): 501 to anything but exactly `chunked`;
+- RFC 9112 §6.3 item 4: a request whose final coding is not chunked MUST get 400. §6.1: a coding the server does not understand SHOULD get 501. llhttp v9.4.3 cites the MUST at the branch that makes `e-request-invalid-te` (src/native/http.c:77-85);
+- chez-httparse's docs/api.org (v0.4.1, lines 105–116), which M2.5 followed, recommends 501 at that node and says Node answers 501 there. Node does not.
+
+DECIDED on the owner's word (2026-09-26), by form, with the table above and four options, each with its rough size: RFC 9112 EXACTLY. 400 whenever the body's end cannot be found, with no chunked or with chunked not last (§6.3's MUST). 501 when chunked is last but another coding comes first, which the server does not undo (§6.1's SHOULD). The alternatives weighed:
+- like nginx and Go: 501 to anything but exactly chunked, which breaks §6.3's MUST;
+- like Node: 400 to every invalid one, with a coding before chunked passed through to the handler;
+- as it was, matching none of the three.
+The form estimated about 60–100 lines for this option; it came to 303 with the new library's own suite and the node's removal from the event.
+The same form granted one upstream ask. FILED chez-httparse #50, a docs fix: Node answers 400, and §6.3 makes the node's case a 400.
+
+Read as the owner's choice, and flagged for the PR:
+- the codings are judged after the Host and the target, so a request refused for either is answered 400 first. The two strict fixtures with a coding before chunked, transfer-encoding.md#21 (on one line) and #22 (on two), have a fragment in their target. They stay the trace lane's invalid-target refusals, and that lane now holds the order too;
+- the parser's flags decide which rule applies (review). The codings are read only when the parser frames the body by a final chunked (F-CHUNKED), and where chunked sits in the list is the parser's to judge: a coding after it is the parser's 400, never the core's 501. Measured at the pin: `chunked`, `Chunked`, `gzip, chunked`, and gzip and chunked on two lines set F-CHUNKED; `gzip` and `chunked;x=1` do not, and the parser refuses them;
+- the checks run in RFC order at on-headers-complete: the Host (a MUST), the framing (a MUST), the target (a SHOULD, 400 or 301), then the codings (a SHOULD, 501). A request refused for an earlier rule never meets a later one. Below 1.1 is llhttp's version gate, as should-keep-alive? applies it, so 0.9, and 2.0 in HTTP/1 syntax, count as HTTP/1.0 here;
+- the node leaves the parser-result event. M2.5 added it for the split, and the event carries the error's code alone again;
+- `chunked,` is refused by the parser (400), where RFC 9110 §5.6.1 asks a recipient to ignore an empty element. That strictness is llhttp's, and chez-httparse follows it; recorded, not changed.
+
+REVIEWED before the first commit, at high effort (/code-review): six findings, all fixed on the owner's "fix all findings", each premise checked first.
+- The check answered from the list alone, so its 501 relied on the parser having refused a coding after chunked, and its contract said "in any order". It now asks the parser's flags whether the body is framed by a final chunked (F-CHUNKED), and the list only whether it names another coding. Where chunked sits is the parser's to judge.
+- An HTTP/1.0 request with Transfer-Encoding kept a keep-alive connection. Measured at 5e16b63: served, then the request behind it served too, and the connection stayed idle. RFC 9112 §6.1 says MUST treat its framing as faulty and close. The fix first served it and closed after; the owner then decided by form to refuse it (below).
+- The new library copied the case folding and the OWS test that (http-server headers) and the serializer already had. `(http-server headers)` now exports `ows?`, `trim-ows` and `range-ci=?`, and the new library and the serializer's `close-option?` both use them. `close-option?` no longer makes a span per call.
+- The head's fields were walked twice per request, once for the Host and once for the codings. Premise checked: merging the walks would not halve the name comparisons, since each field still meets both names, and a length mismatch ends most comparisons at once. What does remove the second walk is the F-CHUNKED gate, which skips it for every request whose body is not chunked.
+- Comment lines left unwrapped by the edits are rewrapped.
+- A unit row that repeated another went with the rewrite.
+
+DECIDED on the owner's word (2026-09-26), by form, after the owner asked what the HTTP/1.0 decision was: REFUSE IT WITH 400. A request below HTTP/1.1 that carries Transfer-Encoding is refused as `faulty-framing`, answered 400, and the connection closes; the handler never sees it. RFC 9112 answers faulty framing with a 400 and a close (§6.3), no well-behaved HTTP/1.0 client sends the field, and nginx does the same (read on master). The alternatives weighed, with their rough sizes:
+- serve it as the parser frames it (chunked), then close. This was the first build, and it needed no change, but it trusts the framing the RFC says to treat as faulty;
+- ignore the field and serve the request as if it had no body, then close, as Go does. About 60–100 lines: the core would have to tell the parser to skip the body, which it cannot yet.
+
+LANDED upstream the same day: chez-httparse #50, in v0.4.2 (29efa8f; PR #51, e2d647d; release PR #52). The generated parser is unchanged, so the pin may move alone and moves no behaviour; it stays at v0.4.1 here. The session that fixed it found a fourth node under `invalid-transfer-encoding` that #50 missed: `e-te-with-content-length`, a Content-Length followed by Transfer-Encoding. Measured through the core, it is a 400 and a close, as every parser error is now. The reverse order is `invalid-content-length`, a 400 too. The comments that listed three failures now name four.
+
+THE FIX (fix/transfer-encoding-status):
+- `(http-server transfer-coding)`, new and pure, holds both of RFC 9112 §6.1's rules, from llhttp's flags and the head's fields read in place:
+  - `unsupported-transfer-coding?` is #t when the parser frames the body by a final chunked (F-CHUNKED) and a Transfer-Encoding line names another coding. The codings are every line's elements, with OWS dropped, empty elements ignored, chunked matched without regard to case, and a coding with a parameter not chunked;
+  - `faulty-framing?` is #t for a request below HTTP/1.1 with the field (F-TRANSFER-ENCODING).
+- `(http-server connection)`: at on-headers-complete, after the Host, a request below 1.1 with Transfer-Encoding is refused as `faulty-framing`. After the target, another coding beside a final chunked is refused as `unsupported-transfer-coding`. A parser-result's error is its code alone.
+- `(http-server decisions)`: `parser-error-status` takes the code alone and answers 400 to every parser error. `faulty-framing` is a reason, answered 400, and so is `unsupported-transfer-coding`, answered 501. `http/1.1?`, llhttp's version gate, is exported.
+- The shared header helpers, `ows?`, `trim-ows` and `range-ci=?`, went up in the PR below (THE SHARED HEADER HELPERS, above), and `(http-server transfer-coding)` reads with them.
+- `tests/fake-shell.sls` hands the core the error's code.
+- Tests:
+  - `tests/test-transfer-coding.sps`, new, 12 checks. Each value is a span followed by `, gzip`, so a scan past its end changes the verdict;
+  - the head suite: pigeons 400; another coding beside chunked 501, on one line and on two; chunked alone read; HTTP/1.0 with Transfer-Encoding 400, asking to keep the connection or not; and the order. A missing Host and an invalid target are each a 400 before the codings, two Hosts a 400 before the framing, and the framing a 400 before the target and the codings;
+  - the decisions suite: every code 400, the reason's 501, the version gate, and at the pin `gzip, chunked` is no parser error;
+  - the table: T3's three instances, the transfer-encoding one a 400;
+  - the originated suite: its 501 is the core's reason now, a Transfer-Encoding with no chunked is a 400 row, and so is HTTP/1.0 with Transfer-Encoding.
+- Docs and records:
+  - design §6.3 and §6.5, and plan §6's M2.5, carry dated amendments;
+  - docs/responses.org's 501 row says it as it is, and docs/connections.org says an HTTP/1.0 request with Transfer-Encoding gets 400;
+  - decision 0008's table records #50, which needed no workaround and landed the same day, and its #36 row notes that the server dropped the split.
+- Red before green, in three rounds:
+  - before the review, 19 checks failed in five suites, all on the transfer codings;
+  - for the review's fixes, 8 checks failed in four suites: HTTP/1.0 with Transfer-Encoding in the response suite and the table, the three helpers, `chunked, gzip` without F-CHUNKED, and the close below 1.1.
+  - for the owner's 400, 6 checks failed in three suites against the tree that closed after the response: the head suite 3 (HTTP/1.0 with Transfer-Encoding, twice, and the framing's order), the originated suite 2 (its row, and the reasons' coverage) and the decisions suite 1. The unit suite could not load until the rule had its new name.
+  Every other suite was green both times.
+- Mutations (m3-mutations.md, "The transfer-encoding statuses"): TA to TU on the final tree, all killed, each by the checks it should turn red. Earlier sets ran before the review and before the 400, and this one replaces them.
+  - TA answers `invalid-transfer-encoding` 501 again, TQ answers the new reason 400, TU answers `faulty-framing` 500, and TB drops the core's question about the codings. Each turns its status rows red.
+  - TC, TD, TR and TS move the checks out of order: the codings before the target or the Host, and the framing after the target or before the Host. Each turns its order row red. TC and TD also turn the trace lane red, where #21 and #22 turn from invalid-target to unsupported-transfer-coding.
+  - TE drops the F-CHUNKED gate, and TF gates on F-TRANSFER-ENCODING instead. Pigeons turns 501, and the trace lane sees the core refuse transfer-encoding.md#13 before the parser does.
+  - TG reads only the first line; TH to TL break the shared helpers and the element rules; TM runs the scan past the value. Each turns its unit and helper rows red. TI also turns the trace lane red, where #27 and #29 send `chunked` with a trailing space, and TM turns every chunked request red end to end.
+  - TN never asks the HTTP/1.0 rule: its rows go red. TO inverts the rule's version gate, and every HTTP/1.1 request with Transfer-Encoding is refused, across the head suite, the originated suite and the lanes. TP reads F-CHUNKED for the rule, and only the unit suite sees it, since the parser refuses every Transfer-Encoding it does not frame as chunked.
+- Found while writing the mutants: the first set's scan past the value would have survived the unit suite's first helper, and the review's rewrite needed the two-line row in the other order for TG. Both were fixed before the runs.
+- `make test` green: twenty-six suites, 674 expected passes (transfer-coding 12, headers 18, decisions 52, connection-head 51, connection-table 95, connection-originated 20), exit 0. `make check-imports` is clean. Allocation: 2,736 B per request, unchanged.
+- 396 inserted lines of code and tests in this PR, stacked on the helpers' 64. Together they come to 460 (303 before the review), over plan §1 rule 1's ~400, so they went up as two PRs, split at the helpers, each green on its own. The first form's estimate was 60–100 lines.
+
+NEXT: the two stacked PRs, merged bottom up on the owner's word. Then M3.5, the staged close (plan §7): after a status the core originates is written, the core asks for `shutdown`, reads on and drops what arrives, and closes when the client closes or a linger deadline passes; measure first, then settle the linger limit and its default by a decision record. Then the M3 exit.

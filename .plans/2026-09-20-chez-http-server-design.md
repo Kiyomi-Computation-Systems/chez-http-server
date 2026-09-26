@@ -664,6 +664,26 @@ pure map:
 - every other code → `400`.
 - then `close`, always. A parser error means the framing is no longer trustworthy.
 
+> *Amended 2026-09-26, on the owner's word:* the split is gone. `invalid-transfer-encoding`
+> is a `400` at each of its four nodes. No `chunked`, a coding after it and an empty value
+> leave the body's length undetermined, which RFC 9112 §6.3 answers with a MUST 400; a
+> `Content-Length` before the `Transfer-Encoding` is a request §6.1 lets a server refuse,
+> then close. The `501` goes where §6.1 puts it, to a coding the server does not
+> understand. When the parser frames the body by a final `chunked` (its `F_CHUNKED`
+> flag) and the list names another coding, the parser accepts the request, so the core
+> refuses it itself at `on-headers-complete`, as `unsupported-transfer-coding`
+> (`(http-server transfer-coding)`), after the Host and the target. The flags decide
+> which rule applies, so the core reads the codings only for a chunked body, and where
+> `chunked` sits in the list is the parser's to judge. A request below HTTP/1.1 with
+> `Transfer-Encoding` is refused, `400`, as `faulty-framing`, right after the Host (both
+> are MUSTs): §6.1 says to treat an HTTP/1.0 message's framing as faulty, and RFC 9112
+> answers faulty framing with a 400 and a close. nginx does the same; Go ignores the field
+> and closes after. The parser-result event carries the error's code alone again. Measured
+> first (ledger, 2026-09-26): nginx and Go answer 501 to anything but exactly `chunked`,
+> and Node 20 answers 400 to every invalid one. chez-httparse's docs said Node answers
+> 501; that was filed upstream as chez-httparse #50, and the docs fix landed in v0.4.2
+> the same day.
+
 **Never match the reason string.** An error's identity upstream is the `(code,
 reason)` pair — the corpus has reasons sharing a code and one reason under two codes —
 so the reason is for logs. Node names are documented as movable, so reach for
@@ -746,13 +766,13 @@ Every status the server can originate, and who decides it:
 
 | Status | Origin | Closes? |
 |---|---|---|
-| `400` | parser error (default) | yes |
+| `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26) | yes |
 | `408` | header or body-inactivity deadline (policy) | yes |
 | `413` | body cap, buffering helper only (policy) | yes |
 | `414` | request-target over `max-target-bytes` (policy) | yes |
 | `431` | header bytes or header count (policy) | yes |
 | `500` | handler raise | yes |
-| `501` | `invalid-transfer-encoding` at node `e-request-invalid-te` | yes |
+| `501` | a transfer coding before a final `chunked`, which the server does not implement (RFC 9112 §6.1; since 2026-09-26) | yes |
 | `505` | the HTTP/2 preface (decision 0006 item 2; `Upgrade: h2c` only until its 2026-09-25 amendment) | yes |
 
 Every originated status closes the connection. That is not a simplification to revisit:
