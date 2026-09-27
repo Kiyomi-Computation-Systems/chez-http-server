@@ -177,9 +177,14 @@
 ;;; linger (decision 0011) — to arm, and carries no time: no event but `tick`
 ;;; carries `now`, so the core cannot turn a duration into an instant.  The
 ;;; shell's timing wheel does, from the limits (decision 0005, M5), and ticks
-;;; a connection only once the deadline it armed has passed.  The state records
-;;; the armed kind, so a tick is acted on only while the core still has a
-;;; deadline of that kind armed.
+;;; a connection only once the deadline it armed has passed, and only as it
+;;; lets that deadline go.  The state records the armed kind, so a tick is
+;;; acted on only while the core still has a deadline of that kind armed, and
+;;; every kind has its tick row (M5.2).  The record and the actions agree:
+;;; wherever the core lets a deadline go of its own accord, it emits
+;;; `(disarm-deadline)`, so every way it lets a connection go, a close or the
+;;; hand-off, takes the connection out of the wheel.  A tick clears the record
+;;; with no disarm, since the wheel has already let the deadline go.
 (library (http-server connection)
   (export conn-states conn-events conn-actions conn-deadline-kinds
           conn-parser-callbacks conn-span-callbacks
@@ -506,26 +511,50 @@
       (conn-outstanding-set! s (fx- writes 1))
       (conn-outstanding-bytes-set! s (fx- bytes nbytes))))
 
-  ;; A tick means the wheel found this connection's armed deadline expired
-  ;; (0005).  idle past the idle deadline -> closing, with no response; head
-  ;; past the header deadline -> responding 408; lingering past the linger
-  ;; deadline -> closing, for the reason it closes after its response (M3.5).
-  ;; A tick with no deadline of that kind armed changes nothing.
+  ;; A tick means the wheel found this connection's armed deadline passed
+  ;; (0005), and has let it go: an advance returns its keys already disarmed.
+  ;; So the kind the state records is read, then cleared, and a row that
+  ;; keeps the connection arms what it needs.  Every kind the core arms has
+  ;; its row (M5.2):
+  ;;   idle past the idle deadline -> closing, with no response; and so does
+  ;;     draining, from idle, past the idle deadline it carried there;
+  ;;   head past the header deadline -> responding 408;
+  ;;   body past the body deadline -> responding 408, the request in flight's;
+  ;;   responding past the write deadline -> closing, with no response: the
+  ;;     client is not reading, so nothing more can be written to it.  The
+  ;;     close is logged, with the bytes still outstanding, and names the
+  ;;     write deadline, whatever the connection would have closed for after
+  ;;     its response.  The write it cuts short is settled in `closing`
+  ;;     (M3.3);
+  ;;   lingering past the linger deadline -> closing, for the reason it closes
+  ;;     after its response (M3.5).
+  ;; A tick with no deadline of that kind recorded asks for nothing.
   (define (on-tick s)
-    (case (conn-phase s)
-      ((idle)
-       (if (eq? (conn-deadline s) 'idle)
-           (close s 'idle-timeout '())
-           (values s '())))
-      ((head)
-       (if (eq? (conn-deadline s) 'header)
-           (respond-and-close s 'header-timeout '())
-           (values s '())))
-      ((lingering)
-       (if (eq? (conn-deadline s) 'linger)
-           (close s (conn-close-after s) '())
-           (values s '())))
-      (else (values s '()))))
+    (let ((kind (conn-deadline s)))
+      (conn-deadline-set! s #f)
+      (case (conn-phase s)
+        ((idle draining)
+         (if (eq? kind 'idle)
+             (close s 'idle-timeout '())
+             (values s '())))
+        ((head)
+         (if (eq? kind 'header)
+             (respond-and-close s 'header-timeout '())
+             (values s '())))
+        ((body)
+         (if (eq? kind 'body)
+             (respond-and-close s 'body-timeout '())
+             (values s '())))
+        ((responding)
+         (if (eq? kind 'write)
+             (close s 'write-timeout
+                    (list (list 'log 'write-timeout (conn-outstanding-bytes s))))
+             (values s '())))
+        ((lingering)
+         (if (eq? kind 'linger)
+             (close s (conn-close-after s) '())
+             (values s '())))
+        (else (values s '())))))
 
   ;; A parser callback as a tagged list: unpack the payload and call the entry
   ;; point the adapter calls directly (0002's third amendment, item 3).  A
@@ -755,13 +784,13 @@
   ;; head/body: a hand-off, on either of the parser's channels
   ;; (`result-hands-off-stream?`), is the door (M2.5).  The HTTP/2 preface, on
   ;; the error channel, is answered 505, then close (decision 0006 item 2).
-  ;; A pause for an upgrade stops reading and hands the stream off (0006
-  ;; item 3): the door M8 opens for a handler that takes upgrades, which the
-  ;; core's own flow never reaches, since it pauses at every message's end
-  ;; and closes after an upgrade.  Any other error is answered with a status,
-  ;; then close: one the core asked for with `fail` gets its reason's status
-  ;; (design §6.3), and any other the status (http-server decisions) gives
-  ;; its code.
+  ;; A pause for an upgrade stops reading, disarms the deadline (M5.2) and
+  ;; hands the stream off (0006 item 3): the door M8 opens for a handler that
+  ;; takes upgrades, which the core's own flow never reaches, since it pauses
+  ;; at every message's end and closes after an upgrade.  Any other error is
+  ;; answered with a status, then close: one the core asked for with `fail`
+  ;; gets its reason's status (design §6.3), and any other the status
+  ;; (http-server decisions) gives its code.
   ;; handling: the core's own answer to on-message-complete paused the
   ;; parser, a pause with no reason, so the rest of the last delivery, from
   ;; `next`, is kept as the pending input the resume feeds (decision 0004
@@ -785,7 +814,8 @@
                  (begin
                    (conn-phase-set! s 'handed-off)
                    (conn-deadline-set! s #f)
-                   (values s (list '(read-stop) (list 'hand-off (conn-request s)))))))
+                   (values s (list '(read-stop) '(disarm-deadline)
+                                   (list 'hand-off (conn-request s)))))))
             ((not (eq? status 'error)) (values s '()))
             ((head-refusal (conn-head s))
              => (lambda (reason)
@@ -876,12 +906,13 @@
       (else (values s '()))))
 
   ;; close : ConnState Symbol (Listof Action) -> (values ConnState (Listof Action))
-  ;; Enter `closing`: the transport leaves the wheel with the handle, so no
-  ;; deadline stays armed.  `before` precedes the close.
+  ;; Enter `closing`, disarming the deadline, armed or not, before the close
+  ;; (M5.2): the shell's wheel holds a connection until its deadline is
+  ;; disarmed or passes.  `before` precedes both.
   (define (close s reason before)
     (conn-phase-set! s 'closing)
     (conn-deadline-set! s #f)
-    (values s (append before (list (list 'close reason)))))
+    (values s (append before (list '(disarm-deadline) (list 'close reason)))))
 
   ;; respond-and-close :
   ;;   ConnState Symbol Headers -> (values ConnState (Listof Action))

@@ -492,6 +492,36 @@ Termination and error rows:
 >   `write`, since `responding` does not read. A status written from `handling` does
 >   not: reading stopped at the pause.
 
+> *Amended 2026-09-27 (M5.2; decision 0005's table):* every deadline the core arms has
+> its tick row. These three join the `head`, `idle` and `lingering` ones:
+>
+> | State | Event | State' | Actions |
+> |---|---|---|---|
+> | `body` | `tick` past `body` deadline | `responding` | `write` 408, `read-stop`, `arm-deadline write`; `close-after? = #t` |
+> | `responding` | `tick` past `write` deadline | `closing` | `log write-timeout` with the bytes outstanding, `disarm-deadline`, `close` — **no response** |
+> | `draining` | `tick` past the `idle` deadline carried from `idle` | `closing` | `disarm-deadline`, `close` — **no response**, as from `idle` |
+>
+> A write still outstanding at its deadline means a client that is not reading, so
+> nothing more can be written to it. The close is at once, not staged, and names the
+> write deadline, whatever the connection would have closed for after its response. It
+> is logged, since nothing else would show it, with the bytes still outstanding. The
+> write it cuts short is settled in `closing`, as one a read error cuts short is (M3.3).
+> A connection that drains from `idle` had nothing in flight, and takes its idle deadline
+> with it; the rows M8 writes for `draining` arm the write deadline there (§4.3).
+>
+> A tick means the wheel has let the connection's deadline go: an advance returns its
+> keys already disarmed (decision 0005's amendment of 2026-09-27). So every tick clears
+> the kind the state records, even where no row acts on it, and a row that keeps the
+> connection arms what it needs. And every way the core lets a connection go disarms its
+> deadline first. Every row that closes emits `disarm-deadline` before `close`, armed or
+> not, and the hand-off row emits it before the hook. Until M5.2 the core cleared its
+> record of the deadline there without saying so, which would leave a connection gone
+> from the core in the shell's wheel until its deadline passed, up to 75 s (M5.1's
+> review). `tests/test-connection-table.sps` checks both halves of the rule on every row:
+> the kind the state records is what the row's actions leave armed, starting from nothing
+> at a tick, and each kind a row leaves armed, ticked in the state it leaves, moves the
+> connection on.
+
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with
 `parser-result-pause` code `paused-upgrade`; the h2c preface `PRI * HTTP/2.0` arrives

@@ -122,3 +122,75 @@ Every check the step added is reddened by one mutant at least:
 - the plain-list row by every wheel mutant but N and those of P and R: A, A2, B, C, D, D2, D3, E, E2, F, G, H, I, J, K, M and W;
 - the refusal row by P1 to P6 and P8 to P10;
 - the refused arm by E2, P3, P6 and R.
+
+## M5.2 — every deadline the core arms has its tick row (2026-09-27)
+
+Red before green, first build: the tests edited, the core as on main at 2dbef93.
+- connection-table 21:
+  - T1 (3), T2 (7), T5, T7 (2), L2 and L3, which now disarm first;
+  - D1's first instance and D2's first two;
+  - "after every row, the state records the deadline its actions leave armed", with thirteen strays, every row that closed or handed off with a kind recorded;
+  - the moves-on check, where `(body body)` and `(responding write)` stayed put;
+  - and the fake shell's idle close.
+- decisions 1: the reason table, raised at `body-timeout`.
+- connection-originated 18: every row, whose staged close now ends with the disarm, and "every row's reason is one of them, or a parser error", since `body-timeout` was not a reason yet.
+- connection-linger 7: every row that closes.
+- connection-deadlines 4: idle, body, write and linger. The header row and the kinds' check passed, since the header deadline already had its row.
+
+Red before green, the review's fixes (`/code-review high`, 2026-09-27): the tests edited, the core as built above. connection-table 7:
+- D2's first two, now logged;
+- D3, draining's carried idle deadline, with no row;
+- D4's two, a tick that left its kind recorded;
+- the state-and-actions check, whose three strays were D3's and D4's ticks: at a tick the wheel holds nothing;
+- the moves-on check, which now reads every state a row leaves and found `(draining idle)`.
+
+connection-deadlines 1: the write row, not logged. The first run of D1's two instances failed too, but the fault was the test's: `ticked` read the state's deadline in an argument to `append`, which Chez evaluated before the step. It now binds the step first, as `kept` does. D1 then passed on the old core, as it should, since the core already framed the 408 for the request in flight.
+
+Every mutant below ran against all thirty-seven suites of the finished tree. Where a row names no other suite, the others were green. The runner prints eight FAIL lines a suite at most; E's and M's longer lists were run by hand. The first build's twenty mutants, A to U, ran twice before the review with the same results, but for R's label (below). Every one was written again for the fixed `on-tick` and run once more.
+
+| # | mutation (`src/http-server/connection.sls` unless named) | observed |
+|---|---|---|
+| M5.2-A | the plan's: the write row removed | connection-table 3 — D2's first two instances, and "each deadline a row leaves armed, ticked in the state it leaves, moves the connection on"; connection-deadlines 1 — the write row. A write that never completes keeps the connection open |
+| M5.2-B | the body row removed | connection-table 3 — D1's two instances with the body deadline, and the moves-on check; connection-deadlines 1 — the body row; connection-originated 1 — "408: a body still unfinished when the body deadline passes" |
+| M5.2-C | the body row's guard removed: a tick in `body` answers 408 whatever was recorded | connection-table 1 — D1's guard instance |
+| M5.2-D | the write row's guard removed | connection-table 1 — D2's guard instance |
+| M5.2-E | a close emits no disarm, as before M5.2 | connection-table 18 — T1 (3), T2 (7), T5, L2, L3, D2's first two, D3, the state-and-actions check, and the fake shell's idle close; connection-originated 17, every row; connection-linger 7, every row that closes; connection-deadlines 3 — idle, write and linger |
+| M5.2-F | the hand-off emits no disarm, as before M5.2 | connection-table 3 — T7 (2) and the state-and-actions check |
+| M5.2-G | the body row answers for the header deadline | connection-table 2 — D1's two, their close-after `header-timeout`; connection-deadlines 1 and connection-originated 1, the body rows |
+| M5.2-H | `body-timeout` answered 400 (`src/http-server/decisions.sls`) | decisions 1 — "each reason the core closes with after a response, and its status"; connection-table 2 — D1's two; connection-deadlines 1 and connection-originated 1, the body rows |
+| M5.2-I | the write row closes for the reason the connection would have closed for after its response | connection-table 1 — D2's second instance, a 408 still being written |
+| M5.2-J | the write row closes in stages, lingering, as a close after a response does | connection-table 3 — D2's first two and the moves-on check; connection-deadlines 1 — the write row |
+| M5.2-K | the write deadline answered 408, a status of its own (both files) | decisions 1 — "a reason with no originated response is refused"; connection-originated 1 — "every reason the core originates a response for has a row"; connection-table 3 — D2's first two and the moves-on check; connection-deadlines 1 — the write row |
+| M5.2-L | a close disarms only when a deadline is armed | connection-table 8 — T2's two instances with none armed, `handling` and `draining`, and every close a tick makes: T5, L3, D2's first two, D3 and the fake shell's idle close, since a tick clears the record before it closes; connection-linger 2 — the linger deadline's two closes; connection-deadlines 3 — idle, write and linger |
+| M5.2-M | a close disarms after the close, not before | as E, less the state-and-actions check, which the order does not change: connection-table 17, connection-originated 17, connection-linger 7, connection-deadlines 3 |
+| M5.2-N | the keep-alive completion arms the idle deadline without recording it | connection-table 2 — the state-and-actions check, and the moves-on check, which gains `(idle write idle)`; connection-deadlines 1 — the idle row, whose tick meets a state still recording the write deadline |
+| M5.2-O | a row arms a deadline no tick row acts on: the shutdown from `idle` arms the write deadline in `draining` | connection-table 2 — T8, and the moves-on check, which gains `(draining write draining)` |
+| M5.2-Q | the deadlines suite loses its linger row (`tests/test-connection-deadlines.sps`) | connection-deadlines 1 — "a row for each kind of deadline the core arms, in order" |
+| M5.2-R | the table's D4 row loses its instances (`tests/test-connection-table.sps`) | connection-table 1 — "M5.2: all 4 tick rows have a test". Before the counts moved, the same kind of failure printed under a row's name (below) |
+| M5.2-S | a linger row built from a state that raises (`tests/test-connection-table.sps`) | connection-table 1 — "M3.5: all 4 linger rows have a test", exit 1: the group's rows never ran, its count is `'raised`, and the error port reads "RAISED building the linger rows: Exception in make-conn-state: not a connection state with irritant no-such-state" |
+| M5.2-T | no row arms the linger deadline: the staged close arms the idle one | connection-table 5 — H10 (2), W3's second instance, "the rows arm all five deadline kinds, and no other", and the moves-on check; connection-originated 17, connection-linger 6, and connection-deadlines 3 (header, body and linger), every staged close |
+| M5.2-U | the header deadline's row removed | connection-table 3 — T4, W1's 408, and the moves-on check; connection-deadlines 1 — the header row; connection-originated 1 — "408: a head still unfinished when the header deadline passes" |
+| M5.2-V | the write deadline's close is not logged | connection-table 2 — D2's first two; connection-deadlines 1 — the write row |
+| M5.2-W | the draining row removed: only `idle` acts on the idle deadline | connection-table 2 — D3, and the moves-on check, where `(draining idle)` stays put |
+| M5.2-X | a tick keeps the kind it found recorded | connection-table 4 — D4 (2), the state-and-actions check, and the moves-on check, which gains `(handling idle handling)` and `(head body head)` |
+| M5.2-Y | the body row answers as though no request were in flight | connection-table 1 — D1's HEAD instance, which gains a `Content-Length: 0`. The POST's 408 frames the same either way |
+| M5.2-Z | the body deadline lasts the idle timeout (`src/http-server/limits.sls`, `limits-deadline-ms`) | limits 1 — "each deadline kind lasts its own timeout"; connection-table 1 — "each deadline kind lasts one of the limits: idle 75 s, header, body and write 60 s, linger 30 s"; connection-deadlines 1 — the body row, ticked at 75,000 |
+| M5.2-AA | the idle row's guard removed: a tick in `idle` or `draining` closes whatever was recorded | connection-table 2 — T5's guard instance and D3's |
+
+Every check the slice added or changed is reddened by one mutant at least:
+- T1, T2, T5, L2 and L3 by E and M; T2's two instances with nothing armed, T5 and L3 by L;
+- T7 by F;
+- D1 by B, G and H, its HEAD instance also by Y, its guard by C;
+- D2 by A, E, I, J, K, L, M and V, its guard by D;
+- D3 by E, L, M and W, its guard by AA; D4 by X;
+- "M5.2: all 4 tick rows have a test" by R. The count checks moved beside it keep their earlier mutants, and S shows a group that raises fails its own count, with its cause printed;
+- the state-and-actions check by E, F, N and X;
+- the moves-on check by A, B, J, K, N, O, T, U, W and X;
+- "the rows arm all five deadline kinds" by T;
+- the fake shell's idle close by E, L and M;
+- decisions' reason table by H, and write-timeout's refusal by K;
+- connection-originated's body row by B, G and H, and every row's disarm by E and M;
+- connection-linger's closes by E and M, and the linger deadline's two by L;
+- connection-deadlines: idle by E, L, M and N; header by T and U; body by B, G, H, T and Z; write by A, E, J, K, L, M and V; linger by E, L, M and T; the kinds' check by Q. Each row's instant is 0005's default for its kind, and Z moves the body's.
+
+Found on the way (scratch `nested-label.sps`, Darwin arm64, 2026-09-27): SRFI-64's simple runner names a failing check after the last check run inside its expression. A check `"OUTER"` whose expression ran a passing `"INNER"` and then failed printed `FAIL INNER: passes`. Six of the table's count checks ran their rows inside themselves, so a missing row's count would fail under a row's name, as the first R, which emptied D2, did ("D1 ..."). Each group's rows now run first, under a guard that prints the cause of a raise, so a group that raises fails its own count, exit 1 (S). No earlier log misnames one: M2.1-E's count, "all 9 termination and error rows", was already taken outside its check.

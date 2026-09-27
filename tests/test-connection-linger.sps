@@ -57,10 +57,12 @@
               (conn-phase s) (conn-close-after s))))))
 
 ;; staged : Symbol -> Outcome — one request handled and answered 200, then
-;; the staged close, ended by the client's close, for `why`.
+;; the staged close, ended by the client's close, for `why`.  Like every
+;; close, it disarms the deadline first (M5.2).
 (define (staged why)
   (list 1 (list '(write 200) '(arm-deadline write)
-                '(shutdown) '(read-start) '(arm-deadline linger) (list 'close why))
+                '(shutdown) '(read-start) '(arm-deadline linger)
+                '(disarm-deadline) (list 'close why))
         'closed why))
 
 ;; lingering : -> FakeShell
@@ -122,13 +124,13 @@
 
     ;; --- the ways a linger ends ----------------------------------------------
     (test-equal "a client that never closes: the linger deadline closes the connection"
-                '(((close handler-close)) closed handler-close)
+                '(((disarm-deadline) (close handler-close)) closed handler-close)
                 (after (lingering) linger-passes!))
     ;; The deadline is armed once, when lingering starts: what arrives is
     ;; dropped and asks for nothing, so a client that keeps sending cannot
     ;; hold the connection past it.
     (test-equal "a client that keeps sending: nothing fed, the deadline not re-armed, and it still closes"
-                '(((close handler-close)) closed handler-close)
+                '(((disarm-deadline) (close handler-close)) closed handler-close)
                 (after (lingering)
                        (lambda (sh)
                          (send! sh get)
@@ -136,7 +138,7 @@
                          (send! sh "123456789")
                          (linger-passes! sh))))
     (test-equal "a read error while lingering: logged, then the close"
-                '(((log read-error ECONNRESET) (close read-error)) closed handler-close)
+                '(((log read-error ECONNRESET) (disarm-deadline) (close read-error)) closed handler-close)
                 (after (lingering) (lambda (sh) (fake-shell-deliver! sh '(read-error ECONNRESET)))))
     (test-equal "the half-close's completion changes nothing: the connection lingers, reading"
                 '((() lingering handler-close) #t)

@@ -56,8 +56,7 @@
       (fake-shell-feed-input! sh bv (bytevector-length bv))
       (let ((s (fake-shell-conn-state sh)))
         (list (map (lambda (w) (read-response w skip? #f)) (fake-shell-writes sh))
-              (map (lambda (a) (if (eq? (car a) 'write) (list 'write (written-status a)) a))
-                   (filter (lambda (a) (memq (car a) '(log write))) (fake-shell-actions sh)))
+              (map shown (filter (lambda (a) (memq (car a) '(log write))) (fake-shell-actions sh)))
               (conn-phase s) (conn-close-after s))))))
 
 ;; A row: what it shows; the requests; the handler's answer; whether the

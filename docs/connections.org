@@ -29,6 +29,23 @@ the connection. Anything the client sent after that request is ignored.
 A client that opens with HTTP/2's preface (~PRI * HTTP/2.0~) gets ~505 HTTP
 Version Not Supported~, and the connection closes.
 
+* Clients that stall
+
+From M5, the server stops waiting for a client that stalls:
+
+- a kept-alive connection with no new request for ~CHEZ_HTTP_IDLE_TIMEOUT~
+  (75 s) is closed;
+- a request whose headers take longer than ~CHEZ_HTTP_READ_HEADER_TIMEOUT~, or
+  whose body pauses longer than ~CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT~ (60 s
+  each), gets ~408 Request Timeout~, and the connection closes;
+- a client that stops reading is closed once a write has waited
+  ~CHEZ_HTTP_WRITE_TIMEOUT~ (60 s), with no answer: nothing more can be
+  written to it.
+
+Until M6 the server does not send ~100 Continue~. A client that sends
+~Expect: 100-continue~ and waits for it, instead of sending its body, also
+gets ~408~ once the body timeout passes.
+
 * How the server closes a connection
 
 When the server closes a connection after a response, it closes it gently:

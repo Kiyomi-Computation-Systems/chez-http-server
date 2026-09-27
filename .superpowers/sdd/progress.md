@@ -2398,3 +2398,56 @@ M5.1 DONE and merged (b54c860, PR #58; 042260f, PR #59): the wheel, and its two 
 - decision 0005 is amended twice, and plan §14 carries the review's notes for M5.2 and M5.3.
 
 NEXT: M5.2, every deadline the core arms has its tick row (plan §14): `body` past its deadline answers 408 and closes, and `responding` past the write deadline closes with no response. With them, per plan §14's note, the core's close and hand-off emit `(disarm-deadline)`. Then M5.3, one timer per loop in both shells. It starts on a fresh branch cut from main after this commit, when the owner asks.
+
+M5.2 — EVERY DEADLINE THE CORE ARMS HAS ITS TICK ROW. Branch feat/m5.2-tick-rows, cut from main at 2dbef93.
+
+Gathered: plan §14's M5.2 and its note of 2026-09-27; design §4.3's table of states and deadlines, and §4.4; decision 0005's table (on breach, body: 408 and close; write: close).
+
+- `(http-server connection)`:
+  - `body` past the body deadline answers 408, reads no more, and closes after the response in stages, as a head past its deadline does. The reason is `body-timeout`, and the 408 is framed for the request in flight: a HEAD's has no Content-Length;
+  - `responding` past the write deadline closes at once, with no response: the client is not reading, so nothing more can be written to it. The close is logged, `(log write-timeout bytes)` with the bytes still outstanding, since nothing else would show it. It is `write-timeout`, whatever the connection would have closed for after its response. The write it cuts short is settled in `closing`, as a read error's is (M3.3's W5), and as the libuv shell reports a write its close cancels;
+  - `draining`, entered from idle, carries the idle deadline, and past it closes as idle does: it had nothing in flight. It is the one draining row before M8, whose rows arm the write deadline there;
+  - a tick clears the kind the state records, then acts: the wheel ticks a connection only as it lets its deadline go. So the record agrees with the wheel even where no row acts on the kind;
+  - every close, and the hand-off, emits `(disarm-deadline)` first, armed or not (plan §14's note). The core cleared its record of the deadline there without saying so, which would leave a connection gone from the core in the shell's wheel until its deadline passed. Unconditional, as the core's other disarms are: a disarm with nothing armed is nothing to the wheel;
+  - the comments: `on-tick`'s rows, `close`, the hand-off, and the header's deadline paragraph.
+- `(http-server decisions)`: `body-timeout`, 408.
+- `tests/test-connection-table.sps`, 119 checks (main's 106):
+  - D1 to D4, the tick rows: the body's 408, a POST's and a HEAD's; the write deadline's logged close, and a 408 whose write stalls, which closes for `write-timeout`; draining's idle deadline; and a tick no row acts on, which leaves no deadline recorded. Each with its guard, and each outcome ends with the deadline recorded after;
+  - T1, T2, T5, T7, L2, L3 and the fake shell's idle close now disarm first;
+  - "after every row, the state records the deadline its actions leave armed", starting from nothing at a tick, since the wheel has let the deadline go. It would have caught the missing disarm, thirteen strays, and the stale record after a tick no row acted on;
+  - "each deadline a row leaves armed, ticked in the state it leaves, moves the connection on": the slice's title as a check, over every (state, kind) a row leaves a connection in, armed there or carried in. It found draining's carried idle deadline, and a future row that leaves a kind where no tick row acts on it goes red (O);
+  - each group's rows now run before its count is checked, and a raise while building them prints its cause (found on the way, below).
+- `tests/test-connection-deadlines.sps`, new, 6 checks: each of the five kinds reached on a fake connection as a client reaches it, the kind read, then passed at its own limit, decision 0005's default, which the row states. Idle after a response closes; a head or a body left unfinished gets 408, then the staged close; a response the client never reads, its completion never delivered, is logged with its 77 bytes and closed, and the write settles; a linger closes. And a row for each kind.
+- `tests/test-connection-originated.sps`, 21 checks (main's 20): the body's 408 end to end, read back by chez-httparse; every row's staged close ends with the disarm.
+- `tests/test-connection-linger.sps` (9) and `tests/test-decisions.sps` (52): the closes' disarm; `body-timeout`'s 408, and `write-timeout` among the reasons with no status.
+- `tests/read-back.sls`: `shown`, a write as its status, shared by the response, linger, originated and deadlines suites, where three copies were.
+- Records:
+  - design §4.4's amendment of 2026-09-27;
+  - plan §14's notes for M6.2, M6.3 and M6.4 (below);
+  - docs: responses.org's 408 row gains the body, and connections.org gains "Clients that stall", marked from M5, with the Expect case.
+
+Reviewed (`/code-review high`, 2026-09-27, before the first commit): eight findings, all taken on the owner's "fix all eight":
+- **A tick left a stale record.** A tick no row acted on kept the kind it found, though the wheel had let it go. Draining kept idle's. Now every tick clears it (D4, X).
+- **The moves-on check read only arms,** so it missed the idle deadline T8 carries into draining. It now reads every state a row leaves, and draining got its row (D3, W).
+- **Expect: 100-continue.** Until M6.4 the server never sends `100 Continue`, and a client that waits for it is answered 408 once the body deadline passes, though the server is the one waiting. Kept, not changed: without the deadline, a request that expects the 100 and never sends its body would hold its connection with no bound. Plan §14 has M6.4 arm the body deadline when the 100 is written, and connections.org says so.
+- **The count guard swallowed a raise's cause.** It now prints the group and the condition. A raise from the core while rows are built still fails the group's count, exit 1, as M5.1's review had setups that raise fail as checks.
+- **A write-timeout close was invisible.** It is now logged with the bytes outstanding. An idle close stays unlogged, as a client's own close is: a keep-alive connection going idle is the normal case.
+- **D1 could not tell its request's framing.** A HEAD instance now shows it (Y).
+- **The deadlines suite's clock was inert.** Each row now states the instant its deadline passed (Z).
+- **`shown` was in three copies.** It is now one, in `(read-back)`.
+
+Watched to fail (m5-mutations.md, M5.2): twenty-six mutants, A to AA, each against all thirty-seven suites of the finished tree. M5.2-A, the plan's, turns the write rows red: D2 in the table, the moves-on check, and the end-to-end write row. Every check the slice added or changed is reddened by one at least.
+
+Found on the way: SRFI-64's simple runner names a failing check after the last check run inside its expression (scratch `nested-label.sps`, measured). Six of the table's count checks ran their rows inside themselves, so a count that fell failed under a row's name. Each group's rows now run first. No earlier mutation log misnames one.
+
+Notes for M6 (plan §14):
+- The body deadline's 408 assumes the client is the one stalling and no handler has answered.
+- In M6.2, while reading is stopped for a handler's credit, the body deadline must not run.
+- In M6.3, once a handler's head is on the wire, a stalled body gets a bare close.
+- In M6.4, the body deadline of a request that expects the 100 starts when the 100 is written.
+
+`make test` green on the finished tree: thirty-seven suites, 938 expected passes (connection-table 119, connection-deadlines 6, connection-originated 21), exit 0. `make check-imports` is clean. The allocation gate's GET is 1,840 B a request, as on main: a keep-alive request never closes. Size: 449 inserted lines of code and tests, past plan §1 rule 1's ~400.
+
+DECIDED on the owner's word (2026-09-27), by form: one PR. The disarm, the tick's clearing and the tick rows share the table suite's rows and derived checks. Weighed: two stacked PRs by layer, each proved green on its own tree.
+
+NEXT: the PR, feat/m5.2-tick-rows. Then M5.3, one timer per loop in both shells.
