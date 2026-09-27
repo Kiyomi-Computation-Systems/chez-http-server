@@ -2606,7 +2606,7 @@ Between the tags, the library path gains that verb alone: its binding in `(libuv
 
 The pin moves from v0.6.0 to the v0.7.0 tag, on a commit of its own (branch chore/chez-libuv-v0.7.0): `vendor/chez-libuv` is at ed30206. Watched to fail:
 - with the checkout moved and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2);
-- with the pin moved and nothing else, the shell no longer loads. The facade now exports `uv-update-time!`, the name of the shell's workaround, and Chez refuses the library: `multiple definitions for uv-update-time! in body`. Five of the 37 suites failed: clients, contract, serve and shell with Chez's refusal (exit 255), and exports, whose check loads the facade (exit 1). This is the red decision 0008 asks a carried workaround to turn when its ask lands.
+- with the pin moved and nothing else, the shell no longer loads. The facade now exports `uv-update-time!`, the name of the shell's workaround, and Chez refuses the library: `multiple definitions for uv-update-time! in body`. Five of the 37 suites failed, each because it loads the shell: clients, contract, serve and shell exited 255 on Chez's refusal, and exports, which loads the shell through the facade inside a check, failed that check (exit 1). This is the red decision 0008 asks a carried workaround to turn when its ask lands.
 
 So the pin's commit imports `(except (libuv) uv-update-time!)`, keeping the workaround as it was, and the next commit drops it for the facade's verb. With that one line, `make test` is green at the new pin: thirty-seven suites, 962 expected passes, exit 0.
 
@@ -2618,19 +2618,14 @@ Smoke evidence (`.plans/research/spike/smoke-libuv-v070.sps`, Darwin arm64, Chez
     (b) a 150 ms timer armed after the hold, without the refresh, fired after (expect about 50): 51
         with the refresh (expect 149 or more: libuv's clock counts whole ms): 151
     (c) off the loop's thread (expect wrong-thread uv-update-time!): (wrong-thread uv-update-time!)
-    (d) round 1 of a million calls each:
-        uv-update-time! (ns-per-call 29 bytes-per-call 1.6e-4)
-        the workaround  (ns-per-call 19 bytes-per-call 1.6e-4)
-        uv-now          (ns-per-call 9 bytes-per-call 1.6e-4)
-        nothing         (ns-per-call 2 bytes-per-call 1.6e-4)
-    (d) round 2 of a million calls each:
-        uv-update-time! (ns-per-call 17 bytes-per-call 1.6e-4)
-        the workaround  (ns-per-call 14 bytes-per-call 1.6e-4)
-        uv-now          (ns-per-call 7 bytes-per-call 1.6e-4)
-        nothing         (ns-per-call 2 bytes-per-call 1.6e-4)
+    (d) eight rounds of a million calls each, the order rotated; ns per call sorted, least, median, and bytes per call:
+        uv-update-time! (15 16 16 16 16 16 16 27) least 15 median 16.0 bytes (1.6e-4)
+        the workaround  (14 14 14 14 14 14 15 18) least 14 median 14.0 bytes (1.6e-4)
+        uv-now          (7 7 7 7 7 7 7 8) least 7 median 7.0 bytes (1.6e-4)
+        nothing         (2 2 2 2 2 2 2 2) least 2 median 2.0 bytes (1.6e-4)
     done
 
 Reading:
 - (a) and (b) are #28's claim. The refresh moves the clock by the hold and runs nothing, and a 150 ms timer armed after it fires on time, where without it the timer fired 99 ms early.
 - (c) is the one behaviour the workaround did not have. The shell calls the verb only from its callbacks, on the loop's thread.
-- (d): in round 2 of both runs, the verb costs 16 to 17 ns a call, 2 to 3 ns over the workaround, for its two checks. It allocates nothing: every row, the empty loop's too, reads the same 160 B over a million calls, the measurement's own. Round 1 runs slower in both runs, the verb at 26 and 29 ns.
+- (d): eight rounds with the order rotated, so each row is measured first in two of them. In both runs the verb's median is 16 ns a call (least 15), 2 ns over the workaround's 14 (least 14). By its source, the difference is its two checks, that the loop is open and that the caller is on its thread. Three rows have one slow result of their eight, 8 to 29 ns in the two runs, which the medians set aside. It allocates nothing: every row, the empty loop's too, reads the same 160 B over a million calls, the measurement's own.

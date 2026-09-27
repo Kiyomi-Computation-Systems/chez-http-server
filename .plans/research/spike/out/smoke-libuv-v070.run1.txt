@@ -4,14 +4,9 @@
 (b) a 150 ms timer armed after the hold, without the refresh, fired after (expect about 50): 51 
     with the refresh (expect 149 or more: libuv's clock counts whole ms): 151 
 (c) off the loop's thread (expect wrong-thread uv-update-time!): (wrong-thread uv-update-time!) 
-(d) round 1 of a million calls each: 
-    uv-update-time! (ns-per-call 26 bytes-per-call 1.6e-4) 
-    the workaround  (ns-per-call 18 bytes-per-call 1.6e-4) 
-    uv-now          (ns-per-call 8 bytes-per-call 1.6e-4) 
-    nothing         (ns-per-call 2 bytes-per-call 1.6e-4) 
-(d) round 2 of a million calls each: 
-    uv-update-time! (ns-per-call 16 bytes-per-call 1.6e-4) 
-    the workaround  (ns-per-call 14 bytes-per-call 1.6e-4) 
-    uv-now          (ns-per-call 7 bytes-per-call 1.6e-4) 
-    nothing         (ns-per-call 2 bytes-per-call 1.6e-4) 
+(d) eight rounds of a million calls each, the order rotated; ns per call sorted, least, median, and bytes per call: 
+    uv-update-time! (15 15 16 16 16 16 16 29) least 15 median 16.0 bytes (1.6e-4) 
+    the workaround  (14 14 14 14 14 14 15 19) least 14 median 14.0 bytes (1.6e-4) 
+    uv-now          (7 7 7 7 7 7 7 9) least 7 median 7.0 bytes (1.6e-4) 
+    nothing         (2 2 2 2 2 2 2 2) least 2 median 2.0 bytes (1.6e-4) 
 done
