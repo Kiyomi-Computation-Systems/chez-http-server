@@ -2192,3 +2192,12 @@ A HOST VALUE WITH OWS AFTER IT (RFC 9112 §5). Branch fix/host-trailing-whitespa
 - `docs/host-header.org` says nothing about whitespace, so it is unchanged.
 
 `make test` green on the rebased tree: thirty-four suites, 880 expected passes (host 12, connection-head 52), exit 0. NEXT is unchanged.
+
+MERGED to main on 2026-09-27, on the owner's "Do the closing ritual?": **#54, the Host fix,** as 52ddb1f.
+- **Rebased first.** M4.5 merged meanwhile (#55, #56), so #54 was rebased from 25ca646 (on a5d8474) onto 6bf3c34 as f8623bf. The owner chose by form to drop its plan §8 paragraph, which M4.5's note there covers. Each ledger file was rebuilt as main's text followed by #54's own appended text, both proven pure appends to a5d8474's. The code and tests were byte-identical to 25ca646's; `make test` and the three mutants ran again on the rebased tree. It was force-pushed with the lease read from `ls-remote`.
+- **Merged** with `--match-head-commit` and without `--delete-branch`, from this session's worktree, since the shared checkout held main. The squash tree (4d2aae4) is identical to the tested tip's, f8623bf, and its parent is 6bf3c34.
+- **Local main** was caught up in the shared checkout, clean and with its session idle, by a fast-forward through `git -C`.
+- **CI.** Both runs were the billing block, the `linux` job with 0 steps: 36324869520 (as opened) and 36326632003 (rebased).
+- **Branches.** Deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: thirty-four suites, 880 expected passes, exit 0. NEXT is unchanged: the M4 exit.
