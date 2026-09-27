@@ -13,7 +13,7 @@
 ;;; NOT pure: it drives chez-libuv and the shell.
 (library (shell-testing)
   (export open-client client? client-tcp client-collector client-connected client-end
-          client-read! client-send! client-bytes client-close!
+          client-read! client-send! client-shut! client-bytes client-close!
           err->symbol run-shell-until)
   (import (rnrs) (libuv) (uv-testing)
           (only (http-server private shell) shell-run!))
@@ -67,6 +67,10 @@
 
   ;; client-send! : Client Bytevector -> Void — one write, its outcome ignored.
   (define (client-send! cl bytes) (uv-write! (client-tcp cl) bytes (lambda (err) #f)))
+
+  ;; client-shut! : Client -> Void
+  ;; End the stream the client sends, its write side, reading on.
+  (define (client-shut! cl) (uv-shutdown! (client-tcp cl) (lambda (err) #f)))
 
   ;; client-bytes : Client -> Bytevector — everything read so far, in order.
   (define (client-bytes cl) (collector-bytes (client-collector cl)))

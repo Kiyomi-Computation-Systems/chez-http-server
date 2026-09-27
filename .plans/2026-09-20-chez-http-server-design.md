@@ -1143,6 +1143,17 @@ event stream through the fake shell, the direct libuv shell (M4) and the corouti
 shell (M7) must produce **identical wire bytes and identical action traces**. It is
 written in M4 with two shells and extended in M7 to the third.
 
+*Noted 2026-09-26 (M4.4):* `tests/test-contract.sps`. A script is a client's: what it
+sends, where it waits for the server to have read it, and its end. The client plays it
+to the libuv shell over loopback, and the libuv shell's own events are then given to
+the fake: each delivery and the client's end as the libuv shell received them, and each
+completion where it received its own, the fake delivering the one it has waiting. How
+the kernel divides the stream into reads is its policy (§8.5), so a script cannot fix
+it. What closes that gap is a check that the libuv shell read exactly what the client
+sent, then its end. The traces are of the events each shell dispatched and the actions
+each ran, in order. Where the shells part, the suite names the first byte, or the first
+event or action.
+
 ### 8.5 The socket lane
 
 chez-libuv's own shape, which its `tests/test-echo.sps` is the template for: bind

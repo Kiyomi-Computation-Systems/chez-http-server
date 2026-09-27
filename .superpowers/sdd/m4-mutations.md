@@ -269,4 +269,40 @@ short started a read on a closing handle, and the raise surfaced in the next
 block's wait, reddening the three checks of the handler that raises with it.
 The client now reads only while its handle is open.
 
+## M4.4, second step — the contract test (2026-09-26)
+
+Red before green: the fake shell's two checks ran before it had a trace or
+handed over a later turn's events one at a time. `tests/test-fake-shell.sps`
+raised at the five-argument `make-fake-shell` (a harness error, after 15
+passes), and `tests/test-message-loop.sps` stopped at load
+(`fake-shell-deliver-later!` unbound). The script whose handler raises a
+condition with no message, which the review added, was red first: its trace
+check failed at the handler's answer, the two conditions alike and distinct.
+The rest of the contract suite was written against shells that already agree,
+so its red is its mutants'. All ran on the finished tree.
+
+| # | mutation | observed |
+|---|---|---|
+| M4.4-A | the plan's: the libuv shell's write path sends the Date line's space after the colon as a tab (`shell.sls`, `write!`) | contract 9 — every script's "the client read the bytes the fake shell wrote", each naming the byte, `(differs-at i 32 9)`: 32 in the fake's bytes, 9 in the libuv shell's, at byte 22 after a 200's status line, 31 after a 400's and 41 after a 500's. The socket lane green, 65: llhttp strips a tab there as it strips a space, so the Date reads the same. Every other suite green |
+| M4.4-T | the libuv shell reports its half-close's completion twice (`shutdown!`) | contract 5 — the trace checks of the five scripts that close in stages, each at the second `(shutdown-completed)`, index 18 (13 for the refusal). The core ignores it, so the wire and the socket lane stay green. Every other suite green |
+| M4.4-T2 | the libuv shell traces an action after performing it (`run!`) | contract 9 — every script's trace check, at index 1, where the feed's result comes before the feed. Every other suite green |
+| M4.4-R | the libuv shell's read path drops each delivery's last byte (`serve!`'s on-data) | contract 9 — every script's "the libuv shell read what the client sent, then its end alone, and closed", `(wrong-length n)`; its wire and trace checks green, since the fake is given the same short stream. So the read check is what closes the replay's gap. The socket lane 28; every other suite green |
+| M4.4-X | the libuv shell reports a read error after the client's end (`serve!`'s on-eof) | contract 9 — every script's read check, naming `(eof read-error)`. The replay hands the fake the same read error, so the wire and trace checks stay green, and so does every other suite: before the review, when the read check counted the client's end alone, this mutant left the contract green |
+| M4.4-E | a shutdown leaves the listener open (`server-run!`) | contract 1 — "at the end, no connection is left, and no handle on the loop"; shell 3, as M4.3-S6. Every other suite green |
+| M4.4-N | the rendering compares a condition by its message alone, and any other record by identity, as before the review (the suite) | contract 1 — "a handler that raises a condition with no message: the two shells' traces are identical", at index 10, the handler's answer. Every other suite green |
+| M4.4-P | `shell-listen!` reports port 1, where nothing listens (`shell.sls`; the contract suite alone) | contract 9 — every script's read check, naming `(not-connected satisfied ECONNREFUSED)`; the suite runs on. Before the review's fix it stopped at the first script, a harness error |
+| M4.4-P2 | `shell-listen!` reports its port plus one, on macOS the client's own (the contract suite alone) | contract 9 — the first script's connect refused at the call, `EINVAL`, and the rest `ECONNREFUSED`, each named; the suite runs on |
+| M4.4-F1 | the fake shell traces an action after performing it (`tests/fake-shell.sls`) | fake-shell 1 — "a trace sees each event as it is dispatched, and each action before it is performed"; contract 9, every trace check. Every other suite green |
+| M4.4-F2 | the fake shell traces only the events dispatched outside a drain | fake-shell 1 and contract 9, the same |
+| M4.4-F3 | the fake shell delivers the newest later event, not the oldest | message-loop 1 — "a later turn's events are delivered one at a time, oldest first, then none". Every other suite green |
+| M4.4-F4 | the fake shell delivers every later event when asked for one | message-loop 1, the same |
+
+F3 and F4 survive in the contract suite, a scope statement: at no completion
+in its nine scripts does the fake have two waiting. libuv 1.52.1 runs a
+write's completion in the loop's pending phase, and in the same call shuts the
+socket for the half-close the core asks for there and runs its callback,
+before the poll that reads (`src/unix/stream.c:733-735, 1232-1238, 625-660`).
+The replay delivers each completion where the libuv shell received its own
+regardless, and the message loop's check holds the order.
+
 `make test` afterwards: see the ledger's M4.4 entry.

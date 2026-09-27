@@ -34,6 +34,13 @@
 ;;; action abandons its dispatch, and the shell dispatches the next event as
 ;;; it would have.
 ;;;
+;;; M4.4: A TRACE sees what the shell does in the order it does it, as the
+;;; libuv shell's does, so the cross-shell contract test (design §8.4) can
+;;; compare the two: each event as it is dispatched, and each action as it
+;;; runs, before it is performed.  And the events a later turn brings are
+;;; delivered one at a time on request, so that test can deliver them where
+;;; the libuv shell delivered its own.
+;;;
 ;;; `make-fake-connection` is the shell M2.4 drives the core with: the core
 ;;; through the adapter's bindings, one real parser, and a handler that answers
 ;;; at once.  It performs what a v1 shell performs:
@@ -63,7 +70,7 @@
           fake-shell-actions fake-shell-events fake-shell-violations
           fake-shell-advance! fake-shell-deliver! fake-shell-tick! fake-shell-run!
           make-fake-connection fake-shell-conn-state fake-shell-reading?
-          fake-shell-settle! fake-shell-feed-input!
+          fake-shell-deliver-later! fake-shell-settle! fake-shell-feed-input!
           fake-shell-writes written-status write-wire)
   (import (rnrs)
           (byte-machine runtime)
@@ -71,9 +78,12 @@
           (only (http-server serializer) date-line)
           (http-server private adapter))
 
-  ;; make-fake-shell : Step State Nat [Perform] -> FakeShell
+  ;; make-fake-shell : Step State Nat [Perform [Trace]] -> FakeShell
   ;;   Perform = FakeShell Action -> Any, run for each action as it is taken
-  ;;   from the queue; without one the shell only records.
+  ;;   from the queue; without one (or with #f) the shell only records.
+  ;;   Trace   = Symbol Any -> Any, called as (trace 'event event) when an
+  ;;   event is dispatched and (trace 'action action) when an action runs,
+  ;;   before it is performed; the datum is the event or action itself.
   ;; fake-shell? : Any -> Boolean
   ;; fake-shell-state : FakeShell -> State — the step's state, threaded
   ;; fake-shell-now : FakeShell -> Nat — the injected clock
@@ -90,12 +100,20 @@
             (mutable reading?)
             (mutable dispatches)
             (mutable writes-rev)              ; the bytes of each write, newest first
-            (mutable shut?))                  ; whether a shutdown has run
+            (mutable shut?)                   ; whether a shutdown has run
+            trace)
     (protocol (lambda (new)
                 (case-lambda
-                  ((step state0 now0) (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f))
+                  ((step state0 now0) (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f))
                   ((step state0 now0 perform)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f))))))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f))
+                  ((step state0 now0 perform trace)
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace))))))
+
+  ;; trace! : FakeShell Symbol Any -> Void
+  (define (trace! s kind datum)
+    (let ((trace (fake-shell-trace s)))
+      (when trace (trace kind datum))))
 
   ;; fake-shell-actions / -violations : FakeShell -> (Listof Action)
   ;; fake-shell-events : FakeShell -> (Listof Event)
@@ -122,14 +140,15 @@
   (define dispatch-cap 100000)
 
   ;; fake-shell-deliver! : FakeShell Event -> (Listof Action)
-  ;; Dispatch one event: step it, thread the state, record the event, queue
-  ;; the actions, and drain the queue unless a drain or a feed is under way.
-  ;; Returns this event's actions.
+  ;; Dispatch one event: trace it, step it, thread the state, record the
+  ;; event, queue the actions, and drain the queue unless a drain or a feed is
+  ;; under way.  Returns this event's actions.
   (define (fake-shell-deliver! s event)
     (fake-shell-dispatches-set! s (+ (fake-shell-dispatches s) 1))
     (when (> (fake-shell-dispatches s) dispatch-cap)
       (assertion-violation 'fake-shell-deliver! "no progress: the dispatch cap was reached"
                            dispatch-cap event))
+    (trace! s 'event event)
     (call-with-values
      (lambda () ((fake-shell-step s) (fake-shell-state s) event))
      (lambda (state* actions)
@@ -170,9 +189,10 @@
          (fake-shell-back-set! s '())))))
 
   ;; run! : FakeShell Action -> Void
-  ;; Record the action, and a violation if it runs anywhere but the outermost
-  ;; drain; then perform it.  A write after a shutdown is refused first.  A
-  ;; stub step's action may be any datum, so only a tagged list is read.
+  ;; Record and trace the action, and a violation if it runs anywhere but the
+  ;; outermost drain; then perform it.  A write after a shutdown is refused
+  ;; first.  A stub step's action may be any datum, so only a tagged list is
+  ;; read.
   (define (run! s a)
     (case (and (pair? a) (car a))
       ((write)
@@ -182,6 +202,7 @@
     (unless (= (fake-shell-depth s) 1)
       (fake-shell-violations-rev-set! s (cons a (fake-shell-violations-rev s))))
     (fake-shell-actions-rev-set! s (cons a (fake-shell-actions-rev s)))
+    (trace! s 'action a)
     (let ((perform (fake-shell-perform s)))
       (when perform (perform s a))))
 
@@ -198,34 +219,45 @@
   (define (later! s event)
     (fake-shell-later-set! s (append (fake-shell-later s) (list event))))
 
+  ;; fake-shell-deliver-later! : FakeShell -> (U Event #f)
+  ;; Deliver the oldest event waiting for a later turn, a write's completion,
+  ;; a half-close's or a close's, and return it; #f if none waits.
+  (define (fake-shell-deliver-later! s)
+    (let ((later (fake-shell-later s)))
+      (and (pair? later)
+           (begin (fake-shell-later-set! s (cdr later))
+                  (fake-shell-deliver! s (car later))
+                  (car later)))))
+
   ;; fake-shell-settle! : FakeShell -> Void
   ;; Deliver the events waiting for a later turn, oldest first, until none
   ;; wait: a write's completion, a close's `closed`.
   (define (fake-shell-settle! s)
-    (let loop ()
-      (let ((later (fake-shell-later s)))
-        (when (pair? later)
-          (fake-shell-later-set! s (cdr later))
-          (fake-shell-deliver! s (car later))
-          (loop)))))
+    (when (fake-shell-deliver-later! s)
+      (fake-shell-settle! s)))
 
   ;; --- the connection ---------------------------------------------------------
 
-  ;; make-fake-connection : Limits (Request -> Response) -> FakeShell
+  ;; make-fake-connection : Limits (Request -> Response) [Trace] -> FakeShell
   ;; A connection in idle, reading, its idle deadline armed, the clock at 0:
   ;; (http-server connection)'s core through the adapter, with a parser of its
-  ;; own and `handler` answering every request at once.  Its state is the
-  ;; adapter's context; fake-shell-conn-state reads the core's state from it.
-  (define (make-fake-connection limits handler)
-    (let* ((cell #f)
-           (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f limits)
-                                   (lambda (actions) (enqueue! cell actions))))
-           (s (make-fake-shell (lambda (ctx event) (values ctx (conn-context-step! ctx event)))
-                               ctx 0
-                               (lambda (s a) (perform-connection! s a handler)))))
-      (set! cell s)
-      (fake-shell-parser-set! s (make-conn-parser ctx))
-      s))
+  ;; own and `handler` answering every request at once, traced as
+  ;; make-fake-shell traces.  Its state is the adapter's context;
+  ;; fake-shell-conn-state reads the core's state from it.
+  (define make-fake-connection
+    (case-lambda
+      ((limits handler) (make-fake-connection limits handler #f))
+      ((limits handler trace)
+       (let* ((cell #f)
+              (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f limits)
+                                      (lambda (actions) (enqueue! cell actions))))
+              (s (make-fake-shell (lambda (ctx event) (values ctx (conn-context-step! ctx event)))
+                                  ctx 0
+                                  (lambda (s a) (perform-connection! s a handler))
+                                  trace)))
+         (set! cell s)
+         (fake-shell-parser-set! s (make-conn-parser ctx))
+         s))))
 
   ;; fake-shell-conn-state : FakeShell -> ConnState
   (define (fake-shell-conn-state s) (conn-context-state (fake-shell-state s)))

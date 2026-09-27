@@ -717,6 +717,19 @@ verb sequences only — never on how libuv fragmented the stream, which is kerne
   is exactly what makes the contract test worth having, since the socket lane asserts on
   verb sequences and cannot see it.
 
+*Noted 2026-09-26 (M4.4):* the contract test is `tests/test-contract.sps`: nine
+scripts, each a client's, played to the libuv shell over loopback. The libuv shell's own
+events are then given to the fake, since how the kernel divides the stream into reads is
+its policy and a script cannot fix it. A check that the libuv shell read exactly what the
+client sent closes that gap. The plan's mutation sends the Date line's space after the
+colon as a tab. Every script's wire check goes red, naming the byte: 32 in the fake's
+bytes and 9 in the libuv shell's, at byte 22 after a 200's status line, 31 after a
+400's and 41 after a 500's. The socket lane stays green, since llhttp strips a tab
+there as it strips a space. The socket lane is `tests/test-shell.sps`, M4.2's, and it
+gained decision 0011's measurement: a client that uploads four MiB past a refusal sends
+all of it, then reads the 400 and the stream's end. Closed at once, its send fails with
+EPIPE, and its stream ends in a reset, with the 400 already in its buffer.
+
 ### M4.5 — the facade, and what a handler sees (added 2026-09-26)
 
 *Re-planned in the ledger (brief risk 6):* no slice held `(http-server)`, decision

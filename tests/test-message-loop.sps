@@ -15,6 +15,8 @@
 ;;;
 ;;; The rows:
 ;;;   - one keep-alive request runs design §4.4's happy path in order;
+;;;   - the events a later turn brings are delivered one at a time on request,
+;;;     oldest first, as the contract test needs (M4.4);
 ;;;   - the pipelining boundary: when the handler runs, the rest of the
 ;;;     delivery is kept from where the parser stopped, and the resume feeds
 ;;;     exactly that;
@@ -176,6 +178,23 @@
                     (resume-parser) (read-start) (arm-deadline idle))
                   (map render-action (fake-shell-actions sh)))
       (test-equal "and nothing ran inside a feed" '() (fake-shell-violations sh)))
+
+    ;; --- a later turn, one event at a time (M4.4) --------------------------------
+    ;; The contract test delivers the fake's completions where the libuv shell
+    ;; delivered its own, so the fake hands them over one at a time, oldest
+    ;; first.  A close-marked GET: its write completes, the half-close is
+    ;; asked for, and the client's end, arriving before the half-close has
+    ;; completed, closes the connection; two completions then wait, in order.
+    (let-values (((sh seen) (connection default-limits)))
+      (let ((input (b "GET /a HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
+            (next (lambda () (let ((e (fake-shell-deliver-later! sh))) (if e (car e) 'none)))))
+        (fake-shell-deliver! sh (list 'bytes-arrived input 0 (bytevector-length input)))
+        (let ((written (next)))
+          (fake-shell-deliver! sh '(eof))
+          (let* ((shut (next)) (closed (next)) (after (next)))
+            (test-equal "a later turn's events are delivered one at a time, oldest first, then none"
+                        '(write-completed shutdown-completed closed none)
+                        (list written shut closed after))))))
 
     ;; --- the pipelining boundary (0004 item 1) --------------------------------
     ;; Delivered whole, the parser stops at 51, the first message's end; the
