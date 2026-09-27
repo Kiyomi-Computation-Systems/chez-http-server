@@ -2451,3 +2451,17 @@ Notes for M6 (plan §14):
 DECIDED on the owner's word (2026-09-27), by form: one PR. The disarm, the tick's clearing and the tick rows share the table suite's rows and derived checks. Weighed: two stacked PRs by layer, each proved green on its own tree.
 
 NEXT: the PR, feat/m5.2-tick-rows. Then M5.3, one timer per loop in both shells.
+
+MERGED to main on 2026-09-27, on the owner's "do the closing ritual": **M5.2, as one PR.**
+- **#60** as 9edbe49. Its squash tree (e467aa5) is identical to the tested tip's, 3f67729, and its parent is 2dbef93.
+- **CI.** The one run, 36344049731, was the billing block: the `linux` job with 0 steps, "The job was not started because recent account payments have failed or your spending limit needs to be increased."
+- **Branches.** feat/m5.2-tick-rows deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: thirty-seven suites, 938 expected passes.
+
+M5.2 DONE and merged (9edbe49, PR #60): every deadline the core arms has its tick row.
+- a stalled body is answered 408, a stalled write closes with a log line, and a connection draining from idle closes past its idle deadline;
+- a tick clears the deadline the state records, and every close and the hand-off disarm first, so the core and the wheel agree on every row, which the table checks;
+- plan §14 carries notes for M6.2, M6.3 and M6.4, the Expect case among them.
+
+NEXT: M5.3, one timer per loop in both shells (plan §14, and its notes of 2026-09-27). It starts on a fresh branch cut from main after this commit, when the owner asks.
