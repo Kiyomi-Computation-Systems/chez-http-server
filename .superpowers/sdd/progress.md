@@ -2596,3 +2596,41 @@ NEXT: the M5 exit (plan §14):
 - the budget spike run again with deadlines armed, so a connection's wheel entry is priced.
 
 Its docs item is done. It starts on a fresh branch cut from main after this commit, when the owner asks.
+
+UPSTREAM LANDED (2026-09-27): chez-libuv v0.7.0 is tagged (ed30206, 17:46 -0400; annotated tag 1ff5265). #28, filed that day at M5.3's review on the owner's form, closed via PR #29 (d769da0). PR #30 documents `(libuv async)` and the one-thread-per-loop rule, and the release is PR #31. `uv-update-time! : uv-loop -> unspecified` is on `(libuv loop)`, re-exported from `(libuv)`:
+- it refreshes the loop's cached clock, `uv-now`, from libuv's;
+- it is legal while the loop runs, and runs nothing, not even a timer already due;
+- it is checked for the loop's thread, `&uv-wrong-thread` off it, since it writes the clock the loop thread rewrites each turn (its ADR-0019). `uv-now` stays unchecked.
+
+Between the tags, the library path gains that verb alone: its binding in `(libuv private native)`, the verb in `(libuv loop)`, and their exports, the facade's included. Every other change under `src/` is a comment. The C shim and `tests/uv-testing.sls` are byte-identical, and chez-libuv's own test-loop and test-facade gained checks.
+
+The pin moves from v0.6.0 to the v0.7.0 tag, on a commit of its own (branch chore/chez-libuv-v0.7.0): `vendor/chez-libuv` is at ed30206. Watched to fail:
+- with the checkout moved and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2);
+- with the pin moved and nothing else, the shell no longer loads. The facade now exports `uv-update-time!`, the name of the shell's workaround, and Chez refuses the library: `multiple definitions for uv-update-time! in body`. Five of the 37 suites failed: clients, contract, serve and shell with Chez's refusal (exit 255), and exports, whose check loads the facade (exit 1). This is the red decision 0008 asks a carried workaround to turn when its ask lands.
+
+So the pin's commit imports `(except (libuv) uv-update-time!)`, keeping the workaround as it was, and the next commit drops it for the facade's verb. With that one line, `make test` is green at the new pin: thirty-seven suites, 962 expected passes, exit 0.
+
+Smoke evidence (`.plans/research/spike/smoke-libuv-v070.sps`, Darwin arm64, Chez 10.4.1, libuv 1.52.1, on the Makefile's LIBDIRS; exit 0 on both runs, `out/smoke-libuv-v070.run{1,2}.txt`; run 2 in full, and run 1 differs only in CPU times):
+
+    (a) after a 100 ms hold, uv-now had moved (expect 0): 0
+        after uv-update-time!, it had moved (expect 100 or more): 100
+        a 10 ms timer, due, had run during the call (expect #f): #f | and ran after it (expect #t): #t
+    (b) a 150 ms timer armed after the hold, without the refresh, fired after (expect about 50): 51
+        with the refresh (expect 149 or more: libuv's clock counts whole ms): 151
+    (c) off the loop's thread (expect wrong-thread uv-update-time!): (wrong-thread uv-update-time!)
+    (d) round 1 of a million calls each:
+        uv-update-time! (ns-per-call 29 bytes-per-call 1.6e-4)
+        the workaround  (ns-per-call 19 bytes-per-call 1.6e-4)
+        uv-now          (ns-per-call 9 bytes-per-call 1.6e-4)
+        nothing         (ns-per-call 2 bytes-per-call 1.6e-4)
+    (d) round 2 of a million calls each:
+        uv-update-time! (ns-per-call 17 bytes-per-call 1.6e-4)
+        the workaround  (ns-per-call 14 bytes-per-call 1.6e-4)
+        uv-now          (ns-per-call 7 bytes-per-call 1.6e-4)
+        nothing         (ns-per-call 2 bytes-per-call 1.6e-4)
+    done
+
+Reading:
+- (a) and (b) are #28's claim. The refresh moves the clock by the hold and runs nothing, and a 150 ms timer armed after it fires on time, where without it the timer fired 99 ms early.
+- (c) is the one behaviour the workaround did not have. The shell calls the verb only from its callbacks, on the loop's thread.
+- (d): in round 2 of both runs, the verb costs 16 to 17 ns a call, 2 to 3 ns over the workaround, for its two checks. It allocates nothing: every row, the empty loop's too, reads the same 160 B over a million calls, the measurement's own. Round 1 runs slower in both runs, the verb at 26 and 29 ns.

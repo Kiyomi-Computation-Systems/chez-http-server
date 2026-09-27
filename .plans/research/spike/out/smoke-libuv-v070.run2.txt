@@ -1,0 +1,17 @@
+(a) after a 100 ms hold, uv-now had moved (expect 0): 0 
+    after uv-update-time!, it had moved (expect 100 or more): 100 
+    a 10 ms timer, due, had run during the call (expect #f): #f | and ran after it (expect #t): #t 
+(b) a 150 ms timer armed after the hold, without the refresh, fired after (expect about 50): 51 
+    with the refresh (expect 149 or more: libuv's clock counts whole ms): 151 
+(c) off the loop's thread (expect wrong-thread uv-update-time!): (wrong-thread uv-update-time!) 
+(d) round 1 of a million calls each: 
+    uv-update-time! (ns-per-call 29 bytes-per-call 1.6e-4) 
+    the workaround  (ns-per-call 19 bytes-per-call 1.6e-4) 
+    uv-now          (ns-per-call 9 bytes-per-call 1.6e-4) 
+    nothing         (ns-per-call 2 bytes-per-call 1.6e-4) 
+(d) round 2 of a million calls each: 
+    uv-update-time! (ns-per-call 17 bytes-per-call 1.6e-4) 
+    the workaround  (ns-per-call 14 bytes-per-call 1.6e-4) 
+    uv-now          (ns-per-call 7 bytes-per-call 1.6e-4) 
+    nothing         (ns-per-call 2 bytes-per-call 1.6e-4) 
+done

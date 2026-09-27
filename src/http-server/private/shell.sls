@@ -119,7 +119,7 @@
           wall-clock)
   (import (rnrs)
           (only (chezscheme) current-time time-second time-nanosecond foreign-procedure)
-          (libuv)
+          (except (libuv) uv-update-time!)
           (only (libuv private handles) loop-pointer)
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
@@ -468,11 +468,12 @@
 
   ;; uv-update-time! : UvLoop -> Void
   ;; Bring the loop's clock, uv_now, up to date.  libuv reads it once a
-  ;; turn, so a callback that holds the loop leaves it behind.  chez-libuv
-  ;; v0.6.0 binds no uv_update_time, so this calls libuv's own through
-  ;; chez-libuv's private loop pointer: a workaround carried until
-  ;; chez-libuv #28 lands (decision 0008).  The entry is looked up at the
-  ;; first call, when chez-libuv has loaded libuv.
+  ;; turn, so a callback that holds the loop leaves it behind.  This calls
+  ;; libuv's own through chez-libuv's private loop pointer, the workaround
+  ;; carried for chez-libuv #28 (decision 0008).  #28 landed in v0.7.0, whose
+  ;; facade exports this name; the import leaves that out until the facade's
+  ;; replaces this.  The entry is looked up at the first call, when
+  ;; chez-libuv has loaded libuv.
   (define uv-update-time!
     (let ((native #f))
       (lambda (loop)
