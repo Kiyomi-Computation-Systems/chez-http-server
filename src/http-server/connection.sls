@@ -181,7 +181,7 @@
 ;;; the armed kind, so a tick is acted on only while the core still has a
 ;;; deadline of that kind armed.
 (library (http-server connection)
-  (export conn-states conn-events conn-actions
+  (export conn-states conn-events conn-actions conn-deadline-kinds
           conn-parser-callbacks conn-span-callbacks
           make-conn-state conn-state?
           conn-phase conn-deadline conn-close-after conn-outstanding
@@ -221,6 +221,13 @@
       call-handler deliver-body deliver-body-end notify-producer
       arm-deadline disarm-deadline shutdown close log hand-off))
 
+  ;; conn-deadline-kinds : (Listof Symbol)
+  ;; The five kinds of deadline the core arms, `(arm-deadline kind)`: design
+  ;; §4.3's idle, header, body and write, and decision 0011's linger.  How
+  ;; long each lasts is the limits' (limits-deadline-ms); the shell's wheel
+  ;; turns it into an instant (M5).
+  (define conn-deadline-kinds '(idle header body write linger))
+
   ;; conn-parser-callbacks : (Listof Symbol)
   ;; chez-httparse's twenty-five parser callbacks (design §4.2), in llhttp's
   ;; trace order: the closed set the two parser entry points accept.
@@ -246,7 +253,7 @@
   ;; make-conn-state :
   ;;   Phase Deadline CloseAfter Nat Nat Pending Request Limits -> ConnState
   ;;   Phase      = one of conn-states (anything else is an assertion violation)
-  ;;   Deadline   = (U #f 'idle 'header 'body 'write 'linger) — the kind armed, if any
+  ;;   Deadline   = (U #f one of conn-deadline-kinds) — the kind armed, if any
   ;;   CloseAfter = (U #f Symbol) — #f keeps the connection after the response;
   ;;                a symbol closes it once the response is written, naming why
   ;;   Nat, Nat   = the writes issued and not yet completed, and the bytes

@@ -18,7 +18,9 @@
 ;;; and M3.5's staged close, from RFC 9112 §9.6 and decision 0011: every
 ;;; close after a response lingers in a tenth state, `lingering`, and a state
 ;;; that reads stops reading when it refuses a request, as design §4.3's
-;;; table says `responding` does.
+;;; table says `responding` does.  And the five kinds of deadline the rows
+;;; arm, design §4.3's four and decision 0011's linger, each lasting one of
+;;; the limits (M5.1).
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -97,6 +99,9 @@
 ;; Every action kind any row emitted, for the vocabulary check at the end.
 (define emitted '())
 
+;; Every kind of deadline any row armed, for the kinds' check at the end.
+(define armed '())
+
 ;; outcome : ConnState Event -> (List Phase CloseAfter (Listof Datum))
 ;; One step: the state it leaves, whether it closes after the response, and
 ;; the actions in order.
@@ -105,6 +110,8 @@
    (lambda () (conn-step s ev))
    (lambda (s* actions)
      (set! emitted (append (map car actions) emitted))
+     (set! armed (append (map cadr (filter (lambda (a) (eq? (car a) 'arm-deadline)) actions))
+                         armed))
      (list (conn-phase s*) (conn-close-after s*) (map render-action actions)))))
 
 ;; A row is the design's wording and its instances; an instance is a synthetic
@@ -529,6 +536,9 @@
                   call-handler deliver-body deliver-body-end notify-producer
                   arm-deadline disarm-deadline shutdown close log hand-off)
                 conn-actions)
+    (test-equal "five deadline kinds: design §4.3's idle, header, body and write, and decision 0011's linger"
+                '(idle header body write linger)
+                conn-deadline-kinds)
 
     (test-equal "the samples name every event, in order" conn-events (map car samples))
     (for-each (lambda (ev)
@@ -581,6 +591,13 @@
                   call-handler deliver-body arm-deadline disarm-deadline shutdown
                   close log hand-off)
                 (filter (lambda (k) (memq k emitted)) conn-actions))
+    (test-equal "the rows arm all five deadline kinds, and no other"
+                (list conn-deadline-kinds '())
+                (list (filter (lambda (k) (memq k armed)) conn-deadline-kinds)
+                      (filter (lambda (k) (not (memq k conn-deadline-kinds))) armed)))
+    (test-equal "each deadline kind lasts one of the limits: idle 75 s, header, body and write 60 s, linger 30 s"
+                '(75000 60000 60000 60000 30000)
+                (map (lambda (k) (limits-deadline-ms default-limits k)) conn-deadline-kinds))
 
     ;; --- conn-step in the fake shell ------------------------------------
     ;; The fake shell's tick is a vocabulary event: (tick now), not (tick . now).
