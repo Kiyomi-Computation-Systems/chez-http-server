@@ -1150,6 +1150,12 @@ chez-libuv's own shape, which its `tests/test-echo.sps` is the template for: bin
 wall-clock**, and assert on bytes and verb sequences only — never on how libuv
 fragmented the stream, which is kernel policy.
 
+*Noted 2026-09-26 (M4.4):* the lane is `tests/test-shell.sps`, which M4.2 wrote in
+this shape. M4.4 added decision 0011's measurement to it: a client that uploads four
+MiB past a refusal sends all of it, then reads the status and the stream's end, where
+a close at once fails its send with EPIPE. Its clients moved to
+`tests/shell-testing.sls`, to be shared with the contract test (§8.4).
+
 ### 8.6 The ratchet
 
 A manifest naming every fixture in every lane with its status. A fixture that changes
