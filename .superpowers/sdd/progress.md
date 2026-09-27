@@ -2383,3 +2383,18 @@ NEXT: two stacked PRs, on the owner's word ("commit it and open the two stacked 
 - feat/m5.1-limits, the first step: 107 inserted lines of code and tests;
 - feat/m5.1-timing-wheel, cut from it: 563, over plan §1 rule 1's ~400, since the wheel and its checks do not divide.
 Then M5.2, the tick rows the core lacks (`body` answers 408, `responding` closes), with the disarm at close.
+
+MERGED to main on 2026-09-27, on the owner's "do the closing ritual": **M5.1, as two stacked PRs.**
+- **#58, the first step,** as b54c860. Its squash tree (64824e7) is identical to the tested tip's, 39e84c1, and its parent is c14956c. It merged first, keeping its branch, since #59 was based on it.
+- **#59, the second step,** as 042260f. It was retargeted to main and rebased from #58's old tip. The rebased tip, 4986465, has the tested tree (9d3df90, d89ac4d's), and so does the squash, whose parent is b54c860.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36339388420 (#58), 36339406157 (#59 as opened) and 36339920482 (#59 rebased).
+- **Branches.** Both deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: thirty-six suites, 918 expected passes, exit 0.
+
+M5.1 DONE and merged (b54c860, PR #58; 042260f, PR #59): the wheel, and its two limits.
+- `(http-server wheel)` fires each deadline as `now` reaches it, and each connection keeps its own entry, so arming and disarming allocate nothing;
+- `write-timeout-ms` and `tick-ms` (1 to 1,000) are limits, and `limits-deadline-ms` says how long each of the core's five deadline kinds lasts;
+- decision 0005 is amended twice, and plan §14 carries the review's notes for M5.2 and M5.3.
+
+NEXT: M5.2, every deadline the core arms has its tick row (plan §14): `body` past its deadline answers 408 and closes, and `responding` past the write deadline closes with no response. With them, per plan §14's note, the core's close and hand-off emit `(disarm-deadline)`. Then M5.3, one timer per loop in both shells. It starts on a fresh branch cut from main after this commit, when the owner asks.
