@@ -14,15 +14,16 @@
 ;;; never ends its stream, and waits for the server's deadlines to close the
 ;;; connection (M5.3).  The client plays it on the libuv shell's own loop,
 ;;; to the shell's own listener, and the shell's trace records every event
-;;; and action, and the loop's time each event came at.  How the kernel
-;;; divides the bytes into reads is its policy (design §8.5), so the libuv
-;;; shell's events are then given to the fake, its clock moved to each
-;;; one's time first: each delivery and the client's end as the libuv shell
-;;; received them; each completion (a write's, a half-close's, a close's)
-;;; where the libuv shell received its own, the fake delivering the one it
-;;; has waiting; and each tick as the fake's own timer firing then.  The
-;;; events a shell makes itself while it performs an action, a parser's
-;;; result and a handler's answer, each makes on its own.
+;;; and action, and the loop's time each event came at and each write was
+;;; made at.  How the kernel divides the bytes into reads is its policy
+;;; (design §8.5), so the libuv shell's events are then given to the fake,
+;;; its clock moved to each one's time first: each delivery and the
+;;; client's end as the libuv shell received them; each completion (a
+;;; write's, a half-close's, a close's) where the libuv shell received its
+;;; own, the fake delivering the one it has waiting; and each tick as the
+;;; fake's own timer firing then.  The events a shell makes itself while it
+;;; performs an action, a parser's result and a handler's answer, each makes
+;;; on its own.
 ;;;
 ;;; ONE CLOCK.  The libuv shell keeps two: the wall clock its Date line is
 ;;; made from, and the loop's (uv_now), which its deadlines are armed and
@@ -31,10 +32,15 @@
 ;;; adopted its connection, as the libuv shell arms its first deadline then.
 ;;; The libuv shell brings its clock up to date before each arm and each
 ;;; write, where the fake's stays at the instant of the event it was given,
-;;; so the libuv shell makes each Date and deadline then or a moment later.
-;;; Its deadlines are never earlier than the fake's, so the fake, fired
-;;; where the libuv shell ticked, ticks too; its Dates are the fake's unless
-;;; a second begins in that moment.
+;;; so the libuv shell arms each deadline then or a moment later: never
+;;; earlier than the fake, which, fired where the libuv shell ticked, ticks
+;;; too.  A Date names a second, and one can begin in that moment, so the
+;;; fake dates each write at the libuv shell's instant for it, in order: the
+;;; loop's time where the trace sees the write, which the shell calls once
+;;; the clock is up to date.  One script holds its second request into the
+;;; next second, so its answers are dated a second apart, the second a
+;;; second after its event: a fake dated at the event's instant, or at the
+;;; instants out of order, writes another Date.
 ;;;
 ;;; The checks, for each script:
 ;;;   - the libuv shell read what the client sent, then its end alone, and
@@ -48,8 +54,10 @@
 ;;;
 ;;; Oracles: the scripts' bytes; the fake shell, which the core's table
 ;;; suites hold to design §4.4's rows (M1.4 to M3.5) and its wheel to their
-;;; deadlines (M5.3); the loop's time, as both shells' clock.
+;;; deadlines (M5.3); the loop's time, as both shells' clock, read where the
+;;; libuv shell's trace sees each event and each write.
 (import (rnrs) (srfi :64) (testing)
+        (only (chezscheme) current-time time-second time-nanosecond)
         (libuv) (uv-testing)
         (http-server private shell)
         (http-server request) (http-server response) (http-server span) (http-server limits)
@@ -73,6 +81,31 @@
            (raise (condition (make-error) (make-who-condition 'handler))))
           (else (make-response 200 #f '() target)))))
 
+;; The libuv shells call the handler through `held-handler`, which first
+;; holds the loop into the next second for `/next-second`, as a handler that
+;; computes for a while does: its request arrives in one second of the
+;; loop's clock, and its answer is written in the next.  The fake's clock
+;; stands still while its handler runs, so the fake calls the handler itself.
+(define (held-handler req)
+  (when (bytevector=? (span->bytevector (request-target req)) (b "/next-second"))
+    (hold-into-next-second!))
+  (handler req))
+
+;; monotonic-ms : -> Nat — Chez's monotonic clock, in milliseconds.
+(define (monotonic-ms)
+  (let ((t (current-time 'time-monotonic)))
+    (+ (* 1000 (time-second t)) (div (time-nanosecond t) 1000000))))
+
+;; hold-into-next-second! : -> Void
+;; Keep the loop's thread busy until the loop's clock has passed into the
+;; second after the one it reads now: the rest of that second, and 5 ms
+;; more for the two clocks' rounding, by Chez's monotonic clock, which runs
+;; as the loop's does.  The loop's clock is left as it is, so the shell's
+;; refresh before the write is the first to read the next second.
+(define (hold-into-next-second!)
+  (let ((until (+ (monotonic-ms) (- 1000 (mod (uv-now loop) 1000)) 5)))
+    (let spin () (when (< (monotonic-ms) until) (spin)))))
+
 ;; A script: its name, then its steps, each `(send "text")`, or `(read)`,
 ;; which waits until the libuv shell has read everything sent so far.  The
 ;; client's end follows the last step, unless the last is `(stall)`: the
@@ -92,7 +125,9 @@
     ("a handler that raises" (send "GET /raise HTTP/1.1\r\nHost: x\r\n\r\n"))
     ("a handler that raises a condition with no message"
      (send "GET /raise-who HTTP/1.1\r\nHost: x\r\n\r\n"))
-    ("a request the core refuses, with no Host" (send "GET /x HTTP/1.1\r\n\r\n"))))
+    ("a request the core refuses, with no Host" (send "GET /x HTTP/1.1\r\n\r\n"))
+    ("two requests in one write, the second answered in the next second"
+     (send "GET /now HTTP/1.1\r\nHost: x\r\n\r\nGET /next-second HTTP/1.1\r\nHost: x\r\n\r\n"))))
 
 ;; The scripts whose deadlines pass, played to a shell with short limits: a
 ;; fifth of a second or a little more for a head, an idle connection and a
@@ -193,12 +228,14 @@
 ;; What the libuv shell's connection has done while a script plays: every
 ;; event dispatched and action run, rendered, newest first; the events
 ;; themselves, newest first, for the fake, each as (at . event), `at` the
-;; loop's time it came at; the bytes of its deliveries, collected as they
-;; arrive; whether its close has completed; and the loop's time the shell
-;; adopted it at.  One client plays at a time, so these are its
-;; connection's.
+;; loop's time it came at; the loop's time at each of its writes, newest
+;; first, which dates the write (ONE CLOCK); the bytes of its deliveries,
+;; collected as they arrive; whether its close has completed; and the
+;; loop's time the shell adopted it at.  One client plays at a time, so
+;; these are its connection's.
 (define traced '())
 (define received '())
+(define written-at '())
 (define delivered #f)
 (define closed #f)
 (define adopted-at #f)
@@ -211,7 +248,9 @@
            (set! received (cons (cons (uv-now loop) datum) received))
            (case (car datum)
              ((bytes-arrived) (collect-span! delivered (cadr datum) (caddr datum) (cadddr datum)))
-             ((closed) (set! closed #t)))))
+             ((closed) (set! closed #t))))
+         (when (and (eq? kind 'action) (eq? (car datum) 'write))
+           (set! written-at (cons (uv-now loop) written-at))))
         ((and (eq? kind 'server-action) (eq? (car datum) 'accept))
          (set! adopted-at (uv-now loop)))))
 
@@ -232,6 +271,7 @@
 (define (play! port script)
   (set! traced '())
   (set! received '())
+  (set! written-at '())
   (set! delivered (make-byte-collector))
   (set! closed #f)
   (set! adopted-at #f)
@@ -265,22 +305,24 @@
 
 ;; --- the fake shell -----------------------------------------------------------
 
-;; replay : Limits (Listof (Pair Nat Event)) -> (values FakeShell (Listof Entry))
+;; replay : Limits (Listof (Pair Nat Event)) (Listof Nat) -> (values FakeShell (Listof Entry))
 ;; The libuv shell's events given to a fake connection under the same
 ;; limits, made at the instant the libuv shell adopted its own, its clock
 ;; moved to each event's instant before it is given: a delivery, the
 ;; client's end and a read's error delivered as they are, a completion as
 ;; the fake's own oldest one waiting, a tick as the fake's timer firing,
 ;; and the events a shell makes itself left to the fake.  Then whatever the
-;; fake still has waiting.  Answers the fake and its trace, in order.  A
-;; client the libuv shell never adopted has no events, and its fake is made
-;; at 0.
-(define (replay limits events)
+;; fake still has waiting.  Its writes are dated at `writes`, the instants
+;; the libuv shell's were, in order (ONE CLOCK).  Answers the fake and its
+;; trace, in order.  A client the libuv shell never adopted has no events,
+;; and its fake is made at 0.
+(define (replay limits events writes)
   (let* ((seen '())
          (fake (make-fake-connection limits handler
                                      (lambda (kind datum)
                                        (set! seen (cons (list kind (render datum)) seen)))
                                      (or adopted-at 0))))
+    (fake-shell-date-writes! fake writes)
     (for-each (lambda (e)
                 (fake-shell-advance! fake (- (car e) (fake-shell-now fake)))
                 (let ((event (cdr e)))
@@ -302,7 +344,7 @@
          (libuv (reverse traced))
          (evs (reverse received))
          (name (car script)))
-    (let-values (((fake fake-trace) (replay limits evs)))
+    (let-values (((fake fake-trace) (replay limits evs (reverse written-at))))
       ;; No script resets its connection, so the client's end is the one
       ;; input besides the bytes: a read error there would be the libuv
       ;; shell's own, which the replay would hand the fake too.  A client
@@ -325,9 +367,9 @@
   (lambda ()
     (set! loop (make-uv-loop))
     ;; Each shell's wall clock is the loop's own (ONE CLOCK, above).
-    (set! shell (make-shell loop handler default-limits (lambda () (uv-now loop))
+    (set! shell (make-shell loop held-handler default-limits (lambda () (uv-now loop))
                             (lambda (what details) #f) trace!))
-    (let ((quick (make-shell loop handler quick-limits (lambda () (uv-now loop))
+    (let ((quick (make-shell loop held-handler quick-limits (lambda () (uv-now loop))
                              (lambda (what details) #f) trace!)))
       ;; A client the libuv shell never adopted, one that did not connect,
       ;; has no events to replay: the fake writes and traces nothing, so of
@@ -336,7 +378,7 @@
       (test-equal "a client the libuv shell never adopted replays as nothing"
                   '(() ())
                   (begin (set! adopted-at #f)
-                         (let-values (((fake fake-trace) (replay default-limits '())))
+                         (let-values (((fake fake-trace) (replay default-limits '() '())))
                            (list (fake-shell-writes fake) fake-trace))))
       (let ((port (shell-listen! shell "127.0.0.1" 0)))
         (for-each (lambda (script) (check-script! port default-limits script)) scripts))

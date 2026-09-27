@@ -23,7 +23,8 @@
 ;;; test-decisions.sps) and decision 0010; each request's own bytes; RFC 9110
 ;;; §15's reason phrases; and the Date: the fake clock starts at the epoch,
 ;;; `Thu, 01 Jan 1970 00:00:00 GMT`, and at RFC 9110 §5.6.7's example,
-;;; 784,111,777 s, reads `Sun, 06 Nov 1994 08:49:37 GMT`.
+;;; 784,111,777 s, reads `Sun, 06 Nov 1994 08:49:37 GMT`; a second and two
+;;; seconds on, `08:49:38` and `08:49:39`.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
         (fake-shell) (response-reader) (read-back))
@@ -182,4 +183,21 @@
                         (bv (b get)))
                     (fake-shell-advance! sh 784111777000)
                     (fake-shell-feed-input! sh bv (bytevector-length bv))
-                    (map (lambda (w) (read-response w #f #f)) (fake-shell-writes sh)))))))
+                    (map (lambda (w) (read-response w #f #f)) (fake-shell-writes sh)))))
+
+    ;; Or from the instants the connection is given for its writes, one
+    ;; each, in order, and the clock's again once they run out: the contract
+    ;; test gives its fake the instants the libuv shell dated its own at.
+    ;; Three requests, two instants: a second on, then the last millisecond
+    ;; of the second after, which names that second.
+    (test-equal "writes given instants are dated at them, in order, then at the clock once they run out"
+                '("Sun, 06 Nov 1994 08:49:38 GMT" "Sun, 06 Nov 1994 08:49:39 GMT"
+                  "Sun, 06 Nov 1994 08:49:37 GMT")
+                (guard (e (#t '(raised)))
+                  (let ((sh (make-fake-connection default-limits (lambda (request) (answer 200))))
+                        (bv (b (string-append get get get))))
+                    (fake-shell-advance! sh 784111777000)
+                    (fake-shell-date-writes! sh '(784111778000 784111779999))
+                    (fake-shell-feed-input! sh bv (bytevector-length bv))
+                    (map (lambda (w) (cdr (assoc "Date" (caddr (read-response w #f #f)))))
+                         (fake-shell-writes sh)))))))

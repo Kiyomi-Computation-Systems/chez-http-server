@@ -58,9 +58,11 @@
 ;;;   resume-parser   parser-resume!
 ;;;   call-handler    the handler's response as `handler-responded`, or
 ;;;                   `handler-failed` if it raises
-;;;   write           fills the Date slot from the fake clock, keeps the bytes
-;;;                   as the client would read them, and completes on a later
-;;;                   turn, as `write-completed` with the write's byte count
+;;;   write           fills the Date slot from the fake clock, or from the
+;;;                   instant given for the write (fake-shell-date-writes!),
+;;;                   keeps the bytes as the client would read them, and
+;;;                   completes on a later turn, as `write-completed` with the
+;;;                   write's byte count
 ;;;   read-stop/-start  whether the next delivery is read
 ;;;   shutdown        shuts the write side; `shutdown-completed` arrives on a
 ;;;                   later turn, as uv_shutdown's callback does
@@ -82,7 +84,7 @@
           fake-shell-advance! fake-shell-deliver! fake-shell-tick! fake-shell-fire! fake-shell-run!
           make-fake-connection fake-shell-conn-state fake-shell-reading?
           fake-shell-deliver-later! fake-shell-settle! fake-shell-feed-input!
-          fake-shell-writes written-status write-wire)
+          fake-shell-writes fake-shell-date-writes! written-status write-wire)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state)
@@ -115,15 +117,16 @@
             (mutable writes-rev)              ; the bytes of each write, newest first
             (mutable shut?)                   ; whether a shutdown has run
             trace
-            (mutable wheel) (mutable entry))  ; a connection's deadline; #f for a stub's
+            (mutable wheel) (mutable entry)   ; a connection's deadline; #f for a stub's
+            (mutable dated))                  ; instants its next writes are dated at, in order
     (protocol (lambda (new)
                 (case-lambda
                   ((step state0 now0)
-                   (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f #f #f))
+                   (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f #f #f '()))
                   ((step state0 now0 perform)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f #f #f))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f #f #f '()))
                   ((step state0 now0 perform trace)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace #f #f))))))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace #f #f '()))))))
 
   ;; trace! : FakeShell Symbol Any -> Void
   (define (trace! s kind datum)
@@ -320,15 +323,32 @@
       ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
       (else (values))))
 
+  ;; fake-shell-date-writes! : FakeShell (Listof Nat) -> Void
+  ;; Date the connection's next writes at `instants`, one each, in order,
+  ;; rather than at the clock's now; once they run out, a write is dated at
+  ;; the clock's now again.  The contract test gives its fake the instants
+  ;; the libuv shell dated its own writes at, which can be a moment after the
+  ;; event the fake's clock stands at.
+  (define (fake-shell-date-writes! s instants) (fake-shell-dated-set! s instants))
+
   ;; write! : FakeShell (Listof Segment) Nat -> Void
   ;; Perform `(write segments nbytes)` as a shell does: the bytes are kept as
-  ;; write-wire makes them, for the fake clock's second (the clock counts
-  ;; milliseconds, decision 0005's unit), and the write completes on a later
-  ;; turn with its byte count.
+  ;; write-wire makes them, for the second of the write's instant (the clock
+  ;; counts milliseconds, decision 0005's unit), and the write completes on a
+  ;; later turn with its byte count.
   (define (write! s segments nbytes)
-    (let ((wire (write-wire segments nbytes (div (fake-shell-now s) 1000))))
+    (let ((wire (write-wire segments nbytes (div (write-instant! s) 1000))))
       (fake-shell-writes-rev-set! s (cons wire (fake-shell-writes-rev s)))
       (later! s (list 'write-completed nbytes))))
+
+  ;; write-instant! : FakeShell -> Nat
+  ;; The instant a write is dated at: the first of those given for the next
+  ;; writes, taken, or the clock's now when none is left.
+  (define (write-instant! s)
+    (let ((dated (fake-shell-dated s)))
+      (if (pair? dated)
+          (begin (fake-shell-dated-set! s (cdr dated)) (car dated))
+          (fake-shell-now s))))
 
   ;; write-wire : (Listof Segment) Nat Nat -> Bytevector
   ;; The bytes `(write segments nbytes)` puts on the wire, copied out of the

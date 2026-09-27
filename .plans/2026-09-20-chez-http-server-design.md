@@ -1259,6 +1259,17 @@ deadlines use. The fake keeps one, so the libuv shell's wall clock in this test 
 loop's own. Both shells then write each Date and arm each deadline at the same
 instant.
 
+*Noted 2026-09-27 (after chez-libuv #28):* the last sentence held until the libuv shell
+brought the loop's clock up to date before each arm and each write (`uv-update-time!`).
+Its instants since are the event's or a moment later, where the fake's stay at the
+event's. Its deadlines are never earlier than the fake's, so the fake, fired where the
+libuv shell ticked, still ticks there. But a Date names a second, and one can begin in
+that moment, so the Dates could differ by chance. The fake now dates each write at the
+libuv shell's instant for it, in order (`fake-shell-date-writes!`): the loop's time
+where the trace sees the write, which the shell calls once the clock is up to date. A
+script holds its second request into the next second, so a fake dated at the event's
+instant, or at the instants out of order, fails its bytes check every time.
+
 ### 8.5 The socket lane
 
 chez-libuv's own shape, which its `tests/test-echo.sps` is the template for: bind

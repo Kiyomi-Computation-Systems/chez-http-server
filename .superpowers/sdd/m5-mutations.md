@@ -348,3 +348,36 @@ The spike's parts, in scratch copies whose refresh raises: the old spike died in
 | v0.7.0-E | the refresh after the trace, not before | shell 1 — the shell's own work's, whose deadline is no longer the one its trace recorded |
 
 Each check the review added is reddened by one mutant at least: the Date check by A and B, the shell's own work's by A, C and E, the adoption's by D. The slow handler's check keeps A. M5.3's AC and AD moved the handler's refresh, which is gone, and A takes their place.
+
+## The contract's Dates, made exact (2026-09-27)
+
+Since #65 the libuv shell dates a write at the loop's time brought up to date just before it, and the contract's fake dated its own at the instant of the event the replay last gave it. The two could name different seconds. The fix hands the fake the libuv shell's write instants, which the trace reads, in order.
+
+Red before green, the fix not yet written, the fake dating each write at its clock:
+- contract 1, three runs of three. The first form of the new script held its one request into the next second, and "…: the client read the bytes the fake shell wrote" failed with `(differs-at 47 49 50)`, `(differs-at 47 51 52)` and `(differs-at 47 53 54)`. Byte 47 is the Date's last digit, the fake's a second behind. The script now holds a second request behind a first, so its two answers are dated a second apart as well. dates-A below restores the fake's old dating on the finished tree, and its red is the final script's;
+- connection-response 1, "writes given instants are dated at them, in order, then at the clock once they run out", against a stub that kept the instants and dated each write at the clock: the three Dates were all `Sun, 06 Nov 1994 08:49:37 GMT`.
+
+Every mutant below ran against all thirty-seven suites of the finished tree, four at a time. None failed to load. Where a row names no other suite, the others were green. The runner prints eight FAIL lines a suite at most, so the three re-runs' contract lists were also run by hand.
+
+| Mutant | Mutation (`tests/test-contract.sps` unless named) | Killed by |
+|---|---|---|
+| dates-A | the replay gives the fake no instants, so it dates each write at its clock, as before the fix | contract 1 — the new script's bytes, `(differs-at 126 53 54)`: the second answer's Date, a second behind |
+| dates-B | the fake dates each write at its clock, whatever it is given (`tests/fake-shell.sls`) | connection-response 1 — the instants' check; contract 1 — the new script's bytes, at 126 |
+| dates-C | the fake takes the instants it is given last first (`tests/fake-shell.sls`) | connection-response 1; contract 1 — at 47, the first answer's Date a second late |
+| dates-D | the fake dates every write at the first instant, never taking it (`tests/fake-shell.sls`) | connection-response 1; contract 1 — at 126 |
+| dates-E | once the instants run out, the fake dates a write at 0, not at its clock (`tests/fake-shell.sls`) | connection-response 2 — the Date from the clock, and the instants' check; connection-originated 2 — the two 408 rows, dated a minute on |
+| dates-F | the libuv shell brings the clock up to date after the action's trace, not before (`shell.sls`; v0.7.0-E) | contract 1 — at 126: the trace read the time from before the hold; shell 1 — the shell's own work's, as v0.7.0-E |
+| dates-G | the trace hook records the loop's time at every action, not only at each write | contract 1 — at 126 |
+| dates-H | the replay gives the fake the instants newest first | contract 1 — at 47, the first answer's Date a second late |
+| dates-I | calibration: dates-A, and the handler holds nothing | SURVIVES, as meant. Without the hold, a fake dated at its clock passes unless a second happens to begin mid-turn. The hold is what makes the script's check discriminate |
+| dates-J | calibration: dates-F, and the hold brings the loop's clock up to date as it ends | SURVIVES in the contract, as meant; shell 1, as dates-F. A hold that refreshes the clock leaves the write's refresh nothing to add. So the suite's hold reads Chez's monotonic clock and leaves the loop's alone |
+| dates-K | the arms refreshed, not the writes (`shell.sls`; v0.7.0-B) | shell 1 — the Date check, as v0.7.0-B. The contract stays green: both shells then date the write at the stale time, since the trace reads it too. The socket lane holds that a write's Date is brought up to date |
+| M4.4-A | re-run: the libuv shell's Date line's SP after the colon sent as HTAB (`shell.sls`) | contract 11 — the bytes of every script that writes, the new script's among them; clients 1 |
+| M4.4-T2 | re-run, adapted to `run!`'s new arms: the libuv shell traces an action after performing it (`shell.sls`) | contract 11 — every trace check but the silent client's, the new script's among them |
+| M4.4-R | re-run: the libuv shell's read path drops each delivery's last byte (`shell.sls`) | contract 11 — every read check but the silent client's, the new script's among them; clients 6, serve 1, shell 32 |
+
+Every check this change added is reddened by one mutant at least:
+- connection-response's instants' check by B, C, D and E;
+- the new script's read check by M4.4-R;
+- its bytes check by A, B, C, D, F, G, H and M4.4-A;
+- its trace check by M4.4-T2.

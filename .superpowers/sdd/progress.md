@@ -2670,3 +2670,35 @@ NEXT: the M5 exit (plan §14), on a fresh branch cut from main after this commit
 - the budget spike run again with deadlines armed, so a connection's wheel entry is priced.
 
 The contract's exact Date comparison runs in its own session on `fix/contract-write-instants`, which will want rebasing onto main.
+
+THE CONTRACT'S DATES, MADE EXACT. Branch fix/contract-write-instants, cut from #65's tip, b63d828, before #64 and #65 merged, and rebased onto main at 1fc6dc9 once they had. #65's squash, 946b500, has b63d828's tree, so the code under test is the same. 2026-09-27, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+
+The flake. Since #65 the libuv shell brings the loop's clock up to date before each write, and dates the write then. The contract's fake dated its write at the instant of the event the replay last gave it: the loop's time where the trace saw that event. The two differ by the turn's work, tens of microseconds. So the Dates differed, and "the client read the bytes the fake shell wrote" failed, whenever a second began in between. #65's review had left that chance in the ONE CLOCK note.
+
+- `tests/test-contract.sps`:
+  - the trace hook records the loop's time at each write the libuv shell's connection runs. The shell calls the hook once the clock is up to date, so the time is the write's own;
+  - the replay hands those instants to the fake, in order. The fake's clock, and so its deadlines, stay at the events' instants, never later than the libuv shell's, so the fake still ticks wherever the libuv shell ticked;
+  - a script, "two requests in one write, the second answered in the next second". The libuv shells call the handler through `held-handler`, which holds the loop into the next second for `/next-second`: the rest of the second the loop's clock reads, and 5 ms more, by Chez's monotonic clock. The loop's own clock is left alone, so the shell's refresh before the write is the first to read the next second. The fake calls the handler itself, since its clock stands still while the handler runs;
+  - the ONE CLOCK note says so.
+- `tests/fake-shell.sls`: `fake-shell-date-writes!` dates a connection's next writes at the instants it is given, one each, in order. Once they run out, a write is dated at the clock's now, as every write is when none is given.
+- `tests/test-connection-response.sps`: a check that writes given instants are dated at them, in order, then at the clock: RFC 9110's example instant, a second and two seconds on.
+- Design §8.4: a dated note. Its M5.3 note said both shells write each Date and arm each deadline at the same instant, untrue since #65.
+
+Weighed: moving the fake's clock to each write's instant, mid-turn, which would make its deadlines the libuv shell's too. The replay would then walk events the fake has already passed, whose instants are earlier, and the fake's clock never runs backwards.
+
+Watched to fail (m5-mutations.md, the contract's Dates):
+- red before green: contract 1, three runs of three, the fake dating each write at its clock: `(differs-at 47 49 50)`, the Date's last digit a second behind. That was the script's first form, one request held; the final form's red is dates-A's. And connection-response 1, against a stub that kept the instants and dated each write at the clock;
+- then eleven mutants, and three of M4.4's run again, each against all thirty-seven suites. Every check added is reddened by one at least;
+- two calibrations survive, as meant. Without the hold, the script cannot tell (dates-I). A hold that refreshed the loop's clock would hide a trace that reads the time before the refresh (dates-J), which only the socket lane's check would then catch.
+
+Measured (this tree, Darwin arm64):
+- the contract suite alone, three runs: 2.27, 1.99 and 1.99 s real, 38 passes, where it took 1.49 s before the script, 35. The hold is the rest of a second: half a second on average, a second at most;
+- sixteen runs, eight at a time: all green, 38 passes each, 2.85 to 2.97 s real. The eight of a batch finish together, since their holds end at the same second of the loop's clock, the machine's uptime.
+
+`make test` green: thirty-seven suites, 969 expected passes (contract 38, connection-response 24), exit 0. Size: 123 inserted and 43 deleted lines of code and tests, one PR.
+
+DECIDED on the owner's word (2026-09-27), by form:
+- **the script stays in the suite**, at half a second a run on average. Weighed: a scratch copy only, as the brief suggested, which would leave dates-A, G and H surviving: the replay could stop handing the fake its instants, or hand them out of order, and nothing would notice;
+- **one commit, and a third PR stacked on #65**, based on refactor/uv-update-time. Weighed: the PR once #64 and #65 have merged, rebased onto main; and a review first, left uncommitted. #64 and #65 merged while the form was open (7c4f6d3, 946b500; reflect 1fc6dc9), so the commit sits on main and its PR is based there.
+
+NEXT: the PR, merged on the owner's word. Then the M5 exit (plan §14), as the NEXT above has it.
