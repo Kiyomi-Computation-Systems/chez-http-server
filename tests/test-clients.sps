@@ -23,12 +23,13 @@
 ;;;   - RFC 9110 §9.3.2: the answer to a HEAD has the fields a GET's would,
 ;;;     and no content;
 ;;;   - chez-libuv's live handles, and the counters of its dev build: with
-;;;     every client gone, the listener is the one handle left, and after the
-;;;     shutdown none is.
+;;;     every client gone, the listener is the one handle left but the timer
+;;;     the shell keeps for its next deadline (M5.3), and after the shutdown
+;;;     none is.
 (import (rnrs) (srfi :64) (testing)
         (libuv) (uv-testing) (shell-testing)
         (http-server)
-        (only (http-server private shell) shell-connections shell-listener shell-shutdown!)
+        (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-timer)
         (only (http-server private serve) start-server)
         (rename (only (libuv private native) live-counts) (live-counts debug-live-counts)))
 
@@ -194,8 +195,12 @@
                                        (for-all (lambda (h) (not (or (uv-pipe? h) (uv-process? h))))
                                                 (uv-loop-live-handles loop))))
                                 cap))
-      (test-equal "and the listener is the one handle left" (list (shell-listener sh))
-                  (uv-loop-live-handles loop))
+      (test-equal "and the listener is the one handle left, beside the timer the shell keeps"
+                  '(#t #t 2)
+                  (let ((live (uv-loop-live-handles loop)) (timer (shell-timer sh)))
+                    (list (and (memq (shell-listener sh) live) #t)
+                          (and timer (memq timer live) #t)
+                          (length live))))
       (test-equal "the server logged nothing but where it listens" '(listening) (map car logged))
       (shell-shutdown! sh)
       (run-until-drained loop cap)

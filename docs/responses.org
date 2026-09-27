@@ -54,7 +54,7 @@ request cannot be read safely.
 |-----------------------------------------+---------------------------------------------------------------|
 | ~301 Moved Permanently~                 | brackets or pipes in a GET or HEAD target ([[file:request-targets.org][request-targets.org]]) |
 | ~400 Bad Request~                       | a request, target or ~Host~ the server cannot accept          |
-| ~408 Request Timeout~                   | the headers took longer than ~CHEZ_HTTP_READ_HEADER_TIMEOUT~, or the body paused longer than ~CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT~ (from M5) |
+| ~408 Request Timeout~                   | the headers took longer than ~CHEZ_HTTP_READ_HEADER_TIMEOUT~, or the body paused longer than ~CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT~ |
 | ~414 URI Too Long~                      | a target over ~CHEZ_HTTP_MAX_TARGET_BYTES~                    |
 | ~431 Request Header Fields Too Large~   | headers over one of the four header limits                    |
 | ~500 Internal Server Error~             | your handler raised, or gave an answer listed above           |
