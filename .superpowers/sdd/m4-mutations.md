@@ -247,3 +247,26 @@ awk scan now named each call; two uses one character apart still counted as
 one, and a `;` in a string hid a call. That scan is gone.
 
 `make test` afterwards: see the ledger's M4.3 entry.
+
+## M4.4, first step — the socket lane's upload past a refusal (2026-09-26)
+
+The upload check passed at once, against M4.2's staged close, so its red is
+its mutants'. The ticker's check, which the review added (ledger, M4.4), was red
+first: the ticker the wait left also reddened the suite's last "no handle is
+left on the loop". Every mutant ran on the finished tree, and U, U3 and K
+again in a scratch worktree with only this step, where each turned the same
+checks of the shell suite red.
+
+| # | mutation | observed |
+|---|---|---|
+| M4.4-U | a close at once: the libuv shell performs the half-close as a close (`shell.sls`) | shell 5 — "a client that uploads four MiB past a refusal sends all of it" (the send fails with EPIPE, three runs of three), "and then reads the refusal, a 400, and the stream's end" (the 400 is read, then ECONNRESET), and the linger's three; contract 10 — the read and trace checks of the five scripts that close in stages. Every other suite green |
+| M4.4-U3 | no reading while lingering: a read-start skipped when the connection lingers (`shell.sls`) | shell 7 — the upload's two (its send never finishes), the linger's two once the client closes, and the end's three, since a lingering connection that does not read never closes until M5's deadline; contract 6 — the read checks of the five scripts that close in stages (the client's end is never read) and the end's check. Every other suite green |
+| M4.4-K | `run-shell-until` leaves its ticker when the run loop raises, as before the review (`tests/shell-testing.sls`) | shell 2 — "a wait the run loop's raise ends leaves no handle of its own on the loop", and "and no handle is left on the loop". Every other suite green |
+| M4.4-Q | a probe, not a mutation of the code: the upload's client connects to port 1, where nothing listens (the suite) | shell 2 — the upload's two, and the suite runs on to its end, 63 passes. Before the review's fix it stopped there, a harness error after 13 passes |
+
+U3 found a flaw in the upload check first: a send the suite's own close cut
+short started a read on a closing handle, and the raise surfaced in the next
+block's wait, reddening the three checks of the handler that raises with it.
+The client now reads only while its handle is open.
+
+`make test` afterwards: see the ledger's M4.4 entry.

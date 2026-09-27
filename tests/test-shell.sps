@@ -2,11 +2,12 @@
 ;;; (http-server private shell): the direct libuv shell, over loopback.  M4.2.
 ;;;
 ;;; The shell performs the core's actions with chez-libuv (design §5.2).  This
-;;; suite serves clients on the same loop, bound to 127.0.0.1:0, each wait
-;;; capped by an iteration count, never wall-clock (design §8.5), and asserts
-;;; on bytes, states and the order of verbs, never on how the kernel split the
-;;; stream.  A response is read back by chez-httparse's strict response parser
-;;; (tests/response-reader.sls), not by our own code.
+;;; suite is the socket lane (design §8.5): it serves clients on the same loop,
+;;; bound to 127.0.0.1:0, each wait capped by an iteration count, never
+;;; wall-clock, and asserts on bytes, states and the order of verbs, never on
+;;; how the kernel split the stream.  Its clients are tests/shell-testing.sls's,
+;;; which the contract test shares.  A response is read back by chez-httparse's
+;;; strict response parser (tests/response-reader.sls), not by our own code.
 ;;;
 ;;; The checks:
 ;;;   - a GET is answered, its Date from the shell's clock, and the connection
@@ -19,6 +20,9 @@
 ;;;     the client reads the response, then the stream's end, while the
 ;;;     connection lingers, reading, until the client closes (decision 0011,
 ;;;     the shell's half of M3.5);
+;;;   - a client that uploads four MiB past a refusal sends all of it, and
+;;;     then reads the status and the stream's end: the connection lingers,
+;;;     reading and dropping the upload (decision 0011's measurement, M4.4);
 ;;;   - a handler that raises is answered 500, and what it raised is logged;
 ;;;   - a write outstanding keeps nothing of its response: chez-libuv copied
 ;;;     the segments at the call, and the completion keeps their byte count
@@ -60,7 +64,7 @@
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks)
         (http-server request) (http-server response) (http-server span) (http-server limits)
-        (response-reader))
+        (response-reader) (shell-testing))
 
 (define (b s) (string->utf8 s))
 
@@ -69,13 +73,6 @@
 (define instant-date "Sun, 06 Nov 1994 08:49:37 GMT")
 
 (define cap 4096)
-
-;; err->symbol : (U #f Condition) -> Symbol — a callback's error, as a symbol
-;; no failure path confuses with success.
-(define (err->symbol err)
-  (cond ((not err) 'no-error)
-        ((uv-errno-error? err) (uv-errno-error-errno err))
-        (else 'unexpected-error-object)))
 
 ;; --- what the shell reports, and the faults the suite hands it ------------------
 
@@ -175,37 +172,19 @@
                       (when small-send-buffer (uv-send-buffer-size! tcp small-send-buffer))
                       (set! adopted (cons (shell-adopt! adopting tcp) adopted)))))))
 
-;; --- clients -------------------------------------------------------------------
-
-(define-record-type client
-  (fields tcp collector (mutable connected) (mutable end) (mutable reading?))
-  (protocol (lambda (new) (lambda (tcp) (new tcp (make-byte-collector) 'never 'open #f)))))
+;; --- clients (tests/shell-testing.sls) ---------------------------------------
 
 (define clients '())
 
-;; client-read! : Client -> Void — start reading, collecting what arrives.
-(define (client-read! cl)
-  (client-reading?-set! cl #t)
-  (uv-read-start! (client-tcp cl)
-                  (lambda (bv start end) (collect-span! (client-collector cl) bv start end))
-                  (lambda () (client-end-set! cl 'eof))
-                  (lambda (e) (client-end-set! cl (err->symbol e)))))
-
 ;; open-client-to! : Nat (U #f Bytevector) [Boolean] -> Client
 ;; A client on the loop that connects to `to`, writes `request` whole unless
-;; it is #f, and reads unless told to wait.
+;; it is #f, and reads unless told to wait; closed at the suite's end.
 (define open-client-to!
   (case-lambda
     ((to request) (open-client-to! to request #t))
     ((to request read?)
-     (let* ((tcp (make-uv-tcp loop)) (cl (make-client tcp)))
+     (let ((cl (open-client loop to request read?)))
        (set! clients (cons cl clients))
-       (connect-loopback! tcp to
-                          (lambda (err)
-                            (client-connected-set! cl (err->symbol err))
-                            (unless err
-                              (when read? (client-read! cl))
-                              (when request (client-send! cl request)))))
        cl))))
 
 ;; open-client! : (U #f Bytevector) [Boolean] -> Client — one to the suite's
@@ -214,13 +193,6 @@
   (case-lambda
     ((request) (open-client-to! port request #t))
     ((request read?) (open-client-to! port request read?))))
-
-(define (client-send! cl bytes) (uv-write! (client-tcp cl) bytes (lambda (err) #f)))
-
-(define (client-bytes cl) (collector-bytes (client-collector cl)))
-
-(define (client-close! cl)
-  (when (uv-handle-open? (client-tcp cl)) (uv-close! (client-tcp cl))))
 
 ;; bytes-between : Bytevector Nat Nat -> Bytevector
 (define (bytes-between bv from to)
@@ -275,21 +247,10 @@
   (and (connection? c) (eq? (uv-handle-state (connection-tcp c)) 'closed)
        (not (memq c (shell-connections sh)))))
 
-;; run-shell-until : Shell (-> Boolean) -> Symbol
-;; Step `sh`'s run loop, which logs a callback's error and runs on, a 1 ms
-;; ticker keeping the loop awake, until `pred` holds: 'satisfied or
-;; 'iterations-exhausted.  The ticker is closed after, and its close drained.
-(define (run-shell-until sh pred)
-  (let ((ticker (make-uv-timer loop)))
-    (uv-timer-start! ticker (lambda (t) #f) 1 1)
-    (let ((outcome (let step ((i 0))
-                     (cond ((pred) 'satisfied)
-                           ((= i cap) 'iterations-exhausted)
-                           (else (shell-run! sh 'once) (step (+ i 1)))))))
-      (uv-timer-stop! ticker)
-      (uv-close! ticker)
-      (run-until loop (lambda () (eq? (uv-handle-state ticker) 'closed)) 8)
-      outcome)))
+;; run-shell : Shell (-> Boolean) -> Symbol
+;; Step `sh`'s run loop, which logs a callback's error and runs on, until
+;; `pred` holds (tests/shell-testing.sls): 'satisfied or 'iterations-exhausted.
+(define (run-shell sh pred) (run-shell-until loop sh pred cap))
 
 ;; --- the byte-machine contract condition, provoked ------------------------------
 
@@ -401,6 +362,42 @@
                      'in-order
                      (list 'out-of-order (and (connection? c) (verbs c)))))))
 
+    ;; The upload past a refusal (decision 0011's measurement, as a test).  A
+    ;; client sends four MiB after a head the core refuses, with no Host, and
+    ;; reads only once all of it is sent, as Python's http.client and Node's
+    ;; fetch do.  Its send buffer is small, so the upload is sent only if the
+    ;; server reads it: the connection lingers, reading and dropping it.  A
+    ;; close at once would reset the connection with the upload unread, and
+    ;; fail the send before the status is read.
+    (let* ((head (b (string-append "POST /upload HTTP/1.1\r\nContent-Length: "
+                                   (number->string big-size) "\r\n\r\n")))
+           (upload (make-bytevector (+ (bytevector-length head) big-size) 120))
+           (sent 'not-yet)
+           (cl (open-client! #f #f)))
+      (bytevector-copy! head 0 upload 0 (bytevector-length head))
+      (wait-for (lambda () (not (eq? (client-connected cl) 'never))))
+      ;; A client that did not connect sends nothing, and both checks say how
+      ;; its connect ended.
+      (let ((connected (client-connected cl)))
+        (when (eq? connected 'no-error)
+          (uv-send-buffer-size! (client-tcp cl) 4096)
+          ;; It reads once its send is over, whatever the outcome; a send the
+          ;; suite's own close cuts short has nothing to read.
+          (uv-write! (client-tcp cl) upload
+                     (lambda (err)
+                       (set! sent (err->symbol err))
+                       (when (uv-handle-open? (client-tcp cl)) (client-read! cl)))))
+        (test-eq "a client that uploads four MiB past a refusal sends all of it" 'no-error
+                 (if (eq? connected 'no-error)
+                     (begin (wait-for (lambda () (not (eq? sent 'not-yet)))) sent)
+                     (list 'not-connected connected)))
+        (test-equal "and then reads the refusal, a 400, and the stream's end" '((400) eof)
+                    (if (eq? connected 'no-error)
+                        (begin (wait-for (lambda () (not (eq? (client-end cl) 'open))))
+                               (list (map status (responses (client-bytes cl))) (client-end cl)))
+                        (list 'not-connected connected))))
+      (client-close! cl))
+
     ;; A handler that raises.
     (set! logged '())
     (let ((cl (open-client! (b "GET /raise HTTP/1.1\r\nHost: x\r\n\r\n"))))
@@ -494,7 +491,22 @@
       (set! log-fails 'contract-violation)
       (let ((outcome (raise-in-callback reentrancy)))
         (set! log-fails #f)
-        (test-eq "and raises it again when the log raises" 'reentrancy (contract-code outcome))))
+        (test-eq "and raises it again when the log raises" 'reentrancy (contract-code outcome)))
+      ;; A wait through the run loop that its raise ends leaves nothing of the
+      ;; wait's own on the loop: run-shell-until's ticker is closed on the way
+      ;; out (tests/shell-testing.sls).
+      (let* ((before (length (uv-loop-live-handles loop)))
+             (t (make-uv-timer loop))
+             (outcome (begin
+                        (uv-timer-start! t (lambda (t) (raise reentrancy)) 0 0)
+                        (guard (e ((byte-machine-contract-condition? e) 'raised))
+                          (run-shell shell (lambda () #f))
+                          'ran-out))))
+        (uv-close! t)
+        (run-until loop (lambda () (eq? (uv-handle-state t) 'closed)) 8)
+        (test-equal "a wait the run loop's raise ends leaves no handle of its own on the loop"
+                    (list 'raised before)
+                    (list outcome (length (uv-loop-live-handles loop))))))
     (set! logged '())
     (let ((outcome (raise-in-callback (make-message-condition "a bug in a callback"))))
       (test-eq "after any other error in a callback, the run loop runs on" 'ran-on outcome)
@@ -506,7 +518,7 @@
            (cl (open-client! (b "GET /trap HTTP/1.1\r\nHost: x\r\n\r\n"))))
       (set! trap '(action . call-handler))
       (test-eq "when a connection's callback raises, its client reads the stream's end" 'satisfied
-               (run-shell-until shell (lambda () (eq? (client-end cl) 'eof))))
+               (run-shell shell (lambda () (eq? (client-end cl) 'eof))))
       (let ((c (adopted-since before)))
         (test-equal "with no response, the connection closed and gone, the error logged"
                     '(0 #t callback-error)
@@ -520,7 +532,7 @@
       (set! logged '())
       (let ((cl (open-client! #f)))
         (test-eq "when a connection cannot be adopted, its client reads the stream's end" 'satisfied
-                 (run-shell-until bad (lambda () (eq? (client-end cl) 'eof))))
+                 (run-shell bad (lambda () (eq? (client-end cl) 'eof))))
         (set! adopting shell)
         (test-equal "and the connection is closed and gone, the error logged" '(() callback-error)
                     (list (shell-connections bad) (first-logged)))
@@ -534,7 +546,7 @@
       (set! trap '(server-event . connection-arrived))
       (test-eq "when the server's step raises on an arrival, its client reads the stream's end"
                'satisfied
-               (run-shell-until shell (lambda () (eq? (client-end cl) 'eof))))
+               (run-shell shell (lambda () (eq? (client-end cl) 'eof))))
       (set! trap #f)
       (test-equal "with nothing read, no connection served, and the error logged"
                   '(0 none-served callback-error)
