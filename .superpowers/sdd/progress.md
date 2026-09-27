@@ -2041,3 +2041,26 @@ Found in review (2026-09-27, `/code-review high`), before the first commit: eigh
 `make test` green: thirty-two suites, 853 expected passes (contract 28, shell 65, fake-shell 19, message-loop 20), exit 0.
 
 NEXT: two stacked PRs, on the owner's word. M4.4's code and tests are 567 inserted lines, over plan §1 rule 1's ~400: feat/m4.4-socket-lane, the first step (176 inserted, 60 deleted), then feat/m4.4-contract, cut from it (391 inserted, 33 deleted). Then M4.5, the facade (decision 0012), and the M4 exit.
+
+MERGED to main on 2026-09-27, on the owner's "Do closing ritual":
+- **#52, the first step,** as 32aa654, without deleting its branch. The squash tree (a478baa) is identical to the tested tip's, 251ab40.
+- **#53, the second step.** Retargeted to main, then rebased from 251ab40 onto 32aa654 as 962eaa8, its tree unchanged (8efdc9e, the tested 1c63567's). It was force-pushed with the lease read from `ls-remote`, and merged as a854e06, whose tree is 8efdc9e too.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36319062837 (#52), 36319064692 (#53 as opened) and 36320460207 (#53 rebased).
+- **Branches.** Both are deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: thirty-two suites, 853 expected passes, exit 0.
+
+M4.4 DONE and merged:
+- the socket lane, `tests/test-shell.sps`, holds decision 0011's measurement as a test: a client that uploads four MiB past a refusal sends all of it, then reads the status and the stream's end;
+- the cross-shell contract, `tests/test-contract.sps`: nine client scripts played to the libuv shell, its own events given to the fake shell, and the two shells' wire bytes and traces identical. The plan's mutation names the differing byte, and the socket lane stays green under it;
+- the fake shell traces what it does and hands over a later turn's events one at a time, and the shell suites share `(shell-testing)`;
+- the pre-commit review's eight findings fixed.
+
+NEXT: M4.5, the facade, and what a handler sees (plan §8; decision 0012):
+- `(http-server)`, decision 0001's facade;
+- a handler reads the request through accessors that copy what it asks for, with the host by RFC 9112 §3.2.2;
+- the server listens where `CHEZ_HTTP_HOST` and `CHEZ_HTTP_PORT` say, by default 127.0.0.1 and 8080;
+- a facade that builds limits refuses a pipeline cap other than 1;
+- finished by the plan's mutation, an absolute-form request's host read from its Host field.
+
+Then the M4 exit (plan §8): curl and ab get correct responses and the counters return to zero; the contract test passes; the connection table is reconciled against `uv-loop-live-handles` at one place in the run loop; the per-connection budget is re-measured; and the amendment slicing M5–M8 is written (plan §10). It starts on a fresh branch cut from main after this commit, when the owner asks.
