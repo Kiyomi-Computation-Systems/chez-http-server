@@ -2576,3 +2576,23 @@ DECIDED on the owner's word (2026-09-27), by form: three stacked PRs, each layer
 - **feat/m5.3-contract-deadlines**, the contract's deadline scripts, 145, with design §8.4's note, this ledger entry and the mutation log.
 
 NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the M5 exit, whose docs item is done.
+
+MERGED to main on 2026-09-27, on the owner's "do the closing ritual": **M5.3, as three stacked PRs.**
+- **#61, the fake shell's wheel,** as 1e87251. Its squash tree (eae845b) is identical to the tested tip's, 85d8d60, and its parent is 6fe18eb. It merged first and kept its branch, since #62 was based on it.
+- **#62, the libuv shell's wheel and timer,** as 593d7bc. It was retargeted to main and rebased from #61's old tip. The rebased tip, 447c37b, has the tested tree (542ea72, 313e14f's), and so does the squash, whose parent is 1e87251. It kept its branch for #63.
+- **#63, the contract's deadline scripts,** as 791852f. It was retargeted and rebased from #62's old tip, 313e14f. The rebased tip, 9ce1bf3, and the squash have the tested tree (2fbce0e, e5356d9's), and the squash's parent is 593d7bc.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36350300156 (#61), 36350323606 (#62 as opened), 36350340863 (#63 as opened), 36353017190 (#62 rebased) and 36353077286 (#63 rebased).
+- **Branches.** All three deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: thirty-seven suites, 962 expected passes.
+
+M5.3 DONE and merged (1e87251, PR #61; 593d7bc, PR #62; 791852f, PR #63): one timer per loop, in both shells.
+- The libuv shell keeps its connections' deadlines in one wheel. One timer ticks it: it stops when the wheel empties, and the shell keeps it. The socket lane closes each stalled client at the first firing at or after its deadline.
+- The fake shell's timer is the test's, and the contract replays deadlines across both shells.
+- The loop's clock is brought up to date as each handler returns, a workaround carried until chez-libuv #28 lands (decision 0008). The pin then moves, and the workaround goes.
+
+NEXT: the M5 exit (plan §14):
+- the brief's exit checked on the merged tree: fake-clock table tests, slow clients closed within a tick of their deadlines, and no timer handle per connection;
+- the budget spike run again with deadlines armed, so a connection's wheel entry is priced.
+
+Its docs item is done. It starts on a fresh branch cut from main after this commit, when the owner asks.
