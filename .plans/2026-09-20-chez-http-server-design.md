@@ -119,6 +119,22 @@ it stops when the wheel empties. Every limit is overridable from the environment
 > `uv_now`, which never steps. Each connection keeps its own entry in the wheel, so
 > arming and disarming allocate nothing.
 
+> *Noted 2026-09-27 (M5.3):* both shells turn `arm-deadline` into the connection's
+> entry at their clock's now plus the kind's limit (`limits-deadline-ms`), and
+> `disarm-deadline` into its removal. A connection's first deadline, its idle one, is
+> armed as it is adopted, since no action arms it. The libuv shell's one timer is made
+> when a deadline is armed and the shell has none. It fires every `tick-ms`, is stopped
+> by the first firing that finds the wheel empty, so an idle server sleeps, and is
+> started again by the next arm. The shell keeps it until it has stopped listening and
+> no connection is left, and then closes it. Each firing advances the wheel to the
+> loop's now, ticks each connection whose deadline has passed, each under its own guard,
+> and tells the server the time (§4.6's `tick`). A connection closed with no step of the
+> core, or dropped by the reconciliation, leaves the wheel there, and one closing is not
+> armed again. libuv reads `uv_now` once a turn, so the shell brings it up to date as
+> each handler returns, and the deadline armed after the answer runs from then
+> (chez-libuv #28; decision 0008). The fake shell's clock and timer are the test's: its
+> firing (`fake-shell-fire!`) ticks the connection only once its deadline has passed.
+
 HTTP/1.0 is **supported**, an h2c preface is answered `505`, and upgrades leave
 through **one hook** (0006). The 1.0 rules differ in three places — connections close
 unless the client asks for keep-alive, chunked does not exist so an unknown-length
@@ -1243,6 +1259,18 @@ this shape. M4.4 added decision 0011's measurement to it: a client that uploads 
 MiB past a refusal sends all of it, then reads the status and the stream's end, where
 a close at once fails its send with EPIPE. Its clients moved to
 `tests/shell-testing.sls`, to be shared with the contract test (§8.4).
+
+*Noted 2026-09-27 (M5.3):* the lane's deadline clients run on a shell with short
+limits, and their deadlines pass in the loop's own time. The iteration caps still
+bound every wait. Whether a deadline was met on time is read from the trace, not from
+a stopwatch:
+- each deadline's instant, the loop's time where it was armed plus its limit;
+- the tick's instant;
+- each time the shell's timer fired, which the server's `tick` shows.
+
+A deadline is met on time when its tick comes the first time the timer fires at or
+after it. The timer's repeat, `tick-ms`, is checked apart. So the check holds however
+late the loop runs, which a bound in milliseconds would not.
 
 ### 8.6 The ratchet
 

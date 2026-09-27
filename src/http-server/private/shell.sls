@@ -25,7 +25,9 @@
 ;;;                   `parser-result`
 ;;;   resume-parser   parser-resume!
 ;;;   call-handler    the handler's response as `handler-responded`, or, if
-;;;                   the handler raises, `handler-failed`, logged
+;;;                   the handler raises, `handler-failed`, logged; the
+;;;                   loop's clock brought up to date first, as the handler
+;;;                   held the loop (chez-libuv #28)
 ;;;   write           uv-write*!, the Date slot filled from the clock (decision
 ;;;                   0010); its completion reports `write-completed` with the
 ;;;                   action's byte count, which is all the completion keeps:
@@ -39,8 +41,30 @@
 ;;;                   close's callback takes the connection out of the table
 ;;;                   and reports `closed`
 ;;;   log             the shell's log
-;;; A deadline is not acted on: the wheel is M5's.  Bodies (M6) and the
-;;; hand-off (M8) are never asked for in v1's flow.
+;;;   arm-deadline    the connection's entry in the wheel, at the loop's now
+;;;                   plus the kind's limit (below)
+;;;   disarm-deadline its entry taken out of the wheel
+;;; Bodies (M6) and the hand-off (M8) are never asked for in v1's flow.
+;;;
+;;; DEADLINES (decision 0005 and its amendments of 2026-09-27; M5.3).  The
+;;; shell keeps the deadlines of its connections in one wheel, (http-server
+;;; wheel), in which each connection keeps one entry, made as it is adopted.
+;;; A deadline is armed at the loop's now, `uv_now`, which never steps, plus
+;;; the kind's limit (limits-deadline-ms), never by the wall clock the Date
+;;; is made from.  The first is armed as the connection is adopted, its idle
+;;; one: the core starts it in idle with that deadline recorded, and asks
+;;; for the next ones.  ONE TIMER TICKS THEM ALL, every tick-ms: made when a
+;;; deadline is first armed, stopped by the first firing that finds the
+;;; wheel empty, so an idle server sleeps (0005), started again by the next
+;;; arm, and closed once the shell has stopped listening and no connection
+;;; is left.  Each time it fires, the wheel is advanced to the loop's now,
+;;; each connection whose deadline has passed is ticked, `(tick now)`, and
+;;; the server is told the time, as its events say (design §4.6).  A
+;;; connection is ticked the first time the timer fires at or after its
+;;; deadline: never before it, and within tick-ms of it when the loop runs
+;;; on time.  A connection that leaves with no step of the core, closed by
+;;; handle-close! or dropped by the reconciliation, is taken out of the
+;;; wheel there, and one closing is armed no more.
 ;;;
 ;;; THE LISTENER is the server's (design §4.6; M4.3): `server-step` decides,
 ;;; and the shell performs.  Each connection the listener takes is offered to
@@ -88,17 +112,21 @@
 ;;; failure's place: a log that raises there is ignored.
 (library (http-server private shell)
   (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run!
-          shell-connections shell-server shell-listener
+          shell-connections shell-server shell-listener shell-timer shell-deadlines
           connection? connection-state connection-tcp connection-violations
+          connection-deadline
           connection-close!
           wall-clock)
   (import (rnrs)
-          (only (chezscheme) current-time time-second time-nanosecond)
+          (only (chezscheme) current-time time-second time-nanosecond foreign-procedure)
           (libuv)
+          (only (libuv private handles) loop-pointer)
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
           (only (http-server connection) make-conn-state)
-          (only (http-server limits) limits-read-buffer-size limits-backlog)
+          (only (http-server limits)
+                limits-read-buffer-size limits-backlog limits-tick-ms limits-deadline-ms)
+          (http-server wheel)
           (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
           (http-server private adapter))
@@ -122,10 +150,17 @@
   ;; shell-server : Shell -> ServerState — the server's state (design §4.6)
   ;; shell-listener : Shell -> (U #f UvTcp)
   ;;   the listener the shell last made, open or closed, or #f if none
+  ;; shell-timer : Shell -> (U #f UvTimer)
+  ;;   the one timer that ticks its connections' deadlines, running or
+  ;;   stopped, from the first deadline armed until the shell has stopped
+  ;;   listening and has no connection left; #f before and after
+  ;; The limits' tick-ms is its wheel's bucket, and one below 1 is an
+  ;; assertion violation (make-wheel's).
   (define-record-type (shell %make-shell shell?)
-    (fields loop handler limits clock log trace table
+    (fields loop handler limits clock log trace table wheel
             (mutable server)
             (mutable listener)
+            (mutable timer) (mutable ticking?)  ; the timer, and whether it runs
             (mutable read-at) (mutable read-ms)       ; the clock's last reading, and when
             (mutable date-second) (mutable date-line)))
 
@@ -134,7 +169,8 @@
       ((loop handler limits clock log) (make-shell loop handler limits clock log #f))
       ((loop handler limits clock log trace)
        (%make-shell loop handler limits clock log trace (make-eq-hashtable)
-                    (make-server-state 'listening 0 limits) #f #f #f #f #f))))
+                    (make-wheel (limits-tick-ms limits))
+                    (make-server-state 'listening 0 limits) #f #f #f #f #f #f #f))))
 
   ;; wall-clock : -> Nat — milliseconds since the epoch, UTC: a shell's clock.
   (define (wall-clock)
@@ -160,10 +196,19 @@
             (mutable violations)
             (mutable reading?)
             (mutable closing?)
-            (mutable on-data) (mutable on-eof) (mutable on-error)))
+            (mutable on-data) (mutable on-eof) (mutable on-error)
+            (mutable entry)))                 ; its deadline's, in the shell's wheel
 
   ;; connection-state : Connection -> ConnState — the core's state.
   (define (connection-state c) (conn-context-state (connection-ctx c)))
+
+  ;; connection-deadline : Connection -> (U Nat #f)
+  ;; The loop's time its deadline passes at, or #f while none is armed.
+  (define (connection-deadline c) (wheel-entry-deadline (connection-entry c)))
+
+  ;; shell-deadlines : Shell -> Nat — how many of its connections have a
+  ;; deadline armed.
+  (define (shell-deadlines sh) (wheel-count (shell-wheel sh)))
 
   ;; --- the listener -------------------------------------------------------------
 
@@ -256,8 +301,11 @@
       (when trace (trace sh kind datum))))
 
   ;; server-dispatch! : Shell Event -> Void — an event that brings no handle.
+  ;; A server that has stopped listening, with no connection left, takes the
+  ;; timer with it (release-timer!).
   (define (server-dispatch! sh event)
-    (run-server-actions! sh (server-step! sh event)))
+    (run-server-actions! sh (server-step! sh event))
+    (release-timer! sh))
 
   ;; run-server-actions! : Shell (Listof Action) -> Void — in order.
   (define (run-server-actions! sh actions)
@@ -284,14 +332,16 @@
 
   ;; serve! : Shell UvTcp -> Connection
   ;; Serve an accepted TCP handle: the core in idle, a parser of its own, the
-  ;; connection in the table, Nagle's algorithm off, and reading started with
-  ;; the limits' buffer.  Nagle's algorithm would hold a response's last
-  ;; partial segment until the client acknowledged the ones before it, and
-  ;; the shell writes each response whole, in one write; a socket that
-  ;; refuses the option has already failed, which reading will report.  A
-  ;; start that raises goes on to shell-adopt!, which closes the handle.
+  ;; connection in the table, its idle deadline armed, Nagle's algorithm off,
+  ;; and reading started with the limits' buffer.  Nagle's algorithm would
+  ;; hold a response's last partial segment until the client acknowledged
+  ;; the ones before it, and the shell writes each response whole, in one
+  ;; write; a socket that refuses the option has already failed, which
+  ;; reading will report.  A start that raises goes on to shell-adopt!, which
+  ;; closes the handle.
   (define (serve! sh tcp)
-    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f)))
+    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f)))
+      (connection-entry-set! c (make-wheel-entry c))
       (connection-ctx-set! c (make-conn-context
                               (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
                               (lambda (actions) (enqueue! c actions))))
@@ -300,6 +350,7 @@
       (connection-on-eof-set! c (lambda () (dispatch! c '(eof))))
       (connection-on-error-set! c (lambda (e) (dispatch! c (list 'read-error (errno e)))))
       (hashtable-set! (shell-table sh) tcp c)
+      (arm! c 'idle)
       (guard (e ((transport-condition? e) (values)))
         (uv-tcp-nodelay! tcp #t))
       (uv-read-start! tcp (connection-on-data c) (connection-on-eof c) (connection-on-error c)
@@ -376,6 +427,8 @@
       ((shutdown) (shutdown! c))
       ((close) (connection-close! c))
       ((log) (log! (connection-shell c) (cadr a) (cddr a)))
+      ((arm-deadline) (arm! c (cadr a)))
+      ((disarm-deadline) (disarm! c))
       (else (values))))
 
   (define (trace! c kind datum)
@@ -403,11 +456,28 @@
   (define (code e) (and e (parser-error-code e)))
 
   ;; call-handler! : Connection Request -> Void
+  ;; The handler's answer, or its failure, dispatched once the loop's clock
+  ;; is brought up to date: a handler holds the loop while it runs, and the
+  ;; deadline armed after its answer runs from when it returned.
   (define (call-handler! c request)
     (let ((answer (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
                                 (list 'handler-failed e)))
                     (list 'handler-responded ((shell-handler (connection-shell c)) request)))))
+      (uv-update-time! (shell-loop (connection-shell c)))
       (dispatch! c answer)))
+
+  ;; uv-update-time! : UvLoop -> Void
+  ;; Bring the loop's clock, uv_now, up to date.  libuv reads it once a
+  ;; turn, so a callback that holds the loop leaves it behind.  chez-libuv
+  ;; v0.6.0 binds no uv_update_time, so this calls libuv's own through
+  ;; chez-libuv's private loop pointer: a workaround carried until
+  ;; chez-libuv #28 lands (decision 0008).  The entry is looked up at the
+  ;; first call, when chez-libuv has loaded libuv.
+  (define uv-update-time!
+    (let ((native #f))
+      (lambda (loop)
+        (unless native (set! native (foreign-procedure "uv_update_time" (uptr) void)))
+        (native (loop-pointer loop 'uv-update-time!)))))
 
   ;; write! : Connection (Listof Segment) Nat -> Void
   ;; One uv-write*! of the segments, the Date slot filled.
@@ -456,23 +526,105 @@
                     (lambda (err)
                       (dispatch! c (if err (list 'read-error (errno err)) '(shutdown-completed)))))))
 
+  ;; --- deadlines ----------------------------------------------------------------
+
+  ;; arm! : Connection Symbol -> Void
+  ;; Arm the connection's deadline of `kind` at the loop's now plus the
+  ;; kind's limit, moving the one it had, and see the timer runs.  A
+  ;; connection already closing is not armed, as it is not read: it left the
+  ;; wheel for good as its close began (handle-close!), and the core may not
+  ;; know it has, when the close came from outside it.
+  (define (arm! c kind)
+    (unless (connection-closing? c)
+      (let ((sh (connection-shell c)))
+        (wheel-arm! (shell-wheel sh) (connection-entry c)
+                    (+ (uv-now (shell-loop sh)) (limits-deadline-ms (shell-limits sh) kind)))
+        (start-ticking! sh))))
+
+  ;; start-ticking! : Shell -> Void
+  ;; See the timer runs: made and started, every tick-ms, if the shell has
+  ;; none, and started again if it has stopped, keeping its callback and
+  ;; repeat (uv-timer-again!).  A timer whose first start raises is closed,
+  ;; and the raise goes on.
+  (define (start-ticking! sh)
+    (unless (shell-ticking? sh)
+      (let ((timer (shell-timer sh)))
+        (if timer
+            (uv-timer-again! timer)
+            (let ((timer (make-uv-timer (shell-loop sh)))
+                  (tick-ms (limits-tick-ms (shell-limits sh))))
+              (closing-on-raise sh timer
+                (lambda () (uv-timer-start! timer (lambda (t) (tick! sh)) tick-ms tick-ms)))
+              (shell-timer-set! sh timer))))
+      (shell-ticking?-set! sh #t)))
+
+  ;; stop-ticking! : Shell -> Void — stop the timer, if it runs.
+  (define (stop-ticking! sh)
+    (when (shell-ticking? sh)
+      (uv-timer-stop! (shell-timer sh))
+      (shell-ticking?-set! sh #f)))
+
+  ;; disarm! : Connection -> Void — take its deadline out of the wheel.
+  (define (disarm! c)
+    (wheel-disarm! (shell-wheel (connection-shell c)) (connection-entry c)))
+
+  ;; tick! : Shell -> Void
+  ;; The timer has fired: advance the wheel to the loop's now, tick each
+  ;; connection whose deadline has passed, earliest first, stop the timer
+  ;; if the wheel is then empty, and tell the server the time.  The wheel
+  ;; has let every one of them go, so each is ticked under its own guard,
+  ;; and one that raises keeps none of the rest from its tick; its dispatch
+  ;; has closed its connection.  Once every tick is delivered, the first
+  ;; raise goes on, and the run loop logs it, unless a later one is a
+  ;; byte-machine contract condition, which the run loop keeps fatal
+  ;; (design §6.4): that one goes on.
+  (define (tick! sh)
+    (let* ((now (uv-now (shell-loop sh)))
+           (event (list 'tick now))
+           (raised '()))
+      (define (guarded thunk)
+        (guard (e (#t (when (or (null? raised)
+                                (and (byte-machine-contract-condition? e)
+                                     (not (byte-machine-contract-condition? (car raised)))))
+                        (set! raised (list e)))))
+          (thunk)))
+      (for-each (lambda (c) (guarded (lambda () (dispatch! c event))))
+                (wheel-advance! (shell-wheel sh) now))
+      (when (fxzero? (wheel-count (shell-wheel sh))) (stop-ticking! sh))
+      (guarded (lambda () (server-dispatch! sh event)))
+      (unless (null? raised) (raise (car raised)))))
+
+  ;; release-timer! : Shell -> Void
+  ;; Close the timer once the shell has stopped listening and no connection
+  ;; is left: a shell that serves no more holds none.
+  (define (release-timer! sh)
+    (let ((timer (shell-timer sh)))
+      (when (and timer
+                 (fxzero? (hashtable-size (shell-table sh)))
+                 (not (eq? (server-phase (shell-server sh)) 'listening)))
+        (shell-timer-set! sh #f)
+        (shell-ticking?-set! sh #f)
+        (handle-close! sh timer))))
+
   ;; connection-close! : Connection -> Void — close the connection's handle.
   (define (connection-close! c)
     (handle-close! (connection-shell c) (connection-tcp c)))
 
   ;; handle-close! : Shell UvHandle -> Void
-  ;; Close a handle: a connection's, the listener, or one the server refused.
-  ;; This is the one uv-close! call (design §5.3 and §7.6;
+  ;; Close a handle: a connection's, the listener, the timer, or one the
+  ;; server refused.  This is the one uv-close! call (design §5.3 and §7.6;
   ;; tests/test-close-ownership.sps).  chez-libuv runs the callback of a
   ;; handle's first close alone, and a later close does nothing, so every
   ;; close passes the same callback, and what it does follows the handle: a
-  ;; connection's handle stops reading at once, and its close takes the
-  ;; connection out of the table and reports `closed`, whoever asked for it.
+  ;; connection's handle stops reading at once and leaves the wheel, and its
+  ;; close takes the connection out of the table and reports `closed`,
+  ;; whoever asked for it.
   (define (handle-close! sh h)
     (let ((c (hashtable-ref (shell-table sh) h #f)))
       (when c
         (connection-closing?-set! c #t)
-        (connection-reading?-set! c #f)))
+        (connection-reading?-set! c #f)
+        (disarm! c)))
     (uv-close! h (lambda () (handle-closed! sh h))))
 
   ;; handle-closed! : Shell UvHandle -> Void — a handle's close has completed.
@@ -480,6 +632,7 @@
     (let ((c (hashtable-ref (shell-table sh) h #f)))
       (when c
         (hashtable-delete! (shell-table sh) h)
+        (release-timer! sh)
         (dispatch! c '(closed)))))
 
   ;; transport-condition? : Any -> Boolean
@@ -533,8 +686,10 @@
 
   ;; reconcile! : Shell -> Void
   ;; Hold the table to the loop: a connection whose handle the loop no longer
-  ;; has, so whose close never reported back, is logged and dropped, which
-  ;; frees its place, since the server counts the table.
+  ;; has, so whose close never reported back, is logged, taken out of the
+  ;; wheel and dropped, which frees its place, since the server counts the
+  ;; table.  A server that has stopped listening takes the timer with its
+  ;; last connection (release-timer!).
   (define (reconcile! sh)
     (let ((live (make-eq-hashtable)))
       (for-each (lambda (h) (hashtable-set! live h #t))
@@ -544,5 +699,7 @@
          (lambda (h c)
            (unless (hashtable-contains? live h)
              (log-quietly! sh 'reconciled (list c))
+             (disarm! c)
              (hashtable-delete! (shell-table sh) h)))
-         handles connections)))))
+         handles connections))
+      (release-timer! sh))))

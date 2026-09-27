@@ -1047,7 +1047,8 @@ its deadline, using short limits and the shell's clock:
 
 **M5 exit:** the brief's (fake-clock table tests; slow clients closed within a tick of
 their deadlines; no per-connection timer handle). Plus: the docs drop their "from M5"
-notes (`configuration.org`, `connections.org`, `responses.org`, README). The budget
+notes (`configuration.org`, `connections.org`, `responses.org`, README). *Done in M5.3,
+after its review (2026-09-27).* The budget
 spike is run again with deadlines armed, so a connection's wheel entry is priced.
 
 ### M6 — body streaming and backpressure
@@ -1077,6 +1078,13 @@ M6 changes both:
   run, since the server is the one waiting. It is armed again when reading starts;
 - in M6.3, once a handler's head is on the wire, a body that stalls gets a bare close,
   as a handler that fails then does.
+
+*Noted 2026-09-27 (M5.3):* the loop's timer stops at the first firing that finds the
+wheel empty (0005). In M5 the wheel empties only when the connections close, so no
+check can yet tell that stop from one made when the last connection leaves. From
+M6.2, a connection waiting for its handler's credit has no deadline armed, and so does
+one waiting on an awaiting handler in M7. The first such row checks that the timer
+stops while the connection stays.
 
 **M6.3 — a streamed response.**
 - `handler-body-chunk` and `handler-body-end` get rows: chunked to HTTP/1.1, and
@@ -1155,6 +1163,11 @@ drain ends. The drain is table-tested with a fake clock. On a socket:
 - an idle keep-alive connection closes at once;
 - a client that holds its connection is closed at the deadline.
 - **Mutation:** `force-close-all` never asked for. Expect the held connection's row red.
+
+*Noted 2026-09-27 (M5.3):* the libuv shell already tells the server the time each
+time its timer fires, `(tick now)`, and today the server asks for nothing. That timer
+runs only while a connection is open, and a drain with none has already ended. The
+socket lane reads those ticks to show a deadline was met on time (design §8.5).
 
 **M8.2 — the hand-off door, decided first.** A decision record answers §9's three
 questions: who writes the `101`, what the handed-off stream still belongs to, and what

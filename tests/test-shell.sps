@@ -33,9 +33,9 @@
 ;;;     callback raised, even when the log raises, and runs on after any other
 ;;;     (design §6.4, the first hazard; decision 0003 item 4);
 ;;;   - a connection whose callback raises is closed, and so is one whose
-;;;     adoption fails;
+;;;     adoption fails, leaving no deadline armed;
 ;;;   - the run loop drops a connection whose handle closed behind the shell,
-;;;     and runs on;
+;;;     taking it out of the wheel, and runs on;
 ;;;   - the server's own listener (design §4.6; M4.3) serves a client; refuses
 ;;;     those over max-connections, closing each at once, the first refusal
 ;;;     logged and the count once a place is free; serves the next then;
@@ -43,16 +43,36 @@
 ;;;     used at a shutdown, and never listens after it; listens with the
 ;;;     limits' backlog; and closes a listener that cannot listen, after which
 ;;;     the shell may listen again;
+;;;   - deadlines (M5.3; decision 0005), under short limits and the loop's
+;;;     own clock: a client that sends half a head is answered 408, then
+;;;     closed once its linger passes; an idle keep-alive connection is
+;;;     closed; a lingering client that never closes is closed; and so is one
+;;;     that connects and sends nothing, whose idle deadline the shell armed
+;;;     as it adopted it.  Each deadline is met at the first time the shell's
+;;;     timer fires at or after it, the timer firing every tick-ms: within a
+;;;     tick of the deadline, never before it.  The loop's clock is brought
+;;;     up to date as a handler returns, so one that holds the loop does not
+;;;     shorten the deadline armed after it (chez-libuv #28).  A connection
+;;;     closed from outside the core is armed no more;
+;;;   - the shell's one timer: four connections add one timer to the loop;
+;;;     its wheel empty, it stops, and the shell keeps it for its next
+;;;     deadline, and closes it once shut down with no connection left; when
+;;;     one firing's ticks raise for two connections, each is still ticked,
+;;;     and a byte-machine contract condition among the raises is the one the
+;;;     run loop raises again;
 ;;;   - and at the end every connection was accepted and has closed, and no
 ;;;     handle is left on the loop.
 ;;;
 ;;; Oracles: RFC 9110 §5.6.7's example instant, Sun, 06 Nov 1994 08:49:37
 ;;; GMT, as the shell's clock; chez-httparse's response parser; chez-libuv's
 ;;; live-handle list and its dev-build counters; byte-machine's own contract
-;;; condition, provoked by a feed from inside a callback; and the weak-pair
-;;; instrument, calibrated below.
+;;; condition, provoked by a feed from inside a callback; the weak-pair
+;;; instrument, calibrated below; and for deadlines, the loop's time
+;;; (uv_now) each was armed at, read where it was armed, and the suite's
+;;; own limits.
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?)
+        (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?
+              current-time time-second time-nanosecond)
         (libuv) (uv-testing)
         (rename (only (libuv private native) live-counts) (live-counts debug-live-counts))
         (only (byte-machine private conditions)
@@ -91,16 +111,45 @@
 
 ;; The verbs the shells ran and the events they dispatched, newest first, as
 ;; (connection kind verb), or (shell kind verb) for the server's: only the
-;; verb, so the trace keeps nothing of an action's bytes.  While `trap` is
-;; (kind . verb), the next trace of that verb, a connection's `action` or the
-;; server's `server-event`, raises first, as a bug in the shell would.
+;; verb, so the trace keeps nothing of an action's bytes.  Each trap, set by
+;; `trap!`, is (kind verb raised): the next trace of that verb, a
+;; connection's `action` or `event` or the server's `server-event`, raises
+;; `raised` first, as a bug in the shell would, and the trap is spent.
+;; While `closing-at` is an action, the next connection to run it has its
+;; handle closed by the trace first, behind the core's back, as a close from
+;; outside the core would.
 (define traced '())
-(define trap #f)
+(define traps '())
+(define closing-at #f)
 (define (trace! c kind datum)
   (set! traced (cons (list c kind (car datum)) traced))
-  (when (and trap (eq? kind (car trap)) (eq? (car datum) (cdr trap)))
-    (set! trap #f)
-    (raise (make-message-condition "a bug in the shell"))))
+  (case (car datum)
+    ((arm-deadline) (time! (list 'arm c (cadr datum) (uv-now loop))))
+    ((tick) (time! (list (if (connection? c) 'tick 'fire) c (cadr datum)))))
+  (when (and closing-at (connection? c) (eq? kind 'action) (equal? datum closing-at))
+    (set! closing-at #f)
+    (connection-close! c))
+  (let ((t (find (lambda (t) (and (eq? kind (car t)) (eq? (car datum) (cadr t)))) traps)))
+    (when t
+      (set! traps (remq t traps))
+      (raise (caddr t)))))
+
+;; trap! : Symbol Symbol [Any] -> Void
+;; Set a trap for the next trace of `verb` as `kind`, behind those set: it
+;; raises `raised`, by default a message condition, as a bug would.
+(define (trap! kind verb . raised)
+  (set! traps (append traps (list (list kind verb (if (pair? raised)
+                                                      (car raised)
+                                                      (make-message-condition "a bug in the shell")))))))
+
+;; What the deadlines' checks read, newest first: each deadline armed, as
+;; (arm connection kind at), `at` the loop's time where it was armed; each
+;; tick a connection was given, as (tick connection now); and each time a
+;; shell's timer fired, as (fire shell now), which it tells its server.  The
+;; first idle deadline, which the shell arms as it adopts a connection, is
+;; recorded where the suite's listener adopts it.
+(define timed '())
+(define (time! entry) (set! timed (cons entry timed)))
 
 ;; verbs / events : Connection -> (Listof Symbol) — its actions, or its
 ;; events, in order.
@@ -123,14 +172,22 @@
 (define (clock) (set! clock-reads (+ clock-reads 1)) (* 1000 instant))
 
 ;; The handler answers 200 with the request's target as the body, except:
-;; `/raise` raises; and `/big`, four MiB, held weakly here so the retention
+;; `/raise` raises; `/big`, four MiB, held weakly here so the retention
 ;; check can ask whether anything else still holds it, and closing the
 ;; connection after it, so the client knows it has the whole response when it
-;; reads the stream's end.
+;; reads the stream's end; and `/slow`, answered once the handler has held
+;; the loop `slow-ms`, as a handler that computes for a while does.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
+(define slow-ms 300)
+(define (monotonic-ms)
+  (let ((t (current-time 'time-monotonic)))
+    (+ (* 1000 (time-second t)) (div (time-nanosecond t) 1000000))))
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
+    (when (bytevector=? target (b "/slow"))
+      (let ((until (+ (monotonic-ms) slow-ms)))
+        (let spin () (when (< (monotonic-ms) until) (spin)))))
     (cond ((bytevector=? target (b "/big"))
            (let ((body (make-bytevector big-size 120)))
              (set! big-body (weak-cons body '()))
@@ -152,12 +209,17 @@
 (define adopted '())                   ; newest first
 (define listen-error 'no-listen-error)
 (define small-send-buffer #f)
+(define pairing #f)                    ; adopt connections two at a time
+(define held #f)                       ; the first of a pair, accepted, not yet adopted
 
 ;; open-server! : -> Void
 ;; The loop, the shell, and a listener on 127.0.0.1:0 that adopts each
 ;; connection it accepts into `adopting`; with `small-send-buffer`, the
-;; connection's send buffer is asked to be that small first.  Made inside the
-;; suite, so a failure here is the harness's status, not a crash.
+;; connection's send buffer is asked to be that small first.  While
+;; `pairing`, it holds each connection it accepts until it accepts another,
+;; and adopts the two in one callback, so the shell arms both at one
+;; instant.  Made inside the suite, so a failure here is the harness's
+;; status, not a crash.
 (define (open-server!)
   (set! loop (make-uv-loop))
   (set! shell (make-shell loop handler default-limits clock log! trace!))
@@ -170,7 +232,17 @@
                     (set! listen-error (err->symbol err))
                     (let ((tcp (uv-accept! listener)))
                       (when small-send-buffer (uv-send-buffer-size! tcp small-send-buffer))
-                      (set! adopted (cons (shell-adopt! adopting tcp) adopted)))))))
+                      (cond ((and pairing (not held)) (set! held tcp))
+                            (else (when held (adopt! held) (set! held #f))
+                                  (adopt! tcp))))))))
+
+;; adopt! : UvTcp -> Void
+;; Serve `tcp` in `adopting`, recording when: the shell arms a connection's
+;; first deadline, its idle one, as it adopts it (M5.3).
+(define (adopt! tcp)
+  (let ((c (shell-adopt! adopting tcp)))
+    (when (connection? c) (time! (list 'arm c 'idle (uv-now loop))))
+    (set! adopted (cons c adopted))))
 
 ;; --- clients (tests/shell-testing.sls) ---------------------------------------
 
@@ -251,6 +323,61 @@
 ;; Step `sh`'s run loop, which logs a callback's error and runs on, until
 ;; `pred` holds (tests/shell-testing.sls): 'satisfied or 'iterations-exhausted.
 (define (run-shell sh pred) (run-shell-until loop sh pred cap))
+
+;; --- deadlines (M5.3) -------------------------------------------------------------
+
+;; Short limits, so the suite waits for its deadlines briefly: a fifth of a
+;; second or a little more for a head, an idle connection and a linger, each
+;; its own, so a deadline armed for the wrong kind shows, and a tick of 10
+;; ms.  Loopback moves a client's bytes in a few milliseconds, so no
+;; deadline passes before the client has made its move.
+(define quick-limits
+  (limits-with default-limits
+               '((read-header-timeout-ms . 200) (idle-timeout-ms . 250) (linger-timeout-ms . 300)
+                 (tick-ms . 10))))
+
+;; open-adopted! : (U #f Bytevector) -> (Pair Client (U Connection #f))
+;; A client that connects to the suite's listener, sends `request` unless it
+;; is #f, and reads; and the connection it was adopted as, once it is.
+(define (open-adopted! request)
+  (let* ((before (newest)) (cl (open-client! request)))
+    (wait-for (lambda () (and (adopted-since before) #t)))
+    (cons cl (adopted-since before))))
+
+;; deadlines-passed : Shell Connection -> (Listof (List Symbol Datum))
+;; Each tick `c` was given, in order: the kind of the deadline armed last
+;; before it, and `on-time` if the tick came the first time `sh`'s timer
+;; fired at or after that deadline, the instant it was armed at plus the
+;; kind's limit: at a firing, never before the deadline, and no firing
+;; between.  Otherwise the deadline, the tick's instant, and the firings
+;; from the deadline to the tick.
+(define (deadlines-passed sh c)
+  (let ((log (reverse timed)))
+    (let scan ((es log) (armed #f) (out '()))
+      (if (null? es)
+          (reverse out)
+          (let ((e (car es)))
+            (cond ((and (eq? (car e) 'arm) (eq? (cadr e) c)) (scan (cdr es) e out))
+                  ((and (eq? (car e) 'tick) (eq? (cadr e) c))
+                   (let* ((kind (caddr armed))
+                          (deadline (+ (cadddr armed) (limits-deadline-ms quick-limits kind)))
+                          (now (caddr e))
+                          (firings (filter (lambda (f) (and (eq? (car f) 'fire) (eq? (cadr f) sh)
+                                                            (<= deadline (caddr f) now)))
+                                           log)))
+                     (scan (cdr es) armed
+                           (cons (list kind (if (and (<= deadline now) (equal? (map caddr firings) (list now)))
+                                                'on-time
+                                                (list deadline now (map caddr firings))))
+                                 out))))
+                  (else (scan (cdr es) armed out))))))))
+
+;; deadline-outcome : Shell (Pair Client Connection) -> Datum
+;; What the client read, as statuses; how its stream ended; and each
+;; deadline its connection passed (deadlines-passed).
+(define (deadline-outcome sh p)
+  (list (map status (responses (client-bytes (car p)))) (client-end (car p))
+        (deadlines-passed sh (cdr p))))
 
 ;; --- the byte-machine contract condition, provoked ------------------------------
 
@@ -516,7 +643,7 @@
     (set! logged '())
     (let* ((before (newest))
            (cl (open-client! (b "GET /trap HTTP/1.1\r\nHost: x\r\n\r\n"))))
-      (set! trap '(action . call-handler))
+      (trap! 'action 'call-handler)
       (test-eq "when a connection's callback raises, its client reads the stream's end" 'satisfied
                (run-shell shell (lambda () (eq? (client-end cl) 'eof))))
       (let ((c (adopted-since before)))
@@ -536,18 +663,27 @@
         (set! adopting shell)
         (test-equal "and the connection is closed and gone, the error logged" '(() callback-error)
                     (list (shell-connections bad) (first-logged)))
-        (client-close! cl)))
+        (test-eqv "leaving no deadline armed" 0 (shell-deadlines bad))
+        (client-close! cl))
+      ;; The adoption armed a deadline, so the shell made its timer, and
+      ;; keeps it until it serves no more.
+      (let ((timer (shell-timer bad)))
+        (shell-shutdown! bad)
+        (test-equal "a shell shut down with no connection left closes the timer it kept"
+                    '(#t #f #t)
+                    (list (and timer (uv-timer? timer) #t) (shell-timer bad)
+                          (and timer (memq (uv-handle-state timer) '(closing closed)) #t)))))
 
     ;; A bug before a connection is served closes its handle: the server's
     ;; step raises on the arrival, and the client reads the stream's end.
     (set! logged '())
     (let* ((before (newest))
            (cl (open-client! #f)))
-      (set! trap '(server-event . connection-arrived))
+      (trap! 'server-event 'connection-arrived)
       (test-eq "when the server's step raises on an arrival, its client reads the stream's end"
                'satisfied
                (run-shell shell (lambda () (eq? (client-end cl) 'eof))))
-      (set! trap #f)
+      (set! traps '())
       (test-equal "with nothing read, no connection served, and the error logged"
                   '(0 none-served callback-error)
                   (list (collector-count (client-collector cl))
@@ -563,16 +699,18 @@
       (let ((c (adopted-since before)))
         (when c (uv-close! (connection-tcp c)))
         (wait-for (lambda () (and c (eq? (uv-handle-state (connection-tcp c)) 'closed))))
-        (test-eq "a connection whose handle was closed behind the shell's back stays in the table"
-                 'in-table
-                 (if (and c (memq c (shell-connections shell))) 'in-table 'gone))
+        (test-equal "a connection whose handle was closed behind the shell's back stays in the table, its deadline armed"
+                    '(in-table #t)
+                    (list (if (and c (memq c (shell-connections shell))) 'in-table 'gone)
+                          (and c (number? (connection-deadline c)))))
         (set! logged '())
         (let ((outcome (raise-in-callback (make-message-condition "a bug in a callback"))))
-          (test-equal "until the run loop reconciles the table with the loop, logs it, and runs on"
-                      '(gone #t ran-on)
+          (test-equal "until the run loop reconciles the table with the loop, logs it, takes it out of the wheel, and runs on"
+                      '(gone #t #f ran-on)
                       (list (if (and c (memq c (shell-connections shell))) 'in-table 'gone)
                             (let ((entry (assq 'reconciled logged)))
                               (and entry (pair? (cdr entry)) (eq? (cadr entry) c)))
+                            (and c (connection-deadline c))
                             outcome))))
       (client-close! cl))
 
@@ -657,11 +795,154 @@
       (wait-for (lambda () (for-all (lambda (sh) (eq? (uv-handle-state (shell-listener sh)) 'closed))
                                     (list holder retry)))))
 
-    ;; The end.
+    ;; The end of the connections the suite's own shell served.
     (for-each client-close! clients)
+    (set! clients '())
     (test-eq "every connection closes and leaves the table" 'satisfied
              (wait-for (lambda () (null? (shell-connections shell)))))
     (test-equal "the listener accepted every connection" 'no-listen-error listen-error)
+
+    ;; One timer however many connections are open (M5.3): four clients
+    ;; that send nothing, on a shell of their own under decision 0005's
+    ;; limits, so no deadline of theirs passes while the suite looks.  The
+    ;; loop may hold other shells' timers, kept stopped, so what is counted
+    ;; is the timers the four add.
+    (let* ((steady (make-shell loop handler default-limits clock log! trace!))
+           (timers (lambda () (filter uv-timer? (uv-loop-live-handles loop))))
+           (before (length (timers)))
+           (counted (live-count 'timer)))
+      (set! adopting steady)
+      (let* ((w (open-adopted! #f)) (x (open-adopted! #f)) (y (open-adopted! #f)) (z (open-adopted! #f))
+             (four (list w x y z)))
+        (test-equal "four connections open on one shell add one timer to the loop, the shell's, firing every tick"
+                    '(4 1 #t 250)
+                    (let ((timer (shell-timer steady)) (now (timers)))
+                      (list (length (shell-connections steady)) (- (length now) before)
+                            (and timer (memq timer now) #t)
+                            (if timer (uv-timer-repeat timer) 'no-timer))))
+        ;; The counters exist only in chez-libuv's dev build, as below.
+        (if (= (live-count 'loop) 1)
+            (test-eqv "and chez-libuv counts one timer more" 1 (- (live-count 'timer) counted))
+            (display "shell: chez-libuv's counters are off in this build; not read\n"))
+        (for-each (lambda (p) (client-close! (car p))) four)
+        (wait-for (lambda () (null? (shell-connections steady)))))
+      (shell-shutdown! steady))
+
+    ;; Deadlines (M5.3), on a shell of their own with short limits, adopted
+    ;; through the suite's listener, which records when each was adopted.
+    (let* ((quick (make-shell loop handler quick-limits clock log! trace!))
+           (firings (lambda ()
+                      (length (filter (lambda (e) (and (eq? (car e) 'fire) (eq? (cadr e) quick))) timed)))))
+      (set! adopting quick)
+      (let* ((half (open-adopted! (b "GET /half HTTP/1.1\r\nHo")))
+             (idle (open-adopted! (b "GET /idle HTTP/1.1\r\nHost: x\r\n\r\n")))
+             (bye (open-adopted! (b "GET /bye HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")))
+             (silent (open-adopted! #f))
+             (all (list half idle bye silent)))
+        (test-eq "each of them closes once its deadlines pass" 'satisfied
+                 (wait-for (lambda ()
+                             (for-all (lambda (p)
+                                        (and (closed-and-gone? quick (cdr p))
+                                             (not (eq? (client-end (car p)) 'open))))
+                                      all))))
+        (test-equal "a client that sends half a head reads 408 once its head's deadline passes, and the stream's end; it is closed once its linger's does"
+                    '((408) eof ((header on-time) (linger on-time)))
+                    (deadline-outcome quick half))
+        (test-equal "an idle keep-alive connection is closed once its idle deadline passes"
+                    '((200) eof ((idle on-time)))
+                    (deadline-outcome quick idle))
+        (test-equal "a lingering client that never closes is closed once its linger deadline passes"
+                    '((200) eof ((linger on-time)))
+                    (deadline-outcome quick bye))
+        (test-equal "a client that connects and sends nothing is closed at the idle deadline armed as it was adopted"
+                    '(() eof ((idle on-time)))
+                    (deadline-outcome quick silent))
+        (for-each (lambda (p) (client-close! (car p))) all))
+
+      ;; A handler that holds the loop past a deadline's length (M5.3's
+      ;; review).  libuv reads its clock once a turn, so the shell brings it
+      ;; up to date as the handler returns, and the deadline armed after the
+      ;; answer runs from then, not from before the handler ran.  Here the
+      ;; handler holds the loop 300 ms, past the idle limit's 250.
+      (let ((slow (open-adopted! (b "GET /slow HTTP/1.1\r\nHost: x\r\n\r\n"))))
+        (test-equal "after a handler that holds the loop 300 ms, the idle deadline armed after its answer is still ahead when the client has it"
+                    '(satisfied #t)
+                    (let* ((read (wait-for (lambda () (= 1 (length (responses (client-bytes (car slow))))))))
+                           (deadline (connection-deadline (cdr slow))))
+                      (list read (and deadline (> deadline (uv-now loop)) #t))))
+        (client-close! (car slow)))
+
+      ;; A deadline the core asks for once the shell has closed its
+      ;; connection behind it is not armed: the connection has left the
+      ;; wheel for good.  A keep-alive response written, the connection is
+      ;; closed from outside the core just as its idle deadline is armed.
+      (set! closing-at '(arm-deadline idle))
+      (let ((late (open-adopted! (b "GET /late HTTP/1.1\r\nHost: x\r\n\r\n"))))
+        (test-equal "a connection closed from outside the core as it arms a deadline leaves with none armed"
+                    '(satisfied #f 0)
+                    (let ((gone (wait-for (lambda () (closed-and-gone? quick (cdr late))))))
+                      (list gone (connection-deadline (cdr late)) (shell-deadlines quick))))
+        (set! closing-at #f)
+        (client-close! (car late)))
+
+      ;; Its wheel empty, the next firing stops the timer, and the shell
+      ;; keeps it for its next deadline (0005).  Fifty turns of the loop, each
+      ;; waiting on the wait's own 1 ms timer, span five ticks of 10 ms and
+      ;; more, so a timer that ran on would fire in them.
+      (let ((timer (shell-timer quick)))
+        (test-equal "its wheel empty, the timer stops, firing once more at most, and the shell keeps it"
+                    '(#t #t)
+                    (let* ((before (firings))
+                           (ran (run-until/ticking loop (lambda () #f) 50)))
+                      (list (<= (- (firings) before) 1)
+                            (and timer (uv-timer? timer) (eq? (shell-timer quick) timer)))))
+
+        ;; Each tick is delivered under its own guard.  Two connections
+        ;; adopted in one callback share their idle deadline, so the kept
+        ;; timer, started again, ticks both at one firing, the first adopted
+        ;; first.  Both ticks raise, as bugs would: the first an error, the
+        ;; second byte-machine's contract condition.  Each is still ticked,
+        ;; and closed, and the contract condition is the one the run loop
+        ;; raises again, which keeps it fatal (design §6.4).
+        (set! logged '())
+        (set! pairing #t)
+        (let* ((n (length adopted))
+               (first-cl (open-client! #f))
+               (second-cl (open-client! #f)))
+          (wait-for (lambda () (= (length adopted) (+ n 2))))
+          (set! pairing #f)
+          ;; A pair whose second never came leaves its first held: closed.
+          (when held (uv-close! held) (set! held #f))
+          (let* ((pair (if (= (length adopted) (+ n 2)) (list (cadr adopted) (car adopted)) '()))
+                 (both-gone (lambda ()
+                              (and (pair? pair)
+                                   (for-all (lambda (c) (closed-and-gone? quick c)) pair)))))
+            (trap! 'event 'tick)
+            (trap! 'event 'tick (provoke-reentrancy))
+            ;; let*, since Chez evaluates a call's arguments in no fixed order.
+            (test-equal "when one firing's ticks raise for both of two connections, each is still ticked and closed, and a contract condition is the raise the run loop raises again"
+                        '(reentrancy satisfied (((idle on-time)) ((idle on-time))) #t)
+                        (let* ((raised (guard (e ((byte-machine-contract-condition? e)
+                                                  (byte-machine-contract-condition-code e)))
+                                         (run-shell quick both-gone)))
+                               (gone (wait-for both-gone))
+                               (ticked (map (lambda (c) (deadlines-passed quick c)) pair)))
+                          (list raised gone ticked (eq? (shell-timer quick) timer)))))
+          (set! traps '())
+          (client-close! first-cl)
+          (client-close! second-cl))
+
+        (set! adopting shell)
+        (shell-shutdown! quick)
+        (test-equal "shut down with no connection left, the shell closes its timer"
+                    '(#f #t)
+                    (list (shell-timer quick)
+                          (and timer (memq (uv-handle-state timer) '(closing closed)) #t)))))
+
+    ;; The end.  The suite's own shell, shut down with no connection left,
+    ;; closes the timer it kept.
+    (for-each client-close! clients)
+    (shell-shutdown! shell)
     (uv-close! listener)
     (run-until loop (lambda () (eq? (uv-handle-state listener) 'closed)) 8)
     (test-equal "and no handle is left on the loop" '() (uv-loop-live-handles loop))
