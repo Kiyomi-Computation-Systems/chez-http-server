@@ -108,6 +108,17 @@ wheel keyed by `(deadline div tick-ms)` and dispatches `(tick now)` only to
 connections in expired buckets. One tick timer per loop is the only timer handle, and
 it stops when the wheel empties. Every limit is overridable from the environment.
 
+> *Noted 2026-09-27 (M5.1; decision 0005's amendment of that day):* `(http-server wheel)`
+> fires by each deadline, not by its bucket. An advance to `now` fires exactly the
+> deadlines at or before `now`; the bucket says only where to look, so a deadline later in
+> the current bucket, or a revolution ahead in the same slot, waits. So no deadline fires
+> before D, and a caller that advances every `tick-ms` fires it within
+> [D, D + `tick-ms`]. It fires less than a tick late when a tick came in the tick before D.
+> At most it fires a whole tick late, when D had already passed as the ticks began: a zero
+> timeout, with the timer started at its arm. The instants are the loop's clock,
+> `uv_now`, which never steps. Each connection keeps its own entry in the wheel, so
+> arming and disarming allocate nothing.
+
 HTTP/1.0 is **supported**, an h2c preface is answered `505`, and upgrades leave
 through **one hook** (0006). The 1.0 rules differ in three places — connections close
 unless the client asks for keep-alive, chunked does not exist so an unknown-length
