@@ -1070,6 +1070,14 @@ handler holds at most a read buffer's worth.
 - **Mutation:** the credit ignored, reading started regardless. Expect the slow
   handler's bound red.
 
+*Noted 2026-09-27 (M5.2):* the body deadline's tick row answers 408 as the core's own
+response. That assumes the client is the one stalling and no handler has answered, and
+M6 changes both:
+- in M6.2, while reading is stopped for the handler's credit, the body deadline must not
+  run, since the server is the one waiting. It is armed again when reading starts;
+- in M6.3, once a handler's head is on the wire, a body that stalls gets a bare close,
+  as a handler that fails then does.
+
 **M6.3 — a streamed response.**
 - `handler-body-chunk` and `handler-body-end` get rows: chunked to HTTP/1.1, and
   close-delimited to 1.0. That is M3.2's carried arm, and its mutation, dropping the
@@ -1088,6 +1096,14 @@ handler holds at most a read buffer's worth.
   the ratchet moves.
 - Trailer fields are held to a limit, where today they are held to none (ledger, M2).
 - **Mutation:** the `100` written with the head. Expect the Expect row red.
+
+*Noted 2026-09-27 (M5.2's review):* until M6.4 the server never sends `100 Continue`, yet
+the body deadline, armed at on-headers-complete, runs while a client that sent
+`Expect: 100-continue` waits for it, and such a client is answered 408 once it passes,
+though the server is the one waiting. M5.2 keeps the deadline: without it, a request that
+expects the 100 and never sends its body would hold its connection with no bound. M6.4
+arms the body deadline when the 100 is written, not at the head. A body the client sends
+without waiting re-arms it, as any body does.
 
 **M6 exit:** the brief's. 16 MiB each way against a slow peer, with memory bounded,
 read as the M4 exit read a connection: the server's heap, the client in a process of

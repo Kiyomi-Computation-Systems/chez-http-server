@@ -20,7 +20,11 @@
 ;;; that reads stops reading when it refuses a request, as design §4.3's
 ;;; table says `responding` does.  And the five kinds of deadline the rows
 ;;; arm, design §4.3's four and decision 0011's linger, each lasting one of
-;;; the limits (M5.1).
+;;; the limits (M5.1).  And M5.2's two tick rows, from decision 0005's table:
+;;; a body past its deadline is answered 408, and a write past its deadline
+;;; closes with no response.  With them, every way the core lets a connection
+;;; go, a close or the hand-off, disarms its deadline first (plan §14's note of
+;;; 2026-09-27).
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -28,13 +32,16 @@
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server limits) (fake-shell)
-        (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE))
+        (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE)
+        (only (chezscheme) display-condition))
 
 (define (b s) (string->utf8 s))
 
 ;; Any delivery will do: in M2.1 the core never reads the bytes it is handed.
 (define bv (b "GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
 (define req (make-request 'GET (b "/") 1 1 '() #f))
+(define post (make-request 'POST (b "/") 1 1 '() #f))
+(define head-req (make-request 'HEAD (b "/") 1 1 '() #f))
 (define resp (make-response 200 #f '() (b "row H7")))
 
 ;; state : Symbol . Plist -> ConnState
@@ -102,17 +109,59 @@
 ;; Every kind of deadline any row armed, for the kinds' check at the end.
 (define armed '())
 
+;; Every state a row left with a deadline recorded, as (phase . kind): armed
+;; by the row, or carried into the state from the one before, for the check
+;; that each has its tick row.
+(define held '())
+
+;; Every step whose state records a kind of deadline other than the one its
+;; actions leave armed, as (before actions after), for the check at the end.
+(define strays '())
+
+;; left-armed : (U #f Kind) (Listof Action) -> (U #f Kind)
+;; What a shell that performs `actions` has armed, given `before`: the kind
+;; of the last arm-deadline, #f after a disarm-deadline, and `before` when
+;; the actions touch no deadline.
+(define (left-armed before actions)
+  (fold-left (lambda (kind a)
+               (case (car a)
+                 ((arm-deadline) (cadr a))
+                 ((disarm-deadline) #f)
+                 (else kind)))
+             before actions))
+
+;; wheel-before : ConnState Event -> (U #f Kind)
+;; What the shell's wheel holds for the connection as the event arrives: the
+;; kind the state records, but nothing at a tick, since the wheel ticks a
+;; connection only as it lets the deadline go (decision 0005's amendment of
+;; 2026-09-27: an advance returns its keys already disarmed).
+(define (wheel-before s ev)
+  (if (eq? (car ev) 'tick) #f (conn-deadline s)))
+
 ;; outcome : ConnState Event -> (List Phase CloseAfter (Listof Datum))
 ;; One step: the state it leaves, whether it closes after the response, and
-;; the actions in order.
+;; the actions in order.  What the wheel holds is read before the step, since
+;; the step updates the state in place.
 (define (outcome s ev)
-  (call-with-values
-   (lambda () (conn-step s ev))
-   (lambda (s* actions)
-     (set! emitted (append (map car actions) emitted))
-     (set! armed (append (map cadr (filter (lambda (a) (eq? (car a) 'arm-deadline)) actions))
-                         armed))
-     (list (conn-phase s*) (conn-close-after s*) (map render-action actions)))))
+  (let ((before (wheel-before s ev)))
+    (call-with-values
+     (lambda () (conn-step s ev))
+     (lambda (s* actions)
+       (set! emitted (append (map car actions) emitted))
+       (set! armed (append (map cadr (filter (lambda (a) (eq? (car a) 'arm-deadline)) actions))
+                           armed))
+       (when (conn-deadline s*)
+         (set! held (cons (cons (conn-phase s*) (conn-deadline s*)) held)))
+       (unless (eq? (conn-deadline s*) (left-armed before actions))
+         (set! strays (cons (list before (map car actions) (conn-deadline s*)) strays)))
+       (list (conn-phase s*) (conn-close-after s*) (map render-action actions))))))
+
+;; ticked : ConnState Event -> (List Phase CloseAfter (Listof Datum) Kind)
+;; One step's outcome, and the kind of deadline the state records after it:
+;; read once the step has run, since arguments have no order of evaluation.
+(define (ticked s ev)
+  (let* ((o (outcome s ev)) (after (conn-deadline s)))
+    (append o (list after))))
 
 ;; A row is the design's wording and its instances; an instance is a synthetic
 ;; state, one event, and the expected outcome.  "any" and "head/body" rows get
@@ -125,8 +174,8 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Design §4.4, the happy path: ten rows.  The tables are procedures so their
-;; synthetic states are built inside the suite, where a raise is a harness
-;; error (status 2) rather than a crash before any test runs.
+;; synthetic states are built inside the suite, where a raise fails the
+;; group's count (status 1) rather than crashing before any test runs.
 (define (happy-path)
   (list
    (row 'H1 "idle, bytes-arrived -> idle: feed-parser"
@@ -200,29 +249,34 @@
 
 ;; ---------------------------------------------------------------------------
 ;; Design §4.4, termination and error: nine rows.
+;;
+;; Every row that closes, and the hand-off (T7), disarms the deadline first,
+;; armed or not (M5.2).  The shell's wheel holds a connection whose deadline
+;; is armed until the deadline passes, up to the idle deadline's 75 s, so
+;; every way the core lets a connection go says to let it go.
 (define (termination)
   (list
-   (row 'T1 "any reading state, eof -> closing: close"
-        (i (state 'idle 'deadline 'idle) '(eof) '(closing #f ((close eof))))
-        (i (state 'head 'deadline 'header) '(eof) '(closing #f ((close eof))))
-        (i (state 'body 'deadline 'body) '(eof) '(closing #f ((close eof)))))
+   (row 'T1 "any reading state, eof -> closing: disarm, close"
+        (i (state 'idle 'deadline 'idle) '(eof) '(closing #f ((disarm-deadline) (close eof))))
+        (i (state 'head 'deadline 'header) '(eof) '(closing #f ((disarm-deadline) (close eof))))
+        (i (state 'body 'deadline 'body) '(eof) '(closing #f ((disarm-deadline) (close eof)))))
 
-   (row 'T2 "any live state, read-error -> closing: log, close, no response"
+   (row 'T2 "any live state, read-error -> closing: log, disarm, close, no response"
         (i (state 'idle 'deadline 'idle) '(read-error ECONNRESET)
-           '(closing #f ((log read-error ECONNRESET) (close read-error))))
+           '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'head 'deadline 'header) '(read-error ECONNRESET)
-           '(closing #f ((log read-error ECONNRESET) (close read-error))))
+           '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'body 'deadline 'body) '(read-error ECONNRESET)
-           '(closing #f ((log read-error ECONNRESET) (close read-error))))
+           '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'handling) '(read-error ECONNRESET)
-           '(closing #f ((log read-error ECONNRESET) (close read-error))))
+           '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100)
            '(read-error EPIPE)
-           '(closing #f ((log read-error EPIPE) (close read-error))))
+           '(closing #f ((log read-error EPIPE) (disarm-deadline) (close read-error))))
         (i (state 'draining) '(read-error ECONNRESET)
-           '(closing #f ((log read-error ECONNRESET) (close read-error))))
+           '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'lingering 'deadline 'linger 'close-after 'headers-too-large) '(read-error ECONNRESET)
-           '(closing headers-too-large ((log read-error ECONNRESET) (close read-error)))))
+           '(closing headers-too-large ((log read-error ECONNRESET) (disarm-deadline) (close read-error)))))
 
    ;; The status is design §6.5's for a parser error: 400, whatever the code,
    ;; invalid-transfer-encoding among them (RFC 9112 §6.3; amended on the
@@ -246,9 +300,9 @@
         (i (state 'head) '(tick 60000)
            '(head #f ())))
 
-   (row 'T5 "idle, tick past the idle deadline -> closing: close, no response"
+   (row 'T5 "idle, tick past the idle deadline -> closing: disarm, close, no response"
         (i (state 'idle 'deadline 'idle) '(tick 75000)
-           '(closing #f ((close idle-timeout))))
+           '(closing #f ((disarm-deadline) (close idle-timeout))))
         (i (state 'idle) '(tick 75000)
            '(idle #f ())))
 
@@ -261,15 +315,16 @@
    ;; closes after it (U1), so the parser never runs on to its hand-off.  It
    ;; is the door M8 opens for a handler that takes upgrades (decision 0006's
    ;; amendment of 2026-09-25).  The error channel is U2's.
-   (row 'T7 "head/body, parser-result hands off -> handed-off: read-stop, the hand-off hook"
+   (row 'T7 "head/body, parser-result hands off -> handed-off: read-stop, disarm, the hand-off hook"
         (i (state 'head 'deadline 'header 'request req) '(parser-result paused 55 55 #f paused-upgrade)
-           `(handed-off #f ((read-stop) (hand-off ,req))))
+           `(handed-off #f ((read-stop) (disarm-deadline) (hand-off ,req))))
         (i (state 'body 'deadline 'body 'request req) '(parser-result paused 63 63 #f paused-upgrade)
-           `(handed-off #f ((read-stop) (hand-off ,req)))))
+           `(handed-off #f ((read-stop) (disarm-deadline) (hand-off ,req)))))
 
    ;; Instantiated on idle only: with nothing in flight "finish in flight" is
-   ;; vacuous.  The table has no row whose source is draining, so the in-flight
-   ;; states have nothing to finish through yet; that is M8's.
+   ;; vacuous.  The in-flight states have no row into draining, so they have
+   ;; nothing to finish through yet; that is M8's.  The idle deadline goes
+   ;; with the connection into draining, and D3 acts on it there.
    (row 'T8 "any, shutdown-requested -> draining: finish in flight, then shutdown"
         (i (state 'idle 'deadline 'idle) '(shutdown-requested)
            '(draining #f ((shutdown)))))
@@ -426,9 +481,10 @@
         (i (state 'responding 'deadline 'write 'outstanding 2 'outstanding-bytes 100)
            '(write-completed) 'refused)
         (i (state 'closing) '(write-completed 0) 'refused))
-   ;; A read error while a write is outstanding closes the connection (T2).
-   ;; libuv still reports the write the close cut short, and its completion
-   ;; settles it; how the shell reports a cancelled write is M4's.
+   ;; A read error while a write is outstanding closes the connection (T2),
+   ;; and so does the write deadline (D2).  libuv still reports the write
+   ;; the close cut short, and its completion settles it; how the shell
+   ;; reports a cancelled write is M4's.
    (row 'W5 "closing, write-completed for a write the close cut short -> closing: nothing outstanding, nothing asked"
         (i (state 'closing 'outstanding 1 'outstanding-bytes 100) '(write-completed 100)
            '(closing #f () 0 0)))))
@@ -445,14 +501,14 @@
    (row 'L1 "lingering, bytes-arrived -> lingering: dropped, nothing fed, the deadline not re-armed"
         (i (state 'lingering 'deadline 'linger 'close-after 'headers-too-large) `(bytes-arrived ,bv 0 5)
            '(lingering headers-too-large ())))
-   (row 'L2 "lingering, eof -> closing: close, for the reason it closes after its response"
+   (row 'L2 "lingering, eof -> closing: disarm, close, for the reason it closes after its response"
         (i (state 'lingering 'deadline 'linger 'close-after 'not-keep-alive) '(eof)
-           '(closing not-keep-alive ((close not-keep-alive)))))
+           '(closing not-keep-alive ((disarm-deadline) (close not-keep-alive)))))
    ;; As T4 and T5: the wheel ticks a connection once its deadline has
    ;; passed, and a tick with nothing armed changes nothing.
-   (row 'L3 "lingering, tick past the linger deadline -> closing: close"
+   (row 'L3 "lingering, tick past the linger deadline -> closing: disarm, close"
         (i (state 'lingering 'deadline 'linger 'close-after 'handler-close) '(tick 30000)
-           '(closing handler-close ((close handler-close))))
+           '(closing handler-close ((disarm-deadline) (close handler-close))))
         (i (state 'lingering 'close-after 'handler-close) '(tick 30000)
            '(lingering handler-close ())))
    ;; The shell reports that the half-close is done; the client's close,
@@ -460,6 +516,78 @@
    (row 'L4 "lingering, shutdown-completed -> lingering: nothing"
         (i (state 'lingering 'deadline 'linger 'close-after 'not-keep-alive) '(shutdown-completed)
            '(lingering not-keep-alive ())))))
+
+;; ---------------------------------------------------------------------------
+;; M5.2: every deadline the core arms has its tick row (design §4.4, amended
+;; 2026-09-27; decision 0005's table).  T5, T4 and L3 act on the idle, header
+;; and linger deadlines; D1 and D2 act on the other two, and D3 on the idle
+;; deadline a draining connection carries.  A body that stalls past its
+;; inactivity deadline is answered 408, as a head that stalls is, framed for
+;; the request in flight.  A write still outstanding past its deadline means a
+;; client that is not reading, so nothing more can be written to it: the
+;; connection closes with no response, for the write deadline, whatever it
+;; would have closed for after the response, and the write the close cuts
+;; short is settled in `closing` (W5).  As in T4, an instance with nothing
+;; armed is the guard.  Each outcome ends with the deadline the state records
+;; after the tick.
+(define (deadline-rows)
+  (list
+   ;; A HEAD's answer carries no Content-Length the core cannot know (decision
+   ;; 0010 item 6), so its 408 shows the request in flight framing it.
+   (row 'D1 "body, tick past the body deadline -> responding: write 408, read-stop, close-after"
+        (i (state 'body 'deadline 'body 'request post) '(tick 60000)
+           `(responding body-timeout (,(status-write 408 "Request Timeout") (read-stop) (arm-deadline write))
+                        write))
+        (i (state 'body 'deadline 'body 'request head-req) '(tick 60000)
+           `(responding body-timeout (,(written "HTTP/1.1 408 Request Timeout\r\n" 'date
+                                                "Connection: close\r\n\r\n")
+                                      (read-stop) (arm-deadline write))
+                        write))
+        (i (state 'body 'request post) '(tick 60000)
+           '(body #f () #f)))
+   ;; The log names the bytes still outstanding, for an operator to tell a
+   ;; client that stopped reading from one that went away.
+   (row 'D2 "responding, tick past the write deadline -> closing: log, disarm, close, no response"
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100) '(tick 60000)
+           '(closing #f ((log write-timeout 100) (disarm-deadline) (close write-timeout)) #f))
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
+                  'close-after 'header-timeout)
+           '(tick 60000)
+           '(closing header-timeout ((log write-timeout 100) (disarm-deadline) (close write-timeout)) #f))
+        (i (state 'responding 'outstanding 1 'outstanding-bytes 100) '(tick 60000)
+           '(responding #f () #f)))
+   ;; A connection draining from idle had nothing in flight, and the idle
+   ;; deadline went with it (T8): past it, the connection closes, as idle's
+   ;; does.  The rows M8 writes for draining arm the write deadline there.
+   (row 'D3 "draining, tick past the idle deadline it carried from idle -> closing: disarm, close, no response"
+        (i (state 'draining 'deadline 'idle) '(tick 75000)
+           '(closing #f ((disarm-deadline) (close idle-timeout)) #f))
+        (i (state 'draining) '(tick 75000)
+           '(draining #f () #f)))
+   ;; A tick means the wheel has let the deadline go: an advance returns its
+   ;; keys already disarmed.  So the state records none after a tick, even
+   ;; where no row acts on the kind it recorded, and agrees with the wheel.
+   (row 'D4 "any, tick past a deadline no row acts on there -> the same state: nothing asked, no deadline recorded"
+        (i (state 'handling 'deadline 'idle) '(tick 75000)
+           '(handling #f () #f))
+        (i (state 'head 'deadline 'body) '(tick 60000)
+           '(head #f () #f)))))
+
+;; index : Any (Listof Any) -> Nat — where `x` stands in `xs`.
+(define (index x xs)
+  (let loop ((xs xs) (n 0))
+    (if (eq? (car xs) x) n (loop (cdr xs) (+ n 1)))))
+
+;; held-pairs : -> (Listof (Pair Phase Kind))
+;; Each (phase . kind) the rows left a connection in, once: by kind, in
+;; conn-deadline-kinds' order, then by phase, in conn-states'.
+(define (held-pairs)
+  (list-sort (lambda (a b)
+               (let ((ka (index (cdr a) conn-deadline-kinds))
+                     (kb (index (cdr b) conn-deadline-kinds)))
+                 (or (< ka kb)
+                     (and (= ka kb) (< (index (car a) conn-states) (index (car b) conn-states))))))
+             (fold-left (lambda (seen p) (if (member p seen) seen (cons p seen))) '() held)))
 
 (define (pause-protocol)
   (list
@@ -504,6 +632,22 @@
                              (step (car inst) (cadr inst))))
                (row-instances r))
      (if (null? (row-instances r)) 0 1))))
+
+;; count-rows : String (-> (Listof Row)) (ConnState Event -> Datum)
+;;              -> (U Nat 'raised)
+;; Build a group of rows and run each through `step`: how many have a test.
+;; Building them runs the core, a target read into a state's head or a pause
+;; reached by steps, so a raise there is the code under test failing, as a
+;; raise inside a check is.  It fails the group's count, which is 'raised,
+;; and the group's name and the condition go to the error port, so the cause
+;; is not lost.
+(define (count-rows name rows step)
+  (guard (e (#t (let ((p (current-error-port)))
+                  (put-string p (string-append "RAISED building the " name " rows: "))
+                  (display-condition e p)
+                  (newline p))
+                'raised))
+    (fold-left (lambda (n r) (+ n (run-row r step))) 0 (rows))))
 
 ;; One well-formed event of every kind, for the closed-set checks.
 (define samples
@@ -567,20 +711,25 @@
 
     ;; --- the table ------------------------------------------------------
     ;; A row with no instance is absent from the count, and the count is the
-    ;; design's.
-    (let* ((count-rows (lambda (rows)
-                         (fold-left (lambda (n r) (+ n (run-row r))) 0 rows)))
-           (happy (count-rows (happy-path)))
-           (term (count-rows (termination))))
+    ;; design's.  Each group's rows run before its count is checked: SRFI-64's
+    ;; simple runner names a failing check after the last check run inside
+    ;; it, so a count taken inside its check fails under a row's name.
+    (let* ((happy (count-rows "happy-path" happy-path outcome))
+           (term (count-rows "termination" termination outcome))
+           (pause (count-rows "pause-protocol" pause-protocol kept))
+           (upgrade (count-rows "upgrade-door" upgrade-door outcome))
+           (answered (count-rows "response" response-rows outcome))
+           (accounting (count-rows "accounting" accounting-rows accounted))
+           (linger (count-rows "linger" linger-rows outcome))
+           (ticks (count-rows "tick" deadline-rows ticked)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
       (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
-      (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3
-                (fold-left (lambda (n r) (+ n (run-row r kept))) 0 (pause-protocol)))
-      (test-eqv "M2.5: both upgrade-door rows have a test" 2 (count-rows (upgrade-door)))
-      (test-eqv "M3.2: both response rows have a test" 2 (count-rows (response-rows)))
-      (test-eqv "M3.3: all 5 accounting rows have a test" 5
-                (fold-left (lambda (n r) (+ n (run-row r accounted))) 0 (accounting-rows)))
-      (test-eqv "M3.5: all 4 linger rows have a test" 4 (count-rows (linger-rows))))
+      (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
+      (test-eqv "M2.5: both upgrade-door rows have a test" 2 upgrade)
+      (test-eqv "M3.2: both response rows have a test" 2 answered)
+      (test-eqv "M3.3: all 5 accounting rows have a test" 5 accounting)
+      (test-eqv "M3.5: all 4 linger rows have a test" 4 linger)
+      (test-eqv "M5.2: all 4 tick rows have a test" 4 ticks))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it but the two body-streaming actions (M6's).
@@ -599,6 +748,33 @@
                 '(75000 60000 60000 60000 30000)
                 (map (lambda (k) (limits-deadline-ms default-limits k)) conn-deadline-kinds))
 
+    ;; The state records the kind of deadline armed, so that a tick is acted
+    ;; on only while that kind is (the guards above), and a shell arms and
+    ;; disarms only as the actions say.  The two must agree after every row:
+    ;; the kind the state records is what the row's actions leave armed,
+    ;; starting from what the wheel held, which at a tick is nothing (see
+    ;; wheel-before).  A close and the hand-off cleared the kind without a
+    ;; disarm until M5.2, which left a connection gone from the core in the
+    ;; shell's wheel; and a tick no row acted on left a kind the wheel had
+    ;; already let go (D4).
+    (test-equal "after every row, the state records the deadline its actions leave armed" '()
+                strays)
+
+    ;; Every deadline the core arms has its tick row (M5.2): ticked in each
+    ;; state a row leaves it armed in, armed there or carried in from the
+    ;; state before, the connection moves on, to a 408 or a close, never
+    ;; staying where it was.  A write that never completes must not keep the
+    ;; connection open, and a draining connection must not keep the idle
+    ;; deadline it carried with nothing to act on it.
+    (test-equal "each deadline a row leaves armed, ticked in the state it leaves, moves the connection on"
+                '((idle idle closing) (draining idle closing) (head header responding)
+                  (body body responding) (responding write closing) (lingering linger closing))
+                (map (lambda (pair)
+                       (let ((s (state (car pair) 'deadline (cdr pair))))
+                         (conn-step s '(tick 0))
+                         (list (car pair) (cdr pair) (conn-phase s))))
+                     (held-pairs)))
+
     ;; --- conn-step in the fake shell ------------------------------------
     ;; The fake shell's tick is a vocabulary event: (tick now), not (tick . now).
     (let ((s (make-fake-shell conn-step (state 'idle 'deadline 'idle) 0)))
@@ -606,6 +782,6 @@
       (fake-shell-tick! s)
       (test-equal "the fake shell delivers (tick now)" '((tick 75000)) (fake-shell-events s))
       (test-equal "conn-step runs in the fake shell: the idle deadline closes"
-                  '((close idle-timeout)) (fake-shell-actions s))
+                  '((disarm-deadline) (close idle-timeout)) (fake-shell-actions s))
       (test-eq "the fake shell threads conn-step's state" 'closing
                (conn-phase (fake-shell-state s))))))

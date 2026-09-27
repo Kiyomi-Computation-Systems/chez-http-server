@@ -43,6 +43,7 @@
       (invalid-host . 400)                   ; RFC 9112 §3.2's Host rules
       (faulty-framing . 400)                 ; Transfer-Encoding below HTTP/1.1 (RFC 9112 §6.1)
       (header-timeout . 408)
+      (body-timeout . 408)                   ; a body stalled past its deadline (M5.2)
       (target-too-large . 414)
       (headers-too-large . 431) (too-many-headers . 431)
       (header-field-too-large . 431) (header-value-too-large . 431)

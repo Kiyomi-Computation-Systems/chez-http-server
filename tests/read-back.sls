@@ -4,13 +4,14 @@
 ;;; writes back share it (test-connection-response.sps, M3.2, and
 ;;; test-connection-originated.sps, M3.4).  M3.5 adds what the originated
 ;;; and linger suites share besides: a client's two moves on a fake
-;;; connection, and the actions from the core's own response on.
+;;; connection, and the actions from the core's own response on.  M5.2 adds
+;;; `shown`, how those suites and the deadlines suite state an action.
 ;;;
 ;;; A field is a (name . value) pair of strings, as read-response returns it.
 ;;; The Date is the fake shell's: its clock starts at the epoch.
 (library (read-back)
   (export message epoch content-length close keep-alive
-          send! client-close! from-response)
+          send! client-close! from-response shown)
   (import (rnrs)
           (only (fake-shell) written-status fake-shell-feed-input! fake-shell-reading?
                 fake-shell-deliver!))
@@ -47,6 +48,10 @@
   ;; log before it naming a fault.  A write shows as its status.
   (define (from-response actions)
     (cond ((null? actions) '())
-          ((memq (caar actions) '(log write))
-           (map (lambda (a) (if (eq? (car a) 'write) (list 'write (written-status a)) a)) actions))
-          (else (from-response (cdr actions))))))
+          ((memq (caar actions) '(log write)) (map shown actions))
+          (else (from-response (cdr actions)))))
+
+  ;; shown : Action -> Datum
+  ;; An action as the suites state it: a write as its status, any other as it
+  ;; is.
+  (define (shown a) (if (eq? (car a) 'write) (list 'write (written-status a)) a)))

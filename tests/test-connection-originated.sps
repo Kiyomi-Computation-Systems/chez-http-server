@@ -5,8 +5,8 @@
 ;;;
 ;;; Design §6.5's statuses, and decision 0009's 301, each provoked on a fake
 ;;; connection the way a client provokes it: a request the core refuses, a
-;;; head left unfinished past its deadline, a handler that raises or answers
-;;; what cannot be written safely, the HTTP/2 preface.  Each response is
+;;; head or a body left unfinished past its deadline, a handler that raises
+;;; or answers what cannot be written safely, the HTTP/2 preface.  Each response is
 ;;; written through the serializer and read back with chez-httparse's strict
 ;;; response parser, a client that is not our code ((response-reader)).
 ;;;
@@ -21,12 +21,14 @@
 ;;;     §9.6; decision 0011): it shuts its write side, reads again, drops
 ;;;     what arrives, and closes when the client closes;
 ;;;   - nothing the client sent after the offending request is fed to the
-;;;     parser or answered.  Every row but the 408, whose head never ends,
-;;;     sends a request behind it in the same delivery, and every row sends
-;;;     another while the connection lingers;
+;;;     parser or answered.  Every row but the two 408s, whose requests
+;;;     never end, sends a request behind it in the same delivery, and every
+;;;     row sends another while the connection lingers;
 ;;;   - the connection closes for the row's reason.
 ;;; A row states all of it: each write as the client reads it, the actions
 ;;; from the core's own response on, and the state and reason it ends with.
+;;; The client's close ends the linger, and like every close it disarms the
+;;; deadline first (M5.2).
 ;;;
 ;;; 413 has no way in before M6's buffering helper (decision 0005's
 ;;; max-body-bytes row), so its row is the serializer's alone: the response
@@ -36,7 +38,7 @@
 ;;; §15's reason phrases, and RFC 6585 §5's for 431; decision 0010 item 6;
 ;;; decision 0005's defaults, which set the limit each row passes; and the
 ;;; Date: the fake clock starts at the epoch, `Thu, 01 Jan 1970 00:00:00
-;;; GMT`, and a minute on, when the 408's row is ticked, reads `Thu, 01 Jan
+;;; GMT`, and a minute on, when the 408s' rows are ticked, reads `Thu, 01 Jan
 ;;; 1970 00:01:00 GMT`.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
@@ -68,7 +70,7 @@
   (list (list (message status reason fields ""))
         (append before (list (list 'write status)) stop
                 (list '(arm-deadline write) '(shutdown) '(read-start) '(arm-deadline linger)
-                      (list 'close why)))
+                      '(disarm-deadline) (list 'close why)))
         'closed why))
 
 ;; refused : Nat String Symbol (Listof Field) -> Outcome
@@ -95,10 +97,10 @@
 (define (sent text) (lambda (sh) (send! sh text)))
 
 ;; stalled : String -> (FakeShell -> Any)
-;; The client sends `text`, a head it never finishes; a minute passes, and
-;; the connection is ticked, as M5's wheel ticks one whose header deadline
-;; has passed.  The core reads no clock: the tick is what tells it, and only
-;; the Date shows the minute.
+;; The client sends `text`, a request it never finishes; a minute passes,
+;; the header and body deadlines' 60 s, and the connection is ticked, as
+;; M5's wheel ticks one whose deadline has passed.  The core reads no clock:
+;; the tick is what tells it, and only the Date shows the minute.
 (define (stalled text)
   (lambda (sh)
     (send! sh text)
@@ -164,10 +166,14 @@
    (row "400: a parser error, a Transfer-Encoding with no chunked"
         answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: pigeons\r\n\r\n" get))
         (refused 400 "Bad Request" 'parser-error (at epoch)))
-   ;; 408: the header deadline passes with the head unfinished.
+   ;; 408: the header deadline passes with the head unfinished, or the body
+   ;; deadline with the body unfinished (M5.2): two of its five bytes.
    (row "408: a head still unfinished when the header deadline passes"
         answers (stalled "GET / HTTP/1.1\r\nHo")
         (refused 408 "Request Timeout" 'header-timeout (at a-minute-on)))
+   (row "408: a body still unfinished when the body deadline passes"
+        answers (stalled "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab")
+        (refused 408 "Request Timeout" 'body-timeout (at a-minute-on)))
    ;; 414 and 431: one past a limit.
    (row "414: a target one byte past max-target-bytes"
         answers (sent (string-append "GET /" (make-string max-target #\a) " HTTP/1.1\r\nHost: x\r\n\r\n" get))
