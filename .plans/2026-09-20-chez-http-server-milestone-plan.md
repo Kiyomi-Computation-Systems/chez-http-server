@@ -809,9 +809,9 @@ M8 defines it. The door's shape answers three questions before a taker can use i
    `max-connections`; whether the drain waits for it or tells it to close (a WebSocket's
    1001, "going away") within `drain-timeout-ms`; whether its ping and idle deadlines
    ride the one tick timer and the wheel (0005) or it brings its own timer; and who
-   owns its close, since `make check-close-ownership` gives each kind of handle one
-   `uv-close!` owner in `src/`, and the taker lives outside it. A door that leaves these
-   open leaks sockets or holds a shutdown.
+   owns its close, since `handle-close!` is the one `uv-close!` in `src/`, for every
+   kind of handle (`make check-close-ownership`), and the taker lives outside it. A door
+   that leaves these open leaks sockets or holds a shutdown.
 3. **What the door hands over.** Recommended: the transport record, a record of verbs
    (write, start and stop reading with a data callback, close, a deadline) that the
    server's shell implements over chez-libuv. The taker imports no chez-libuv and is
