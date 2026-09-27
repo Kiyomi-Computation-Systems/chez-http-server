@@ -2064,3 +2064,59 @@ NEXT: M4.5, the facade, and what a handler sees (plan §8; decision 0012):
 - finished by the plan's mutation, an absolute-form request's host read from its Host field.
 
 Then the M4 exit (plan §8): curl and ab get correct responses and the counters return to zero; the contract test passes; the connection table is reconciled against `uv-loop-live-handles` at one place in the run loop; the per-connection budget is re-measured; and the amendment slicing M5–M8 is written (plan §10). It starts on a fresh branch cut from main after this commit, when the owner asks.
+
+M4.5 — THE FACADE, AND WHAT A HANDLER SEES (plan §8; decision 0012). Branch feat/m4.5-handler-view, cut from main at a5d8474; 2026-09-27, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+
+Gathered before the first test, from plan §8, decision 0012 and this ledger:
+- decision 0012: a handler reads the path, the query, a header's value by name and the host, as strings made when asked, and the method as llhttp's symbol; the host follows RFC 9112 §3.2.2; the server listens where `CHEZ_HTTP_HOST` and `CHEZ_HTTP_PORT` say, by default 127.0.0.1 and 8080;
+- a facade that builds limits refuses a pipeline cap other than 1 (M2.4);
+- design §6.4's `&http-server-error` and its two subtypes, "defined in the shell and exported from the facade", which design §9.1 gives to M4;
+- the plan's mutation: an absolute-form request's host read from its Host field.
+
+Settled here, where decision 0012 is silent, each with a check:
+- a string is a character per byte, Latin-1, as the decision's measurement made its strings, so every byte reads back as the byte it was;
+- the query is what follows the target's first "?", in every form, since a "?" can be in neither an authority nor a path (RFC 3986 §3.2, §3.3);
+- asterisk-form's path is "*", authority-form's is "", and an absolute-form target's is its URI's, "/" when empty (RFC 9110 §4.2.3's normal form). Hyper's `http` crate reads all three the same way;
+- a header's value is its first field's, by name in any case, as `headers-ref` reads it in the decision's measurement, and without the whitespace around it (RFC 9112 §5). So is the host from a Host field, which #54 left to M4.5. The view trims where it reads, as the Host judge (with #54) and the transfer-coding reader do. Trimming once, where the core records a value, is #54's alternative, recorded in its entry: one place for every reader, at the cost of a new span for each value with whitespace to drop. It changes M2's core. Decided below: trimmed where read;
+- authority-form's host is the Host field's, by the decision's letter ("otherwise it is the Host field's value"). RFC 9112 §3.3 would read the target, the tunnel's destination. v1 answers a CONNECT and closes, so no handler needs it now. Kept, decided below (M4.5-J is its mutant).
+
+Found:
+- llhttp leaves out the whitespace before a field value and keeps what comes after it: through the core, "X-Pad:   v  x  " keeps "v  x  ". So the view trims it.
+- The Host judge (M2.3's) judges that span as it is kept, so "Host: h " and "Host: h" with a tab after it are answered 400, where RFC 9112 §5 makes the value "h". This is outside M4.5, and was fixed on its own by another session: PR #54 (fix/host-trailing-whitespace), open as this is written. Its review left to M4.5 what a handler reads of such a value: settled below.
+- An absolute-form target always has an authority, which may be empty ("ftp:///x"). llhttp takes one only with "//": "GET urn:example:x" never reaches the core.
+- `(rnrs)` leaves out `string-set!`. The view fills its strings with it, so `(rnrs mutable-strings)` joins the pure libraries' imports, amended in global-constraints and design §3.1. Measured on an 11-byte path (scratch): 64 B that way, 96 B through a UTF-16 bytevector, 240 B through a list, 2,048 B through a Latin-1 transcoder.
+
+MEASURED, the shipped view (scratch, not kept; two identical runs, exit 0), on decision 0012's three requests and one absolute-form GET. Bytes per request, beside the decision's (A), 80, 96 and 192:
+
+| request | path and User-Agent | host |
+|---|---|---|
+| curl's GET | 112 | 64 |
+| a JSON POST | 128 | 64 |
+| a browser's GET | 224 | 64 |
+| curl's GET, absolute-form | 3,952 | 3,904 |
+
+A lookup by name makes the name a bytevector, 32 B, which is the difference from (A). An absolute-form target's path or host costs a uriparse parse each time it is asked for. That is accepted, as CONNECT's fresh parse is (design §7.5): absolute-form is a proxy's, rare at an origin server, and a handler that does not ask pays nothing.
+
+M4.5 FIRST STEP — WHAT A HANDLER SEES.
+- `src/http-server/view.sls`, `(http-server view)`, new, pure:
+  - `request-path`, `request-query`, `request-header` and `request-host`, each a fresh string, or #f for a query or a header that is not there;
+  - where each part is follows the target's form, read by `target-form`, the judge's own rule;
+  - an absolute-form target's host is its authority, whatever the Host field says; otherwise the host is the Host field's value, "" when it is empty or missing.
+- `(http-server target)` exports `target-form`, the rule the judge reads, which the view now reads too, and `first-question`. The allocation gate is unchanged (19 passes).
+- `tests/test-view.sps`, new, thirteen checks. Each request is fed whole to a fake connection running the real core and parser, and read inside the handler's call. The rows: origin-form's path and query, with a second "?" and a percent-encoding; no "?" and an empty query; absolute-form's path, query and host; the empty path; asterisk-form and authority-form; origin-form's host; an empty Host and none; a header by name; a value's trailing whitespace; a byte above 127. One more is built by hand: a Host value with whitespace after it, which the core refuses until #54, reads without it.
+- Red before green: the twelve rows through the core failed against a stub view. The hand-built host row, added after #54, passed at once against the view as written; its red is M4.5-O2's.
+- Watched to fail (m4-mutations.md):
+  - M4.5-A, the plan's, reddens the host row alone. Every other suite stays green;
+  - B to P each redden the view's own rows, and O2, the host's value untrimmed, the hand-built row alone;
+  - Q, `target-form` without its CONNECT arm, reddens the judge's CONNECT rows, two CONNECT traces and the view's authority-form row;
+  - each of the thirteen checks is reddened by at least one mutant.
+
+DECIDED on the owner's word (2026-09-27, "Go with the recommendations"), each as recommended and built:
+- a value's trailing whitespace is dropped where it is read: by the Host judge (with #54), the transfer-coding reader and the view. Trimming once where the core records a value, #54's alternative, can come later as a small PR of its own;
+- authority-form's host is the Host field's, by decision 0012's letter;
+- an absolute-form target's parts cost a uriparse parse each time they are asked for (3,904 B, measured above), accepted as CONNECT's fresh parse is;
+- the details the view settles where decision 0012 is silent (above) stand, and decision 0012 gains a dated note saying so.
+
+Every suite green on this step alone, in a scratch worktree cut at its commit: thirty-three suites, 866 expected passes (view 13), each exit 0; the import audit clean.
+
+NEXT: the second step, the facade, stacked on this one: `(http-server)`, what reaches the embedder; the address from `CHEZ_HTTP_HOST` and `CHEZ_HTTP_PORT`; the startup's `&http-server-config-error`, which refuses a pipeline cap other than 1 as the environment path does; and the docs a handler reads.

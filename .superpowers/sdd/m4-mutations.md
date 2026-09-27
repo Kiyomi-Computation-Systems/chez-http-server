@@ -306,3 +306,39 @@ The replay delivers each completion where the libuv shell received its own
 regardless, and the message loop's check holds the order.
 
 `make test` afterwards: see the ledger's M4.4 entry.
+
+## M4.5, first step — what a handler sees (2026-09-27)
+
+Red before green: `tests/test-view.sps` ran first against a stub
+`(http-server view)` whose four accessors answered `'stub`, and all twelve
+checks failed (status 1). Every mutant ran on the finished tree. The view is
+imported by its suite alone, so its mutants ran against that suite and the
+exports suite. M4.5-A and M4.5-Q, whose `target-form` the judge shares, ran
+against every suite.
+
+| # | mutation | observed |
+|---|---|---|
+| M4.5-A | the plan's: an absolute-form request's host read from its Host field (`request-host`) | view 1 — "absolute-form: the host is the target's authority, whatever Host says". Every other suite green, 32 |
+| M4.5-B | the path is the whole origin-form target, its query too (`request-path`) | view 2 — "origin-form: the path up to the first ?, as sent, and the query after it", and "origin-form with no ?: no query; ending in ?: an empty one" |
+| M4.5-C | the query follows the last "?", not the first (`request-query`) | view 1 — "origin-form: the path up to the first ?, ...", whose query holds a second "?" |
+| M4.5-D | a target with no "?" reads an empty query, not #f | view 4 — the no-"?" check, the empty path's, asterisk-form's and authority-form's, each expecting no query |
+| M4.5-E | a target ending in "?" reads no query, not an empty one | view 1 — "origin-form with no ?: no query; ending in ?: an empty one" |
+| M4.5-F | an absolute-form path is split as origin-form's (`request-path`) | view 2 — "absolute-form: the path and the query are the URI's", and "absolute-form with an empty path: the path reads /" |
+| M4.5-G | an empty absolute-form path reads empty, not "/" | view 1 — "absolute-form with an empty path: the path reads /" |
+| M4.5-H | asterisk-form's path reads empty, not "*" | view 1 — "asterisk-form: the path is *, with no query, and the host is Host's" |
+| M4.5-I | authority-form's path is its target | view 1 — "authority-form: no path, no query, and the host is Host's" |
+| M4.5-J | authority-form's host is its target, RFC 9112 §3.3's authority, not the Host field's (`request-host`) | view 1 — the authority-form check. Decision 0012 reads the Host field for every form but absolute-form, and the check holds that letter |
+| M4.5-K | the Host field's value is not read: every host but absolute-form's reads empty | view 3 — asterisk-form's, authority-form's, and "origin-form: the host is the Host field's value" |
+| M4.5-L | a request with no Host reads #f, not empty | view 1 — "an empty Host reads empty, and so does a request with none" |
+| M4.5-M | a header by name reads the last field of that name, not the first (`request-header`) | view 1 — "a header by name, in any case: the first field's value, or none" |
+| M4.5-N | a header's name is matched with its case | view 3 — the by-name check, and the two value checks, which ask in lower case for names sent capitalized |
+| M4.5-O | a value keeps the whitespace after it (`field-value`) | view 2 — "a value without the whitespace after it", and "the host is the Host field's value without the whitespace after it" |
+| M4.5-O2 | the host is the Host field's value with the whitespace after it (`request-host`) | view 1 — "the host is the Host field's value without the whitespace after it". Every other suite green, 33 |
+| M4.5-P | strings are UTF-8 decoded, not a character per byte (`latin-1`) | view 1 — "a value is a character per byte, whatever the byte": the lone 0xE9 decodes to U+FFFD |
+| M4.5-Q | `target-form` loses its CONNECT arm (`target.sls`), the rule the judge and the view share | target 5 — the CONNECT rows; trace lane 1, two CONNECT traces refused as `invalid-target`; view 1 — the authority-form check. Every other suite green |
+
+The host's row was added after the Host fix (PR #54) asked what a handler reads
+of a value with whitespace after it. Before the row, O2 had no check to redden:
+the core answers `Host: h ` 400 until #54's judge trims, so the row builds its
+request by hand. Each of the view's thirteen checks is reddened by at least one
+mutant above.

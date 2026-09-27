@@ -43,7 +43,8 @@
 ;;; `target-redirect` gives that target, for bracket params and pipes only.
 ;;; PURE: imports (rnrs), (uri ...) and (http-server span).
 (library (http-server target)
-  (export make-target-judge target-judge? target-fault target-redirect)
+  (export make-target-judge target-judge? target-fault target-redirect
+          target-form first-question)
   (import (rnrs)
           (http-server span)
           (only (uri collect)
@@ -72,6 +73,19 @@
   (define RIGHT-BRACKET 93)
   (define PIPE 124)
 
+  ;; target-form : Symbol Span -> Symbol
+  ;;   method target — the method as llhttp names it ('GET, 'CONNECT)
+  ;; The form the target must be, by its method and first byte, in the order
+  ;; above: 'authority, 'asterisk, 'origin or 'absolute.  The judge reads it,
+  ;; and so does the handler's view of the request (M4.5).
+  (define (target-form method target)
+    (let ((bv (span-bytevector target)) (start (span-start target)) (end (span-end target)))
+      (cond
+       ((eq? method 'CONNECT) 'authority)
+       ((and (fx=? (fx- end start) 1) (fx=? (bytevector-u8-ref bv start) ASTERISK)) 'asterisk)
+       ((and (fx<? start end) (fx=? (bytevector-u8-ref bv start) SLASH)) 'origin)
+       (else 'absolute))))
+
   ;; target-fault : TargetJudge Symbol Span -> (U #f Symbol)
   ;;   judge method target — the method as llhttp names it ('GET, 'CONNECT)
   ;; #f when the target is the form its method and first byte call for, and
@@ -80,13 +94,11 @@
   ;; 'no-host.
   (define (target-fault judge method target)
     (let ((bv (span-bytevector target)) (start (span-start target)) (end (span-end target)))
-      (cond
-       ((eq? method 'CONNECT) (authority-form-fault target))
-       ((and (fx=? (fx- end start) 1) (fx=? (bytevector-u8-ref bv start) ASTERISK))
-        (if (eq? method 'OPTIONS) #f 'asterisk-not-options))
-       ((and (fx<? start end) (fx=? (bytevector-u8-ref bv start) SLASH))
-        (origin-form-fault bv start end))
-       (else (absolute-form-fault judge bv start end)))))
+      (case (target-form method target)
+        ((authority) (authority-form-fault target))
+        ((asterisk) (if (eq? method 'OPTIONS) #f 'asterisk-not-options))
+        ((origin) (origin-form-fault bv start end))
+        (else (absolute-form-fault judge bv start end)))))
 
   ;; origin-form-fault : Bytevector Nat Nat -> (U #f Symbol)
   ;; The path before the first "?", then the query after it.  One pass finds
@@ -100,7 +112,8 @@
 
   ;; first-question : Bytevector Nat Nat -> Nat
   ;; The first "?" in [start, end), where an origin-form query begins, or end.
-  ;; The redirect's split; the judge finds the same "?" by judging the path.
+  ;; The redirect's split, and the handler's view's; the judge finds the same
+  ;; "?" by judging the path.
   (define (first-question bv start end)
     (let loop ((i start))
       (cond ((fx=? i end) end)

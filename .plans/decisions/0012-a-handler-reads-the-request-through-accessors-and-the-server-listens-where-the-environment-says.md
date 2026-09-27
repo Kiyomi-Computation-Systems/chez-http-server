@@ -63,3 +63,28 @@ address, the same variables defaulting to `0.0.0.0`, or the platforms' `PORT` be
   such as `ftp:`, is the handler's routing, as any path is.
 - A deployment platform that sets only `PORT` maps it to `CHEZ_HTTP_PORT` in its
   launcher.
+
+## Amendment (2026-09-27) — what the accessors read (M4.5)
+
+Settled in M4.5 where this record is silent, and kept on the owner's word ("Go with
+the recommendations"). `tests/test-view.sps` holds each.
+
+- A string is a character per byte (Latin-1), as this record's measurement made its
+  strings, so every byte reads back as it was sent. Nothing is percent-decoded.
+- The query is what follows the target's first "?", in every form. A "?" can be in
+  neither an authority nor a path (RFC 3986 §3.2, §3.3).
+- The path by form: origin-form's up to the first "?"; an absolute-form target's
+  URI path, "/" when it is empty (RFC 9110 §4.2.3); "*" for asterisk-form; "" for
+  authority-form.
+- A header's value is its first field's, by name in any case, without the whitespace
+  around it (RFC 9112 §5). llhttp keeps the whitespace after a value, so the view
+  trims where it reads, as the Host judge and the transfer-coding reader do.
+  Trimming once, where the core records a value, can come later as a change of its
+  own.
+- A CONNECT request's host is the Host field's, by this record's letter. RFC 9112
+  §3.3 would read the target, the tunnel's destination, but v1 answers a CONNECT and
+  closes, so no handler needs it.
+- An absolute-form target's host and path cost a uriparse parse each time they are
+  asked for: 3,904 B, measured on curl's GET in absolute-form (Darwin arm64). The
+  cost is accepted, as CONNECT's fresh parse is (design §7.5): absolute-form is a
+  proxy's, rare at an origin server, and a handler that does not ask pays nothing.
