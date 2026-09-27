@@ -41,6 +41,15 @@
 ;;; delivered one at a time on request, so that test can deliver them where
 ;;; the libuv shell delivered its own.
 ;;;
+;;; M5.3: THE WHEEL.  A fake connection keeps its deadline in a wheel of its
+;;; own, as the libuv shell keeps its connections' (decision 0005): armed at
+;;; the fake clock's now plus the kind's limit (limits-deadline-ms), the idle
+;;; deadline armed so when the connection is made, and disarmed on request.
+;;; The fake clock is the test's own, and so is the timer: `fake-shell-fire!`
+;;; is the timer firing at the clock's now, and it ticks the connection only
+;;; once its deadline has passed.  A stub step's shell keeps no wheel, and
+;;; `fake-shell-tick!` ticks its step, whatever it has armed.
+;;;
 ;;; `make-fake-connection` is the shell M2.4 drives the core with: the core
 ;;; through the adapter's bindings, one real parser, and a handler that answers
 ;;; at once.  It performs what a v1 shell performs:
@@ -56,25 +65,29 @@
 ;;;   shutdown        shuts the write side; `shutdown-completed` arrives on a
 ;;;                   later turn, as uv_shutdown's callback does
 ;;;   close           stops reading; `closed` arrives on a later turn
+;;;   arm-deadline    arms the wheel at the clock's now plus the kind's limit
+;;;   disarm-deadline disarms it
 ;;;
-;;; and records the rest (deadlines, logs, body deliveries, a hand-off)
-;;; without acting on them: the wheel is M5's, bodies M6's, the hand-off
-;;; M8's.  (Since M2.5 the core serves an upgrade and closes after it, so its
-;;; own loop never hands off.)  Input is delivered only while the connection
-;;; reads, as libuv delivers it.  An event the core cannot finish within
-;;; `dispatch-cap` dispatches is a harness error, never a hang
-;;; (global-constraints: cap by iteration count, never wall-clock).
+;;; and records the rest (logs, body deliveries, a hand-off) without acting
+;;; on them: bodies are M6's, the hand-off M8's.  (Since M2.5 the core
+;;; serves an upgrade and closes after it, so its own loop never hands off.)
+;;; Input is delivered only while the connection reads, as libuv delivers
+;;; it.  An event the core cannot finish within `dispatch-cap` dispatches is
+;;; a harness error, never a hang (global-constraints: cap by iteration
+;;; count, never wall-clock).
 (library (fake-shell)
   (export make-fake-shell fake-shell?
           fake-shell-state fake-shell-now
           fake-shell-actions fake-shell-events fake-shell-violations
-          fake-shell-advance! fake-shell-deliver! fake-shell-tick! fake-shell-run!
+          fake-shell-advance! fake-shell-deliver! fake-shell-tick! fake-shell-fire! fake-shell-run!
           make-fake-connection fake-shell-conn-state fake-shell-reading?
           fake-shell-deliver-later! fake-shell-settle! fake-shell-feed-input!
           fake-shell-writes written-status write-wire)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state)
+          (only (http-server limits) limits-tick-ms limits-deadline-ms)
+          (http-server wheel)
           (only (http-server serializer) date-line)
           (http-server private adapter))
 
@@ -101,14 +114,16 @@
             (mutable dispatches)
             (mutable writes-rev)              ; the bytes of each write, newest first
             (mutable shut?)                   ; whether a shutdown has run
-            trace)
+            trace
+            (mutable wheel) (mutable entry))  ; a connection's deadline; #f for a stub's
     (protocol (lambda (new)
                 (case-lambda
-                  ((step state0 now0) (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f))
+                  ((step state0 now0)
+                   (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f #f #f))
                   ((step state0 now0 perform)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f #f #f))
                   ((step state0 now0 perform trace)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace))))))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace #f #f))))))
 
   ;; trace! : FakeShell Symbol Any -> Void
   (define (trace! s kind datum)
@@ -208,8 +223,23 @@
 
   ;; fake-shell-tick! : FakeShell -> (Listof Action)
   ;; Deliver a `(tick now)` event carrying the injected now — the tagged-list
-  ;; shape of (http-server connection)'s event vocabulary.
+  ;; shape of (http-server connection)'s event vocabulary — to the step,
+  ;; whatever deadline it has: what a stub step is ticked with.
   (define (fake-shell-tick! s) (fake-shell-deliver! s (list 'tick (fake-shell-now s))))
+
+  ;; fake-shell-fire! : FakeShell -> (Listof Action)
+  ;; A fake connection's timer fires at the injected now: its wheel is
+  ;; advanced to now, and the connection ticked, `(tick now)`, only if its
+  ;; deadline has passed.  Returns the tick's actions, or none when nothing
+  ;; was ticked.  A stub step's shell keeps no wheel, and firing it is an
+  ;; assertion violation.
+  (define (fake-shell-fire! s)
+    (let ((wheel (fake-shell-wheel s)) (now (fake-shell-now s)))
+      (unless wheel
+        (assertion-violation 'fake-shell-fire! "a stub step's shell keeps no timer" s))
+      (if (pair? (wheel-advance! wheel now))
+          (fake-shell-deliver! s (list 'tick now))
+          '())))
 
   ;; fake-shell-run! : FakeShell (Listof Event) -> Void — deliver them in order.
   (define (fake-shell-run! s events)
@@ -238,32 +268,42 @@
 
   ;; --- the connection ---------------------------------------------------------
 
-  ;; make-fake-connection : Limits (Request -> Response) [Trace] -> FakeShell
-  ;; A connection in idle, reading, its idle deadline armed, the clock at 0:
-  ;; (http-server connection)'s core through the adapter, with a parser of its
-  ;; own and `handler` answering every request at once, traced as
-  ;; make-fake-shell traces.  Its state is the adapter's context;
-  ;; fake-shell-conn-state reads the core's state from it.
+  ;; make-fake-connection : Limits (Request -> Response) [Trace [Nat]] -> FakeShell
+  ;; A connection in idle, reading, the clock at `now` (0 unless given), and
+  ;; its idle deadline armed there: (http-server connection)'s core through
+  ;; the adapter, with a parser of its own and `handler` answering every
+  ;; request at once, traced as make-fake-shell traces.  Its state is the
+  ;; adapter's context; fake-shell-conn-state reads the core's state from it.
   (define make-fake-connection
     (case-lambda
-      ((limits handler) (make-fake-connection limits handler #f))
-      ((limits handler trace)
+      ((limits handler) (make-fake-connection limits handler #f 0))
+      ((limits handler trace) (make-fake-connection limits handler trace 0))
+      ((limits handler trace now)
        (let* ((cell #f)
               (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f limits)
                                       (lambda (actions) (enqueue! cell actions))))
               (s (make-fake-shell (lambda (ctx event) (values ctx (conn-context-step! ctx event)))
-                                  ctx 0
-                                  (lambda (s a) (perform-connection! s a handler))
+                                  ctx now
+                                  (lambda (s a) (perform-connection! s a handler limits))
                                   trace)))
          (set! cell s)
          (fake-shell-parser-set! s (make-conn-parser ctx))
+         (fake-shell-wheel-set! s (make-wheel (limits-tick-ms limits)))
+         (fake-shell-entry-set! s (make-wheel-entry s))
+         (arm! s limits 'idle)
          s))))
 
   ;; fake-shell-conn-state : FakeShell -> ConnState
   (define (fake-shell-conn-state s) (conn-context-state (fake-shell-state s)))
 
-  ;; perform-connection! : FakeShell Action (Request -> Response) -> Void
-  (define (perform-connection! s a handler)
+  ;; arm! : FakeShell Limits Symbol -> Void
+  ;; Arm the connection's deadline of `kind`: the clock's now plus its limit.
+  (define (arm! s limits kind)
+    (wheel-arm! (fake-shell-wheel s) (fake-shell-entry s)
+                (+ (fake-shell-now s) (limits-deadline-ms limits kind))))
+
+  ;; perform-connection! : FakeShell Action (Request -> Response) Limits -> Void
+  (define (perform-connection! s a handler limits)
     (case (car a)
       ((feed-parser) (feed! s (cadr a) (caddr a) (cadddr a)))
       ((resume-parser) (parser-resume! (fake-shell-parser s)))
@@ -276,6 +316,8 @@
       ((read-start) (fake-shell-reading?-set! s #t))
       ((shutdown) (later! s '(shutdown-completed)))
       ((close) (fake-shell-reading?-set! s #f) (later! s '(closed)))
+      ((arm-deadline) (arm! s limits (cadr a)))
+      ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
       (else (values))))
 
   ;; write! : FakeShell (Listof Segment) Nat -> Void
