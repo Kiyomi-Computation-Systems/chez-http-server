@@ -1987,6 +1987,8 @@ MERGED to main on 2026-09-26, on the owner's "Do closing ritual":
 
 `make test` green on main: thirty-one suites, 820 expected passes, exit 0.
 
+MERGED to main on 2026-09-26, on the owner's "go ahead and merge this and do the closing ritual": **#51, question 2's close owner,** as 5486ddb. The sentence #50 left stale now says `handle-close!` is the one `uv-close!` in `src/`, for every kind of handle (`make check-close-ownership`). It was written in its own worktree off main, on the owner's word, since the shared checkout was the M4 session's. The squash tree (1389928) is identical to the tested tip's, ac85e2d. CI was the billing block, the `linux` job with 0 steps (36282494049). The branch is deleted local and remote, and refs pruned. `make test` green on its tree: thirty-one suites, 820 expected passes, exit 0. NEXT is unchanged.
+
 M4.3 DONE and merged:
 - `max-connections` (10,000) and `backlog` (511) are limits, the backlog at most a C `int`'s largest; `limits-with` replaces limits by name;
 - `server-step`, pure, decides the listener: accept below the cap, refuse at it; a refusal episode logged twice at most; a shutdown or a failed listener closes the listener and drains;
