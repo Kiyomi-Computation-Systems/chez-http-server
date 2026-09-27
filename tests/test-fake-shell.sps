@@ -1,6 +1,7 @@
 #!r6rs
 ;;; (test-fake-shell) — the fake shell records faithfully, queues in order, and
-;;; takes its clock by injection.  M1.4.  Driven against stub steps, so these
+;;; takes its clock by injection.  M1.4.  Its trace sees events and actions in
+;;; the order it handles them, as the libuv shell's does (M4.4).  Driven against stub steps, so these
 ;;; checks hold whatever core it carries; conn-step runs in it in
 ;;; test-connection-table.sps, and the whole message loop in
 ;;; test-message-loop.sps (M2.4).
@@ -74,6 +75,22 @@
                   '((call b) (note 1) (note 2)) (fake-shell-actions s))
       (test-equal "both events were dispatched, in order" '(a b) (fake-shell-events s))
       (test-equal "every action ran from the outermost drain" '() (fake-shell-violations s)))
+
+    ;; M4.4: a trace sees what the shell does in the order it does it, as the
+    ;; libuv shell's trace does (the contract test compares the two): each
+    ;; event as it is dispatched, and each action as it runs, before it is
+    ;; performed.  So b, dispatched while (call b) is performed, comes after
+    ;; (call b) and before (note 1).
+    (let* ((seen '())
+           (s (make-fake-shell call-step 'st 0
+                               (lambda (sh action)
+                                 (when (eq? (car action) 'call)
+                                   (fake-shell-deliver! sh (cadr action))))
+                               (lambda (kind datum) (set! seen (cons (list kind datum) seen))))))
+      (fake-shell-deliver! s 'a)
+      (test-equal "a trace sees each event as it is dispatched, and each action before it is performed"
+                  '((event a) (action (call b)) (event b) (action (note 1)) (action (note 2)))
+                  (reverse seen)))
 
     ;; M3.5: the core shuts the write side once its last write has completed
     ;; (decision 0011), so a write after the shutdown is the core's bug,
