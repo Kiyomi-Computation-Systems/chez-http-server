@@ -17,16 +17,17 @@
 ;;;     does not, is refused here.  An empty value is valid, and what it means
 ;;;     is M4's (RFC 9112 §3.3).
 ;;;
-;;; The value is judged in place, in the bytevector the parser delivered, by
-;;; uriparse's ranged forms (v0.6.0, uriparse #24): nothing is copied, and
-;;; nothing outside the value is read.  Every verdict is data.
+;;; The value is judged without the OWS around it (RFC 9112 §5; 2026-09-27),
+;;; in place, in the bytevector the parser delivered, by uriparse's ranged
+;;; forms (v0.6.0, uriparse #24): nothing is copied, and nothing outside the
+;;; value is read.  Every verdict is data.
 ;;; PURE: imports (rnrs), (http-server span), (http-server headers) and
 ;;; (uri host).
 (library (http-server host)
   (export host-fault)
   (import (rnrs)
           (http-server span)
-          (only (http-server headers) header-name=?)
+          (only (http-server headers) header-name=? trim-ows)
           (only (uri host) validate-authority authority-host-span))
 
   (define HOST (string->utf8 "host"))
@@ -52,11 +53,15 @@
   ;; uriparse's verdict on the value as an authority, then the userinfo rule:
   ;; an authority carries userinfo exactly when its host begins after an "@",
   ;; by `(uri host)`'s own split, whose bounds are relative to the value.
+  ;; Only uriparse's code is read, never the index it gives beside it.  The
+  ;; value is the span without the OWS around it (RFC 9112 §5): llhttp leaves
+  ;; out the OWS before a value but keeps the OWS after it.
   (define (value-fault value)
-    (let ((bv (span-bytevector value)) (start (span-start value)) (end (span-end value)))
-      (let-values (((code index) (validate-authority bv start end)))
-        (cond (code code)
-              ((let-values (((host-start host-end) (authority-host-span bv start end)))
-                 (fx>? host-start 0))
-               'host-userinfo)
-              (else #f))))))
+    (let ((bv (span-bytevector value)))
+      (let-values (((start end) (trim-ows bv (span-start value) (span-end value))))
+        (let-values (((code index) (validate-authority bv start end)))
+          (cond (code code)
+                ((let-values (((host-start host-end) (authority-host-span bv start end)))
+                   (fx>? host-start 0))
+                 'host-userinfo)
+                (else #f)))))))

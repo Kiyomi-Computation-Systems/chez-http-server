@@ -379,3 +379,27 @@ process's environment (AE), is refused at the bind instead. AC and AE were
 run again after that, and each turned its rows red without hanging.
 
 Every check of the step is reddened by at least one mutant above.
+
+## A Host value with OWS after it (2026-09-27)
+
+The mutants ran against the fix's tree, uncommitted on
+fix/host-trailing-whitespace at a5d8474, against every suite, and again after
+the review's fixes (ledger, this date), with the same results. Rebased onto
+6bf3c34 once M4.5 merged, they ran again against its thirty-four suites, with
+the same results; the view suite's hand-built host row stays green under each,
+since it builds its request without the core.
+
+Red before green: on main's `value-fault` each new row failed alone in its
+suite (host 11 passes and 1 failure, connection-head 51 and 1). The unit
+row's four values read `(invalid-reg-name invalid-reg-name invalid-port
+invalid-reg-name)`, and each request was refused 400 at every delivery size.
+After review the head row leaves out the headers a handler reads; its red is
+HW-A's, which judges the bounds main's code judged.
+
+| # | mutation | observed |
+|---|---|---|
+| HW-A | the trim removed: `value-fault` judges the span as llhttp delivered it (`src/http-server/host.sls`) | host 1 — "a Host value is judged without the OWS around it"; connection-head 1 — "a Host value with a space or a tab after it is served". Every other suite green |
+| HW-B | `value-fault` trims the OWS after the value, and keeps the OWS before it | host 1 — the same row, through ` h`. Every other suite green: llhttp never delivers OWS before a value, so the head row cannot see it |
+| HW-P | a probe, not a mutation of the fix: the core trims every value where it records it (`src/http-server/connection.sls`, `on-header-value-complete`) | every suite green: 32 at a5d8474, 34 after the rebase. Under it the handler reads `h` for `X: h ` (checked), so the head row asks nothing of what a handler reads. It makes a span for every value, and the allocation lane stayed green |
+
+`make test` afterwards: see the ledger's entry of this date.
