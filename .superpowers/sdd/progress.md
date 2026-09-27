@@ -2268,3 +2268,26 @@ THE AMENDMENT (plan §14, this branch): M5–M8 sliced against what M2–M4 meas
 - **Left open, and not sliced:** 0004 item 3's alternative; trimming a value once, in the core (0012's amendment); the lenient fixtures; CI's billing.
 
 NEXT: the PR, on the owner's word: feat/m4-exit, the checks, the budget and the amendment. At the merge, M4 is complete.
+
+MERGED to main on 2026-09-27, on the owner's "do the closing ritual": **#57, the M4 exit,** as 21d041f.
+- The squash tree (ecdcaf2) is identical to the tested tip's, cf6388b, and its parent is 64e9a3b.
+- **CI.** The run (36330741760) was the billing block, the `linux` job with 0 steps.
+- **Branches.** Deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: thirty-five suites, 891 expected passes, exit 0.
+
+M4 COMPLETE and merged (21d041f, PR #57): the libuv shell and the first real server. It took twelve PRs, #46 to #57, merged on 2026-09-26 and 2026-09-27. Among them, #50 and #51 are notes for M8, and #54 is the Host fix. The exit criteria are met on main:
+- curl and ab get correct responses, and the counters return to zero (`tests/test-clients.sps`);
+- the contract test passes (`tests/test-contract.sps`);
+- the table is reconciled against `uv-loop-live-handles` in one place, `shell-run!`;
+- the per-connection budget is re-measured and recorded, at about 18.2 KB per idle connection;
+- plan §14 slices M5–M8. m4-mutations.md is complete, and `make check-imports` is clean.
+
+The suite count went from M3's twenty-seven to thirty-five, adding clients, close-ownership, contract, exports, serve, server, shell and view.
+
+NEXT: M5, timeouts and limits (plan §14):
+- M5.1, the wheel and its two limits, `write-timeout-ms` and `tick-ms`;
+- M5.2, the tick rows the core lacks;
+- M5.3, one timer per loop, in both shells.
+
+It starts on a fresh branch cut from main after this commit, when the owner asks.
