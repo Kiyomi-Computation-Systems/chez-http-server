@@ -2702,3 +2702,16 @@ DECIDED on the owner's word (2026-09-27), by form:
 - **one commit, and a third PR stacked on #65**, based on refactor/uv-update-time. Weighed: the PR once #64 and #65 have merged, rebased onto main; and a review first, left uncommitted. #64 and #65 merged while the form was open (7c4f6d3, 946b500; reflect 1fc6dc9), so the commit sits on main and its PR is based there.
 
 NEXT: the PR, merged on the owner's word. Then the M5 exit (plan §14), as the NEXT above has it.
+
+MERGED to main on 2026-09-27, on the owner's "do closing ritual": **the contract's Dates made exact, as #66,** as c694cc6. Its squash tree (f28cd51) is the tested tip's, 68a1b5c's, and its parent is 1fc6dc9.
+- **CI.** Its one run was the billing block, the `linux` job with 0 steps: 36358148109.
+- **Main.** The shared checkout held `main`, clean, and was fast-forwarded there (`merge --ff-only`), once after the squash and once after this commit. This worktree was left detached at `main`.
+- **Branch.** Deleted local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: thirty-seven suites, 969 expected passes.
+
+DONE and merged (c694cc6, PR #66): the contract's fake dates each write at the instant the libuv shell's trace saw it, so the two shells' Dates are compared exactly. A script that holds a request into the next second keeps it so.
+
+NEXT: the M5 exit (plan §14), on a fresh branch cut from main after this commit, when the owner asks:
+- the brief's exit checked on the merged tree: fake-clock table tests, slow clients closed within a tick of their deadlines, and no timer handle per connection;
+- the budget spike run again with deadlines armed, so a connection's wheel entry is priced.
