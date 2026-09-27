@@ -325,3 +325,26 @@ Every check the review added or changed is reddened by one mutant at least:
   - the pair by A, AB, B, C, D, H, I, M, M2, N and P; `quick`'s close by A, B, H, K, L2, M and M2;
 - clients' "the listener is the one handle left, beside the timer the shell keeps" by A, L2 and M.
 The first round's checks keep their mutants, which ran again here with the same verdicts.
+
+## chez-libuv v0.7.0, after its review (#64 and #65; 2026-09-27)
+
+`/code-review high` found six things across the two stacked PRs, all fixed on the owner's "fix all six": three in the spike and its records (#64), three in the shell and its checks (#65).
+
+Red before green, each check written first and run on #65's tree as it was, the clock brought up to date only after a handler:
+- shell 1: "after the shell's own work holds the loop 300 ms, the idle deadline armed after it is still ahead, and is the one its trace recorded". The idle deadline, armed from the time the loop read before the hold, was ticked at once: the connection's verbs end `read-start arm-deadline disarm-deadline close`;
+- shell 1: "a connection adopted after the loop is held 300 ms has its idle deadline ahead". It was ticked and closed as soon as it was adopted, its events `(tick closed)`;
+- shell 1: "a response written after its handler held the loop 300 ms is dated after the hold" passed there, since the handler's refresh dated the write. It holds the write's own refresh, which replaces the handler's, against B below.
+
+`make check-imports` refuses a chez-libuv private import in `src/`: with the workaround's `(only (libuv private handles) loop-pointer)` put back in the shell, it answered `CHEZ-LIBUV PRIVATE IMPORT` (exit 2). #64's tree still carries that import, so the rule lands in #65.
+
+The spike's parts, in scratch copies whose refresh raises: the old spike died in part (a), `Exception: provoked` (exit 255), printing nothing; the new one names the raise in (a), (b) and (c) and runs on (exit 0). A thread that never answers in (c) is named after 2000 ms.
+
+| Mutant | Mutation | Killed by |
+|---|---|---|
+| v0.7.0-A | no refresh in `run!` | shell 3 — the Date check, the slow handler's, and the shell's own work's |
+| v0.7.0-B | the arms refreshed, not the writes | shell 1 — the Date check |
+| v0.7.0-C | the writes refreshed, not the arms | shell 1 — the shell's own work's. The slow handler's passes: its write's refresh comes just before its write deadline's arm |
+| v0.7.0-D | no refresh as a connection is adopted | shell 1 — the adoption's |
+| v0.7.0-E | the refresh after the trace, not before | shell 1 — the shell's own work's, whose deadline is no longer the one its trace recorded |
+
+Each check the review added is reddened by one mutant at least: the Date check by A and B, the shell's own work's by A, C and E, the adoption's by D. The slow handler's check keeps A. M5.3's AC and AD moved the handler's refresh, which is gone, and A takes their place.

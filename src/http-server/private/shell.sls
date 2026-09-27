@@ -25,9 +25,7 @@
 ;;;                   `parser-result`
 ;;;   resume-parser   parser-resume!
 ;;;   call-handler    the handler's response as `handler-responded`, or, if
-;;;                   the handler raises, `handler-failed`, logged; the
-;;;                   loop's clock brought up to date first, as the handler
-;;;                   held the loop (chez-libuv #28)
+;;;                   the handler raises, `handler-failed`, logged
 ;;;   write           uv-write*!, the Date slot filled from the clock (decision
 ;;;                   0010); its completion reports `write-completed` with the
 ;;;                   action's byte count, which is all the completion keeps:
@@ -53,7 +51,14 @@
 ;;; the kind's limit (limits-deadline-ms), never by the wall clock the Date
 ;;; is made from.  The first is armed as the connection is adopted, its idle
 ;;; one: the core starts it in idle with that deadline recorded, and asks
-;;; for the next ones.  ONE TIMER TICKS THEM ALL, every tick-ms: made when a
+;;; for the next ones.  libuv reads the loop's clock once a turn, and what
+;;; runs in the turn holds the loop, a handler above all, so the shell
+;;; brings the clock up to date (uv-update-time!, chez-libuv #28) as it
+;;; adopts a connection, and before each arm and each write, whose Date the
+;;; loop's time dates: in run!, ahead of the action's trace.  Like every
+;;; chez-libuv verb the shell calls, uv-update-time! is refused off the
+;;; loop's thread (`&uv-wrong-thread`), and the shell runs only on it
+;;; (decision 0003).  ONE TIMER TICKS THEM ALL, every tick-ms: made when a
 ;;; deadline is first armed, stopped by the first firing that finds the
 ;;; wheel empty, so an idle server sleeps (0005), started again by the next
 ;;; arm, and closed once the shell has stopped listening and no connection
@@ -96,9 +101,10 @@
 ;;; loop.  An adoption that fails is closed the same way.
 ;;;
 ;;; THE DATE is made once a second (decision 0010).  The shell's clock is read
-;;; when a second of the loop's own time has passed, libuv's cached
-;;; milliseconds, which cost nothing to read; between readings the second is
-;;; the last reading plus the loop's time since.  A response reads no clock.
+;;; when a second of the loop's own time has passed, libuv's milliseconds,
+;;; brought up to date before the write (DEADLINES, above); between readings
+;;; the second is the last reading plus the loop's time since.  So a
+;;; response reads the shell's clock once a second at most.
 ;;;
 ;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
 ;;; chez-libuv catches whatever a callback raises, and raises it again from
@@ -331,13 +337,13 @@
 
   ;; serve! : Shell UvTcp -> Connection
   ;; Serve an accepted TCP handle: the core in idle, a parser of its own, the
-  ;; connection in the table, its idle deadline armed, Nagle's algorithm off,
-  ;; and reading started with the limits' buffer.  Nagle's algorithm would
-  ;; hold a response's last partial segment until the client acknowledged
-  ;; the ones before it, and the shell writes each response whole, in one
-  ;; write; a socket that refuses the option has already failed, which
-  ;; reading will report.  A start that raises goes on to shell-adopt!, which
-  ;; closes the handle.
+  ;; connection in the table, its idle deadline armed at the loop's time
+  ;; brought up to date, Nagle's algorithm off, and reading started with the
+  ;; limits' buffer.  Nagle's algorithm would hold a response's last partial
+  ;; segment until the client acknowledged the ones before it, and the shell
+  ;; writes each response whole, in one write; a socket that refuses the
+  ;; option has already failed, which reading will report.  A start that
+  ;; raises goes on to shell-adopt!, which closes the handle.
   (define (serve! sh tcp)
     (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f)))
       (connection-entry-set! c (make-wheel-entry c))
@@ -349,6 +355,7 @@
       (connection-on-eof-set! c (lambda () (dispatch! c '(eof))))
       (connection-on-error-set! c (lambda (e) (dispatch! c (list 'read-error (errno e)))))
       (hashtable-set! (shell-table sh) tcp c)
+      (uv-update-time! (shell-loop sh))
       (arm! c 'idle)
       (guard (e ((transport-condition? e) (values)))
         (uv-tcp-nodelay! tcp #t))
@@ -411,10 +418,14 @@
 
   ;; run! : Connection Action -> Void
   ;; Record a violation if the action runs anywhere but the outermost drain,
-  ;; then perform it.
+  ;; then perform it.  An arm or a write reads the loop's time, for its
+  ;; deadline or its Date, so the loop's clock is brought up to date first,
+  ;; before the trace, which then reads the time the action does.
   (define (run! c a)
     (unless (fx=? (connection-depth c) 1)
       (connection-violations-set! c (cons a (connection-violations c))))
+    (when (memq (car a) '(arm-deadline write))
+      (uv-update-time! (shell-loop (connection-shell c))))
     (trace! c 'action a)
     (case (car a)
       ((feed-parser) (feed! c (cadr a) (caddr a) (cadddr a)))
@@ -455,14 +466,10 @@
   (define (code e) (and e (parser-error-code e)))
 
   ;; call-handler! : Connection Request -> Void
-  ;; The handler's answer, or its failure, dispatched once the loop's clock
-  ;; is brought up to date: a handler holds the loop while it runs, and the
-  ;; deadline armed after its answer runs from when it returned.
   (define (call-handler! c request)
     (let ((answer (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
                                 (list 'handler-failed e)))
                     (list 'handler-responded ((shell-handler (connection-shell c)) request)))))
-      (uv-update-time! (shell-loop (connection-shell c)))
       (dispatch! c answer)))
 
   ;; write! : Connection (Listof Segment) Nat -> Void
@@ -516,7 +523,8 @@
 
   ;; arm! : Connection Symbol -> Void
   ;; Arm the connection's deadline of `kind` at the loop's now plus the
-  ;; kind's limit, moving the one it had, and see the timer runs.  A
+  ;; kind's limit, moving the one it had, and see the timer runs.  Its
+  ;; callers, run! and serve!, have brought the loop's clock up to date.  A
   ;; connection already closing is not armed, as it is not read: it left the
   ;; wheel for good as its close began (handle-close!), and the core may not
   ;; know it has, when the close came from outside it.
