@@ -1032,6 +1032,28 @@ The shared binding list is load-bearing: a fresh 25-entry binding list per conne
 would add **1,216 bytes** per connection, so the server builds one list per server and
 passes the connection through the parser's user-context argument.
 
+> *Re-measured 2026-09-27 (the M4 exit; Darwin arm64, Chez 10.4.1, libuv 1.52.1):*
+> against the real shell, a connection held idle costs about **18.2 KB**, not the
+> table's 17,720 B. `research/spike/m4-exit-budget.sps` starts a server as `serve`
+> does, and a client in a process of its own holds 100, then 500, keep-alive
+> connections to it. The server's heap grows by 1,490 to 1,707 B per connection
+> over sixteen readings, median about 1,540 B. The readings after 1, 10, 50 and
+> 200 GETs a connection do not differ beyond that spread, so a connection does not
+> grow with the requests it serves. Outside the heap are the read buffer, 16,384 B,
+> and `uv_tcp_t`, 264 B.
+>
+> The table's parser row counted what making a parser allocates (1,072 B then, and
+> 1,056 B in M4.1's check). A parser keeps 592 B. The rest of the heap breaks down as:
+>
+> - the core's state, with its head and target judge: 192 B;
+> - the adapter's context: 32 B;
+> - chez-libuv's TCP handle: 200 to 240 B;
+> - about 500 B not measured apart: the shell's connection record and closures,
+>   the table's entry, and what reading and a served request leave in place.
+>
+> The buffer, a limit, is 90% of the cost. The runs are
+> `out/m4-exit-budget.run{1,2}.txt`.
+
 Per request, allocation:
 
 | Prototype | Bytes/request |

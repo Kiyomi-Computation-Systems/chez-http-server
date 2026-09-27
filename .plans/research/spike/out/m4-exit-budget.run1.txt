@@ -1,0 +1,28 @@
+Chez Chez Scheme Version 10.4.1, libuv 1.52.1, the listener on 127.0.0.1:64201
+One held connection's heap, (heap with 500 - heap with 100) / 400:
+  held 100 after 1 GET each: satisfied, heap 22760160 B; TCP handles 101, read buffers 101; then satisfied, client exit (0 #f)
+  held 500 after 1 GET each: satisfied, heap 23375632 B; TCP handles 501, read buffers 501; then satisfied, client exit (0 #f)
+  held 100 after 1 GET each: satisfied, heap 22779768 B; TCP handles 101, read buffers 101; then satisfied, client exit (0 #f)
+  held 500 after 1 GET each: satisfied, heap 23389120 B; TCP handles 501, read buffers 501; then satisfied, client exit (0 #f)
+after 1 GET each: 1538.68 B, and again 1523.38 B
+  held 100 after 10 GETs each: satisfied, heap 22762744 B; TCP handles 101, read buffers 101; then satisfied, client exit (0 #f)
+  held 500 after 10 GETs each: satisfied, heap 23386592 B; TCP handles 501, read buffers 501; then satisfied, client exit (0 #f)
+  held 100 after 10 GETs each: satisfied, heap 22755800 B; TCP handles 101, read buffers 101; then satisfied, client exit (0 #f)
+  held 500 after 10 GETs each: satisfied, heap 23381216 B; TCP handles 501, read buffers 501; then satisfied, client exit (0 #f)
+after 10 GETs each: 1559.62 B, and again 1563.54 B
+  held 100 after 50 GETs each: satisfied, heap 22768736 B; TCP handles 101, read buffers 101; then satisfied, client exit (0 #f)
+  held 500 after 50 GETs each: satisfied, heap 23383280 B; TCP handles 501, read buffers 501; then satisfied, client exit (0 #f)
+  held 100 after 50 GETs each: satisfied, heap 22775024 B; TCP handles 101, read buffers 101; then satisfied, client exit (0 #f)
+  held 500 after 50 GETs each: satisfied, heap 23394368 B; TCP handles 501, read buffers 501; then satisfied, client exit (0 #f)
+after 50 GETs each: 1536.36 B, and again 1548.36 B
+  held 100 after 200 GETs each: satisfied, heap 22777576 B; TCP handles 101, read buffers 101; then satisfied, client exit (0 #f)
+  held 500 after 200 GETs each: satisfied, heap 23373528 B; TCP handles 501, read buffers 501; then satisfied, client exit (0 #f)
+  held 100 after 200 GETs each: satisfied, heap 22730352 B; TCP handles 101, read buffers 101; then satisfied, client exit (0 #f)
+  held 500 after 200 GETs each: satisfied, heap 23413136 B; TCP handles 501, read buffers 501; then satisfied, client exit (0 #f)
+after 200 GETs each: 1489.88 B, and again 1706.96 B
+Outside the heap, a connection's: uv_tcp_t 264 B (uv_handle_size), read buffer 16384 B (limits-read-buffer-size)
+The parts, fresh, less a list's pair (16 B):
+  the core's state, with its head and target judge: 192 B
+  the adapter's context: 4001/125 B
+  a parser on the shared binding list: 592 B
+  chez-libuv's TCP handle, its heap side: 60179/250 B

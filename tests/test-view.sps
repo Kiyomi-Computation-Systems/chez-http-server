@@ -24,8 +24,7 @@
 ;;;     value is its first field's, as `headers-ref` reads it in the
 ;;;     decision's measurement.
 (import (rnrs) (srfi :64) (testing) (fake-shell)
-        (http-server limits) (http-server request) (http-server response) (http-server span)
-        (http-server view))
+        (http-server limits) (http-server response) (http-server view))
 
 (define (b s) (string->utf8 s))
 
@@ -95,15 +94,11 @@
                 '("" "")
                 (list (seen (b "GET / HTTP/1.1\r\nHost:\r\n\r\n") request-host)
                       (seen (b "GET / HTTP/1.0\r\n\r\n") request-host)))
-    ;; Built by hand: the core answers `Host: h ` 400 until its Host judge
-    ;; trims (PR #54), and then builds this request from it, the value's span
-    ;; ending where llhttp ends it, after the whitespace.
+    ;; llhttp ends the value's span after the whitespace, and the core's Host
+    ;; judge reads the value without it (#54).
     (test-equal "the host is the Host field's value without the whitespace after it"
                 "h"
-                (let ((whole (lambda (s) (let ((bv (b s))) (make-span bv 0 (bytevector-length bv))))))
-                  (request-host (make-request 'GET (whole "/") 1 1
-                                              (list (cons (whole "Host") (whole "h \t")))
-                                              #f))))
+                (seen (b "GET / HTTP/1.1\r\nHost: h \t\r\n\r\n") request-host))
 
     ;; --- a header's value, by name ---
     (test-equal "a header by name, in any case: the first field's value, or none"

@@ -5,7 +5,7 @@ Status: accepted — schedules [the project brief](2026-09-19-chez-http-server-p
 Decisions: [0001–0008](decisions/) settle the questions this plan sequences; it cites them and re-argues none
 Ledger: [`.superpowers/sdd/progress.md`](../.superpowers/sdd/progress.md); house rules in [`global-constraints.md`](../.superpowers/sdd/global-constraints.md)
 Tree at the time of writing: `main` at `11de638` — M0 merged as `d0c522b`, the design document as `1d59d50`, decisions 0004/0005 amended for M0's limits naming as `9e010ca`. `make test` green: five suites, 55 expected passes, exit 0
-Depth: **M1–M4 are sliced. M5–M8 carry entry conditions and hazards only** and are sliced in a dated amendment when M4 lands (§10 says why)
+Depth: **M1–M4 are sliced. M5–M8 carry entry conditions and hazards only** and are sliced in a dated amendment when M4 lands (§10 says why); that amendment is §14 (2026-09-27)
 
 The brief says what is built and what each milestone must prove. The design document
 says how the parts compose and where the mechanism lives. Neither says what order the
@@ -764,13 +764,33 @@ contract test passes. Plus: the connection table reconciled against
 `uv-loop-live-handles` at one place in the run loop, and the per-connection resident
 budget re-measured against design §7.5's 16,384 + 264 + 1,072 and recorded.
 
+*Noted 2026-09-27 (the M4 exit):* all of it holds.
+- **curl and ab.** `tests/test-clients.sps` runs both against a server started as
+  `serve` starts one, each as a child process on the server's own loop.
+  - curl sends its GETs, HEADs and POSTs on one connection, and its HTTP/1.0 GETs each
+    on its own.
+  - ab's 200 requests, 8 at a time, all succeed, and with `-k` all 200 are kept alive.
+  - `make test` runs the suite, and CI installs curl and ab (the owner's decision,
+    ledger).
+- **The counters.** With every client gone, the table is empty and the listener is
+  the one handle left. After the shutdown, chez-libuv counts no TCP handle, read
+  buffer, write request, pipe or process.
+- **The contract test** passes (`tests/test-contract.sps`, M4.4).
+- **The reconciliation.** The run loop reconciles the table against
+  `uv-loop-live-handles` in one place, `shell-run!`, after a callback's error (M4.2;
+  decision 0003 item 4). With real clients there is nothing to reconcile: the server
+  logs only `listening`.
+- **The budget.** It is about 18.2 KB per idle connection, against design §7.5's
+  17,720 B (§7.5's note of this date).
+- **The slicing.** The amendment slicing M5–M8 is §14.
+
 ---
 
 ## 9. M5–M8 — entry conditions, not yet sliced
 
 These four carry the brief's exits unchanged, the design sections they implement, the
 limits that arrive, and the hazard each will have to answer. **They are deliberately not
-sliced** — §10 says why.
+sliced** — §10 says why. *Amended 2026-09-27:* §14 slices them, at the M4 exit.
 
 ### M5 — timeouts and limits
 Design §4.3's per-state deadlines, `(http-server wheel)`, §6.3's policy family.
@@ -895,6 +915,8 @@ truth than leaving them at milestone grain and saying so.
 **The amendment is part of M4's close-out**, not a separate task: when M4 merges, this
 document gets a dated section slicing M5–M8 against what M2–M4 measured.
 
+*Done 2026-09-27, at the M4 exit:* §14.
+
 ---
 
 ## 11. Out of scope for this plan
@@ -920,7 +942,7 @@ owns.
 | # | Risk | Discharged by |
 |---|---|---|
 | 1 | Allocation per request (gate ≤ 3 KiB) | **M2.3** (the collector) and **M2 exit**, re-measured at **M3 exit** with the response path in the loop, where two requests a server meets joined the gate once byte-machine #139 was fixed (2026-09-26) |
-| 2 | The 64 KiB read buffer dominates per-connection cost | already answered in M0 — `read-buffer-size` defaults to 16,384 — and **re-measured at M4 exit** against the real handle |
+| 2 | The 64 KiB read buffer dominates per-connection cost | already answered in M0 — `read-buffer-size` defaults to 16,384 — and **re-measured at M4 exit** against the real handle: about 18.2 KB per idle connection, 16,384 B of it the buffer (2026-09-27, design §7.5's note) |
 | 3 | Pause protocol edges | **M2.4** (mutation A, against the measured 51/47 boundary) and **M6** (the empty-feed-after-pause case) |
 | 4 | Close-delimited response bodies need `parser-finish!` | **not this server's path** — only the test client and a future proxy see it. Named in **M8**'s black-box lane, where the test client exists |
 | 5 | The corpus is parser truth, not server truth | **M1.4**'s three-lane ratchet, which is the structural answer: the trace lane, the outcome lane and the libhtp lane are gated separately, so parser truth can never vouch for server truth |
@@ -945,3 +967,196 @@ first that would genuinely benefit from the Linux leg**, because the corpus lane
 first lane whose result could plausibly differ by platform — decoded byte counts, chunk
 ladders and trace rendering all go through string and bytevector paths that a different
 Chez build could disagree about. It is an account setting, not a repository change.
+
+---
+
+## 14. M5–M8, sliced (amended 2026-09-27, the M4 exit)
+
+§10 left M5–M8 at milestone grain until M4 landed. This is the amendment it promised:
+each milestone sliced against what M2–M4 measured and what their ledgers carried
+forward. §9's entry conditions, hazards and notes stand. Each slice keeps §1's rules:
+red before green, a named mutation, a PR of its own past about 400 lines.
+
+**What M2–M4 measured that the slices lean on** (the ledger and design have each
+reading's date and derivation):
+
+| Measured | Value | Where | Leaned on by |
+|---|---|---|---|
+| allocation per request, the gate's GET | 1,840 B against the 3,072 B ratchet; a JSON POST 2,384 B, `ab -k`'s GET 2,112 B | the M3 exit | M6, M8.4 |
+| a body delivery | 112 B per `on-body-data`, whatever its size | M2.2 (2026-09-23) | M6 |
+| an idle connection | about 18.2 KB, 16,384 B of it the read buffer | the M4 exit (design §7.5) | M5.3, M7, M8.4 |
+| the ratchet | trace 135, outcome 135, libhtp 12 passing | since the M2 exit | M6.4, M8.3 |
+| a parked coroutine | 3,449 to 5,635 B; none on an idle connection | the research (design §5.2) | M7 |
+
+**What is already in place, and inert.** The core arms deadlines by kind (`idle`,
+`header`, `body`, `write`, `linger`). Neither shell acts on `arm-deadline`,
+`disarm-deadline`, `deliver-body`, `deliver-body-end`, `notify-producer` or `hand-off`:
+each falls through to nothing. The core has no rows for `handler-body-chunk`,
+`handler-body-end` or `body-credit`, and `shutdown-requested` has a row only in `idle`.
+`server-step` never asks for `force-close-all`. The slices below give each of these its
+rows and its performer.
+
+### M5 — timeouts and limits
+
+**M5.1 — the wheel, and its two limits.** `(http-server wheel)`, pure: deadlines in
+`tick-ms` buckets, armed, disarmed and advanced to a `now` the caller gives. A deadline
+of D fires once, within `[D, D + tick-ms]`, never before D. `write-timeout-ms` (60,000
+per write completion) and `tick-ms` (250) arrive with §3's four things;
+`CHEZ_HTTP_TICK_MS` is read in milliseconds, and `docs/configuration.org` says so.
+- **Mutation:** a deadline rounds down to its bucket's start. Expect the interval row
+  red: it fires before D.
+
+**M5.2 — every deadline the core arms has its tick row.** Today `on-tick` answers
+`idle`, `head` and `lingering`. `body` past the body deadline answers 408 and closes,
+and `responding` past the write deadline closes with no response (0005). Design §4.4
+gains both rows.
+- **Mutation:** the write row removed. Expect its row red: a write that never completes
+  keeps the connection open.
+
+**M5.3 — one timer per loop, in both shells.** Each shell turns `arm-deadline` into a
+wheel entry at `now` plus the kind's limit, and `disarm-deadline` into its removal. It
+keeps one timer per loop at `tick-ms`, and delivers `tick` to each connection whose
+deadline passed. The fake shell's clock is the test's own. The contract test gains a
+script whose deadlines pass, and chez-libuv's dev counters read one timer however many
+connections are open. The socket lane gains three clients, each closed within a tick of
+its deadline, using short limits and the shell's clock:
+- one that sends half a head gets 408;
+- an idle keep-alive connection is closed;
+- a lingering client that never closes is closed.
+
+- **Mutation:** a timer per armed deadline. Expect the one-timer check red.
+
+**M5 exit:** the brief's (fake-clock table tests; slow clients closed within a tick of
+their deadlines; no per-connection timer handle). Plus: the docs drop their "from M5"
+notes (`configuration.org`, `connections.org`, `responses.org`, README). The budget
+spike is run again with deadlines armed, so a connection's wheel entry is priced.
+
+### M6 — body streaming and backpressure
+
+**M6.1 — how a handler reads a body, decided first.** Reading a request body, and
+writing a response of unknown length, is public API. So M6 opens with a decision
+record, measured first and settled by form, as 0012 was. With it comes the buffering
+helper and its `max-body-bytes`: `#f` streams, and the helper's default is 1 MiB, past
+which a request is answered 413, the first way 413 has in. Brief risk 3's two pinned
+tests land here:
+- a pause inside `on-body-data` feeds again from `parser-result-next`;
+- after a pause on a body's last byte, one more feed, which may be empty, completes the
+  message.
+- **Mutation:** the feed after the pause starts where the delivery started. Expect the
+  pinned row red.
+
+**M6.2 — backpressure on the read side.** `body-credit` gets its row: reading stops
+while the handler has not taken what was delivered, and starts on its credit, so a slow
+handler holds at most a read buffer's worth.
+- **Mutation:** the credit ignored, reading started regardless. Expect the slow
+  handler's bound red.
+
+**M6.3 — a streamed response.**
+- `handler-body-chunk` and `handler-body-end` get rows: chunked to HTTP/1.1, and
+  close-delimited to 1.0. That is M3.2's carried arm, and its mutation, dropping the
+  arm, is this slice's too.
+- `write-high-water` and `write-low-water` arrive (§3's amendment), and with them
+  `notify-producer`: past high water the producer waits, and below low water it is told
+  to go on.
+- A handler that fails after the head is on the wire gets a bare close. Design §6.4's
+  `&http-server-handler-error` is settled here if that close must reach the embedder;
+  v1 defines none (M4.5).
+- **Mutation:** high water ignored. Expect the slow reader's memory bound red.
+
+**M6.4 — Expect, trailers, and the exit's files.**
+- `100 Continue` goes out when the handler pulls the body, not before (the brief).
+  libhtp's `05-expect.t` and `99-expect-100.t` join its lane with our expectations, and
+  the ratchet moves.
+- Trailer fields are held to a limit, where today they are held to none (ledger, M2).
+- **Mutation:** the `100` written with the head. Expect the Expect row red.
+
+**M6 exit:** the brief's. 16 MiB each way against a slow peer, with memory bounded,
+read as the M4 exit read a connection: the server's heap, the client in a process of
+its own. libhtp's Expect and early-response files pass. `docs/handlers.org` gains
+bodies.
+
+### M7 — the scheduler and awaiting handlers
+
+**M7.1 — the scheduler, and the phase cell** (decision 0003; design §5.2, §5.3). A
+coroutine per awaiting handler, on one-shot continuations, and the scheduler around
+`uv-run`. The phase cell reads `'scheduling` around every await, spawn and resume,
+`'in-uv-run` in a callback, and `'in-parser` during a feed. Four invariants are checked
+here:
+- R1: a callback runs no user code and captures no continuation;
+- R2: a continuation is captured only on a coroutine's stack;
+- R3: a coroutine never returns normally;
+- R5: no parser callback awaits.
+- **Mutations:** design §5.3's "call a handler from inside `on-data`", and its "swap
+  `'once` and `'nowait`". R2's and R3's are named when the slice is written.
+
+**M7.2 — what a handler awaits, decided first.** The awaiting verbs a handler sees are
+public API, so a decision record comes first; the brief's exit needs `uv-getaddrinfo!`.
+A resume cell is one-shot, and a second fulfilment, such as a DNS answer after its
+timeout, is a recorded fault (R4).
+- **Mutation:** design §5.3's third, the one-shot check removed. Expect the R4 row red.
+
+**M7.3 — three shells, one contract.** The contract test plays its scripts through the
+coroutine shell as well (brief item 5). A handler awaiting `uv-getaddrinfo!` inside a
+pipelined connection keeps the responses in order (the brief's exit).
+- **Mutation:** the coroutine shell resumes a later request's handler first. Expect the
+  order row red.
+
+**M7 exit:** the brief's. Each of R1–R5 has a mutation that goes red. The budget spike
+run again shows an idle connection's heap unchanged: an idle connection carries no
+coroutine.
+
+### M8 — shutdown, hand-off, black-box, release
+
+**M8.1 — the drain.** `drain-timeout-ms` (10,000) arrives with §3's four things.
+`server-step` gets the rest of the drain, as `(http-server server)`'s header says:
+- the connections are told to finish;
+- `force-close-all` is asked for on the tick at the deadline;
+- the drain ends on `connection-closed`.
+
+The core gets `shutdown-requested` rows for its in-flight states; today only `idle` has
+one. The shell watches SIGTERM through one signal handle, and `serve` returns when the
+drain ends. The drain is table-tested with a fake clock. On a socket:
+- a request in flight at SIGTERM is answered, then closed;
+- an idle keep-alive connection closes at once;
+- a client that holds its connection is closed at the deadline.
+- **Mutation:** `force-close-all` never asked for. Expect the held connection's row red.
+
+**M8.2 — the hand-off door, decided first.** A decision record answers §9's three
+questions: who writes the `101`, what the handed-off stream still belongs to, and what
+the door hands over (§9 recommends the transport record). The door opens at
+`on-message-complete` for a handler that takes upgrades, and the hook's contract test
+lands (0006 item 3): the retained bytes are exactly `parser-result-next` onward. The
+HTTP/2 preface is still answered 505.
+- **Mutation:** the retained bytes start a byte late. Expect the hook's row red.
+
+**M8.3 — the black-box and robustness lanes** (design §8.8).
+- Against a port: curl scripts beyond the M4 exit's, vtest2's `.vtc`, and hurl. Brief
+  risk 4 is answered here: the test client reads a close-delimited response with
+  `parser-finish!`.
+- Robustness: libhtp's `invalid-*` files, smuggler's payload sets as data, and the AWS
+  `http-desync-guardian` tables, vendored by 0007's rules.
+- *Found at this amendment:* 0007 item 3 orders Kestrel's `HttpParsingData` tables and
+  httpd's `http_strict.t` and lighttpd's `request.t` cases into M2. No slice held them,
+  and M2 closed without them. They join this lane.
+- **Mutation:** one per lane, named as it is written. Each lane's expectations are
+  ratcheted as M1's are, both ways.
+
+**M8.4 — load, and the release.**
+- oha's load smoke gives the first throughput numbers. That is where 0002's amendment
+  says a goal can first be set, and where 0004 item 3's alternative can be weighed.
+- The memory at `max-connections` is re-measured: 10,000 connections at the M4 exit's
+  18.2 KB is about 180 MB.
+- `CHANGELOG.md`, empty today, gains v0.1.0 with the measured numbers and the platforms
+  they were measured on. Then the tag.
+- **Mutation:** the shell drops one write in a thousand. Expect the smoke's own check,
+  every response answered and none failed, red.
+
+**M8 exit:** the brief's. v0.1.0 is tagged with the measured numbers in `CHANGELOG.md`.
+
+### Open, and not sliced
+
+- 0004 item 3's alternative: reading during a handler only to notice a client leave.
+- 0012's amendment: trimming a value's whitespace once, where the core records it,
+  rather than where each reader reads it.
+- The 32 lenient llhttp fixtures stay `deferred` by class (§11).
+- CI's billing block is the owner's (§13).

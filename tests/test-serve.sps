@@ -120,7 +120,7 @@
                   (exchange loop sh port
                             (b (string-append "GET /" (make-string 70 #\a) " HTTP/1.1\r\nHost: h\r\n\r\n"))))
       (shell-shutdown! sh)
-      (run-until/ticking loop (lambda () (null? (uv-loop-live-handles loop))) cap)
+      (run-until-drained loop cap)
       (test-equal "shut down, the server leaves nothing on the loop" '() (uv-loop-live-handles loop))
       (uv-loop-teardown! loop))
 
@@ -143,7 +143,7 @@
                                                                '("CHEZ_HTTP_PORT" . "0"))
                                                           log!))
                                           "CHEZ_HTTP_HOST")))
-                    (run-until/ticking loop (lambda () (null? (uv-loop-live-handles loop))) cap)
+                    (run-until-drained loop cap)
                     (list outcome (uv-loop-live-handles loop))))
       (uv-loop-teardown! loop))
 

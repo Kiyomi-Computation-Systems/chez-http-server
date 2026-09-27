@@ -403,3 +403,34 @@ HW-A's, which judges the bounds main's code judged.
 | HW-P | a probe, not a mutation of the fix: the core trims every value where it records it (`src/http-server/connection.sls`, `on-header-value-complete`) | every suite green: 32 at a5d8474, 34 after the rebase. Under it the handler reads `h` for `X: h ` (checked), so the head row asks nothing of what a handler reads. It makes a span for every value, and the allocation lane stayed green |
 
 `make test` afterwards: see the ledger's entry of this date.
+
+## The M4 exit (2026-09-27)
+
+`tests/test-clients.sps` checks what the server already did, so its red is
+the mutants'. Each ran against every suite, thirty-five, on the finished
+tree, with the clients as installed on macOS: curl 8.7.1 and ApacheBench 2.3.
+Every check of the suite is reddened by at least one mutant below.
+
+| # | mutation | observed |
+|---|---|---|
+| M4X-A | an HTTP/1.1 connection closes after every response (`should-keep-alive?` not asked; `src/http-server/connection.sls`) | clients 4 — curl's GETs, HEADs and POSTs, each second one on a connection of its own, and ab -k's run, none kept alive; the core's keep-alive rows in twelve other suites (connection-allocation exits 2) |
+| M4X-B | a connection that did not ask to be kept alive is kept alive | clients 2 — curl's HTTP/1.0 GETs and ab's run never end, and are killed at the cap, about 25 s each; the core's 1.0 rows in ten other suites |
+| M4X-C | a HEAD's answer carries the body (`response-framing`, `decisions.sls`) | clients 1 — the HEADs; connection-response 1, decisions 2 |
+| M4X-D | a request's body is refused (`on-body-data`) | clients 1 — the POSTs; the rows with a body in eight other suites |
+| M4X-E | a closed connection stays in the table (`handle-closed!`, `shell.sls`) | clients 1 — "with every client gone, every connection leaves the table"; contract 1, shell 6 |
+| M4X-F | the shutdown leaves the listener open (`server-run!`) | clients 2 — "shut down, nothing is left on the loop", and the counters; contract 1, serve 1, shell 3 |
+| M4X-G | a lingering connection is not closed when its client closes (`on-eof`) | clients 4 — the table, "the listener is the one handle left", the loop after the shutdown, and the counters; ten other suites |
+| M4X-H | the shell logs every connection it closes | clients 1 — "the server logged nothing but where it listens"; shell 2, whose checks read the newest log entry |
+| M4X-I | Content-Length one byte less than the body (`serializer.sls`) | clients 4 — curl's four; seven other suites. ab's two runs stay green: ab still reports 200 requests complete, none failed and 4-byte documents, since it does not hold a body to its Content-Length. A and B redden the ab rows |
+
+## The view's host row through the core (2026-09-27)
+
+#54 merged, so the view suite's row "the host is the Host field's value
+without the whitespace after it" sends `Host: h \t` through the core, where
+it built its request by hand before. Both mutants ran again on the finished
+tree, against every suite:
+
+| # | mutation | observed |
+|---|---|---|
+| M4.5-O2b | O2 again: `request-host` reads the Host field's value with the whitespace after it | view 1 — the row. Every other suite green, 34 |
+| HW-Ab | HW-A again: the Host judge judges the span as llhttp delivered it (`value-fault`) | host 1 and connection-head 1, as before, and now view 1, since the core answers 400 and no handler runs. Every other suite green, 32 |
