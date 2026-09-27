@@ -2164,3 +2164,18 @@ DECIDED on the owner's word (the same words, as recommended): design §6.4's `&h
 `make test` green: thirty-four suites, 878 expected passes (serve 9, limits 40, view 13), exit 0.
 
 NEXT: two stacked PRs, on the owner's word: the first step, then the facade stacked on it. Then the M4 exit (plan §8): curl and ab get correct responses, and the counters return to zero; the contract test passes; the connection table is reconciled against `uv-loop-live-handles` at one place in the run loop; the per-connection budget is re-measured; and the amendment slicing M5–M8 is written (plan §10).
+
+MERGED to main on 2026-09-27, on the owner's "Go ahead and do the commits push the PR's up and do a closing ritual":
+- **#55, the first step,** as 36b0ff5, without deleting its branch until #56 was retargeted. The squash tree (ec40093) is identical to the tested tip's, 09f7be3.
+- **#56, the second step.** Retargeted to main, then rebased from 09f7be3 onto 36b0ff5 as df0d6e5, its tree unchanged (3260d75, the tested 24a78db's). It was force-pushed with the lease read from `ls-remote`, and merged as 1bdb83f, whose tree is 3260d75 too.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps and the billing annotation: 36325832664 (#55), 36325848593 (#56 as opened) and 36325938319 (#56 rebased). The last was still queued when #56 merged, on a tree identical to 36325848593's, and completed the same way after.
+- **Branches.** Both are deleted local and remote, and refs pruned. PR #54, the Host fix, is still open, another session's work. It meets these merges at the ends of this file and of m4-mutations.md, and in plan §8's M4.5 section.
+
+`make test` green on main: thirty-four suites, 878 expected passes, exit 0.
+
+M4.5 DONE and merged:
+- `(http-server)`, the facade: `serve` runs a handler where `CHEZ_HTTP_HOST` and `CHEZ_HTTP_PORT` say, by default 127.0.0.1:8080, and a malformed setting raises `&http-server-config-error` naming it before anything listens;
+- `(http-server view)`: a handler reads the path, the query, a header's value and the host as fresh strings, the host by RFC 9112 §3.2.2. The plan's mutation reddens the host row alone;
+- the owner's decisions of 2026-09-27 are recorded in the steps above, and in decision 0012's amendment.
+
+NEXT: the M4 exit (plan §8): curl and ab get correct responses, and the counters return to zero; the contract test passes; the connection table is reconciled against `uv-loop-live-handles` at one place in the run loop; the per-connection budget is re-measured; and the amendment slicing M5–M8 is written (plan §10). It starts on a fresh branch cut from main after this commit, when the owner asks.
