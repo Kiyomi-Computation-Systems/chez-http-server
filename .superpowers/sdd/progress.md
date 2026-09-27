@@ -2651,3 +2651,22 @@ Reviewed (`/code-review high`, 2026-09-27, after the PRs opened): six findings, 
 `make test` on #64's tree: thirty-seven suites, 962 expected passes, exit 0. On #65's: thirty-seven suites, 965, exit 0.
 
 NEXT: the two stacked PRs, merged bottom up on the owner's word. Then the M5 exit, on the merged tree.
+
+MERGED to main on 2026-09-27, on the owner's "do the closing ritual": **chez-libuv v0.7.0, as two stacked PRs.**
+- **#64, the pin,** as 7c4f6d3. Its squash tree (a6c97d2) is the tested tip's, ad36839's, and its parent is 21c1fec. It merged first and kept its branch, since #65 was based on it.
+- **#65, the workaround dropped and the clock refreshed wherever it is read,** as 946b500. It was retargeted to main and rebased from #64's tip, ad36839. The rebased tip, be6d372, has the tested tree (5608788, b63d828's), and so does the squash, whose parent is 7c4f6d3.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36354385484 (#64 as opened), 36354393588 (#65 as opened), 36355718381 (#64's review fixes), 36356253988 (#65's review fixes) and 36356693057 (#65 rebased).
+- **Branches.** Both deleted local and remote, and refs pruned. No PR is open. `fix/contract-write-instants`, the contract's Date comparison in a session of its own, started from #65's tip before the merge, b63d828, and was left alone.
+
+`make test` green on main: thirty-seven suites, 965 expected passes.
+
+DONE and merged (7c4f6d3, PR #64; 946b500, PR #65): chez-libuv is pinned at v0.7.0.
+- The shell calls chez-libuv's `uv-update-time!` as it adopts a connection, and before each arm and each write, and its workaround is gone.
+- No library under `src/` imports a chez-libuv private library, which `make check-imports` holds.
+- All twenty filed asks have landed; nothing is open upstream.
+
+NEXT: the M5 exit (plan §14), on a fresh branch cut from main after this commit, when the owner asks:
+- the brief's exit checked on the merged tree: fake-clock table tests, slow clients closed within a tick of their deadlines, and no timer handle per connection;
+- the budget spike run again with deadlines armed, so a connection's wheel entry is priced.
+
+The contract's exact Date comparison runs in its own session on `fix/contract-write-instants`, which will want rebasing onto main.
