@@ -118,9 +118,8 @@
           connection-close!
           wall-clock)
   (import (rnrs)
-          (only (chezscheme) current-time time-second time-nanosecond foreign-procedure)
-          (except (libuv) uv-update-time!)
-          (only (libuv private handles) loop-pointer)
+          (only (chezscheme) current-time time-second time-nanosecond)
+          (libuv)
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
           (only (http-server connection) make-conn-state)
@@ -465,20 +464,6 @@
                     (list 'handler-responded ((shell-handler (connection-shell c)) request)))))
       (uv-update-time! (shell-loop (connection-shell c)))
       (dispatch! c answer)))
-
-  ;; uv-update-time! : UvLoop -> Void
-  ;; Bring the loop's clock, uv_now, up to date.  libuv reads it once a
-  ;; turn, so a callback that holds the loop leaves it behind.  This calls
-  ;; libuv's own through chez-libuv's private loop pointer, the workaround
-  ;; carried for chez-libuv #28 (decision 0008).  #28 landed in v0.7.0, whose
-  ;; facade exports this name; the import leaves that out until the facade's
-  ;; replaces this.  The entry is looked up at the first call, when
-  ;; chez-libuv has loaded libuv.
-  (define uv-update-time!
-    (let ((native #f))
-      (lambda (loop)
-        (unless native (set! native (foreign-procedure "uv_update_time" (uptr) void)))
-        (native (loop-pointer loop 'uv-update-time!)))))
 
   ;; write! : Connection (Listof Segment) Nat -> Void
   ;; One uv-write*! of the segments, the Date slot filled.
