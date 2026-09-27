@@ -51,8 +51,10 @@
 ;;;     as it adopted it.  Each deadline is met at the first time the shell's
 ;;;     timer fires at or after it, the timer firing every tick-ms: within a
 ;;;     tick of the deadline, never before it.  The loop's clock is brought
-;;;     up to date as a handler returns, so one that holds the loop does not
-;;;     shorten the deadline armed after it (chez-libuv #28).  A connection
+;;;     up to date as each deadline is armed and each response written, so
+;;;     a hold of the loop, a handler's, the shell's own work's or one before
+;;;     an adoption, neither shortens the deadline armed after it nor dates
+;;;     the response written after it early (chez-libuv #28).  A connection
 ;;;     closed from outside the core is armed no more;
 ;;;   - the shell's one timer: four connections add one timer to the loop;
 ;;;     its wheel empty, it stops, and the shell keeps it for its next
@@ -117,10 +119,14 @@
 ;; `raised` first, as a bug in the shell would, and the trap is spent.
 ;; While `closing-at` is an action, the next connection to run it has its
 ;; handle closed by the trace first, behind the core's back, as a close from
-;; outside the core would.
+;; outside the core would.  While `holding-at` is an action, the next
+;; connection to run it holds the loop `slow-ms` in the trace first, as the
+;; shell's own work might, a collection or a large copy; while it is
+;; `adoption`, the listener holds the loop so before its next adoption.
 (define traced '())
 (define traps '())
 (define closing-at #f)
+(define holding-at #f)
 (define (trace! c kind datum)
   (set! traced (cons (list c kind (car datum)) traced))
   (case (car datum)
@@ -129,6 +135,9 @@
   (when (and closing-at (connection? c) (eq? kind 'action) (equal? datum closing-at))
     (set! closing-at #f)
     (connection-close! c))
+  (when (and holding-at (connection? c) (eq? kind 'action) (equal? datum holding-at))
+    (set! holding-at #f)
+    (hold! slow-ms))
   (let ((t (find (lambda (t) (and (eq? kind (car t)) (eq? (car datum) (cadr t)))) traps)))
     (when t
       (set! traps (remq t traps))
@@ -183,11 +192,14 @@
 (define (monotonic-ms)
   (let ((t (current-time 'time-monotonic)))
     (+ (* 1000 (time-second t)) (div (time-nanosecond t) 1000000))))
+;; hold! : Nat -> Void — keep the loop's thread busy `ms`.
+(define (hold! ms)
+  (let ((until (+ (monotonic-ms) ms)))
+    (let spin () (when (< (monotonic-ms) until) (spin)))))
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
     (when (bytevector=? target (b "/slow"))
-      (let ((until (+ (monotonic-ms) slow-ms)))
-        (let spin () (when (< (monotonic-ms) until) (spin)))))
+      (hold! slow-ms))
     (cond ((bytevector=? target (b "/big"))
            (let ((body (make-bytevector big-size 120)))
              (set! big-body (weak-cons body '()))
@@ -238,8 +250,12 @@
 
 ;; adopt! : UvTcp -> Void
 ;; Serve `tcp` in `adopting`, recording when: the shell arms a connection's
-;; first deadline, its idle one, as it adopts it (M5.3).
+;; first deadline, its idle one, as it adopts it (M5.3).  While `holding-at`
+;; is `adoption`, the loop is held first.
 (define (adopt! tcp)
+  (when (eq? holding-at 'adoption)
+    (set! holding-at #f)
+    (hold! slow-ms))
   (let ((c (shell-adopt! adopting tcp)))
     (when (connection? c) (time! (list 'arm c 'idle (uv-now loop))))
     (set! adopted (cons c adopted))))
@@ -828,6 +844,24 @@
         (wait-for (lambda () (null? (shell-connections steady)))))
       (shell-shutdown! steady))
 
+    ;; A write reads the loop's time too: its Date is the shell's clock's
+    ;; last reading plus the loop's time since (decision 0010).  On a shell
+    ;; whose clock reads 800 ms into RFC 9110's second, two requests in one
+    ;; write: the first's answer reads the clock, and the second, `/slow`,
+    ;; is answered once its handler has held the loop 300 ms, in the next
+    ;; second.
+    (let ((dated (make-shell loop handler default-limits
+                             (lambda () (+ (* 1000 instant) 800)) log! trace!)))
+      (set! adopting dated)
+      (let ((p (open-adopted! (b "GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /slow HTTP/1.1\r\nHost: x\r\n\r\n"))))
+        (test-equal "a response written after its handler held the loop 300 ms is dated after the hold"
+                    (list 'satisfied (list instant-date "Sun, 06 Nov 1994 08:49:38 GMT"))
+                    (let ((read (wait-for (lambda () (= 2 (length (responses (client-bytes (car p)))))))))
+                      (list read (map (lambda (r) (field r "Date")) (responses (client-bytes (car p)))))))
+        (client-close! (car p))
+        (wait-for (lambda () (null? (shell-connections dated)))))
+      (shell-shutdown! dated))
+
     ;; Deadlines (M5.3), on a shell of their own with short limits, adopted
     ;; through the suite's listener, which records when each was adopted.
     (let* ((quick (make-shell loop handler quick-limits clock log! trace!))
@@ -861,9 +895,9 @@
 
       ;; A handler that holds the loop past a deadline's length (M5.3's
       ;; review).  libuv reads its clock once a turn, so the shell brings it
-      ;; up to date as the handler returns, and the deadline armed after the
-      ;; answer runs from then, not from before the handler ran.  Here the
-      ;; handler holds the loop 300 ms, past the idle limit's 250.
+      ;; up to date as it arms each deadline, and the deadline armed after
+      ;; the answer runs from then, not from before the handler ran.  Here
+      ;; the handler holds the loop 300 ms, past the idle limit's 250.
       (let ((slow (open-adopted! (b "GET /slow HTTP/1.1\r\nHost: x\r\n\r\n"))))
         (test-equal "after a handler that holds the loop 300 ms, the idle deadline armed after its answer is still ahead when the client has it"
                     '(satisfied #t)
@@ -871,6 +905,40 @@
                            (deadline (connection-deadline (cdr slow))))
                       (list read (and deadline (> deadline (uv-now loop)) #t))))
         (client-close! (car slow)))
+
+      ;; The shell's own work can hold the loop too, not only a handler.
+      ;; Here the trace holds it 300 ms as the shell starts reading again
+      ;; after a keep-alive response, the action before its idle deadline's
+      ;; arm.  The deadline is also the one the trace recorded, the time it
+      ;; read plus the limit: the deadlines' checks above read the trace.
+      (set! holding-at '(read-start))
+      (let ((held-up (open-adopted! (b "GET /held HTTP/1.1\r\nHost: x\r\n\r\n"))))
+        (test-equal "after the shell's own work holds the loop 300 ms, the idle deadline armed after it is still ahead, and is the one its trace recorded"
+                    '(satisfied #t #t)
+                    (let* ((read (wait-for (lambda ()
+                                             (and (not holding-at)
+                                                  (= 1 (length (responses (client-bytes (car held-up)))))))))
+                           (deadline (connection-deadline (cdr held-up)))
+                           (armed (find (lambda (e) (and (eq? (car e) 'arm) (eq? (cadr e) (cdr held-up))))
+                                        timed)))
+                      (list read
+                            (and deadline (> deadline (uv-now loop)) #t)
+                            (and deadline armed (eq? (caddr armed) 'idle)
+                                 (= deadline (+ (cadddr armed) (limits-deadline-ms quick-limits 'idle)))))))
+        (set! holding-at #f)
+        (client-close! (car held-up)))
+
+      ;; And so can the work before an adoption: the listener holds the
+      ;; loop 300 ms before the shell adopts a connection, arming its idle
+      ;; deadline as it does.
+      (set! holding-at 'adoption)
+      (let ((late-adopted (open-adopted! #f)))
+        (test-eq "a connection adopted after the loop is held 300 ms has its idle deadline ahead"
+                 #t
+                 (let ((deadline (connection-deadline (cdr late-adopted))))
+                   (and deadline (> deadline (uv-now loop)) #t)))
+        (set! holding-at #f)
+        (client-close! (car late-adopted)))
 
       ;; A deadline the core asks for once the shell has closed its
       ;; connection behind it is not armed: the connection has left the

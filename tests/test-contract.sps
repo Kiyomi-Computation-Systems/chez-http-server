@@ -27,9 +27,14 @@
 ;;; ONE CLOCK.  The libuv shell keeps two: the wall clock its Date line is
 ;;; made from, and the loop's (uv_now), which its deadlines are armed and
 ;;; ticked by.  The fake keeps one, the test's.  So the libuv shell's wall
-;;; clock here is the loop's own: both shells then make each Date and arm
-;;; each deadline at the same instant, the fake made when the libuv shell
+;;; clock here is the loop's own, and the fake is made when the libuv shell
 ;;; adopted its connection, as the libuv shell arms its first deadline then.
+;;; The libuv shell brings its clock up to date before each arm and each
+;;; write, where the fake's stays at the instant of the event it was given,
+;;; so the libuv shell makes each Date and deadline then or a moment later.
+;;; Its deadlines are never earlier than the fake's, so the fake, fired
+;;; where the libuv shell ticked, ticks too; its Dates are the fake's unless
+;;; a second begins in that moment.
 ;;;
 ;;; The checks, for each script:
 ;;;   - the libuv shell read what the client sent, then its end alone, and

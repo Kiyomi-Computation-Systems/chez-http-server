@@ -130,10 +130,12 @@ it stops when the wheel empties. Every limit is overridable from the environment
 > loop's now, ticks each connection whose deadline has passed, each under its own guard,
 > and tells the server the time (§4.6's `tick`). A connection closed with no step of the
 > core, or dropped by the reconciliation, leaves the wheel there, and one closing is not
-> armed again. libuv reads `uv_now` once a turn, so the shell brings it up to date as
-> each handler returns, and the deadline armed after the answer runs from then
-> (chez-libuv #28; decision 0008). The fake shell's clock and timer are the test's: its
-> firing (`fake-shell-fire!`) ticks the connection only once its deadline has passed.
+> armed again. libuv reads `uv_now` once a turn, and what runs in the turn holds the
+> loop, a handler above all, so the shell brings it up to date (chez-libuv's
+> `uv-update-time!`, #28; decision 0008) as it adopts a connection, and before each arm
+> and each write, whose Date it dates: a deadline armed after a hold runs from after it.
+> The fake shell's clock and timer are the test's: its firing (`fake-shell-fire!`)
+> ticks the connection only once its deadline has passed.
 
 HTTP/1.0 is **supported**, an h2c preface is answered `505`, and upgrades leave
 through **one hook** (0006). The 1.0 rules differ in three places — connections close

@@ -103,7 +103,10 @@ check-pins: ## Verify each submodule sits at its pinned commit (fingerprint chec
 # private/, the tests and this Makefile (global-constraints).  The facade,
 # src/http-server.sls, reaches them only through private/ (design §3.1).  A
 # check, not a comment: add such an import to either and this target reddens.
-check-imports: ## Assert pure libraries import no (libuv)/(chezscheme), and src/ no test library
+# Nothing under src/ imports a (libuv private ...) library either: the shell
+# uses chez-libuv's public verbs, and a private reach is a workaround, carried
+# only until its upstream ask lands (decision 0008), as chez-libuv #28's was.
+check-imports: ## Assert pure libraries import no (libuv)/(chezscheme), and src/ no test or chez-libuv private library
 	@hits=$$(grep -REn '\((chezscheme|libuv)( |\))' src/http-server src/http-server.sls --include='*.sls' 2>/dev/null | grep -v '/private/' || true); \
 	if [ -n "$$hits" ]; then \
 	  echo "IMPURE IMPORT outside src/http-server/private/:" >&2; echo "$$hits" >&2; exit 1; \
@@ -112,7 +115,11 @@ check-imports: ## Assert pure libraries import no (libuv)/(chezscheme), and src/
 	if [ -n "$$tests" ]; then \
 	  echo "TEST-ONLY IMPORT in a shipped library:" >&2; echo "$$tests" >&2; exit 1; \
 	fi; \
-	echo "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, the facade's included; no test library in src/"
+	private=$$(grep -REn '\(libuv private ' src --include='*.sls' 2>/dev/null || true); \
+	if [ -n "$$private" ]; then \
+	  echo "CHEZ-LIBUV PRIVATE IMPORT in a shipped library:" >&2; echo "$$private" >&2; exit 1; \
+	fi; \
+	echo "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, the facade's included; no test library and no chez-libuv private library in src/"
 
 # One procedure closes every handle: handle-close!, the one use of uv-close!
 # in src/ (design §5.3 and §7.6, decision 0003).  chez-libuv keeps the
