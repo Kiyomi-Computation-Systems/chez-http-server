@@ -141,10 +141,15 @@ the keep-alive hot path).
 ### 3.1 The libraries
 
 Pure libraries live directly under `src/http-server/` and may import only `(rnrs)`,
-`(byte-machine runtime)`, `(generated httparse-message)`, `(httparse modes)`,
-`(httparse decisions)`, `(httparse methods)`, `(uri ...)` and this project's own pure
-libraries. `(libuv ...)` and `(chezscheme)` appear only under
+`(rnrs mutable-strings)`, `(byte-machine runtime)`, `(generated httparse-message)`,
+`(httparse modes)`, `(httparse decisions)`, `(httparse methods)`, `(uri ...)` and this
+project's own pure libraries. `(libuv ...)` and `(chezscheme)` appear only under
 `src/http-server/private/`, in the tests, and in the `Makefile` (global-constraints).
+
+> *Noted 2026-09-27 (M4.5):* `(rnrs mutable-strings)` joined the list for
+> `(http-server view)`, what a handler sees of a request (decision 0012). `(rnrs)`
+> leaves out `string-set!`, and the view fills the fresh strings it returns with it,
+> as the serializer fills fresh bytevectors.
 
 | Library | State | Imports beyond `(rnrs)` | Arrives |
 |---|---|---|---|
