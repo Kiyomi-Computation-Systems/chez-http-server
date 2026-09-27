@@ -1013,6 +1013,12 @@ gains both rows.
 - **Mutation:** the write row removed. Expect its row red: a write that never completes
   keeps the connection open.
 
+*Noted 2026-09-27 (M5.1's review):* the core's `close` and its hand-off clear the
+deadline without emitting `(disarm-deadline)`, though `on-message-complete` emits it.
+M5.2 has them emit it too, so one disarm covers every way the core lets a connection go.
+Otherwise a closed connection stays in the wheel, held there, until its deadline passes:
+up to 75 s.
+
 **M5.3 — one timer per loop, in both shells.** Each shell turns `arm-deadline` into a
 wheel entry at `now` plus the kind's limit, and `disarm-deadline` into its removal. It
 keeps one timer per loop at `tick-ms`, and delivers `tick` to each connection whose
@@ -1025,6 +1031,19 @@ its deadline, using short limits and the shell's clock:
 - a lingering client that never closes is closed.
 
 - **Mutation:** a timer per armed deadline. Expect the one-timer check red.
+
+*Noted 2026-09-27 (M5.1's review, and the owner's decisions of that day):*
+- each connection keeps one wheel entry (`make-wheel-entry`), made at adoption. The
+  libuv shell also disarms it in `handle-close!` and `reconcile!`, the ways a
+  connection leaves the table with no step of the core;
+- its first deadline is armed at adoption. A connection starts in `idle` with that kind
+  recorded, but no action arms it: the core emits `(arm-deadline idle)` only after a
+  write. So the socket lane's fourth client connects and sends nothing, and is closed;
+- `now` is the loop's clock, `uv-now`, which never steps, not the wall clock the Date
+  line is made from. The fake shell's is the test's own;
+- a kind's duration is `limits-deadline-ms`, one mapping for both shells;
+- an advance returns its keys already disarmed, so each tick is delivered under its own
+  guard: one delivery that raises must not strand the rest.
 
 **M5 exit:** the brief's (fake-clock table tests; slow clients closed within a tick of
 their deadlines; no per-connection timer handle). Plus: the docs drop their "from M5"

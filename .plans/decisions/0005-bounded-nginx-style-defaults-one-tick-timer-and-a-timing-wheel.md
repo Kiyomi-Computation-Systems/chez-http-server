@@ -151,3 +151,19 @@ Decided on the owner's word on 2026-09-27, by form, after M5.1's review.
   second would make one late by more than its own unit. The default, 250, is unchanged,
   and a larger value is refused at startup as a malformed one is. Weighed: 2^64 − 1,
   the most libuv's timer takes, which still accepts a tick that never fires.
+
+## Amendment (2026-09-27) — the wheel fires by deadline, and each connection keeps its entry
+
+Decided on the owner's word on 2026-09-27, by form, after M5.1's review.
+
+- **The wheel fires each deadline as `now` reaches it, not a bucket once it has
+  expired.** Buckets, `(deadline div tick-ms)`, only say where to look. The rule above,
+  dispatching "only to connections in expired buckets", cannot keep the bound it states,
+  because libuv's timer does not tick on bucket boundaries. With D = 1000, in the bucket
+  1000–1249, and ticks at 1100 and 1350, the bucket rule fires at 1350, D + 350; fired by
+  its own deadline, it fires at 1100. The bound stands: a deadline of D fires within
+  [D, D + tick-ms], never before D. Its instants are the loop's clock, `uv_now`, which
+  never steps, not the wall clock the `Date` line is made from.
+- **Each connection keeps its own entry in the wheel,** so arming and disarming a
+  deadline allocate nothing: a disarm then an arm measured 96 B with the wheel keeping a
+  table from connection to entry, which was weighed, and 0 B this way.

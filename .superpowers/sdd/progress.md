@@ -2339,3 +2339,47 @@ M5.1 FIRST STEP — THE TWO LIMITS, AND HOW LONG EACH DEADLINE LASTS. Branch fea
 - Every suite green on the step's own tree, a scratch worktree cut from main at c14956c: thirty-five suites, 900 expected passes (limits 46, connection-table 106), each exit 0. `make check-imports` is clean there.
 
 NEXT: the second step, the wheel, stacked on this one.
+
+M5.1 SECOND STEP — THE WHEEL. Branch feat/m5.1-timing-wheel, cut from the first.
+- `src/http-server/wheel.sls`, `(http-server wheel)`, new and pure (`(rnrs)` only):
+  - entries are the caller's: `make-wheel-entry key`, kept for as long as the key can have a deadline; `wheel-arm!` arms or moves one; `wheel-disarm!`; `wheel-advance!` returns the keys due by `now`, each disarmed, the earliest deadline first and equal ones in the order they were last armed; `wheel-entry-deadline`, `wheel-entry-key`, `wheel-count` (at 0 the shell stops its timer), `wheel-tick-ms`;
+  - the index: bucket b in slot `(mod b slots)`, 512 slots unless given, each a doubly linked ring headed by a sentinel entry. A deadline whose bucket has passed is kept in the cursor's slot, the cursor being the furthest bucket reached. An advance visits the slots from the cursor's bucket to now's, each once at most;
+  - it fires by each entry's deadline, never by its bucket; its instants are the loop's clock, `uv_now`, which never steps;
+  - an unlinked entry's links are cleared, so an entry a connection keeps holds nothing of the wheel;
+  - it refuses a tick or slot count below 1, an instant that is not an exact integer from 0, and what is not an entry, each by the procedure given it, before it changes anything.
+- `tests/test-wheel.sps`, new, 18 checks:
+  - when a deadline fires, a tick every 250 ms: at the first tick at or after it, row by row, on bucket boundaries and between them; every deadline from 1000 to 3000 ms once, within [D, D + 250), for ticks at three phases (the plan's interval row); an advance to 0; a deadline already past when armed;
+  - one deadline per entry: fired once, disarmed and moved; what `wheel-entry-deadline` and `wheel-count` read;
+  - an entry the caller keeps, disarmed or fired, holds nothing of the wheel. Weak pointers show it after a full collection, beside an entry still armed, which reads held;
+  - the order an advance fires in; a deadline a revolution ahead; one advance over forty deadlines and five revolutions, set up inside its check;
+  - the plain-list row: 4,000 operations, the same on the wheel and on a plain list, for six ticks and slot counts from 1 to 512. Its generator now reaches any bound. On the default wheel (tick 250, 512 slots) it arms 357 deadlines a revolution ahead and makes 176 advances over 512 buckets, where the first generator, capped at 32,767, made none (a scratch count);
+  - the refusals, each checked to come from the procedure given it; and a refused arm leaves the entry and the count as they were.
+- Records:
+  - design §2's note: the wheel fires by deadline, within [D, D + tick-ms];
+  - decision 0005's second amendment of 2026-09-27: fired by deadline, and entries each connection keeps;
+  - plan §14's notes for M5.2 and M5.3 (the readings below).
+
+MEASURED (scratch `wheel-alloc2.sps` and `wheel-cost2.sps`, two runs each, identical where they count bytes; cumulative `sstats-bytes`):
+- entries the caller keeps, 1,000 armed, 100,000 operations each: making an entry 48 B, once a connection; a disarm then an arm, 0 B; moving a deadline, 0 B; an advance that fires nothing, 0 B;
+- 10,000 entries at uv_now's scale, deadlines spread over 75 s, an advance every 250 ms until all fired: about 2 µs an advance (twenty runs, 12 and 13 ms of CPU), and about 81 B for each entry fired (807,200 B for 9,999: the list, its sort, the keys);
+- the first allocation reading, 37.4 B, came from `bytes-allocated`, which is the live heap and drops at each collection; measured again with `sstats-bytes`, as the M2 spike does.
+
+Readings, for M5.2 and M5.3 (plan §14's notes; flagged in the PR):
+- M2.1's reading 2 left M5 to decide whether the core should also compare `now`. It need not. The wheel fires an entry only once its deadline has passed, so no tick reaches a connection early, and the core's kind guard (M2.1-D) stays as a defence.
+- A tick to a closing or closed connection is already harmless: `on-tick` has no row for them. What is missing is the disarm. The core's close and hand-off clear the deadline without emitting `(disarm-deadline)`, so a closed connection would stay in the wheel, held there, until its deadline passed. M5.2 has them emit it. M5.3's libuv shell also disarms in `handle-close!` and `reconcile!`.
+- A connection's first idle deadline is armed by no action: the state starts with `idle` recorded, and the core emits `(arm-deadline idle)` only after a write. M5.3 arms it at adoption, and a client that connects and sends nothing is its test.
+- An advance returns its keys already disarmed, so M5.3 delivers each tick under its own guard.
+
+A survivor, measured (M5.1-N): with the cursor never saved, the same keys fire, with more work. Twenty runs of the cost scenario took 157 and 161 ms of CPU, against 12 and 13 with the cursor: about 26 µs an advance against 2. The suite checks what fires, not the work: a scope statement.
+
+Watched to fail (m5-mutations.md, second step): 29 mutants, each against all thirty-six suites:
+- M5.1-A, the plan's, turns five wheel checks red, the interval row among them, and no other suite's;
+- A2 to W, P1 to P10 and R, one or more for every check the step added;
+- N survives, above.
+
+`make test` green on the finished tree: thirty-six suites, 918 expected passes (wheel 18, limits 46, connection-table 106), exit 0. `make check-imports` is clean.
+
+NEXT: two stacked PRs, on the owner's word ("commit it and open the two stacked PRs"):
+- feat/m5.1-limits, the first step: 107 inserted lines of code and tests;
+- feat/m5.1-timing-wheel, cut from it: 563, over plan §1 rule 1's ~400, since the wheel and its checks do not divide.
+Then M5.2, the tick rows the core lacks (`body` answers 408, `responding` closes), with the disarm at close.
