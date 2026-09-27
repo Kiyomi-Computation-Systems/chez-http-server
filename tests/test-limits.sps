@@ -12,7 +12,15 @@
 ;;; this suite writes out itself, in make-limits' order.  Where the server
 ;;; listens is decision 0012's: CHEZ_HTTP_HOST and CHEZ_HTTP_PORT, by default
 ;;; 127.0.0.1 and 8080; a TCP port is 0 to 65535, 0 asking the kernel for one
-;;; (RFC 9293 §3.1's 16-bit port; libuv's bind takes port 0 so).
+;;; (RFC 9293 §3.1's 16-bit port; libuv's bind takes port 0 so).  0005's
+;;; write timeout, 60 s per write completion, and its tick, 250 ms, arrive in
+;;; M5.1 (milestone plan §3).  The tick's variable, CHEZ_HTTP_TICK_MS, is read
+;;; in milliseconds, since 250 ms has no whole-second spelling (plan §3).  A
+;;; tick is 1 to 1,000 ms, decided on the owner's word on 2026-09-27: the
+;;; wheel's buckets are a tick wide, and a tick over a second would make a
+;;; timeout, given in whole seconds, late by more than its own unit.  Each
+;;; kind of deadline the core arms lasts its own timeout (design §4.3;
+;;; decision 0011's linger).
 (import (rnrs) (srfi :64) (testing) (http-server limits))
 
 ;; env : (Pair String String) ... -> (String -> (U String #f))
@@ -32,6 +40,8 @@
         (cons 'idle-timeout-ms limits-idle-timeout-ms)
         (cons 'body-inactivity-timeout-ms limits-body-inactivity-timeout-ms)
         (cons 'linger-timeout-ms limits-linger-timeout-ms)
+        (cons 'write-timeout-ms limits-write-timeout-ms)
+        (cons 'tick-ms limits-tick-ms)
         (cons 'max-header-bytes limits-max-header-bytes)
         (cons 'max-header-count limits-max-header-count)
         (cons 'max-header-field-bytes limits-max-header-field-bytes)
@@ -63,6 +73,8 @@
     (test-eqv "idle default 75 s"         75000 (limits-idle-timeout-ms default-limits))
     (test-eqv "body-inactivity 60 s"      60000 (limits-body-inactivity-timeout-ms default-limits))
     (test-eqv "linger 30 s (decision 0011)" 30000 (limits-linger-timeout-ms default-limits))
+    (test-eqv "write timeout 60 s per completion" 60000 (limits-write-timeout-ms default-limits))
+    (test-eqv "tick 250 ms"               250   (limits-tick-ms default-limits))
     (test-eqv "max header bytes 16 KiB"   16384 (limits-max-header-bytes default-limits))
     (test-eqv "max header count 100"      100   (limits-max-header-count default-limits))
     (test-eqv "max header field 8 KiB"    8192  (limits-max-header-field-bytes default-limits))
@@ -88,6 +100,7 @@
     (test-equal "the environment variables, one per field"
                 '("CHEZ_HTTP_READ_HEADER_TIMEOUT" "CHEZ_HTTP_IDLE_TIMEOUT"
                   "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT" "CHEZ_HTTP_LINGER_TIMEOUT"
+                  "CHEZ_HTTP_WRITE_TIMEOUT" "CHEZ_HTTP_TICK_MS"
                   "CHEZ_HTTP_MAX_HEADER_BYTES"
                   "CHEZ_HTTP_MAX_HEADER_COUNT" "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"
                   "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES" "CHEZ_HTTP_MAX_TARGET_BYTES"
@@ -119,6 +132,14 @@
       ;; an untouched field keeps its default
       (test-eqv "untouched read-header keeps default" 60000
                 (limits-read-header-timeout-ms L)))
+
+    ;; --- the write timeout in seconds, the tick in milliseconds (M5.1) ---
+    ;; Made inside the check, so a reader that refuses them fails the check.
+    (test-equal "write 90 s -> 90000 ms; the tick is given in ms: 100 -> 100 ms"
+                '(90000 100)
+                (let ((L (limits-from-environment
+                          (env '("CHEZ_HTTP_WRITE_TIMEOUT" . "90") '("CHEZ_HTTP_TICK_MS" . "100")))))
+                  (list (limits-write-timeout-ms L) (limits-tick-ms L))))
 
     ;; --- the literal "unbounded" clears the body cap ---
     (let ((L (limits-from-environment
@@ -174,6 +195,13 @@
                           (lambda (name) (and (string=? name variable) "0")))
                          'no-fault))
                      '("CHEZ_HTTP_MAX_CONNECTIONS" "CHEZ_HTTP_BACKLOG")))
+    (test-equal "a tick of 1 to 1,000 ms is accepted; 0, below 0, over 1,000, or not a number is refused"
+                '(1 1000 faulted faulted faulted faulted)
+                (map (lambda (value)
+                       (guard (e (#t 'faulted))
+                         (limits-tick-ms
+                          (limits-from-environment (env (cons "CHEZ_HTTP_TICK_MS" value))))))
+                     '("1" "1000" "0" "-1" "1001" "fast")))
     (test-eq "a non-numeric size is refused" 'faulted
              (guard (e (#t 'faulted))
                (limits-from-environment
@@ -195,10 +223,24 @@
                 (map (lambda (value) (address (env (cons "CHEZ_HTTP_PORT" value))))
                      '("-1" "65536" "http" "80.5")))
 
+    ;; --- how long each kind of deadline lasts (M5.1) ---
+    (test-equal "each deadline kind lasts its own timeout"
+                '(1000 2000 3000 4000 5000)
+                (let ((L (limits-with default-limits
+                                      '((idle-timeout-ms . 1000) (read-header-timeout-ms . 2000)
+                                        (body-inactivity-timeout-ms . 3000) (write-timeout-ms . 4000)
+                                        (linger-timeout-ms . 5000)))))
+                  (map (lambda (kind) (limits-deadline-ms L kind)) '(idle header body write linger))))
+    (test-eq "a kind the core does not arm has no duration" 'refused
+             (guard (e ((assertion-violation? e) 'refused))
+               (limits-deadline-ms default-limits 'drain)
+               'accepted))
+
     ;; --- limits-with: fields replaced by name, the rest kept ---
     (test-equal "limits-with replaces each field alone, by name"
                 '(read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
-                  linger-timeout-ms max-header-bytes max-header-count max-header-field-bytes
+                  linger-timeout-ms write-timeout-ms tick-ms
+                  max-header-bytes max-header-count max-header-field-bytes
                   max-header-value-bytes max-target-bytes max-body-bytes pipeline-cap
                   read-buffer-size max-connections backlog require-host?)
                 (map car (filter alone? named-fields)))

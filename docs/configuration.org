@@ -2,8 +2,9 @@
 
 chez-http-server follows the 12-factor rule for config: where the server
 listens, and every connection limit, has a default and can be overridden from
-the environment. Timeouts are given in whole *seconds*; sizes and counts in
-their own unit. An unset or empty variable keeps the default. A malformed value
+the environment. Timeouts are given in whole *seconds*, the tick in
+milliseconds, and sizes and counts in their own unit. An unset or empty
+variable keeps the default. A malformed value
 (negative or non-numeric) is refused rather than silently ignored: ~serve~
 raises an ~&http-server-config-error~ naming the variable, before it listens.
 
@@ -29,6 +30,8 @@ with the port it got: ~listening 127.0.0.1 8080~.
 | ~CHEZ_HTTP_IDLE_TIMEOUT~            | 75 s      | keep-alive idle time between requests    |
 | ~CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT~ | 60 s      | longest gap between body reads           |
 | ~CHEZ_HTTP_LINGER_TIMEOUT~          | 30 s      | how long a close waits for the client    |
+| ~CHEZ_HTTP_WRITE_TIMEOUT~           | 60 s      | time for each write to complete          |
+| ~CHEZ_HTTP_TICK_MS~                 | 250 ms    | how often deadlines are checked          |
 | ~CHEZ_HTTP_MAX_HEADER_BYTES~        | 16384     | all header names and values together     |
 | ~CHEZ_HTTP_MAX_HEADER_COUNT~        | 100       | number of header fields                  |
 | ~CHEZ_HTTP_MAX_HEADER_FIELD_BYTES~  | 8192      | one header name                          |
@@ -41,8 +44,13 @@ with the port it got: ~listening 127.0.0.1 8080~.
 | ~CHEZ_HTTP_BACKLOG~                 | 511       | connections waiting to be accepted       |
 | ~CHEZ_HTTP_REQUIRE_HOST~            | true      | HTTP/1.1 requests must send ~Host~       |
 
-The four timeouts are not enforced yet: the server reads and checks them now,
+The five timeouts are not enforced yet: the server reads and checks them now,
 and acts on them from M5.
+
+~CHEZ_HTTP_TICK_MS~ is the one duration given in *milliseconds*: its default,
+250 ms, has no whole-second spelling. It must be from 1 to 1000. From M5 the
+server checks deadlines once a tick, so a timeout acts at most one tick, and
+so at most a second, after it passes.
 
 A request over any of the four header limits gets ~431~, and one whose target
 is over its limit gets ~414~. Either way the connection closes. What else a

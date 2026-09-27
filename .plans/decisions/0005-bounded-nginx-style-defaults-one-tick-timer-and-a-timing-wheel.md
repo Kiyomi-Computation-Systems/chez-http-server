@@ -142,3 +142,12 @@ options weighed).
   whatever supervises it starts it again. libuv reports such a failure only on Windows,
   where the listener has already stopped. Weighed: logging only, which leaves a server
   that runs and never accepts; listening again, which needs M5's timer for a delay.
+
+## Amendment (2026-09-27) — the tick is at most a second
+
+Decided on the owner's word on 2026-09-27, by form, after M5.1's review.
+
+- **`tick-ms` is 1 to 1 000.** Every timeout is given in whole seconds, so a tick over a
+  second would make one late by more than its own unit. The default, 250, is unchanged,
+  and a larger value is refused at startup as a malformed one is. Weighed: 2^64 − 1,
+  the most libuv's timer takes, which still accepts a tick that never fires.

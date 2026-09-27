@@ -2291,3 +2291,51 @@ NEXT: M5, timeouts and limits (plan §14):
 - M5.3, one timer per loop, in both shells.
 
 It starts on a fresh branch cut from main after this commit, when the owner asks.
+
+M5.1 — THE WHEEL, AND ITS TWO LIMITS (plan §14 and §3; decision 0005 and its two amendments of 2026-09-27; design §2). Branches feat/m5.1-limits, cut from main at c14956c, and feat/m5.1-timing-wheel, cut from it; 2026-09-27, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. Mutation log: m5-mutations.md, new.
+
+Gathered before the first test, from plan §14, §3 and §9, decision 0005, and the ledger's M2.1 readings:
+- plan §14: `(http-server wheel)`, pure: deadlines in `tick-ms` buckets, armed, disarmed and advanced to a `now` the caller gives. A deadline of D fires once, within [D, D + tick-ms], never before D. The plan's mutation: a deadline rounds down to its bucket's start;
+- plan §3: `write-timeout-ms` (60,000 per write completion) and `tick-ms` (250) arrive with four things each, and `CHEZ_HTTP_TICK_MS` is read in milliseconds, which `docs/configuration.org` says beside it;
+- 0005: the wheel is keyed by `(deadline div tick-ms)`, and the one tick timer per loop stops when the wheel is empty;
+- M2.1's reading 2: the core arms kinds, not instants. So the wheel takes instants, and a shell adds the kind's limit to its now (M5.3).
+
+Built first, then reviewed (`/code-review max`, 2026-09-27, before the first commit): a key API, in which the wheel kept its own table from key to entry, 15 checks, and the two limits with 5. Ten finder angles, one verifier for each of the 18 candidates, and a sweep:
+- 11 confirmed, 5 plausible, 2 refuted, and 5 more from the sweep. The report held the 15 most severe.
+- The wheel's logic held. Three reviewers ran it against a plain list of deadlines, up to 180,000 random operations, and it always agreed. The sweep also re-ran the 30 mutants recorded then, and every count matched.
+- What they found was in the tests, the records, and what M5.3 will need.
+
+DECIDED on the owner's word (2026-09-27), by form, the recommended answer to each of four questions:
+- **The tick is 1 to 1,000 ms.** Every timeout is given in whole seconds, so a tick over a second would make one late by more than its own unit. Weighed: 2^64 − 1, the most libuv's timer takes (`uv_timer_start`'s `unsigned-64`; Chez's FFI raises above it, after the server listens), which still accepts a tick that never fires, since libuv clamps a timeout that overflows.
+- **The wheel takes entries its caller keeps,** one per connection: a disarm then an arm allocates 0 B, where the key API's measured 96 B (an entry and its table cell, 48 B each), three times a keep-alive GET. Weighed: the key API.
+- **Decision 0005 is amended:** the wheel fires by deadline, the tick's range, and the entries.
+- **The other twelve findings are fixed as proposed,** the kind-to-limit mapping among them.
+
+Found in review, and fixed on the owner's word:
+- **Test gaps.** The first plain-list generator reached at most 32,767. A refusal counted whoever raised it, so an inexact deadline was refused by `vector-ref` after the table had changed. No row advanced to 0. No row accepted a 1 ms tick. And two setups sat outside their checks, so a raise there ended a suite as a harness error. Mutants P6, P7 and L12 survived the first suite and now die, and W and L15 now fail as checks, exit 1.
+- **Records.** The design note's interval was half-open. 0005 still said a bucket fires once it expires. The wheel's header misdescribed the cursor after `now` went back. And the mutation log gave a false reason for running each mutant against its own suite: every mutant now ran against every suite.
+- **For M5.2 and M5.3,** in plan §14's notes: the disarm at close, the first idle arm, the loop's clock, one mapping from kinds to limits, and each tick delivered under its own guard (the readings below).
+- **Cut by the report's cap, six:**
+  - the sort nothing consumes, about twice the work of a mass expiry: kept, and its order stays a promise;
+  - the duplicated unlink, and the model's double filter: gone with the rework;
+  - `wheel?` exported unused: kept, as six sibling predicates are;
+  - 512 slots with a smaller tick, a few percent a tick: left to M5.3, which builds the wheel;
+  - fixnum arithmetic: unsafe for the bignum deadlines the timeouts allow, and not material.
+- **Refuted, two:** positional `make-limits` callers (none outside the library), and reusing uv-testing's generator (it exports bytes only).
+
+M5.1 FIRST STEP — THE TWO LIMITS, AND HOW LONG EACH DEADLINE LASTS. Branch feat/m5.1-limits.
+- `(http-server limits)`: `write-timeout-ms`, 60,000, from `CHEZ_HTTP_WRITE_TIMEOUT` in whole seconds, and `tick-ms`, 250, from `CHEZ_HTTP_TICK_MS` in milliseconds, 1 to 1,000. They are the sixteenth and seventeenth fields, after `linger-timeout-ms` with the other durations, each with plan §3's four things. Nothing reads them yet: M5.3's shells will. And `limits-deadline-ms`: how long each kind of deadline lasts, one mapping for both shells.
+- `(http-server connection)`: `conn-deadline-kinds`, the five kinds the core arms, exported as its other vocabularies are.
+- `tests/test-limits.sps`, 46 checks, 6 more than main's 40:
+  - the two defaults;
+  - the write and tick overrides, read inside their own check;
+  - the tick's range: 1 and 1,000 accepted; 0, -1, 1,001 and a word refused;
+  - each kind's own timeout, and `drain` refused.
+  The variables' list, the drift guard and `limits-with`'s names are extended.
+- `tests/test-connection-table.sps`, 3 checks more: the five kinds; the rows arm all five and no other; each lasts one of the limits.
+- `docs/configuration.org`: the two variables, the tick's unit and range, and five timeouts not yet enforced.
+- Decision 0005's first amendment of 2026-09-27: the tick's range.
+- Watched to fail (m5-mutations.md, first step): L1 to L15, K1 and K2, one or more for every check the step added or extended. They ran against all thirty-five suites of the step's own tree and all thirty-six of the finished tree, with the same result.
+- Every suite green on the step's own tree, a scratch worktree cut from main at c14956c: thirty-five suites, 900 expected passes (limits 46, connection-table 106), each exit 0. `make check-imports` is clean there.
+
+NEXT: the second step, the wheel, stacked on this one.

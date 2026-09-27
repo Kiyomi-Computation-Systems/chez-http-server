@@ -11,9 +11,11 @@
 ;;; Defaults (decision 0005): header-read 60 s, idle 75 s, body-inactivity
 ;;; 60 s, linger 30 s (decision 0011: how long a connection that closes
 ;;; after a response reads and drops what arrives, waiting for the client to
-;;; close), header bytes 16 KiB (-> 431), header count 100, header field and
-;;; header value 8 KiB each (-> 431; M2, milestone plan §3), target 8 KiB
-;;; (-> 414), bodies stream unbounded (#f), pipeline cap 1, read buffer
+;;; close), write 60 s for each write to complete, a tick of 250 ms (how
+;;; often deadlines are checked: the timing wheel's bucket width; M5.1,
+;;; milestone plan §3), header bytes 16 KiB (-> 431), header count 100,
+;;; header field and header value 8 KiB each (-> 431; M2, milestone plan §3),
+;;; target 8 KiB (-> 414), bodies stream unbounded (#f), pipeline cap 1, read buffer
 ;;; 16 KiB (standing risk 2), 10 000 connections at once (a connection over
 ;;; them is refused as it arrives), and a listen backlog of 511, the kernel's
 ;;; queue of connections not yet accepted (M4.3, milestone plan §3).  The
@@ -22,7 +24,11 @@
 ;;; answers one request at a time by design (decision 0004's amendment of
 ;;; 2026-09-25), so any other value is refused rather than ignored.  Durations are stored in milliseconds;
 ;;; sizes and buffers in bytes.  Timeout overrides are given in whole
-;;; seconds; size and count overrides in their stored unit.
+;;; seconds; size and count overrides in their stored unit.  The tick is the
+;;; one duration given in milliseconds, CHEZ_HTTP_TICK_MS: 250 ms has no
+;;; whole-second spelling.  It is 1 to 1,000 ms (decided 2026-09-27): a
+;;; bucket is a tick wide, and a tick over a second would make a timeout,
+;;; given in whole seconds, late by more than its own unit.
 ;;;
 ;;; One switch rides with them (decision 0005's amendment of 2026-09-25):
 ;;; an HTTP/1.1 request with no Host is refused with 400 (RFC 9112 §3.2)
@@ -41,6 +47,8 @@
     limits-idle-timeout-ms
     limits-body-inactivity-timeout-ms
     limits-linger-timeout-ms
+    limits-write-timeout-ms
+    limits-tick-ms
     limits-max-header-bytes
     limits-max-header-count
     limits-max-header-field-bytes
@@ -52,14 +60,15 @@
     limits-max-connections
     limits-backlog
     limits-require-host?
+    limits-deadline-ms
     address-from-environment)
   (import (rnrs))
 
   ;; make-limits :
-  ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Nat Nat Boolean -> Limits
-  ;; The fifteen fields, in declaration order:
+  ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Nat Nat Boolean -> Limits
+  ;; The seventeen fields, in declaration order:
   ;;   read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
-  ;;   linger-timeout-ms max-header-bytes max-header-count
+  ;;   linger-timeout-ms write-timeout-ms tick-ms max-header-bytes max-header-count
   ;;   max-header-field-bytes max-header-value-bytes max-target-bytes
   ;;   max-body-bytes pipeline-cap read-buffer-size max-connections backlog
   ;;   require-host?
@@ -70,6 +79,8 @@
       (immutable idle-timeout-ms            limits-idle-timeout-ms)
       (immutable body-inactivity-timeout-ms limits-body-inactivity-timeout-ms)
       (immutable linger-timeout-ms          limits-linger-timeout-ms)
+      (immutable write-timeout-ms           limits-write-timeout-ms)
+      (immutable tick-ms                    limits-tick-ms)
       (immutable max-header-bytes           limits-max-header-bytes)
       (immutable max-header-count           limits-max-header-count)
       (immutable max-header-field-bytes     limits-max-header-field-bytes)
@@ -106,7 +117,7 @@
   ;; default-limits : Limits — decision 0005's nginx-style defaults, and
   ;; decision 0011's linger.
   (define default-limits
-    (make-limits 60000 75000 60000 30000 16384 100 8192 8192 8192 #f 1 16384 10000 511 #t))
+    (make-limits 60000 75000 60000 30000 60000 250 16384 100 8192 8192 8192 #f 1 16384 10000 511 #t))
 
   ;; limits-environment-variables : (Listof String)
   ;; The environment variables consulted by `limits-from-environment`,
@@ -116,6 +127,8 @@
       "CHEZ_HTTP_IDLE_TIMEOUT"
       "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT"
       "CHEZ_HTTP_LINGER_TIMEOUT"
+      "CHEZ_HTTP_WRITE_TIMEOUT"
+      "CHEZ_HTTP_TICK_MS"
       "CHEZ_HTTP_MAX_HEADER_BYTES"
       "CHEZ_HTTP_MAX_HEADER_COUNT"
       "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"
@@ -198,6 +211,8 @@
       (env-seconds->ms lookup "CHEZ_HTTP_IDLE_TIMEOUT"            75000)
       (env-seconds->ms lookup "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT" 60000)
       (env-seconds->ms lookup "CHEZ_HTTP_LINGER_TIMEOUT"          30000)
+      (env-seconds->ms lookup "CHEZ_HTTP_WRITE_TIMEOUT"           60000)
+      (env-integer     lookup "CHEZ_HTTP_TICK_MS"                 250   1 1000)
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_BYTES"        16384 1)
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_COUNT"        100   1)
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"  8192  1)
@@ -209,6 +224,19 @@
       (env-integer     lookup "CHEZ_HTTP_MAX_CONNECTIONS"         10000 1)
       (env-integer     lookup "CHEZ_HTTP_BACKLOG"                 511   1 c-int-max)
       (env-boolean     lookup "CHEZ_HTTP_REQUIRE_HOST"            #t)))
+
+  ;; limits-deadline-ms : Limits Symbol -> Nat
+  ;; How long a deadline of `kind` lasts: each kind the connection core arms
+  ;; (conn-deadline-kinds) to its own timeout.  A shell arms the wheel at its
+  ;; now plus this (M5.3).  Any other kind is an assertion violation.
+  (define (limits-deadline-ms limits kind)
+    (case kind
+      ((idle)   (limits-idle-timeout-ms limits))
+      ((header) (limits-read-header-timeout-ms limits))
+      ((body)   (limits-body-inactivity-timeout-ms limits))
+      ((write)  (limits-write-timeout-ms limits))
+      ((linger) (limits-linger-timeout-ms limits))
+      (else (assertion-violation 'limits-deadline-ms "not a deadline kind" kind))))
 
   ;; address-from-environment : (String -> (U String #f)) -> (values String Nat)
   ;; Where the server listens (decision 0012): CHEZ_HTTP_HOST, and
