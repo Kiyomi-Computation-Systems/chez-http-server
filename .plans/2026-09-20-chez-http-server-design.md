@@ -1247,6 +1247,16 @@ sent, then its end. The traces are of the events each shell dispatched and the a
 each ran, in order. Where the shells part, the suite names the first byte, or the first
 event or action.
 
+*Noted 2026-09-27 (M5.3):* a script may end in a stall: the client sends nothing more
+and never ends its stream, and the libuv shell's deadlines close the connection, under
+short limits. Each event the fake is given comes with the loop's time it came at, and
+the fake's clock is moved there first. The fake is made at the time the libuv shell
+adopted its connection, and each tick is the fake's own timer firing then. The libuv
+shell keeps two clocks: the wall clock its Date is made from, and the loop's, which its
+deadlines use. The fake keeps one, so the libuv shell's wall clock in this test is the
+loop's own. Both shells then write each Date and arm each deadline at the same
+instant.
+
 ### 8.5 The socket lane
 
 chez-libuv's own shape, which its `tests/test-echo.sps` is the template for: bind

@@ -194,3 +194,134 @@ Every check the slice added or changed is reddened by one mutant at least:
 - connection-deadlines: idle by E, L, M and N; header by T and U; body by B, G, H, T and Z; write by A, E, J, K, L, M and V; linger by E, L, M and T; the kinds' check by Q. Each row's instant is 0005's default for its kind, and Z moves the body's.
 
 Found on the way (scratch `nested-label.sps`, Darwin arm64, 2026-09-27): SRFI-64's simple runner names a failing check after the last check run inside its expression. A check `"OUTER"` whose expression ran a passing `"INNER"` and then failed printed `FAIL INNER: passes`. Six of the table's count checks ran their rows inside themselves, so a missing row's count would fail under a row's name, as the first R, which emptied D2, did ("D1 ..."). Each group's rows now run first, under a guard that prints the cause of a raise, so a group that raises fails its own count, exit 1 (S). No earlier log misnames one: M2.1-E's count, "all 9 termination and error rows", was already taken outside its check.
+
+## M5.3 — one timer per loop, in both shells (2026-09-27)
+
+Red before green, the tests edited, the shells as on main at 6fe18eb:
+- connection-deadlines 6, each row and the adoption row, twice:
+  - first because the fake had no fourth argument, so every row raised;
+  - then with the argument alone, no wheel: every tick a millisecond early acted. Idle closed, the head and the body answered 408, the write closed logged, the linger closed, and so did the adoption row. The fake ticked every time.
+- shell 10, with `shell-timer` a field never set:
+  - the one-timer check and the counters;
+  - "each of them closes once its deadlines pass", and the four deadline clients;
+  - the guard check;
+  - and, since those connections never closed, the end's two handle checks.
+- contract 1: the stalling script's first check, its wait exhausted: no deadline fired, so no 408 was written.
+
+The first green run failed the guard check on the test's own fault. It built its result with `append`, and Chez evaluated `(first-logged)` and the tick records before the `run-shell` that makes them: `(satisfied (() #f) (() #f) nothing-logged)`. It now binds the run first with `let*`, as M5.2's `ticked` does.
+
+Mapping each check to a mutant before the run found four checks that could not fail, each strengthened before the run:
+- the on-time check read "no firing between" and was vacuous without the server's tick. It now also needs a firing at the tick's own instant (I);
+- the short limits were equal, so a deadline armed for the wrong kind would pass. They are now head 200, idle 250 and linger 300;
+- nothing read whether a connection that leaves with no step of the core leaves the wheel. `shell-deadlines` and `connection-deadline` now let the failed adoption and the reconciliation show it (F, G);
+- a closed fake connection asks for nothing when ticked, so the fake's disarm had no check. The deadlines suite now looks for the tick among the events delivered (U).
+
+Every mutant below ran against all thirty-seven suites of the finished tree, four at a time. Where a row names no other suite, the others were green. None failed to load. The runner prints eight FAIL lines a suite at most, so A's, C's, D's and M's socket-lane lists were also run by hand, one at a time. A timing mutant's count can move between runs, since its extra or early timers fire where the loop's timing puts them: A reddened the lingering client's row in the parallel run and not by hand, and D reddened three rows more in parallel. The rows below name what every run reddened, and "in parallel" what only the parallel run did.
+
+| # | mutation (`src/http-server/private/shell.sls` unless named) | observed |
+|---|---|---|
+| M5.3-A | the plan's: a timer per armed deadline, every arm making and starting one | shell 8 by hand, 9 in parallel — "with four connections open, the loop holds one timer, the shell's, firing every tick", "and chez-libuv counts one timer", "once its last connection leaves, the shell holds no timer", the end's "no handle is left on the loop", and, as the extra timers fire between a deadline and its tick, the half-head, idle and silent rows and the guard (the lingering row too, in parallel); clients 2 and serve 1, their loops never empty; contract 1, its end |
+| M5.3-B | no deadline armed at adoption | shell 5 — "each of them closes once its deadlines pass", the silent client, the guard (its pair never ticks), and the end's two handle checks; contract 1 — the silent script's wait. The half-head script still passes: its header arm makes the timer |
+| M5.3-C | a deadline armed at now, not now plus its limit | shell 9 — the one-timer check (connections closed before it), the four deadline rows, the guard, and three four-MiB rows, whose writes the write deadline now cuts short; contract 3 — both scripts' traces, and the half-head's bytes |
+| M5.3-D | a deadline armed at its limit alone | shell 8 by hand — the three four-MiB rows, the four deadline rows and the guard; in parallel 11, the upload's two and the one-timer check more; contract 3, as C |
+| M5.3-E | the disarm action performed as nothing | SURVIVES: a scope statement, below |
+| M5.3-F | handle-close! leaves the connection in the wheel | shell 1 — "leaving no deadline armed, and no timer", after the failed adoption |
+| M5.3-G | the reconciliation leaves the connection in the wheel | shell 1 — "until the run loop reconciles the table with the loop, logs it, takes it out of the wheel, and runs on" |
+| M5.3-H | the ticks delivered under one guard | shell 4 — the guard check, its second connection never ticked; so the timer stays ("once its last connection leaves...") and the end's two handle checks |
+| M5.3-I | the server not told the time | shell 5 — the four deadline rows and the guard: no firing at the tick's instant |
+| M5.3-J | the timer repeating every two ticks | shell 1 — the one-timer check's repeat, 20 |
+| M5.3-K | the timer never closed | shell 5 — the one-timer check and the counts, the main shell's timer still live, "leaving no deadline armed, and no timer", "once its last connection leaves...", and the end's handle check; clients 2, serve 1, contract 1, each at its end |
+| M5.3-L | the timer closed as any connection leaves | shell 3 — "each of them closes", and the half-head and lingering rows, whose deadlines no timer fires once the first connection closed it |
+| M5.3-M | no timer ever made | shell 10 — the one-timer check, the counts, "each of them closes", the four rows, the guard and the end's two handle checks; contract 1 — the half-head script's wait |
+| M5.3-N | the wheel advanced a tick ahead of now: early | shell 5 — the four rows and the guard; contract 2 — both scripts' traces |
+| M5.3-O | a tick that carries a now a millisecond on | contract 2 — both scripts' traces. The socket lane reads the same instant in the connection's tick and the server's, so an offset in both passes there |
+| M5.3-P | the wheel advanced a tick behind now: late | shell 5 — the four rows and the guard, each tick a firing after its deadline's first |
+| M5.3-Q | the fake ticks every time (`tests/fake-shell.sls`) | connection-deadlines 7 — the five rows, the adoption row, and "a connection its client closes is ticked no more" |
+| M5.3-R | the fake arms at now (`tests/fake-shell.sls`) | connection-deadlines 6 — the five rows and the adoption row, each ticked at its early tick |
+| M5.3-S | the fake arms at the limit alone (`tests/fake-shell.sls`) | as R: connection-deadlines 6 |
+| M5.3-T | the fake ignores the instant it is made at (`tests/fake-shell.sls`) | as R: connection-deadlines 6 |
+| M5.3-U | the fake performs a disarm as nothing (`tests/fake-shell.sls`) | connection-deadlines 1 — "a connection its client closes is ticked no more" |
+| M5.3-V | the fake arms nothing when made (`tests/fake-shell.sls`) | connection-deadlines 1 — the adoption row; contract 1 — the silent script's traces |
+| M5.3-W | the replay drops the ticks (`tests/test-contract.sps`) | contract 3 — both scripts' traces, and the half-head's bytes |
+| M5.3-X | the replay leaves the fake's clock where it was made (`tests/test-contract.sps`) | as W: contract 3 |
+| M5.3-Y | the replay makes the fake at 0 (`tests/test-contract.sps`) | SURVIVES: a scope statement, below |
+| M5.3-Z | the arm action performed as nothing | shell 5 — "a connection whose handle was closed behind the shell's back stays in the table, its deadline armed", "each of them closes", and the half-head, idle and lingering rows; contract 1 — the half-head script's wait |
+| M5.3-Z2 | the fake performs an arm as nothing (`tests/fake-shell.sls`) | connection-deadlines 5, the five rows; connection-linger 2 and connection-originated 2, whose deadlines now pass through the fake's wheel; contract 2 — the half-head script's bytes and traces |
+
+Two survivors, each a scope statement, measured by the run above:
+- **M5.3-E, the libuv shell's disarm performed as nothing.** In v1 every disarm the core asks for is followed in the same drain by an arm, which moves the deadline, or by a close, whose handle-close! disarms too. So no v1 flow leaves a deadline armed that a working disarm would take out. From M6.2, a connection waiting for its handler's credit is disarmed with nothing after it, and that row is the disarm's check (plan §14's note). The fake's disarm has its check (U), since the fake's close does not disarm.
+- **M5.3-Y, the replay's fake made at 0.** The replay ticks the fake only where the libuv shell ticked. A fake deadline armed earlier than the libuv shell's therefore passes at the same tick and cannot show. A later one could, and V is that case. The fake's own start instant is held by the deadlines suite (T).
+
+Every check the slice added or changed is reddened by one mutant at least:
+- connection-deadlines: the five rows by Q, R, S, T and Z2; the adoption row by Q, R, S, T and V; "a connection its client closes is ticked no more" by Q and U;
+- shell:
+  - the one-timer check by A, C, J, K and M; the counts by A, K and M; "each of them closes" by B, L, M and Z;
+  - the half-head row by A, C, D, I, L, M, N, P and Z; the idle row by A, C, D, I, M, N, P and Z; the lingering row by C, D, I, L, M, N, P and Z; the silent row by A, B, C, D, I, M, N and P;
+  - the guard by A, B, C, D, H, I, M, N and P; "once its last connection leaves" by A, H and K;
+  - "leaving no deadline armed, and no timer" by F and K; the reconciliation's two by Z (armed before) and G (taken out after);
+- contract: the half-head script by C, D, M, N, O, W, X, Z and Z2; the silent script by B, C, D, N, O, V, W and X; the end's check by A and K.
+
+## M5.3, after its review (2026-09-27)
+
+`/code-review high` found ten things, all fixed on the owner's "fix all ten". Finding 3 was settled by form: a carried workaround, and chez-libuv #28.
+
+Red before green, each fix's check written first and run on the tree as it was:
+- contract 1: "a client the libuv shell never adopted replays as nothing", which raised in the fake's first arm, `(+ #f 75000)`. A scratch copy playing a script to a port where nothing listens ended as a harness error, exit 2. With the fix it ends in a named failure, exit 1, `(not-connected satisfied ECONNREFUSED)`;
+- shell 2: "a connection closed from outside the core as it arms a deadline leaves with none armed", which read `(satisfied 2361711061 1)`. The deadline stayed armed, and its later tick spent the pair check's trap, so the pair check failed as well;
+- shell 1: "after a handler that holds the loop 300 ms, the idle deadline armed after its answer is still ahead when the client has it", which read `(satisfied #f ... closed)`. The idle deadline, armed from the time the loop read before the handler, had already closed the connection;
+- fake-shell 1, the stub's refused firing, held by Q2 below, since the split and its check came together;
+- the checks of the timer's lifetime and of the pair, rewritten with the fixes, each held by the mutants below that restore the tree before the review: L2, AB and M2.
+
+Finding 8, the held handle, is the test harness's, shown in a scratch copy whose pairing opens one client. Without the fix, the held handle failed the end's two handle checks besides the pair check. With it, only the pair check fails.
+
+Every mutant below ran against all thirty-seven suites of the finished tree, four at a time. None failed to load, and the socket-lane lists over eight were run by hand, one at a time, with the same counts.
+
+| # | mutation (`src/http-server/private/shell.sls` unless named) | observed |
+|---|---|---|
+| M5.3-A | the plan's: a timer per armed deadline, a new one each arm | shell 10 — "four connections open on one shell add one timer to the loop", "and chez-libuv counts one timer more", the four deadline rows and the pair, as the extra timers fire between, "its wheel empty, the timer stops...", "shut down... the shell closes its timer", and the end's handle check; clients 2, contract 1, serve 1, each at its end |
+| M5.3-B | no deadline armed at adoption | shell 9 — the one-timer check and the counts, since the four silent clients arm nothing; "a shell shut down with no connection left closes the timer it kept" (`bad`'s adoption never made one); "each of them closes", the silent row, the pair, "shut down... closes its timer", and the end's two handle checks; contract 1 — the silent script's wait |
+| M5.3-C | a deadline armed at now, not now plus its limit | shell 11 — the four-MiB upload's two, the three four-MiB write rows, the four deadline rows, the slow handler's and the pair; clients 2 — ab -k's run and the log; contract 3 — both scripts' traces, the half-head's bytes |
+| M5.3-D | a deadline armed at its limit alone | as C: shell 11, clients 2, contract 3 |
+| M5.3-E | the disarm action performed as nothing | SURVIVES: the scope statement of the first round stands |
+| M5.3-F | handle-close! leaves the connection in the wheel | shell 3 — "leaving no deadline armed" (the failed adoption), the late arm's check, and "its wheel empty, the timer stops...", the connection closed from outside left armed |
+| M5.3-G | the reconciliation leaves the connection in the wheel | shell 1 — "until the run loop reconciles... takes it out of the wheel, and runs on" |
+| M5.3-H | the ticks delivered under one guard | shell 4 — the pair, whose second is never ticked, and so "shut down... closes its timer" and the end's two handle checks, with the second still open |
+| M5.3-I | the server not told the time | shell 5 — the four deadline rows and the pair: no firing at the tick's instant |
+| M5.3-J | the timer repeating every two ticks | shell 1 — the one-timer check's repeat, 500 |
+| M5.3-K | the timer never closed | shell 3 — `bad`'s and `quick`'s closes, and the end's handle check; clients 1, contract 1, serve 1, each at its end |
+| M5.3-L | the timer never stopped | shell 1 — "its wheel empty, the timer stops, firing once more at most, and the shell keeps it" |
+| M5.3-L2 | the timer closed as the table empties, listening or not, as before the review | shell 3 — "its wheel empty... the shell keeps it", `bad`'s close and `quick`'s, each finding no timer kept to close; clients 1 — "the listener is the one handle left, beside the timer the shell keeps" |
+| M5.3-M | no timer ever started | shell 13 — every deadline check, the one-timer check and the counts, "the timer stops", both shut-down closes, and the end's two; clients 1; contract 1 — the half-head script's wait |
+| M5.3-M2 | a stopped timer never started again | shell 3 — the pair, whose deadlines the stopped timer never reaches, then "shut down... closes its timer" and the end's handle check; contract 1 — the silent script's wait, after the half-head script stopped the timer |
+| M5.3-N | the wheel advanced a tick ahead of now: early | shell 5 — the four rows and the pair; contract 2 — both scripts' traces |
+| M5.3-O | a tick that carries a now a millisecond on | contract 2 — both scripts' traces |
+| M5.3-P | the wheel advanced a tick behind now: late | shell 5 — the four rows and the pair |
+| M5.3-Q | the fake fires every time (`tests/fake-shell.sls`) | connection-deadlines 7 — the five rows, the adoption row, and "a connection its client closes is ticked no more" |
+| M5.3-Q2 | firing a stub ticks it, as the one tick did before the review (`tests/fake-shell.sls`) | fake-shell 1 — "a stub step's shell keeps no timer: firing it is refused, and nothing is delivered" |
+| M5.3-R | the fake arms at now (`tests/fake-shell.sls`) | connection-deadlines 6 — the five rows and the adoption row |
+| M5.3-S | the fake arms at the limit alone (`tests/fake-shell.sls`) | as R |
+| M5.3-T | the fake ignores the instant it is made at (`tests/fake-shell.sls`) | as R |
+| M5.3-U | the fake performs a disarm as nothing (`tests/fake-shell.sls`) | connection-deadlines 1 — "a connection its client closes is ticked no more" |
+| M5.3-V | the fake arms nothing when made (`tests/fake-shell.sls`) | connection-deadlines 1 — the adoption row; contract 1 — the silent script's traces |
+| M5.3-W | the replay drops the ticks (`tests/test-contract.sps`) | contract 3 — both scripts' traces, the half-head's bytes |
+| M5.3-W2 | the replay makes the fake at an adoption never seen, as before the review (`tests/test-contract.sps`) | contract 1 — "a client the libuv shell never adopted replays as nothing" |
+| M5.3-X | the replay leaves the fake's clock where it was made (`tests/test-contract.sps`) | as W |
+| M5.3-Y | the replay makes the fake at 0 (`tests/test-contract.sps`) | SURVIVES: the scope statement of the first round stands |
+| M5.3-Z | the arm action performed as nothing | shell 6 — "stays in the table, its deadline armed", "each of them closes", the half-head, idle and lingering rows, and the slow handler's; contract 1 — the half-head script's wait |
+| M5.3-Z2 | the fake performs an arm as nothing (`tests/fake-shell.sls`) | connection-deadlines 5, connection-linger 2, connection-originated 2, contract 2 |
+| M5.3-AA | a connection closing armed again, as before the review | shell 2 — the late arm's check, and "its wheel empty, the timer stops...", the stray deadline keeping it running |
+| M5.3-AB | the first raise goes on, whatever came after, as before the review | shell 1 — the pair: the run loop logs the first raise and runs on, and the contract condition is lost |
+| M5.3-AC | the loop's clock left as the handler found it, as before the review | shell 1 — the slow handler's check |
+| M5.3-AD | the clock brought up to date before the handler, not after | shell 1 — the slow handler's check: the refresh must follow the handler |
+
+Every check the review added or changed is reddened by one mutant at least:
+- contract's replay with nothing adopted by W2;
+- fake-shell's refused firing by Q2;
+- shell:
+  - "leaving no deadline armed" by F; "a shell shut down with no connection left closes the timer it kept" by B, K, L2 and M;
+  - the one-timer check by A, B, J and M, and its count by A, B and M;
+  - the slow handler's by AC, AD, C, D and Z; the late arm's by AA and F;
+  - "its wheel empty, the timer stops..." by A, AA, F, L, L2 and M;
+  - the pair by A, AB, B, C, D, H, I, M, M2, N and P; `quick`'s close by A, B, H, K, L2, M and M2;
+- clients' "the listener is the one handle left, beside the timer the shell keeps" by A, L2 and M.
+The first round's checks keep their mutants, which ran again here with the same verdicts.

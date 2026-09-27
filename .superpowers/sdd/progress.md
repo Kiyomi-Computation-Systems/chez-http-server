@@ -2465,3 +2465,114 @@ M5.2 DONE and merged (9edbe49, PR #60): every deadline the core arms has its tic
 - plan §14 carries notes for M6.2, M6.3 and M6.4, the Expect case among them.
 
 NEXT: M5.3, one timer per loop in both shells (plan §14, and its notes of 2026-09-27). It starts on a fresh branch cut from main after this commit, when the owner asks.
+
+M5.3 — ONE TIMER PER LOOP, IN BOTH SHELLS. Three stacked branches: feat/m5.3-fake-wheel, cut from main at 6fe18eb; feat/m5.3-shell-timer, cut from it; feat/m5.3-contract-deadlines, cut from that. 2026-09-27, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+
+Gathered: plan §14's M5.3 and its notes of 2026-09-27; decision 0005 and its two amendments of that day; design §2's wheel note, §4.6's server events, and §8.4 and §8.5.
+
+- `(http-server private shell)`, as it stands after the review below:
+  - **the wheel.** One per shell, and one entry per connection, made as it is adopted. `arm-deadline` arms the entry at the loop's now, `uv_now`, plus the kind's limit (`limits-deadline-ms`), and `disarm-deadline` takes it out. No action arms a connection's first deadline, its idle one, so the shell arms it at adoption. A connection already closing is armed no more;
+  - **the timer**, as 0005 has it:
+    - one per shell, made at the first arm and firing every tick-ms;
+    - stopped by the first firing that finds the wheel empty, so an idle server sleeps, and started again by the next arm (`uv-timer-again!`);
+    - kept between busy periods, and closed once the shell has stopped listening and has no connection left.
+    Each firing advances the wheel to the loop's now and ticks each connection whose deadline passed, each under its own guard, since the wheel has let them all go. It then tells the server the time, design §4.6's `(tick now)`, which asks for nothing yet. Once every tick is delivered, the first raise goes on and the run loop logs it. A later byte-machine contract condition goes on in its place, since the run loop keeps that one fatal;
+  - **the loop's clock.** It is brought up to date as each handler returns: libuv reads `uv_now` once a turn, and a handler holds the loop. This is a workaround carried until chez-libuv #28 lands (decision 0008), and it calls `uv_update_time` through chez-libuv's private loop pointer;
+  - **leaving the wheel.** handle-close! and the reconciliation take a connection out of the wheel: the two ways a connection leaves the table with no step of the core;
+  - `shell-timer`, `shell-deadlines` and `connection-deadline`, which the socket lane reads.
+- `tests/fake-shell.sls`: a fake connection keeps its deadline in a wheel of its own.
+  - It arms at the fake clock's now plus the kind's limit, the idle deadline as it is made, at an instant its caller may give (a fourth argument).
+  - `fake-shell-fire!` is its timer firing at the clock's now, and ticks the connection only once its deadline has passed. `fake-shell-tick!` delivers the raw `(tick now)` to any step, as before M5.3, and firing a stub step's shell is refused.
+  - The linger, originated and deadlines suites, and the contract's replay, fire.
+- `tests/test-connection-deadlines.sps`, 8 checks (main's 6):
+  - every row's connection is made at 1,000 ms, not 0, so a deadline armed at its limit alone shows;
+  - a firing a millisecond before the deadline asks for nothing;
+  - a client that sends nothing is closed at the idle deadline its connection was made with;
+  - a connection its client closed is ticked no more.
+- `tests/test-fake-shell.sps`, 20 checks (main's 19): firing a stub step's shell is refused.
+- `tests/test-shell.sps`, 79 checks (main's 65). The deadline clients run on a shell of their own with short limits (head 200 ms, idle 250, linger 300, tick 10), adopted through the suite's listener:
+  - one that sends half a head reads 408, then the stream's end, and is closed once its linger passes;
+  - an idle keep-alive connection is closed;
+  - a lingering client that never closes is closed;
+  - one that connects and sends nothing is closed at the idle deadline armed as it was adopted;
+  - each deadline is met at the first time the timer fired at or after it: the instant it was armed, read where it was armed, plus the suite's limit. The firings are the server's ticks in the trace, and one must come at the tick's own instant;
+  - after a handler that holds the loop 300 ms, past the idle limit, the deadline armed after its answer is still ahead;
+  - a connection closed from outside the core just as a deadline is armed leaves with none armed;
+  - with its wheel empty, the timer stops, firing at most once more in fifty turns of the loop, and the shell keeps it;
+  - two connections adopted in one callback share a deadline, and the kept timer, started again, ticks both at one firing. Both ticks raise, the second with byte-machine's contract condition. Each is still ticked and closed, and the contract condition is the raise the run loop raises again;
+  - four connections that send nothing, on a shell under 0005's limits, add one timer to the loop, repeating every tick, and chez-libuv counts one more;
+  - a failed adoption leaves no deadline armed; the reconciliation takes the connection it drops out of the wheel;
+  - a shell shut down with no connection left closes the timer it kept: `bad`'s, `quick`'s and the suite's own before the end's checks.
+- `tests/test-contract.sps`, 35 checks (main's 28): two scripts whose deadlines pass on a shell with short limits:
+  - a head never finished: 408, then the linger;
+  - a client that sends nothing: the idle deadline armed at adoption.
+
+  Each event is replayed with the loop's time it came at. The fake is made at the adoption instant, or at 0 when nothing was adopted (a check), and a tick is the fake's own timer firing then. The libuv shell's wall clock here is the loop's own, so both shells make each Date and arm each deadline at the same instant (ONE CLOCK).
+- `tests/test-clients.sps`, 11 checks as before: an idle server holds the listener and the timer it keeps.
+- Records:
+  - design §2's, §8.4's and §8.5's notes;
+  - plan §14's notes for M6.2 and M8, and the M5 exit's docs item marked done;
+  - decision 0008's chez-libuv #28 row;
+  - docs: the "from M5" notes gone from README, connections.org, responses.org and configuration.org, and the timeouts said to be acted on.
+
+MEASURED (scratch spikes, two runs or more each, Darwin arm64):
+- `arm-alloc.sps`, cumulative `sstats-bytes`: a disarm then an arm made as the shell makes them, `uv_now` plus the kind's limit into `wheel-arm!`, allocates nothing beyond the measuring loop's own. That is 160 B over a million calls, as an empty thunk and `uv-now` alone read;
+- `stale/update-cost.sps`: `uv_update_time` through the private loop pointer, 14 to 15 ns a call and 0 B, over a million calls; `uv-now` 7 to 8 ns;
+- `stale/stale-now2.sps` and `stale-now3.sps`, a handler that holds the loop 300 ms, before the refresh and after it:
+  - a keep-alive connection with a 250 ms idle timeout was gone within 100 ms of its answer, and stayed idle with the refresh;
+  - a 512 KiB answer under a 200 ms write timeout was cut off at 327,212 bytes, logged `write-timeout`, three runs of three, and arrived whole, 524,368 bytes, with the refresh;
+  - a 4 MiB answer outlasted the 200 ms write timeout either way, so it showed nothing;
+  - the first spike, a 77-byte answer, showed nothing either way. libuv 1.52 runs its timers at the end of a turn, after the poll's callbacks, so a write that completes at once replaces the stale deadline before any timer reads it.
+
+Watched to fail, the first round (m5-mutations.md, M5.3):
+- red before green, the tests edited and the shells as on main: connection-deadlines 6 (every early tick acted), shell 10, contract 1;
+- then twenty-seven mutants, A to Z and Z2, each against all thirty-seven suites. M5.3-A, the plan's, a timer per armed deadline, turns the one-timer check red, and chez-libuv's count with it. Every check the slice added or changed is reddened by one at least;
+- two survive, each a scope statement:
+  - E, the libuv shell's disarm performed as nothing. Every v1 disarm is followed by an arm or a close, which disarms too, and M6.2's credit wait is its first check;
+  - Y, the replay's fake made at 0. The replay ticks the fake only where the libuv shell ticked, and the deadlines suite holds the fake's start instant (T).
+
+Found on the way:
+- the guard check's first run failed on the test's own argument order: `(first-logged)` was evaluated before the run that makes it, as M5.2's `ticked` did (spike-harness pitfalls). It binds the run first now;
+- mapping each check to a mutant before the run found four checks that could not fail, and each was strengthened then:
+  - the on-time check was vacuous without the server's tick;
+  - the short limits were equal;
+  - nothing showed a connection leaving the wheel with no step of the core;
+  - a closed fake connection's tick asked for nothing (m5-mutations.md).
+
+Timing, not a stopwatch: the lane's deadlines pass in the loop's own time. A check that a tick came within tick-ms of its deadline would fail whenever the loop ran late, which libuv's repeating timer allows, since each firing re-arms from the loop's time then. So the check reads the trace instead: a deadline is met at the first time the timer fired at or after it, and the timer's repeat is tick-ms. The socket lane and the contract ran twenty-four times, eight at a time, all green: before the review and again after it.
+
+Reviewed (`/code-review high`, 2026-09-27, before the first commit): ten findings, all fixed on the owner's "fix all ten". Finding 3 was settled by form: a carried workaround and an upstream ask, chez-libuv #28.
+1. **The contract replay crashed when a client never connected.** It made the fake at the adoption time, which stays #f then. The fake is now made at 0 when nothing was adopted, and a check replays with nothing adopted. A scratch copy that plays a script to a port where nothing listens ended as a harness error, exit 2, before the fix. After it, the script fails by name, with ECONNREFUSED, exit 1.
+2. **`arm!` could arm a connection already closing.** It now skips one, as `read-start!` does. A check closes a connection from outside the core just as its idle deadline is armed, through the trace's `closing-at`. The connection leaves the table with none armed. Before the fix it left armed: `(satisfied 2361711061 1)`.
+3. **Deadlines were armed from a stale `uv_now` after a slow handler.**
+   - Measured first. A handler that held the loop 300 ms had its 512 KiB answer cut off at 327,212 bytes under a 200 ms write timeout, three runs of three. It also closed a keep-alive connection with a 250 ms idle timeout at once.
+   - DECIDED on the owner's word, by form: the shell calls libuv's `uv_update_time` after each handler, through chez-libuv's private loop pointer, 14 to 15 ns and 0 B a call. chez-libuv #28 asks for `uv-update-time!`, and decision 0008's table carries the row.
+   - The socket lane's `/slow` check. Before the fix, the connection was already closed when its client had the answer.
+4. **`tick!` kept only the first raise.** A later byte-machine contract condition now goes on in its place, since the run loop keeps that one fatal. The pair check raises from both ticks, the second with the contract condition.
+5. **The one-timer check raced the 200 ms head deadline.** It now counts the timers four connections add, on a shell under 0005's limits, where no deadline can pass while the suite looks.
+6. and 7. **The timer's lifetime** now follows 0005 to the letter:
+   - made at the first arm;
+   - stopped by the first firing that finds the wheel empty, and started again by the next arm (`uv-timer-again!`);
+   - kept between busy periods, and closed once the shell has stopped listening and has no connection left.
+   The checks: the timer stops (at most one firing in fifty turns of the loop) and is kept (the same handle); the pair's deadlines start it again; and a shell shut down with no connection left closes it (`bad`'s, `quick`'s and the suite's own). test-clients now finds the listener and the shell's timer on an idle server.
+8. **Pairing could leave a held handle.** It is closed once the pairing wait ends without its pair.
+9. **Docs.** The "from M5" notes are gone from README, connections.org, responses.org and configuration.org, so the M5 exit's docs item is done.
+10. **`fake-shell-tick!` had two meanings.** `fake-shell-fire!` is now a fake connection's timer, and `fake-shell-tick!` delivers the raw tick to any step. Firing a stub shell is refused, which a check holds.
+
+Watched to fail, after the review (m5-mutations.md, M5.3 after its review): each fix's check was red first, but three, each shown otherwise:
+- finding 8's by a scratch copy;
+- the stub's refused firing, and the timer's lifetime rewritten with its fix, by the mutants that restore the tree before the review.
+
+Then thirty-five mutants, each against all thirty-seven suites. M5.3-A, the plan's, still turns the one-timer check red. Every check the review added or changed is reddened by one at least, and E and Y survive as before.
+
+`make test` green on the finished tree: thirty-seven suites, 962 expected passes (shell 79, contract 35, fake-shell 20, connection-deadlines 8), exit 0. `make check-imports` is clean. Size: 794 inserted lines of code and tests (206 deleted), past plan §1 rule 1's ~400. Three layers, each meant to be green on its own tree:
+- the fake shell's wheel, with its suites, 149;
+- the libuv shell's wheel and timer, with the socket lane and the clients, 500;
+- the contract's deadline scripts, 145.
+
+DECIDED on the owner's word (2026-09-27), by form: three stacked PRs, each layer proved green on its own tree before it is committed. Weighed: two stacked PRs, both shells then the contract (649 and 145), and one PR (794).
+- **feat/m5.3-fake-wheel**, the fake shell's wheel: `tests/fake-shell.sls` and its suites (deadlines, fake-shell, linger, originated), 149 inserted lines;
+- **feat/m5.3-shell-timer**, the libuv shell's wheel and timer: `(http-server private shell)`, the socket lane and the clients, 500. With them go the records the code cites: decision 0008's chez-libuv #28 row, the docs, design §2's and §8.5's notes, and plan §14's notes;
+- **feat/m5.3-contract-deadlines**, the contract's deadline scripts, 145, with design §8.4's note, this ledger entry and the mutation log.
+
+NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the M5 exit, whose docs item is done.
