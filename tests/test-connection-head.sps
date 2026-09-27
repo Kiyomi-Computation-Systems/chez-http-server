@@ -29,7 +29,8 @@
 ;;;     `Location` the target encoded, when that target is within the limit;
 ;;;   - RFC 9112 §3.2's Host rules (2026-09-25): two Host lines, an invalid
 ;;;     Host value, and no Host on HTTP/1.1 are refused with 400, the last
-;;;     unless decision 0005's switch is off.  The Host is judged before the
+;;;     unless decision 0005's switch is off.  A value is judged without the
+;;;     OWS after it (RFC 9112 §5; 2026-09-27).  The Host is judged before the
 ;;;     target, so a request the RFC says MUST get 400 is never redirected.
 ;;;     The rows about other rules send minimal requests with no Host, under
 ;;;     `minimal`, the defaults with the switch off; the Host rows run under
@@ -122,6 +123,13 @@
         (reverse seen)
         (let ((o (drive input size limits)))
           (loop (+ size 1) (if (member o seen) seen (cons o seen)))))))
+
+;; headless : Outcome -> Outcome
+;; The outcome with each handled request's headers left out, for a row that
+;; asks whether a request is served, not what its handler reads.
+(define (headless o)
+  (cons (map (lambda (r) (list (car r) (cadr r) (caddr r) (cadddr r) '())) (car o))
+        (cdr o)))
 
 ;; An originated status as render-action shows it: no body, so
 ;; `Content-Length: 0`, and `Connection: close` (decision 0010 item 6;
@@ -273,6 +281,14 @@
     (test-equal "a request with one valid Host is served"
                 (list (ok (list (req 'GET "/" 1 1 '("Host" . "example.com:8080"))) 'idle #f))
                 (every-size (b "GET / HTTP/1.1\r\nHost: example.com:8080\r\n\r\n") default-limits))
+    ;; RFC 9112 §5: the OWS after a value is not part of it, though llhttp
+    ;; keeps it in the value it delivers.  The row asks only that the request
+    ;; is served: what a handler reads of the value is M4.5's.
+    (test-equal "a Host value with a space or a tab after it is served"
+                (list (list (ok (list (req 'GET "/" 1 1)) 'idle #f))
+                      (list (ok (list (req 'GET "/" 1 1)) 'idle #f)))
+                (map (lambda (text) (map headless (every-size (b text) default-limits)))
+                     '("GET / HTTP/1.1\r\nHost: h \r\n\r\n" "GET / HTTP/1.1\r\nHost: h\t\r\n\r\n")))
     (test-equal "an HTTP/1.1 request with no Host is refused with 400"
                 (list (refused 'invalid-host 400))
                 (every-size (b "GET / HTTP/1.1\r\n\r\n") default-limits))

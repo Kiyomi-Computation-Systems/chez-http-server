@@ -13,8 +13,9 @@
 ;;;
 ;;; Oracles: RFC 9112 §3.2 for the rules; uriparse's `validate-authority` and
 ;;; its documented error codes for a value's verdict; RFC 9110 §7.2 for the
-;;; userinfo rule.  Every verdict is compared as 'accepted or a code, never as
-;;; #f: SRFI-64 turns an exception inside a test expression into #f.
+;;; userinfo rule; RFC 9112 §5 for the OWS that is not part of a value.  Every
+;;; verdict is compared as 'accepted or a code, never as #f: SRFI-64 turns an
+;;; exception inside a test expression into #f.
 (import (rnrs) (srfi :64) (testing)
         (http-server host) (http-server span))
 
@@ -46,6 +47,12 @@
     ;; RFC 9112 §3.2: a client sends an empty Host when the target has no
     ;; authority, and §3.3 leaves the empty authority to the server: M4's.
     (test-eq "an empty Host value passes" 'accepted (one-host ""))
+    ;; RFC 9112 §5: the OWS around a field line value is not part of it.
+    ;; llhttp leaves out the OWS before a value but keeps the OWS after it, so
+    ;; the span the core keeps can end in a space or a tab.
+    (test-equal "a Host value is judged without the OWS around it"
+                '(accepted accepted accepted accepted)
+                (map one-host '("h " "h\t" "example.com:8080 \t " " h")))
     (test-equal "the Host name matches in any case"
                 '(accepted duplicate-host)
                 (list (judged '(("hOsT" . "x")) 1 1 #t)
