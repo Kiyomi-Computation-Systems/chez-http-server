@@ -1,0 +1,70 @@
+#+TITLE: Handlers: answering requests
+
+A handler is a procedure. The server calls it with each request, and sends
+back the response it returns.
+
+#+begin_src scheme
+(import (rnrs) (http-server))
+
+(serve
+ (lambda (request)
+   (make-response 200 #f '()
+                  (string->utf8 (string-append "You asked for " (request-path request) "\n")))))
+#+end_src
+
+~serve~ listens on ~127.0.0.1:8080~ unless ~CHEZ_HTTP_HOST~ and ~CHEZ_HTTP_PORT~ say
+otherwise (see [[file:configuration.org][configuration.org]]), and runs until the server stops. It writes one
+line to standard output for each thing that happens, starting with
+~listening 127.0.0.1 8080~.
+
+* Reading the request
+
+For ~GET /a/b?x=1~ with ~Host: example.com~:
+
+| Call                        | Gives                                          | Here            |
+|-----------------------------+------------------------------------------------+-----------------|
+| ~(request-method r)~        | the method, a symbol                           | ~GET~           |
+| ~(request-path r)~          | the path                                       | ~"/a/b"~        |
+| ~(request-query r)~         | what follows the first ~?~, or ~#f~ with no ~?~ | ~"x=1"~         |
+| ~(request-header r "host")~ | the first header with that name, or ~#f~       | ~"example.com"~ |
+| ~(request-host r)~          | the site the request is for                    | ~"example.com"~ |
+
+- Header names match in any case: ~"content-type"~ finds ~Content-Type~.
+- The spaces around a header's value are not part of it.
+- Nothing is decoded: ~/a%20b~ reads ~"/a%20b"~. Decode it yourself if you need to.
+- Each byte is one character (Latin-1), so every byte reads back as it was sent.
+- A proxy names the site in the target itself: ~GET http://example.com/a~. Then the
+  path is ~"/a"~ and the host is ~"example.com"~, whatever the ~Host~ line says
+  (RFC 9112). An empty path, as in ~GET http://example.com~, reads ~"/"~.
+- ~OPTIONS *~ has the path ~"*"~, and ~CONNECT example.com:443~ the path ~""~.
+- With an empty ~Host:~, or none (HTTP/1.0), the host is ~""~.
+
+Each call makes its string when you ask, so a handler pays only for what it reads.
+
+The request's body cannot be read yet: that comes with streaming bodies (M6).
+
+* Keep strings, not the request
+
+A request holds on to the bytes it arrived in, up to ~CHEZ_HTTP_READ_BUFFER_SIZE~
+(16 KiB). To keep something for later, keep the strings you read, not the request:
+a request you keep keeps its bytes too.
+
+* Answering
+
+~(make-response status reason headers body)~:
+
+- ~status~: a number from 200 to 599;
+- ~reason~: a bytevector, such as ~(string->utf8 "OK")~, or ~#f~ for the usual one;
+- ~headers~: a list of ~(name . value)~ pairs of bytevectors;
+- ~body~: a bytevector, or ~#f~ for none.
+
+What the server adds for you, and what it will not send, is in [[file:responses.org][responses.org]]. If
+your handler raises, the client gets ~500 Internal Server Error~ and the server logs
+~handler-failed~.
+
+* When the server will not start
+
+A malformed setting, such as ~CHEZ_HTTP_PORT=http~ or a ~CHEZ_HTTP_HOST~ that is not
+an IP address, stops ~serve~ before it listens. It raises an
+~&http-server-config-error~ that names the variable; ~http-server-config-error?~
+checks for one.

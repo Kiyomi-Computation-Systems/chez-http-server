@@ -36,7 +36,7 @@ When the server closes a connection after a response, it closes it gently:
 1. It tells the client it has finished writing.
 2. It keeps reading, and throws away whatever the client still sends.
 3. It closes once the client closes too, or once ~CHEZ_HTTP_LINGER_TIMEOUT~ (30 s)
-   has passed.
+   has passed (from M5; until then it waits for the client).
 
 Closing at once while the client is still sending makes the operating system reset
 the connection. A client that is still uploading would then see an error instead of

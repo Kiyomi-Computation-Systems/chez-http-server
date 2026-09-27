@@ -9,8 +9,22 @@
 ;;; backlog reaches libuv's uv_listen as a C int, whose largest value is
 ;;; 2147483647 on every platform the project targets (chez-libuv's native.sls
 ;;; types it int).  `limits-with` replaces fields by the names below, which
-;;; this suite writes out itself, in make-limits' order.
+;;; this suite writes out itself, in make-limits' order.  Where the server
+;;; listens is decision 0012's: CHEZ_HTTP_HOST and CHEZ_HTTP_PORT, by default
+;;; 127.0.0.1 and 8080; a TCP port is 0 to 65535, 0 asking the kernel for one
+;;; (RFC 9293 §3.1's 16-bit port; libuv's bind takes port 0 so).
 (import (rnrs) (srfi :64) (testing) (http-server limits))
+
+;; env : (Pair String String) ... -> (String -> (U String #f))
+;; An environment holding just these variables.
+(define (env . pairs)
+  (lambda (name) (let ((p (assoc name pairs))) (and p (cdr p)))))
+
+;; address : (String -> (U String #f)) -> (U (List String Nat) 'faulted)
+(define (address lookup)
+  (guard (e (#t 'faulted))
+    (let-values (((host port) (address-from-environment lookup)))
+      (list host port))))
 
 ;; Every field, by name and accessor, in make-limits' order.
 (define named-fields
@@ -165,6 +179,21 @@
                (limits-from-environment
                  (lambda (name) (if (string=? name "CHEZ_HTTP_MAX_HEADER_BYTES") "big" #f)))
                'no-fault))
+
+    ;; --- where the server listens (decision 0012) ---
+    (test-equal "the server listens on 127.0.0.1:8080 by default, or when both are empty"
+                '(("127.0.0.1" 8080) ("127.0.0.1" 8080))
+                (list (address (env))
+                      (address (env '("CHEZ_HTTP_HOST" . "") '("CHEZ_HTTP_PORT" . "")))))
+    (test-equal "CHEZ_HTTP_HOST and CHEZ_HTTP_PORT move it, each alone; port 0 asks the kernel"
+                '(("0.0.0.0" 8080) ("127.0.0.1" 0) ("::1" 65535))
+                (list (address (env '("CHEZ_HTTP_HOST" . "0.0.0.0")))
+                      (address (env '("CHEZ_HTTP_PORT" . "0")))
+                      (address (env '("CHEZ_HTTP_HOST" . "::1") '("CHEZ_HTTP_PORT" . "65535")))))
+    (test-equal "a port that is not a whole number from 0 to 65535 is refused"
+                '(faulted faulted faulted faulted)
+                (map (lambda (value) (address (env (cons "CHEZ_HTTP_PORT" value))))
+                     '("-1" "65536" "http" "80.5")))
 
     ;; --- limits-with: fields replaced by name, the rest kept ---
     (test-equal "limits-with replaces each field alone, by name"

@@ -58,7 +58,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps build dev test check-pins check-imports check-close-ownership prod clean corpus-refresh
+.PHONY: help check-help submodules deps build dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -100,18 +100,19 @@ check-pins: ## Verify each submodule sits at its pinned commit (fingerprint chec
 
 # The pure connection libraries under src/http-server/ (outside private/) must
 # not reach the impure world: (libuv ...) and (chezscheme) live only in
-# private/, the tests and this Makefile (global-constraints).  A check, not a
-# comment: add such an import to a pure library and this target reddens.
+# private/, the tests and this Makefile (global-constraints).  The facade,
+# src/http-server.sls, reaches them only through private/ (design §3.1).  A
+# check, not a comment: add such an import to either and this target reddens.
 check-imports: ## Assert pure libraries import no (libuv)/(chezscheme), and src/ no test library
-	@hits=$$(grep -REn '\((chezscheme|libuv)( |\))' src/http-server --include='*.sls' 2>/dev/null | grep -v '/private/' || true); \
+	@hits=$$(grep -REn '\((chezscheme|libuv)( |\))' src/http-server src/http-server.sls --include='*.sls' 2>/dev/null | grep -v '/private/' || true); \
 	if [ -n "$$hits" ]; then \
-	  echo "IMPURE IMPORT in a pure library:" >&2; echo "$$hits" >&2; exit 1; \
+	  echo "IMPURE IMPORT outside src/http-server/private/:" >&2; echo "$$hits" >&2; exit 1; \
 	fi; \
 	tests=$$(grep -REn '\((uv-testing|httparse test)( |\))' src --include='*.sls' 2>/dev/null || true); \
 	if [ -n "$$tests" ]; then \
 	  echo "TEST-ONLY IMPORT in a shipped library:" >&2; echo "$$tests" >&2; exit 1; \
 	fi; \
-	echo "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, no test library in src/"
+	echo "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, the facade's included; no test library in src/"
 
 # One procedure closes every handle: handle-close!, the one use of uv-close!
 # in src/ (design §5.3 and §7.6, decision 0003).  chez-libuv keeps the
@@ -139,6 +140,10 @@ build: deps ## Build dependencies and assemble the one library path
 
 dev: build ## Start a REPL with everything on the library path
 	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ)
+
+run: build ## Run a program on the library path: make run PROGRAM=hello.sps
+	@test -n "$(PROGRAM)" || { echo "run: set PROGRAM=path/to/program.sps" >&2; exit 2; }
+	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ) --program $(PROGRAM)
 
 test: build check-pins check-imports ## Run every tests/test-*.sps (status 0/1/2/3, keep-going)
 	@test -n "$(TESTS)" || { echo "test: empty selection — no tests/test-*.sps (failure)" >&2; exit 2; }

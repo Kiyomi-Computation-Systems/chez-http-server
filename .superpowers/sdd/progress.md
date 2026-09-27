@@ -2120,3 +2120,47 @@ DECIDED on the owner's word (2026-09-27, "Go with the recommendations"), each as
 Every suite green on this step alone, in a scratch worktree cut at its commit: thirty-three suites, 866 expected passes (view 13), each exit 0; the import audit clean.
 
 NEXT: the second step, the facade, stacked on this one: `(http-server)`, what reaches the embedder; the address from `CHEZ_HTTP_HOST` and `CHEZ_HTTP_PORT`; the startup's `&http-server-config-error`, which refuses a pipeline cap other than 1 as the environment path does; and the docs a handler reads.
+
+M4.5 SECOND STEP — THE FACADE. Branch feat/m4.5-facade, cut from the first.
+- `src/http-server.sls`, `(http-server)`, new, the facade. It exports:
+  - `serve`;
+  - the six accessors a handler reads with: `request?`, `request-method`, and the view's four;
+  - `make-response` and `response?`;
+  - `&http-server-error` and `&http-server-config-error`, with their predicates.
+  
+  It imports this project's libraries alone, as design §3.1 has it. The spans stay the request's: no span accessor is exported.
+- `src/http-server/private/serve.sls`, `(http-server private serve)`, new: the process's edge.
+  - `start-server` reads the limits and the address through a lookup. It makes the shell, listens, and logs `listening` with the host and the port it got.
+  - `serve` is `start-server` on a loop of its own, with the process's environment (`getenv`) unless a lookup is given, and the log below. It then runs the loop until the server stops: in v1, only a listener that fails stops it.
+  - A setting the pure parsers refuse is raised again as an `&http-server-config-error` composed with their assertion violation, whose irritants name the variable. That covers a pipeline cap other than 1, since the facade builds limits only from the environment (M2.4's note). A `CHEZ_HTTP_HOST` that is not an IP literal is refused by chez-libuv's bind as `bad-address`; it is raised as a config error naming the variable, and the shell has closed the listener.
+  - `log-line` writes each thing that happens as one line on standard output, flushed at once (Twelve-Factor XI): what happened, then each detail. A condition reads as Chez's `display-condition` shows it, its line breaks made spaces, and a record as its kind, `#<connection>`, so a line never spells out a connection's state.
+- `(http-server limits)`: `address-from-environment` reads `CHEZ_HTTP_HOST` and `CHEZ_HTTP_PORT`, by default 127.0.0.1 and 8080 (decision 0012). The port is 0 to 65535, and 0 asks the kernel for one. The host is judged by the bind, the OS's own parser.
+- `tests/test-serve.sps`, new, nine checks:
+  - the facade's exports;
+  - a server started through an environment on port 0: it logs where it listens, with the kernel's port; a request read through the facade's names reaches the handler, and its answer reaches the client; its limits are the environment's (a 414); and once shut down it leaves nothing on the loop;
+  - `serve` refuses three malformed settings as config errors naming each;
+  - a host that is not an IP literal is refused, and nothing is left open;
+  - the log's two shapes.
+  
+  Clients run on the server's loop, every wait capped by an iteration count. `tests/test-limits.sps` gains three address rows (40).
+- `make run PROGRAM=...` runs a program on the library path. `make check-imports` now reads the facade's file as well as `src/http-server/`.
+- Docs:
+  - `docs/handlers.org`, new: what a handler reads, keeping strings rather than the request (decision 0012's rule for spans), and answering;
+  - `docs/configuration.org` gains where the server listens;
+  - the README's status, stale since M0, now says M4, and there is a quick start.
+  
+  The docs had described the four timeouts, a 408 among them, as enforced; the shell only records deadlines until M5's wheel, and now they say so.
+- Red before green:
+  - the address rows failed against a stub parser;
+  - the serve suite's eight behavior rows failed against a stub start that listened with default-limits and logged nothing;
+  - the exports row passed at once, since the facade's list was already the one written, so its red is M4.5-Z's.
+- Watched to fail (m4-mutations.md), each against every suite: M4.5-R to AE, and AF, the facade importing `(chezscheme)`, which `make check-imports` alone reddens. Every check of the step is reddened by at least one.
+- Found while watching: M4.5-AC hung the serve suite. Its `serve` accepted a pipeline cap of 2, listened on 8080 and ran for good, and the run was killed. So every start that should fail also names a host no bind accepts, and so does the suite's own environment: a start past its settings, or a `serve` that read the process's environment rather than its lookup (AE), is refused at the bind. Both were run again and turned red without hanging. A failing start must not be able to run.
+- Not tested in a suite: `serve`'s own run of its loop, which blocks by design. Smoke-run by hand (2026-09-27): the README's program, started with `make run` on port 18765, logged `listening 127.0.0.1 18765`. curl got a 200 with its body for a GET and for HTTP/1.0 (with `Connection: close`), the length and no body for `-I`, and two GETs on one connection. The M4 exit runs curl and ab against it.
+- Records: design §6.4 (the two types, and why §6.4's third waits) and plan §8's M4.5 note.
+
+DECIDED on the owner's word (the same words, as recommended): design §6.4's `&http-server-handler-error` is not defined in v1. A handler's raise is answered 500 and logged as `handler-failed`, and never reaches the embedder, so the wrapper has nothing to carry.
+
+`make test` green: thirty-four suites, 878 expected passes (serve 9, limits 40, view 13), exit 0.
+
+NEXT: two stacked PRs, on the owner's word: the first step, then the facade stacked on it. Then the M4 exit (plan §8): curl and ab get correct responses, and the counters return to zero; the contract test passes; the connection table is reconciled against `uv-loop-live-handles` at one place in the run loop; the per-connection budget is re-measured; and the amendment slicing M5–M8 is written (plan §10).
