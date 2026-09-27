@@ -98,14 +98,14 @@
 
 ;; stalled : String -> (FakeShell -> Any)
 ;; The client sends `text`, a request it never finishes; a minute passes,
-;; the header and body deadlines' 60 s, and the connection is ticked, as
-;; M5's wheel ticks one whose deadline has passed.  The core reads no clock:
-;; the tick is what tells it, and only the Date shows the minute.
+;; the header and body deadlines' 60 s, and the fake's timer fires, which
+;; ticks the connection once its deadline has passed (M5.3).  The core reads
+;; no clock: the tick is what tells it, and only the Date shows the minute.
 (define (stalled text)
   (lambda (sh)
     (send! sh text)
     (fake-shell-advance! sh 60000)
-    (fake-shell-tick! sh)))
+    (fake-shell-fire! sh)))
 
 ;; drive : (Request -> Response) (FakeShell -> Any) -> Outcome
 ;; One connection under decision 0005's defaults, with `handler`: the

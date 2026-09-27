@@ -63,6 +63,14 @@
       (test-eq "advance! refuses a negative step" 'refused
                (guard (e (#t 'refused)) (fake-shell-advance! s -1) 'accepted)))
 
+    ;; M5.3: a fake connection's timer is its wheel's; a stub step's shell
+    ;; keeps none, so firing it is refused, where its tick is delivered.
+    (let ((s (make-fake-shell echo-step 0 0)))
+      (test-equal "a stub step's shell keeps no timer: firing it is refused, and nothing is delivered"
+                  '(refused ())
+                  (list (guard (e ((assertion-violation? e) 'refused)) (fake-shell-fire! s) 'fired)
+                        (fake-shell-events s))))
+
     ;; M2.4: actions run after the outermost dispatch, from one queue (design
     ;; §4.5).  Performing (call b) dispatches b; b's action must wait behind
     ;; the (note 1) already queued, never run in a drain nested inside this one.

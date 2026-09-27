@@ -1,12 +1,12 @@
 #!r6rs
 ;;; (http-server connection): each deadline the core arms, reached as a
-;;; client reaches it, then passed.  M5.2.
+;;; client reaches it, then passed.  M5.2; M5.3 gives the fake shell its wheel.
 ;;;
 ;;; A connection has one deadline armed at a time, of five kinds (design
 ;;; §4.3; decision 0011), and the shell's wheel ticks it once that deadline
-;;; has passed (decision 0005; M5.3 builds the wheel into both shells).
-;;; Every kind has its tick row (design §4.4, amended 2026-09-27), and each
-;;; row here reaches one on a fake connection, the way a client does:
+;;; has passed (decision 0005).  Every kind has its tick row (design §4.4,
+;;; amended 2026-09-27), and each row here reaches one on a fake connection,
+;;; the way a client does:
 ;;;   idle    a keep-alive client that sends nothing more: closed, with no
 ;;;           response;
 ;;;   header  a head never finished: 408, then the staged close;
@@ -17,16 +17,20 @@
 ;;;           settled when the shell reports it (M3.3);
 ;;;   linger  a client that never closes: closed.
 ;;; Every close disarms the deadline first, so the wheel lets the connection
-;;; go (M5.2).
+;;; go (M5.2).  And a client that connects and sends nothing is closed at
+;;; the idle deadline its connection was made with: no action arms that one,
+;;; the shell does, at adoption (M5.3).
 ;;;
-;;; A row reads which kind is armed once the client has moved, then passes
-;;; it: the fake clock, at 0 while the client moves, moves by that kind's
-;;; limit (limits-deadline-ms), the connection is ticked there, and every
-;;; later turn runs.  The core reads no clock: the tick is what tells it, as
-;;; M5.3's wheel will once that much time has passed.  The row states the
-;;; kind, the instant of the tick, the actions from the tick on, a write
-;;; shown as its status, and the phase, the reason it closes after its
-;;; response, and the writes outstanding it ends with.
+;;; The fake shell arms its wheel as the libuv shell does (M5.3): at its
+;;; clock's now plus the kind's limit (limits-deadline-ms), and its timer
+;;; ticks the connection only once that instant has passed.  A row makes the
+;;; connection at `start`, its client moves there, and the row reads which
+;;; kind is armed; the timer then fires a millisecond before the deadline,
+;;; which ticks nothing, and at the deadline, and every later turn runs.  The
+;;; core reads no clock: the tick is what tells it.  The row states the kind,
+;;; what the early tick asked for, the instant of the tick, the actions from
+;;; it on, a write shown as its status, and the phase, the reason it closes
+;;; after its response, and the writes outstanding it ends with.
 ;;; test-connection-originated.sps reads the 408s' bytes back.
 ;;;
 ;;; Oracles: design §4.3's table of states and their deadlines, and §4.4's
@@ -36,7 +40,7 @@
 ;;; Date line's 37 bytes); the requests' own bytes.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
-        (fake-shell) (only (read-back) send! shown))
+        (fake-shell) (only (read-back) send! client-close! shown))
 
 (define (b s) (string->utf8 s))
 
@@ -59,24 +63,34 @@
   (let ((bv (b text)))
     (fake-shell-deliver! sh (list 'bytes-arrived bv 0 (bytevector-length bv)))))
 
+;; The instant each row's connection is made at and its client moves at:
+;; not the fake clock's start, so a deadline armed at its limit alone, and
+;; not at the clock's now plus its limit, would show.
+(define start 1000)
+
 ;; passed : (FakeShell -> Any) -> Outcome
-;; One connection under decision 0005's defaults: the client's moves, then
-;; the deadline they left armed passes, then every later turn.  The outcome:
-;; the kind armed, the instant it passed, the actions from the tick on, and
-;; the phase, close-after and writes outstanding the connection ends with;
-;; or `(raised)` if the run raised, as it does when no deadline is armed.
+;; One connection under decision 0005's defaults, made at `start`: the
+;; client's moves, then the timer fires a millisecond before the deadline
+;; they left armed, and at it, then every later turn.  The outcome: the kind
+;; armed, the actions the early tick asked for, the instant the deadline
+;; passed, the actions from its tick on, and the phase, close-after and
+;; writes outstanding the connection ends with; or `(raised)` if the run
+;; raised, as it does when no deadline is armed.
 (define (passed moves)
   (guard (e (#t '(raised)))
-    (let ((sh (make-fake-connection default-limits answers)))
+    (let ((sh (make-fake-connection default-limits answers #f start)))
       (moves sh)
-      (let ((kind (conn-deadline (fake-shell-conn-state sh)))
-            (n (length (fake-shell-actions sh))))
-        (fake-shell-advance! sh (limits-deadline-ms default-limits kind))
-        (fake-shell-tick! sh)
-        (fake-shell-settle! sh)
-        (let ((s (fake-shell-conn-state sh)))
-          (list kind (fake-shell-now sh) (map shown (list-tail (fake-shell-actions sh) n))
-                (conn-phase s) (conn-close-after s) (conn-outstanding s)))))))
+      (let* ((kind (conn-deadline (fake-shell-conn-state sh)))
+             (deadline (+ start (limits-deadline-ms default-limits kind))))
+        (fake-shell-advance! sh (- deadline 1 (fake-shell-now sh)))
+        (let* ((early (fake-shell-fire! sh))
+               (n (length (fake-shell-actions sh))))
+          (fake-shell-advance! sh 1)
+          (fake-shell-fire! sh)
+          (fake-shell-settle! sh)
+          (let ((s (fake-shell-conn-state sh)))
+            (list kind early (fake-shell-now sh) (map shown (list-tail (fake-shell-actions sh) n))
+                  (conn-phase s) (conn-close-after s) (conn-outstanding s))))))))
 
 ;; A 408, then the staged close (decision 0011): the write, reading stopped,
 ;; the write deadline; once the write completes, the half-close, reading
@@ -94,20 +108,20 @@
   (list
    (row "idle: a keep-alive client that sends nothing more is closed, with no response"
         (lambda (sh) (send! sh get))
-        '(idle 75000 ((disarm-deadline) (close idle-timeout)) closed #f 0))
+        '(idle () 76000 ((disarm-deadline) (close idle-timeout)) closed #f 0))
    (row "header: a head never finished is answered 408, then closed in stages"
         (lambda (sh) (send! sh "GET / HTTP/1.1\r\nHo"))
-        `(header 60000 ,answered-408 lingering header-timeout 0))
+        `(header () 61000 ,answered-408 lingering header-timeout 0))
    (row "body: a body never finished is answered 408, then closed in stages"
         (lambda (sh) (send! sh "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab"))
-        `(body 60000 ,answered-408 lingering body-timeout 0))
+        `(body () 61000 ,answered-408 lingering body-timeout 0))
    (row "write: a response the client never reads: logged with its bytes, closed, with no response, its write settled"
         (lambda (sh) (unread! sh get))
-        `(write 60000 ((log write-timeout ,answer-bytes) (disarm-deadline) (close write-timeout))
+        `(write () 61000 ((log write-timeout ,answer-bytes) (disarm-deadline) (close write-timeout))
                 closed #f 0))
    (row "linger: a client that never closes is closed"
         (lambda (sh) (send! sh "GET / HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))
-        '(linger 30000 ((disarm-deadline) (close not-keep-alive)) closed not-keep-alive 0))))
+        '(linger () 31000 ((disarm-deadline) (close not-keep-alive)) closed not-keep-alive 0))))
 
 (run-suite "connection-deadlines"
   (lambda ()
@@ -115,4 +129,22 @@
               rows)
     (test-equal "a row for each kind of deadline the core arms, in order"
                 conn-deadline-kinds
-                (map (lambda (r) (car (row-outcome r))) rows))))
+                (map (lambda (r) (car (row-outcome r))) rows))
+    ;; No action arms the first deadline: the connection is made in idle with
+    ;; its idle deadline armed at the clock's now (M5.3).
+    (test-equal "adoption: a client that connects and sends nothing is closed at the idle deadline it was made with"
+                '(idle () 76000 ((disarm-deadline) (close idle-timeout)) closed #f 0)
+                (passed (lambda (sh) #f)))
+    ;; A close disarms first (M5.2), and the wheel lets the connection go:
+    ;; the deadline it was made with never ticks it.  A closed connection
+    ;; asks for nothing when ticked, so what shows is the tick delivered.
+    (test-equal "a connection its client closes is ticked no more"
+                '(closed ())
+                (guard (e (#t '(raised)))
+                  (let ((sh (make-fake-connection default-limits answers #f start)))
+                    (client-close! sh)
+                    (fake-shell-settle! sh)
+                    (fake-shell-advance! sh (limits-deadline-ms default-limits 'idle))
+                    (fake-shell-fire! sh)
+                    (list (conn-phase (fake-shell-conn-state sh))
+                          (filter (lambda (e) (eq? (car e) 'tick)) (fake-shell-events sh))))))))

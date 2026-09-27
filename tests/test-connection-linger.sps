@@ -84,12 +84,12 @@
       (list (list-tail (fake-shell-actions sh) n) (conn-phase s) (conn-close-after s)))))
 
 ;; linger-passes! : FakeShell -> Any
-;; The linger deadline passes: the clock moves by the limit, and the
-;; connection is ticked, as M5's wheel ticks one whose deadline has passed.
-;; The core reads no clock; the tick is what tells it.
+;; The linger deadline passes: the clock moves by the limit, and the fake's
+;; timer fires, which ticks the connection once its deadline has passed
+;; (M5.3).  The core reads no clock; the tick is what tells it.
 (define (linger-passes! sh)
   (fake-shell-advance! sh (limits-linger-timeout-ms default-limits))
-  (fake-shell-tick! sh))
+  (fake-shell-fire! sh))
 
 (define websocket
   (string-append "GET /chat HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
