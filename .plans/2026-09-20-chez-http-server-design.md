@@ -786,6 +786,15 @@ exists today: `limits-from-environment` currently answers a bare
 right for a pure library but leaves the shell nothing specific to catch at startup. The
 shell wraps it.
 
+> *Noted 2026-09-27 (M4.5):* `&http-server-error` and `&http-server-config-error` are
+> defined in `(http-server private serve)` and exported from the facade. The start
+> composes the config error with what refused the setting: the pure parser's
+> assertion violation, whose irritants name the variable, or chez-libuv's
+> `bad-address` at the bind, for a `CHEZ_HTTP_HOST` that is not an IP literal.
+> `&http-server-handler-error` is not defined. In v1 a handler's raise is answered 500
+> and logged as `handler-failed`, and never reaches the embedder, so the wrapper has
+> nothing to carry until a path hands one to an embedder.
+
 Two composition hazards, both found by reading the dependencies, both turned into
 checks:
 

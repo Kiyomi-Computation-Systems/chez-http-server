@@ -1,10 +1,27 @@
 #+TITLE: Configuration
 
-chez-http-server follows the 12-factor rule for config: every connection limit
-has a bounded default and can be overridden from the environment. Timeouts are
-given in whole *seconds*; sizes and counts in their own unit. An unset or empty
-variable keeps the default; a malformed value (negative or non-numeric) is
-refused rather than silently ignored.
+chez-http-server follows the 12-factor rule for config: where the server
+listens, and every connection limit, has a default and can be overridden from
+the environment. Timeouts are given in whole *seconds*; sizes and counts in
+their own unit. An unset or empty variable keeps the default. A malformed value
+(negative or non-numeric) is refused rather than silently ignored: ~serve~
+raises an ~&http-server-config-error~ naming the variable, before it listens.
+
+* Where the server listens
+
+| Variable         | Default     | What it sets                                   |
+|------------------+-------------+------------------------------------------------|
+| ~CHEZ_HTTP_HOST~ | ~127.0.0.1~ | the IP address to listen on                    |
+| ~CHEZ_HTTP_PORT~ | ~8080~      | the port, 0 to 65535; ~0~ takes any free one   |
+
+The default listens on this machine only, so nothing outside can reach the
+server until you ask. In a container, set ~CHEZ_HTTP_HOST=0.0.0.0~ (or ~::~ for
+IPv6). The host must be an IP address: a name such as ~localhost~ is refused.
+Platforms that set ~PORT~ (Heroku, Cloud Run, Render, Fly) need it passed on:
+~CHEZ_HTTP_PORT=$PORT~. The server's first log line says where it listens,
+with the port it got: ~listening 127.0.0.1 8080~.
+
+* Connection limits
 
 | Variable                            | Default   | What it bounds                          |
 |-------------------------------------+-----------+-----------------------------------------|
@@ -23,6 +40,9 @@ refused rather than silently ignored.
 | ~CHEZ_HTTP_MAX_CONNECTIONS~         | 10000     | connections open at once                 |
 | ~CHEZ_HTTP_BACKLOG~                 | 511       | connections waiting to be accepted       |
 | ~CHEZ_HTTP_REQUIRE_HOST~            | true      | HTTP/1.1 requests must send ~Host~       |
+
+The four timeouts are not enforced yet: the server reads and checks them now,
+and acts on them from M5.
 
 A request over any of the four header limits gets ~431~, and one whose target
 is over its limit gets ~414~. Either way the connection closes. What else a

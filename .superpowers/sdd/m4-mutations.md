@@ -342,3 +342,40 @@ of a value with whitespace after it. Before the row, O2 had no check to redden:
 the core answers `Host: h ` 400 until #54's judge trims, so the row builds its
 request by hand. Each of the view's thirteen checks is reddened by at least one
 mutant above.
+
+## M4.5, second step — the facade (2026-09-27)
+
+Red before green: the limits suite's three address rows failed against a stub
+`address-from-environment` answering "stub" and -1, and the serve suite's
+eight behavior rows against a stub `(http-server private serve)` that listened
+on 127.0.0.1:0 with default-limits, logged nothing, and whose `serve`
+returned at once. The exports row passed against it, since the facade's list
+was already the one written; its red is Z's. Every mutant ran against every
+suite, on the finished tree.
+
+| # | mutation | observed |
+|---|---|---|
+| M4.5-R | the default host is 0.0.0.0, every interface (`address-from-environment`) | limits 2 — the defaults row and the "each alone" row, whose port-only case reads the default host; serve 1 — "it listens where the environment says, and logs where" |
+| M4.5-S | the default port is 80 | limits 2 — the defaults row, and the "each alone" row's host-only case |
+| M4.5-T | a port has no upper bound | limits 1 — "a port that is not a whole number from 0 to 65535 is refused" |
+| M4.5-U | CHEZ_HTTP_HOST is not read | limits 1 — the "each alone" row; serve 1 — the host row: the start listens on 127.0.0.1 |
+| M4.5-V | a malformed setting is raised as the pure parser raised it, not as a config error (`settings`) | serve 1 — "a malformed setting raises an &http-server-config-error naming it, from serve" |
+| M4.5-W | a host the bind refuses is raised as chez-libuv raised it (`start-server`) | serve 1 — "a host that is no IP literal is refused by the bind, as a config error naming CHEZ_HTTP_HOST, and nothing is left open" |
+| M4.5-X | the start serves default-limits, not the environment's | serve 1 — "its limits are the environment's: a target over CHEZ_HTTP_MAX_TARGET_BYTES gets 414" |
+| M4.5-Y | the start logs the port asked for, 0, not the one it got | serve 3 — the listening row, and the two exchanges, whose client connects to the logged port |
+| M4.5-Z | the facade exports `start-server` too (`src/http-server.sls`) | serve 1 — "the facade exports the handler's names, the server's start, and its errors" |
+| M4.5-AA | the log writes a record whole (`put-detail`) | serve 1 — "the log writes a line for each thing: what happened, then each detail" |
+| M4.5-AB | the log keeps a condition's line breaks | serve 1 — "a condition in the log reads as Chez displays it, on one line" |
+| M4.5-AC | the environment's path accepts a pipeline cap of 2 (`env-pipeline-cap`) | limits 1 — "a pipeline cap of 1 is accepted; 2 and 8 are refused"; serve 1 — the malformed-setting row, its pipeline cap |
+| M4.5-AD | the start leaves a timer on the loop | serve 1 — "shut down, the server leaves nothing on the loop" |
+| M4.5-AE | `serve` reads the process's environment, not its lookup | serve 1 — the malformed-setting row: every start is refused at the bind, naming CHEZ_HTTP_HOST, not the setting |
+| M4.5-AF | the facade imports `(chezscheme)` (`src/http-server.sls`), run by `make check-imports` alone | `IMPURE IMPORT outside src/http-server/private/`, naming the line; make exit 2. Before this step the audit read `src/http-server/` alone and the facade's file was outside it |
+
+AC first hung the serve suite: its `serve` accepted the cap, listened on
+8080 and ran for good, and the run was killed. So every start that should
+fail now also names a host no bind accepts, and so does the suite's own
+environment: a start that gets past its settings, or a `serve` that reads the
+process's environment (AE), is refused at the bind instead. AC and AE were
+run again after that, and each turned its rows red without hanging.
+
+Every check of the step is reddened by at least one mutant above.

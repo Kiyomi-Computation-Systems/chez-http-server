@@ -743,6 +743,20 @@ that builds limits refuses a pipeline cap other than 1 (ledger, M2.4).
 - **Mutation:** an absolute-form request's host read from its Host field. Expect the
   host row red.
 
+*Noted 2026-09-27 (M4.5):* the facade is `(http-server)`: `serve`, the request's six
+accessors, `make-response` and `response?`, and two condition types. What a handler
+sees is `(http-server view)`, pure: the path, the query, a header's value and the host,
+each a fresh string, a character per byte, found by the judge's own `target-form`. The
+plan's mutation turns the view's host row red, and nothing else. `serve` reads the
+limits and the address through a lookup, by default the process's environment. A
+malformed setting, a pipeline cap other than 1 among them, raises
+`&http-server-config-error` before anything listens. `make run PROGRAM=...` runs a
+program on the library path, and curl reached the README's server through it. Found
+here, and fixed on its own in #54: the Host judge refused a value with whitespace after
+it, which RFC 9112 §5 leaves out of the value. A handler reads a value without that
+whitespace, the host's included: the view trims where it reads, as the Host judge and
+the transfer-coding reader do.
+
 ### M4 exit
 
 Brief's gate: `curl` and `ab` get correct responses; counters return to zero; the

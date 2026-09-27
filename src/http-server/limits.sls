@@ -26,7 +26,10 @@
 ;;;
 ;;; One switch rides with them (decision 0005's amendment of 2026-09-25):
 ;;; an HTTP/1.1 request with no Host is refused with 400 (RFC 9112 §3.2)
-;;; unless CHEZ_HTTP_REQUIRE_HOST is exactly "false".
+;;; unless CHEZ_HTTP_REQUIRE_HOST is exactly "false".  And where the server
+;;; listens is read the same way (decision 0012): CHEZ_HTTP_HOST and
+;;; CHEZ_HTTP_PORT, by default 127.0.0.1 and 8080, loopback, so a server is
+;;; exposed only when asked.
 (library (http-server limits)
   (export
     make-limits limits?
@@ -48,7 +51,8 @@
     limits-read-buffer-size
     limits-max-connections
     limits-backlog
-    limits-require-host?)
+    limits-require-host?
+    address-from-environment)
   (import (rnrs))
 
   ;; make-limits :
@@ -204,4 +208,16 @@
       (env-integer     lookup "CHEZ_HTTP_READ_BUFFER_SIZE"        16384 1)
       (env-integer     lookup "CHEZ_HTTP_MAX_CONNECTIONS"         10000 1)
       (env-integer     lookup "CHEZ_HTTP_BACKLOG"                 511   1 c-int-max)
-      (env-boolean     lookup "CHEZ_HTTP_REQUIRE_HOST"            #t))))
+      (env-boolean     lookup "CHEZ_HTTP_REQUIRE_HOST"            #t)))
+
+  ;; address-from-environment : (String -> (U String #f)) -> (values String Nat)
+  ;; Where the server listens (decision 0012): CHEZ_HTTP_HOST, and
+  ;; CHEZ_HTTP_PORT, a TCP port, 0 to 65535, where 0 asks the kernel for one;
+  ;; 127.0.0.1 and 8080 when they are absent or empty.  A malformed port
+  ;; faults with who/name, as a malformed limit does.  The host is not
+  ;; judged here: the listener's bind judges it, as the IPv4 or IPv6 literal
+  ;; it must be.
+  (define (address-from-environment lookup)
+    (let ((host (lookup "CHEZ_HTTP_HOST")))
+      (values (if (blank? host) "127.0.0.1" host)
+              (env-integer lookup "CHEZ_HTTP_PORT" 8080 0 65535)))))
