@@ -2201,3 +2201,70 @@ MERGED to main on 2026-09-27, on the owner's "Do the closing ritual?": **#54, th
 - **Branches.** Deleted local and remote, and refs pruned. No PR is open.
 
 `make test` green on main: thirty-four suites, 880 expected passes, exit 0. NEXT is unchanged: the M4 exit.
+
+M4 EXIT (plan §8, §10, §12). Branch feat/m4-exit, cut from main at 64e9a3b; 2026-09-27, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. Mutation log: m4-mutations.md, "The M4 exit".
+
+Gathered before the first test, from the brief's M4 gate, plan §8, §10 and §12, and design §7.5:
+- the brief's gate: curl and ab get correct responses, the counters return to zero, and the contract test passes;
+- plan §8: the table is reconciled against `uv-loop-live-handles` at one place in the run loop, and the per-connection budget is re-measured against design §7.5's 16,384 + 264 + 1,072 and recorded, which discharges §12's risk 2;
+- plan §10: the amendment slicing M5–M8 is part of M4's close-out.
+
+Met before this branch, each with its check:
+- the contract test: `tests/test-contract.sps` (M4.4), in `make test`;
+- the reconciliation: `shell-run!` reconciles after a callback's error (M4.2; decision 0003 item 4), watched to fail by M4.2-C and M4.3-S2;
+- "the counters" are chez-libuv's dev-build counts, which the socket lane has read at its end since M4.2.
+
+MEASURED before the decisions (scratch):
+- curl and ab as child processes on the server's own loop, through `uv-spawn!` and a pipe: curl four times and ab twice over 500 requests took 368 ms and 712 loop iterations. Every answer was correct. After them the table was empty and chez-libuv counted the listener alone; after the shutdown, nothing.
+- A server holding 100, then 500, idle keep-alive connections from a Python client in its own process: its heap grew by about 1.5 KB a connection, and no more after 50 or 200 GETs each. Outside the heap are the read buffer, 16,384 B, and `uv_tcp_t`, 264 B.
+
+DECIDED on the owner's word (2026-09-27), by form, the recommended answers:
+- **The client suite runs in `make test`,** and CI installs curl and ApacheBench (`apache2-utils`). macOS ships both. A client that cannot be started fails the suite with status 2, by name. Weighed: a target of its own, `make test-clients`, outside `make test`.
+- **The per-connection budget is recorded, not gated.** Weighed: holding a connection's heap to 2 KiB in `make test`, with python3 holding the connections.
+
+BUILT:
+- `tests/test-clients.sps`, new: a server started as `serve` starts one, and curl and ab each run as a child process on its loop, every wait capped by an iteration count. It checks:
+  - curl: two GETs, two HEADs and two POSTs with a body, each second one on the first's connection (curl's `num_connects`), and two HTTP/1.0 GETs, each on a connection of its own. For the HEADs, the fields a GET's answer has and no content, their Date lines set aside;
+  - ab: 200 requests 8 at a time, and with `-k` all 200 kept alive, none failed, none answered other than 2xx, and 4-byte documents;
+  - the counters: with every client gone, the table is empty, the listener is the one handle left, and the server logged only `listening`. After the shutdown nothing is left on the loop, and chez-libuv counts no TCP handle, read buffer, write request, pipe or process.
+- `(shell-testing)`: `run-until-drained`, a wait until nothing but a timer is live (below).
+- `tests/test-view.sps`: #54 merged, so the host row sends `Host: h \t` through the core, where it built its request by hand.
+- CI installs `curl` and `apache2-utils`.
+- `.plans/research/spike/m4-exit-budget.sps` and `m4-exit-hold.py`, new, with two runs in `out/`: the per-connection budget against the real shell.
+- Records:
+  - design §7.5's note: about 18.2 KB a connection against the table's 17,720 B, and a parser keeps 592 B, where the table counted the 1,072 B that making one allocates;
+  - plan §8's M4 exit note, and §12's risk-2 row;
+  - the research README;
+  - `docs/configuration.org`: an open connection holds about 18 KB, so 10,000 hold about 180 MB;
+  - README's status: M4 is done.
+
+MEASURED, the budget (`out/m4-exit-budget.run{1,2}.txt`): the heap per held connection, over sixteen readings after 1, 10, 50 and 200 GETs each, is 1,490 to 1,707 B, median about 1,540 B, with no trend in the GETs. The parts, made fresh, are:
+- the core's state with its head and target judge: 192 B;
+- the adapter's context: 32 B;
+- a parser: 592 B;
+- chez-libuv's TCP handle: 200 to 240 B.
+The rest, about 500 B, is not broken down. So an idle connection holds about 18.2 KB, 16,384 B of it the buffer.
+
+Found and fixed:
+- **`tests/test-serve.sps` waited out its caps** (M4.5's). Its two waits for an empty loop could never be satisfied, since the 1 ms ticker that keeps the loop awake is live while it waits. Each ran to its 4,096 iterations: 10.5 s of the suite's 11.1 s. Both now wait until nothing but a timer is live (`run-until-drained`), then check the loop is empty. The suite takes 0.60 s, and the client suite, which first copied the pattern, 0.73 s.
+- **A missing client failed as a check, not as the harness.** SRFI-64 turns a raise inside a check into a failure, so with ab off PATH the suite exited 1. Now both clients run once with their version flags before any check, and with ab off PATH the suite exits 2, naming it. The mutants M4X-A to M4X-I ran again on the final suite and turned the same checks red.
+- **ab does not hold a body to its Content-Length.** With every Content-Length one byte short (M4X-I), ab reports every request complete, none failed. curl's four checks go red. So curl's checks are the ones that see framing, and ab's see concurrency, keep-alive and completion. A and B redden ab's.
+
+Watched to fail (m4-mutations.md): M4X-A to M4X-I each redden the client checks they break, and every check of the suite is reddened by at least one. O2b and HW-Ab, run again, redden the view's host row, now also when the Host judge refuses the value.
+
+`make test` green: thirty-five suites, 891 expected passes (clients 11), exit 0, 16.0 s.
+
+THE AMENDMENT (plan §14, this branch): M5–M8 sliced against what M2–M4 measured. First a sweep (a subagent's extraction) of the ledger, the decisions, the design, the docs and the code, for what each milestone was left. Each item was checked against the tree before it was written.
+- **M5, three slices:** the wheel and its two limits; the tick rows the core lacks (`body` answers 408, `responding` closes); one timer per loop, in both shells.
+- **M6, four:**
+  - how a handler reads a body, decided first (public API, measured and settled by form, as 0012 was), with the buffering helper and brief risk 3's pinned tests;
+  - the read side's credit;
+  - a streamed response, with the write watermarks and M3.2's carried close-delimited arm;
+  - Expect and trailers, with libhtp's two Expect files.
+- **M7, three:** the scheduler and the phase cell (R1, R2, R3, R5); what a handler awaits, decided first (R4); the coroutine shell in the contract test.
+- **M8, four:** the drain; the hand-off door, decided first; the black-box and robustness lanes; load, and the release.
+- **Found:** decision 0007 item 3 put Kestrel's `HttpParsingData` tables, and httpd's `http_strict.t` and lighttpd's `request.t` cases, in M2. No slice held them, and M2 closed without them. §14 puts them in M8.3's robustness lane.
+- **Already done, though the sweep reported it open:** every entry into `responding` has armed the write deadline since M3.2 (`respond`), so the ledger's M2.1 item on the three error entries is settled.
+- **Left open, and not sliced:** 0004 item 3's alternative; trimming a value once, in the core (0012's amendment); the lenient fixtures; CI's billing.
+
+NEXT: the PR, on the owner's word: feat/m4-exit, the checks, the budget and the amendment. At the merge, M4 is complete.

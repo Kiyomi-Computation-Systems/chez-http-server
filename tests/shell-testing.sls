@@ -14,7 +14,7 @@
 (library (shell-testing)
   (export open-client client? client-tcp client-collector client-connected client-end
           client-read! client-send! client-shut! client-bytes client-close!
-          err->symbol run-shell-until)
+          err->symbol run-shell-until run-until-drained)
   (import (rnrs) (libuv) (uv-testing)
           (only (http-server private shell) shell-run!))
 
@@ -98,6 +98,15 @@
                                (else (shell-run! sh 'once) (step (+ i 1))))))))
         (disarm! loop ticker)
         outcome)))
+
+  ;; run-until-drained : UvLoop Nat -> Symbol
+  ;; Run `loop` until nothing but a timer is live on it, or `cap` steps have
+  ;; been taken: 'satisfied or 'iterations-exhausted.  A wait for an empty
+  ;; loop never sees one, since the ticker that keeps it awake is live while
+  ;; it waits: it runs to its cap.  The caller asks after the wait whether
+  ;; the loop is empty, the ticker closed by then.
+  (define (run-until-drained loop cap)
+    (run-until/ticking loop (lambda () (for-all uv-timer? (uv-loop-live-handles loop))) cap))
 
   ;; disarm! : UvLoop UvTimer -> Void — stop and close the ticker, if it is
   ;; open, and drain its close.

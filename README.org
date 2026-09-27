@@ -10,8 +10,9 @@ An HTTP 1.1 Server for Chez Scheme built on libuv.
 
 ** Status
 
-M4, the first real server: ~serve~ runs your handler on libuv, answering each
-connection's requests one at a time. Still to come: the timeouts
+M4, the first real server, is done: ~serve~ runs your handler on libuv,
+answering each connection's requests one at a time, and curl and ApacheBench
+get correct answers from it. Still to come: the timeouts
 (M5), reading request bodies (M6), handlers that wait (M7), and a graceful
 shutdown (M8). See [[file:.plans/2026-09-19-chez-http-server-project-brief.md][the project brief]] for the milestone map.
 
