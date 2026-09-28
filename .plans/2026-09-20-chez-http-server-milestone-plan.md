@@ -1119,6 +1119,28 @@ M6.2, a connection waiting for its handler's credit has no deadline armed, and s
 one waiting on an awaiting handler in M7. The first such row checks that the timer
 stops while the connection stays.
 
+*Noted 2026-09-28 (M6.2):* built as the M6.1 note re-scoped it, with no new decision:
+decision 0013's consequences already say v1's readers take their pieces as handed.
+- Whether reading waits for a reader is the shell's to say, since the shell hands the
+  pieces over: one that hands a streaming reader its pieces on credit answers with the
+  reader and `credit`, `(handler-responded reader credit)`, as M7's coroutine shell
+  will. v1's shells call a reader in place and never say so, so for them reading goes
+  on at once, and v1's figures are unchanged: curl's GET 1,840 B, the JSON POST 2,624 B
+  read whole and 2,432 B streamed (the allocation suite, before and after). The
+  review moved this word from a field on the reader, which the handler builds, to the
+  shell's answer: the reader stays the handler's four fields.
+- Once a read's pieces are handed to a reader on credit, the connection waits in an
+  eleventh state, `awaiting-credit`, reading stopped and no deadline armed, until
+  `(body-credit n)` covers them. The body deadline is armed again when reading starts
+  (M5.2's note). A body the parser refuses, or one past a cap, is still answered with
+  its status: the refusal, not the wait. Design §4.3's table gains the state, and §4.4
+  its rows.
+- The plan's mutation, the credit ignored, turns the slow reader's bound red, at every
+  delivery size in the fake shell.
+- In v1 only the checks make a shell on credit, standing in for M7's coroutine shell.
+  What an awaiting handler asked at the head leaves reading doing is carried to M7
+  (below).
+
 **M6.3 — a streamed response.**
 - `handler-body-chunk` and `handler-body-end` get rows: chunked to HTTP/1.1, and
   close-delimited to 1.0. That is M3.2's carried arm, and its mutation, dropping the
@@ -1187,6 +1209,15 @@ pipelined connection keeps the responses in order (the brief's exit).
 **M7 exit:** the brief's. Each of R1–R5 has a mutation that goes red. The budget spike
 run again shows an idle connection's heap unchanged: an idle connection carries no
 coroutine.
+
+*Carried from M6.2 (2026-09-28):* a handler asked at a head that announces a body
+answers in the same drain in v1, so the pieces kept for its answer are only those the
+head's read brought. An awaiting handler answers later, and until it does, reading goes
+on, and every piece met is kept for its answer, up to `max-body-bytes`, which is unset
+by default. M7 stops reading while such a handler has not answered, as
+`awaiting-credit` stops it while a reader owes its credit; and its coroutine shell
+answers a reader on credit, `(handler-responded reader credit)`, and gives the credit
+as the reader takes each piece (decision 0013's consequences).
 
 ### M8 — shutdown, hand-off, black-box, release
 

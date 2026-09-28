@@ -274,6 +274,8 @@
            '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'handling) '(read-error ECONNRESET)
            '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
+        (i (withheld 10 '(3 8)) '(read-error ECONNRESET)
+           '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100)
            '(read-error EPIPE)
            '(closing #f ((log read-error EPIPE) (disarm-deadline) (close read-error))))
@@ -575,7 +577,9 @@
         (i (state 'handling 'deadline 'idle) '(tick 75000)
            '(handling #f () #f))
         (i (state 'head 'deadline 'body) '(tick 60000)
-           '(head #f () #f)))))
+           '(head #f () #f))
+        (i (withheld 10 '(3 8)) '(tick 60000)
+           '(awaiting-credit #f () #f)))))
 
 ;; ---------------------------------------------------------------------------
 ;; M6.1: reading a body (decision 0013).  A request whose head announces a
@@ -787,6 +791,130 @@
         (i (reading 10 streamer) '(handler-failed boom)
            `(responding handler-failed (,(status-write 500 "Internal Server Error") (read-stop) (arm-deadline write)))))))
 
+;; ---------------------------------------------------------------------------
+;; M6.2: backpressure on the read side (plan §14; decision 0013's
+;; consequences).  A shell that hands a streaming reader its pieces on credit
+;; says so with the reader, `(handler-responded reader credit)`: M7's
+;; coroutine shell, and in v1 only the checks' shells.  Handed a read's
+;; pieces, such a reader makes reading wait until its credit covers them: the
+;; connection reads nothing and arms no deadline, since the server is the one
+;; waiting (plan §14's note of 2026-09-27), so a slow reader holds at most one
+;; read.  A reader answered with no word of credit, as v1's shells answer
+;; every one, takes each piece as it is handed over, and reading goes on at
+;; once.  The credit counts bytes.
+
+;; on-credit : (U Nat 'chunked) [Limits] -> ConnState
+;; A POST with no piece met, whose handler's streaming reader the shell hands
+;; its pieces on credit.
+(define (on-credit framing . limits)
+  (let ((s (apply announced framing limits)))
+    (conn-step s '(parser-result need-input 49 49 #f #f))
+    (conn-step s `(handler-responded ,streamer credit))
+    s))
+
+;; withheld : (U Nat 'chunked) . Piece -> ConnState
+;; The same, handed `pieces` in one feed, which has returned: waiting for the
+;; reader's credit for them.
+(define (withheld framing . pieces)
+  (let ((s (met (on-credit framing) pieces)))
+    (conn-step s '(parser-result need-input 60 60 #f #f))
+    s))
+
+;; credited : ConnState Event -> (U (List Phase CloseAfter (Listof Datum)) 'refused 'crashed)
+;; One step's outcome, or 'refused when the core refuses the event, an
+;; assertion violation of its own, and 'crashed for one raised by anything
+;; else.
+(define (credited s ev)
+  (guard (e ((assertion-violation? e)
+             (if (and (who-condition? e) (eq? (condition-who e) 'conn-step)) 'refused 'crashed)))
+    (outcome s ev)))
+
+(define (credit-rows)
+  (list
+   (row 'C1 "body, a feed returns having handed a reader on credit pieces it has not credited -> awaiting-credit: read-stop, disarm"
+        (i (met (on-credit 10) '((3 5) (5 8))) '(parser-result need-input 60 60 #f #f)
+           '(awaiting-credit #f ((read-stop) (disarm-deadline))))
+        (i (met (on-credit 'chunked) '((3 8))) '(parser-result need-input 60 60 #f #f)
+           '(awaiting-credit #f ((read-stop) (disarm-deadline)))))
+
+   ;; A reader answered with no word of credit, a whole reader answered on
+   ;; credit (the core copies its pieces), and a reader on credit handed
+   ;; nothing in the feed.
+   (row 'C2 "body, a feed returns with nothing handed that is not credited -> body: nothing, reading goes on"
+        (i (met (reading 10 streamer) '((3 8))) '(parser-result need-input 60 60 #f #f)
+           '(body #f ()))
+        (let ((s (asked 10)))
+          (conn-step s `(handler-responded ,(whole-reader) credit))
+          (i (met s '((3 8))) '(parser-result need-input 60 60 #f #f)
+             '(body #f ())))
+        (i (on-credit 10) '(parser-result need-input 60 60 #f #f)
+           '(body #f ())))
+
+   (row 'C3 "body, handler-responded with a reader on credit -> the pieces kept handed over, then awaiting-credit: read-stop, disarm"
+        (i (asked 10 '(3 5) '(5 8)) `(handler-responded ,streamer credit)
+           `(awaiting-credit #f ((deliver-body ,bv 3 5) (deliver-body ,bv 5 8) (read-stop) (disarm-deadline))))
+        (i (asked 10) `(handler-responded ,streamer credit)
+           '(body #f ())))
+
+   (row 'C4 "awaiting-credit, body-credit for all it was handed -> body: read-start, arm body"
+        (i (withheld 10 '(3 5) '(5 8)) '(body-credit 5)
+           '(body #f ((read-start) (arm-deadline body))))
+        (let ((s (withheld 10 '(3 8))))
+          (conn-step s '(body-credit 2))
+          (i s '(body-credit 3)
+             '(body #f ((read-start) (arm-deadline body))))))
+
+   (row 'C5 "awaiting-credit, body-credit for part of what it was handed -> awaiting-credit: nothing"
+        (i (withheld 10 '(3 8)) '(body-credit 2)
+           '(awaiting-credit #f ())))
+
+   ;; Each instance breaks one condition: more than was handed, a count that
+   ;; is not one, no count at all, and a credit to a reader that takes its
+   ;; pieces as they are handed over.
+   (row 'C6 "body-credit for more than the reader was handed and has not credited: refused"
+        (i (withheld 10 '(3 8)) '(body-credit 6) 'refused)
+        (i (withheld 10 '(3 8)) '(body-credit -1) 'refused)
+        (i (withheld 10 '(3 8)) '(body-credit five) 'refused)
+        (i (withheld 10 '(3 8)) '(body-credit) 'refused)
+        (let ((s (met (reading 10 streamer) '((3 8)))))
+          (conn-step s '(parser-result need-input 60 60 #f #f))
+          (i s '(body-credit 1) 'refused)))
+
+   (row 'C7 "awaiting-credit, handler-failed -> responding 500, close-after: reading stopped already"
+        (i (withheld 10 '(3 8)) '(handler-failed boom)
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)))))
+
+   (row 'C8 "awaiting-credit, bytes-arrived -> awaiting-credit: nothing fed"
+        (i (withheld 10 '(3 8)) `(bytes-arrived ,bv 0 4)
+           '(awaiting-credit #f ())))
+
+   ;; The message has ended, and reading waits for the response; or the
+   ;; request was refused, and the reader keeps what it was handed.
+   (row 'C9 "handling or responding, body-credit -> the same: nothing"
+        (let ((s (met (on-credit 10) '((3 8)))))
+          (conn-step s '(parser-event on-message-complete))
+          (i s '(body-credit 5) '(handling #f ())))
+        (let ((s (withheld 10 '(3 8))))
+          (conn-step s '(handler-failed boom))
+          (i s '(body-credit 5) '(responding handler-failed ()))))
+
+   ;; The refusal, not the wait: a feed that handed a reader on credit pieces
+   ;; and then met the parser's error, or passed a cap, is answered with the
+   ;; status, as it is for any reader (T3, B14), though the reader owes credit.
+   (row 'C10 "body, a feed that handed a reader on credit pieces ends in an error or past a cap -> responding: the status, not the wait"
+        (i (met (on-credit 'chunked) '((3 8))) '(parser-result error 60 60 invalid-chunk-size #f)
+           `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
+        (let ((s (on-credit 'chunked (capped 4))))
+          (conn-step s `(parser-event on-body-data ,bv 3 8))
+          (i s '(parser-result error 60 60 body-too-large #f)
+             `(responding body-too-large (,(status-write 413 "Content Too Large") (read-stop)
+                                          (arm-deadline write))))))
+
+   ;; What follows the answer is `credit` or nothing.
+   (row 'C11 "handler-responded with a word after the answer other than credit: refused"
+        (i (asked 10) `(handler-responded ,streamer later) 'refused)
+        (i (asked 10) `(handler-responded ,streamer credit credit) 'refused))))
+
 ;; index : Any (Listof Any) -> Nat — where `x` stands in `xs`.
 (define (index x xs)
   (let loop ((xs xs) (n 0))
@@ -881,8 +1009,9 @@
 (run-suite "connection-table"
   (lambda ()
     ;; --- the closed sets -------------------------------------------------
-    (test-equal "ten states: design §4.3's nine and decision 0011's lingering"
-                '(idle head body handling responding lingering draining handed-off closing closed)
+    (test-equal "eleven states: design §4.3's nine, decision 0011's lingering and M6.2's awaiting-credit"
+                '(idle head body awaiting-credit handling responding lingering draining handed-off
+                  closing closed)
                 conn-states)
     (test-equal "fifteen events (decision 0002 item 2)"
                 '(bytes-arrived eof read-error write-completed shutdown-completed closed
@@ -909,7 +1038,7 @@
              (verdict (lambda () (conn-step (state 'idle) '(no-such-event)))))
     (test-eq "an event that is not a tagged list is an assertion violation" 'refused
              (verdict (lambda () (conn-step (state 'idle) 'eof))))
-    (test-eq "a state outside the ten is refused" 'refused
+    (test-eq "a state outside the eleven is refused" 'refused
              (verdict (lambda () (state 'no-such-state))))
     ;; The writes and bytes outstanding are counts, zero together: every
     ;; write has bytes, a status line at least, and bytes are outstanding
@@ -936,7 +1065,8 @@
            (accounting (count-rows "accounting" accounting-rows accounted))
            (linger (count-rows "linger" linger-rows outcome))
            (ticks (count-rows "tick" deadline-rows ticked))
-           (bodies (count-rows "body" body-rows asked-by)))
+           (bodies (count-rows "body" body-rows asked-by))
+           (credits (count-rows "credit" credit-rows credited)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
       (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
@@ -945,7 +1075,8 @@
       (test-eqv "M3.3: all 5 accounting rows have a test" 5 accounting)
       (test-eqv "M3.5: all 4 linger rows have a test" 4 linger)
       (test-eqv "M5.2: all 4 tick rows have a test" 4 ticks)
-      (test-eqv "M6.1: all 19 body rows have a test" 19 bodies))
+      (test-eqv "M6.1: all 19 body rows have a test" 19 bodies)
+      (test-eqv "M6.2: all 11 credit rows have a test" 11 credits))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it but `notify-producer`, a streamed response's (M6.3).

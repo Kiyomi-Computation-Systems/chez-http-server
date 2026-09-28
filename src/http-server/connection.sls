@@ -26,7 +26,7 @@
 ;;;            (write-completed nbytes)  (shutdown-completed)  (closed)
 ;;;            (tick now)  (parser-event callback-name . payload)
 ;;;            (parser-result status consumed next error pause)
-;;;            (handler-responded response)  (handler-body-chunk bv start end)
+;;;            (handler-responded answer [credit])  (handler-body-chunk bv start end)
 ;;;            (handler-body-end)  (handler-failed raised)  (body-credit n)
 ;;;            (shutdown-requested)
 ;;;
@@ -195,6 +195,24 @@
 ;;; inside a body (decision 0013 item 3).  The shells find the reader a piece
 ;;; goes to with `conn-body-reader`.
 ;;;
+;;; READING WAITS FOR A READER'S CREDIT (M6.2; plan §14).  Whether it must
+;;; is the shell's to say, since the shell hands the pieces over: one that
+;;; hands a streaming reader its pieces on credit answers with the reader and
+;;; `credit`, `(handler-responded reader credit)`, as M7's coroutine shell
+;;; will, handing each piece to the handler's coroutine.  Such a reader owes
+;;; credit for each byte it is handed.  Once a read's feed has returned, or
+;;; its answer has taken the pieces kept for it, with credit owed, the
+;;; connection waits in `awaiting-credit`: reading stops, and the body
+;;; deadline is disarmed, since the server, not the client, is the one
+;;; waiting (plan §14's note of 2026-09-27).  `(body-credit n)` says the
+;;; reader has taken `n` more bytes; once its credit covers what it was
+;;; handed, reading starts again and the body deadline is armed again.  So a
+;;; slow reader holds at most one read.  v1's shells call a reader in place
+;;; and answer with no word of credit, so the reader takes each piece as it
+;;; is handed over, and reading goes on at once (decision 0013's
+;;; consequences).  A whole reader's pieces are the core's to copy, so it
+;;; never owes credit.
+;;;
 ;;; WHAT HAPPENS NEVER DEPENDS ON HOW THE BYTES WERE SPLIT INTO READS (design
 ;;; §8.1's second property).  The feed that completes a head can go on into
 ;;; its body before the handler is asked.  What it meets there waits for the
@@ -237,12 +255,14 @@
           (only (httparse methods) httparse-method-numbers))
 
   ;; conn-states : (Listof Symbol)
-  ;; The ten connection states: design §4.3's nine, and `lingering`, where a
+  ;; The eleven connection states: design §4.3's nine; `lingering`, where a
   ;; connection that closes after its response waits for the client to close
-  ;; (decision 0011).  Only `idle`, `head`, `body` and `lingering` read from
-  ;; the socket; `closed` is terminal.
+  ;; (decision 0011); and `awaiting-credit`, where a body waits for its
+  ;; reader's credit (M6.2).  Only `idle`, `head`, `body` and `lingering`
+  ;; read from the socket; `closed` is terminal.
   (define conn-states
-    '(idle head body handling responding lingering draining handed-off closing closed))
+    '(idle head body awaiting-credit handling responding lingering draining handed-off
+      closing closed))
 
   ;; conn-events : (Listof Symbol)
   ;; The fifteen event kinds, decision 0002 item 2 — the closed set `conn-step`
@@ -446,6 +466,11 @@
   ;;   buffer    a whole reader's body so far: a bytevector of the declared
   ;;             length, or the copies of a chunked body's pieces, newest first
   ;;   filled    the bytes of the body buffered
+  ;;   credit?   whether the shell hands the reader its pieces on credit, as
+  ;;             it said with the reader (M6.2)
+  ;;   owed      the bytes handed to a streaming reader on credit, and not
+  ;;             yet credited; a whole reader's pieces the core copies, so
+  ;;             it owes none
   (define-record-type (body-state make-body-state body-state?)
     (fields (mutable framed?   body-framed?   body-framed?-set!)
             (mutable declared  body-declared  body-declared-set!)
@@ -456,8 +481,10 @@
             (mutable complete? body-complete? body-complete?-set!)
             (mutable reader    body-reader-of body-reader-set!)
             (mutable buffer    body-buffer    body-buffer-set!)
-            (mutable filled    body-filled    body-filled-set!))
-    (protocol (lambda (new) (lambda () (new #f #f 0 #f '() #f #f #f #f 0)))))
+            (mutable filled    body-filled    body-filled-set!)
+            (mutable credit?   body-credit?   body-credit?-set!)
+            (mutable owed      body-owed      body-owed-set!))
+    (protocol (lambda (new) (lambda () (new #f #f 0 #f '() #f #f #f #f 0 #f 0)))))
 
   ;; body-roll! : Body -> Void — nothing read, and nothing kept.
   (define (body-roll! bd)
@@ -470,7 +497,9 @@
     (body-complete?-set! bd #f)
     (body-reader-set! bd #f)
     (body-buffer-set! bd #f)
-    (body-filled-set! bd 0))
+    (body-filled-set! bd 0)
+    (body-credit?-set! bd #f)
+    (body-owed-set! bd 0))
 
   ;; over? : (U Nat #f) (U Nat #f) -> Boolean — whether `n` is past `cap`.
   (define (over? cap n) (and cap n (> n cap)))
@@ -584,14 +613,15 @@
       ((tick)               (on-tick s))
       ((parser-event)       (on-parser-event s (cadr ev) (cddr ev)))
       ((parser-result)      (on-parser-result s ev))
-      ((handler-responded)  (on-handler-responded s (cadr ev)))
+      ((handler-responded)  (on-handler-responded s (cadr ev) (cddr ev)))
       ((handler-failed)     (on-handler-failed s))
+      ((body-credit)        (on-body-credit s (cdr ev)))
       ((shutdown-requested) (on-shutdown-requested s))
       ((closed)             (on-closed s))
-      ;; No row reads these: body streaming (M6) and the drain lifecycle (M8)
-      ;; give them transitions.  The half-close's completion changes
-      ;; nothing: the client's close, not it, ends a linger (M3.5).
-      ((shutdown-completed handler-body-chunk handler-body-end body-credit)
+      ;; No row reads these: a streamed response (M6.3) and the drain
+      ;; lifecycle (M8) give them transitions.  The half-close's completion
+      ;; changes nothing: the client's close, not it, ends a linger (M3.5).
+      ((shutdown-completed handler-body-chunk handler-body-end)
        (values s '()))
       (else (assertion-violation 'conn-step "not a connection event" ev))))
 
@@ -623,7 +653,7 @@
   ;; any live state, read-error -> closing: log it, close, no response.
   (define (on-read-error s errno)
     (case (conn-phase s)
-      ((idle head body handling responding lingering draining)
+      ((idle head body awaiting-credit handling responding lingering draining)
        (close s 'read-error (list (list 'log 'read-error errno))))
       (else (values s '()))))
 
@@ -916,6 +946,7 @@
     (let ((bd (conn-body s)))
       (case (body-answer bd)
         ((stream)
+         (owe! bd (fx- to from))
          (values s (cons (car answer) (cons (list 'deliver-body bv from to) (cdr answer)))))
         ((whole)
          (buffer-add! bd bv from to)
@@ -924,6 +955,13 @@
          (body-held-set! bd (cons (list 'deliver-body bv from to) (body-held bd)))
          (values s answer))
         (else (values s answer)))))
+
+  ;; owe! : BodyState Nat -> Void
+  ;; `n` more bytes handed to the reader: owed its credit, if the shell hands
+  ;; it its pieces on credit (M6.2).
+  (define (owe! bd n)
+    (when (body-credit? bd)
+      (body-owed-set! bd (fx+ (body-owed bd) n))))
 
   ;; hand-over-whole : ConnState -> (values ConnState (Listof Action))
   ;; A whole reader's body, once the message has ended: its buffer handed
@@ -1098,7 +1136,8 @@
                    (conn-deadline-set! s #f)
                    (values s (list '(read-stop) '(disarm-deadline)
                                    (list 'hand-off (conn-request s)))))))
-            ((not (eq? status 'error)) (ask-handler s))
+            ((not (eq? status 'error))
+             (if (fxzero? (body-owed (conn-body s))) (ask-handler s) (await-credit s)))
             ((eq? (body-answer (conn-body s)) 'call)
              (body-error-set! (conn-body s)
                               (let ((reason (head-refusal (conn-head s))))
@@ -1113,6 +1152,15 @@
             (else
              (respond s (parser-error-status err) 'parser-error '())))))
         (else (values s '())))))
+
+  ;; await-credit : ConnState -> (values ConnState (Listof Action))
+  ;; body -> awaiting-credit: the reader has been handed pieces it has not
+  ;; credited, so reading stops, and the body deadline with it, since the
+  ;; server is the one waiting (M6.2; plan §14's note of 2026-09-27).
+  (define (await-credit s)
+    (conn-phase-set! s 'awaiting-credit)
+    (conn-deadline-set! s #f)
+    (values s '((read-stop) (disarm-deadline))))
 
   ;; ask-handler : ConnState -> (values ConnState (Listof Action))
   ;; `(call-handler request)`, once, for a request whose head announced a
@@ -1140,7 +1188,9 @@
       (and (fx<? next end) (list (car delivery) next end))))
 
 ;; body/handling, handler-responded: the handler's answer, or a reader's
-  ;; response (decision 0013).
+  ;; response (decision 0013).  After the answer comes `credit`, when the
+  ;; shell hands a streaming reader its pieces on credit (M6.2), or nothing;
+  ;; anything else is an assertion violation.
   ;;   - Asked, a reader: `accept-reader`.
   ;;   - Asked about a request whose head announced a body, a response: sent
   ;;     at once, and the connection closes after it, as 'unread-body, unless
@@ -1149,13 +1199,15 @@
   ;;   - Asked about a request with no body, or the reader's response: the
   ;;     response, `respond-with`.
   ;; An answer the core did not ask for changes nothing.
-  (define (on-handler-responded s answer)
+  (define (on-handler-responded s answer rest)
+    (unless (or (null? rest) (equal? rest '(credit)))
+      (assertion-violation 'conn-step "after the answer, credit or nothing" rest))
     (case (conn-phase s)
       ((body handling)
        (let ((bd (conn-body s)))
          (case (body-answer bd)
            ((asked)
-            (cond ((body-reader? answer) (accept-reader s answer))
+            (cond ((body-reader? answer) (accept-reader s answer (pair? rest)))
                   ((body-framed? bd)
                    (unless (conn-close-after s) (conn-close-after-set! s 'unread-body))
                    (respond-with s answer))
@@ -1164,20 +1216,23 @@
            (else (values s '())))))
       (else (values s '()))))
 
-  ;; accept-reader : ConnState BodyReader -> (values ConnState (Listof Action))
-  ;; A reader, answered for the request being read.  A declared length, or a
-  ;; body met so far, past the reader's cap is answered 413 at once, then
-  ;; close.  Otherwise the reader reads: the pieces kept for it are handed
-  ;; over now, as `deliver-body` to a streaming one and into its buffer for a
-  ;; whole one; then an error kept for the answer is answered, or once the
-  ;; message has ended, the reader is handed its end.
-  (define (accept-reader s r)
+  ;; accept-reader : ConnState BodyReader Boolean -> (values ConnState (Listof Action))
+  ;; A reader, answered for the request being read, and whether the shell
+  ;; hands it its pieces on credit.  A declared length, or a body met so far,
+  ;; past the reader's cap is answered 413 at once, then close.  Otherwise
+  ;; the reader reads: the pieces kept for it are handed over now, as
+  ;; `deliver-body` to a streaming one and into its buffer for a whole one;
+  ;; then an error kept for the answer is answered, or once the message has
+  ;; ended, the reader is handed its end, or a streaming reader on credit
+  ;; owes for those pieces, and reading waits for its credit (M6.2).
+  (define (accept-reader s r credit?)
     (let ((bd (conn-body s)) (cap (body-reader-max-bytes r)))
       (if (or (over? cap (body-declared bd)) (over? cap (body-count bd)))
           (respond-and-close s 'body-too-large '())
           (let ((held (reverse (body-held bd))) (error (body-error bd)))
             (body-held-set! bd '())
             (body-reader-set! bd r)
+            (body-credit?-set! bd credit?)
             (cond
              ((and error (body-reader-whole? r)) (answer-error s error))
              (error
@@ -1193,7 +1248,11 @@
               (values s (append held '((deliver-body-end)))))
              (else
               (body-answer-set! bd 'stream)
-              (values s held)))))))
+              (for-each (lambda (a) (owe! bd (fx- (cadddr a) (caddr a)))) held)
+              (if (fxzero? (body-owed bd))
+                  (values s held)
+                  (let-values (((s waiting) (await-credit s)))
+                    (values s (append held waiting))))))))))
 
   ;; respond-with : ConnState Response -> (values ConnState (Listof Action))
   ;; -> responding: write the response, arm the write deadline, and let the
@@ -1259,10 +1318,48 @@
   ;; M6.3.)
   (define (on-handler-failed s)
     (case (conn-phase s)
-      ((handling body)
+      ((handling body awaiting-credit)
        (body-roll! (conn-body s))
        (respond-and-close s 'handler-failed '()))
       (else (values s '()))))
+
+  ;; body-credit n: the reader on credit has taken `n` more bytes of what it
+  ;; was handed (M6.2).
+  ;;   - awaiting-credit: once the credit covers all it was handed ->
+  ;;     body, reading starts again and the body deadline is armed again.
+  ;;   - body: reading goes on only once all that was handed is credited,
+  ;;     since the core waits at the end of every feed that hands a reader on
+  ;;     credit a piece, so nothing is owed, and only a credit of none is
+  ;;     taken.
+  ;; A credit for more than the reader was handed and has not credited, or
+  ;; one that is not a count, is a caller bug: an assertion violation.  In
+  ;; every other state the message has ended, and reading waits for the
+  ;; response, or the reader has been let go: nothing changes.
+  (define (on-body-credit s fields)
+    (case (conn-phase s)
+      ((awaiting-credit)
+       (let ((bd (conn-body s)))
+         (credit! bd fields)
+         (if (fxzero? (body-owed bd))
+             (begin
+               (conn-phase-set! s 'body)
+               (conn-deadline-set! s 'body)
+               (values s '((read-start) (arm-deadline body))))
+             (values s '()))))
+      ((body)
+       (credit! (conn-body s) fields)
+       (values s '()))
+      (else (values s '()))))
+
+  ;; credit! : BodyState (Listof Any) -> Void
+  ;; `(n)`, a body-credit's fields: `n` bytes of what the reader owes are
+  ;; credited.  A count past what it owes, or no count, is refused.
+  (define (credit! bd fields)
+    (let ((n (and (pair? fields) (null? (cdr fields)) (car fields))))
+      (unless (and (fixnum? n) (fx<=? 0 n (body-owed bd)))
+        (assertion-violation 'conn-step "a credit for bytes the reader was not handed"
+                             fields (body-owed bd)))
+      (body-owed-set! bd (fx- (body-owed bd) n))))
 
   ;; idle, shutdown-requested -> draining: nothing is in flight, so shut down.
   ;; The in-flight states wait for M8, which writes the rows draining leaves by.

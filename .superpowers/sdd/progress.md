@@ -2909,3 +2909,44 @@ DONE and merged (fcd00b7, PR #69; 780f4c0, PR #70): **M6.1.**
 - What the head's read brings of the body waits for the handler's answer, so the outcome never depends on how the bytes were split into reads.
 
 NEXT: M6.2 (plan §14), backpressure on the read side, as the M6.1 note re-scopes it: a reader in v1 takes each read's pieces as they are handed over, so reading waits on a credit only for an awaiting reader (M7). M6.2's check is that wait, and the body deadline stopped through it, with a reader that withholds its credit. On a fresh branch cut from main after this commit, when the owner asks.
+
+
+M6.2: BACKPRESSURE ON THE READ SIDE. Two stacked steps, cut from main at e9191ef: feat/m6.2-read-backpressure, then feat/m6.2-shell-credit on it; 2026-09-28, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+
+SETTLED BY THE RECORDS, NO FORM: decision 0013's consequences and plan §14's M6.1 note already say what M6.2 is. A reader answered in v1 takes each read's pieces as they are handed over, so reading goes on at once; reading waits on a credit only for M7's awaiting readers; and M6.2's check is that wait, and the body deadline stopped through it, with a reader that withholds its credit.
+
+CHOSEN WHILE BUILDING, flagged for review:
+- Whether reading waits for a reader: the shell's word, since the shell hands the pieces over. A shell that hands a streaming reader its pieces on credit answers with the reader and `credit`, `(handler-responded reader credit)`, as M7's coroutine shell will. First built as a field on the reader, `grants-credit?`, which the review moved to the answer (below). Weighed: every streaming reader granting credit, the shells granting it as each piece's procedure returns, which would stop and start reading, and disarm and arm the body deadline, at every body read in v1, where no reader withholds.
+- Where the connection waits: a state of its own, `awaiting-credit`, which reads nothing and arms no deadline, as design §4.3's table says of each state. Weighed: a flag inside `body`, whose row in that table says it reads and arms the body deadline.
+- How the libuv shell hears a credit: `connection-body-credit!`, which no action asks for. M7's scheduler will call it; the checks call it now. The facade exports nothing new.
+- A credit counts bytes. One for more than the reader was handed and has not credited is an assertion violation, as a completion the core did not ask for is (M3.3).
+
+DECIDED on the owner's word (2026-09-28), by form, after the plan-vs-landed walkthrough: a /code-review high first, its findings fixed on the owner's word, then two stacked PRs, each layer proven green on its own tree. Weighed: the two PRs without a review; the review, then one PR of 538 lines.
+
+REVIEWED before the first commit, at high effort (/code-review), on the owner's "fix all findings" (2026-09-28): four findings, all fixed. The review's rows and checks were written with the fixes, and each was watched red by its mutant.
+- **Nothing checked that a refusal wins over the wait** (the first step). A feed that hands a reader on credit pieces and then meets the parser's error, or passes a cap, is answered with its status: row C10, and two flows at every delivery size, a malformed chunked body answered 400 and one past max-body-bytes answered 413. M6.2-RA, the wait checked before the status, reddens all three.
+- **A refused credit closes the connection and raises, undocumented** (the second step). `connection-body-credit!`'s comment now says so, and a socket check pins it: a credit for more than the reader was handed raises to the caller, and the connection is closed. M6.2-RB, the raise swallowed, reddens it.
+- **The credit's word lived on the reader the handler builds** (both steps). Whether a shell hands a reader its pieces in place or on credit is the shell's to know: M7's coroutine shell hands each piece to the handler's coroutine. `(http-server body)` is back to M6.1's four fields, untouched by the slice, and the shell says so with the answer, anything but `credit` after it refused (row C11). The fake connection (the first step) and the libuv shell (the second) are made on credit for the checks. M6.2-RC (the word ignored) and M6.2-RD (any word taken), and M6.2-RF, RG and RH (a shell's word turned round), redden them.
+- **The credit arm while the body is read could only take none** (the first step). on-body-credit's arms are split: `awaiting-credit` takes the credit, and starts reading once it covers what was handed; `body` takes only a credit of none, since nothing is owed there once a feed has returned. M6.2-RE, the `body` arm reading no credit, reddens C6.
+- The rewrite left a guard doubled: `accept-reader` kept a whole reader off credit, which `owe!` does already, being called only for a streaming reader's pieces, and two guards for one property hide each other's mutants. The doubled one went before the mutants ran; M6.2-RI, a whole reader's pieces owed, reddens C2.
+
+DECIDED on the owner's word (2026-09-28), by form, once the review's fixes had grown the slice to 674 inserted lines of code and tests: two stacked PRs still, the first 432 inserted, a little over plan §1 rule 1's ~400, as M4.3's two went. Weighed: three stacked PRs of 262, 170 and 242.
+
+FOUND WHILE BUILDING:
+- For M7, carried in plan §14: an awaiting handler asked at the head leaves reading going on until it answers, and every piece met meanwhile is kept for its answer, up to `max-body-bytes`, unset by default.
+- The checks' credit calls raised out of their suites when a mutant made the core refuse a credit, so the suites stopped with a harness error. They now take a refusal as a result and fail by name, the contract's replay included (m6-mutations.md).
+
+M6.2 FIRST STEP: the core waits for a reader's credit (feat/m6.2-read-backpressure).
+- `(http-server connection)`: the eleventh state, `awaiting-credit`. An answer may carry `credit` after it, `(handler-responded reader credit)`, anything else after it being refused. The core counts the bytes it hands a streaming reader answered on credit; with credit owed once a read's feed has returned, or once the reader's answer has taken the pieces kept for it, the connection stops reading and disarms the body deadline, and `(body-credit n)` covering what was handed starts reading and arms the body deadline again. A body the parser refuses, or one past a cap, is still answered with its status. A read that ends the message hands its pieces over with the end and waits for nothing: reading stops at the pause for the response, as for every message. `handler-failed` and `read-error` act in the new state as in `body`, less the `read-stop`; `bytes-arrived` and a tick there change nothing; a credit once the message has ended, or once the reader is let go, changes nothing.
+- `(fake-shell)`: a fake connection made on credit answers with each answer and `credit`.
+- The checks, each reading what the reader was handed as well as the core's actions:
+  - `tests/test-connection-table.sps`: eleven credit rows, C1 to C11, and the new state in T2 and D4;
+  - `tests/test-connection-body.sps`: through a fake connection made on credit, at every delivery size, a reader never holds more than one read uncredited, with both framings; a malformed body and one past a cap are answered with their status; the body deadline does not run through the wait, and runs again after the credit; and a reader answered with no word of credit never makes reading wait.
+
+`make test` green on this step's own tree, a scratch worktree cut from main with the step's files laid in: forty suites, 1,101 expected passes, exit 0.
+
+Watched to fail (m6-mutations.md, the first step): twenty-one mutants on that tree, and every check the step added or changed reddened by at least one. The plan's mutation, M6.2-D, the credit ignored, reddens the slow reader's bound at every delivery size.
+
+Size: 432 inserted lines of code and tests, 46 deleted.
+
+NEXT: the second step, the libuv shell's credit, stacked on this one.

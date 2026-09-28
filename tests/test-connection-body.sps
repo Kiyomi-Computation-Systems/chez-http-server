@@ -123,6 +123,87 @@
                      cap))
             (lambda () (reverse got)))))
 
+;; --- a reader on credit (M6.2) --------------------------------------------------
+
+;; granting : -> (values (Request -> Any) (-> Datum) (-> Nat))
+;; A handler that streams every body, for a connection that hands its
+;; readers their pieces on credit; what its readers were handed, as the
+;; pieces' texts joined, each end, and the most bytes they held uncredited at
+;; once; and `take!`, the bytes handed since it was last called, which the
+;; driver credits.
+(define (granting)
+  (let ((read '()) (held 0) (most 0))
+    (values (lambda (request)
+              (read-body (lambda (bv from to)
+                           (set! read (cons (text bv from to) read))
+                           (set! held (+ held (- to from)))
+                           (set! most (max most held)))
+                         (lambda () (set! read (cons 'end read)) ok)))
+            (lambda ()
+              (let ((read (reverse read)))
+                (list (apply string-append (filter string? read)) (filter symbol? read) most)))
+            (lambda () (let ((n held)) (set! held 0) n)))))
+
+;; The most credits one run gives: a count, so a core that never stops
+;; waiting fails rather than hangs (global-constraints: cap by count).
+(define credit-cap 1000)
+
+;; feed-crediting : FakeShell Bytevector Nat (-> Nat) -> (Listof (U Nat 'refused))
+;; Deliver `input` in `size`-byte deliveries while the connection reads, as
+;; fake-shell-feed-input! does; each time it waits for its reader's credit,
+;; credit what the reader was handed since the last credit, `(take!)`.  The
+;; credits given, in order; a credit the core refuses, an assertion
+;; violation of its own, ends them as 'refused.
+(define (feed-crediting sh input size take!)
+  (let ((len (bytevector-length input)))
+    (let loop ((from 0) (credits '()) (n 0))
+      (fake-shell-settle! sh)
+      (cond
+       ((and (< from len) (fake-shell-reading? sh))
+        (let ((to (min len (+ from size))))
+          (fake-shell-deliver! sh (list 'bytes-arrived input from to))
+          (loop to credits n)))
+       ((and (eq? (conn-phase (fake-shell-conn-state sh)) 'awaiting-credit) (< n credit-cap))
+        (let ((credit (take!)))
+          (if (credited? sh credit)
+              (loop from (cons credit credits) (+ n 1))
+              (reverse (cons 'refused credits)))))
+       (else (reverse credits))))))
+
+;; credited? : FakeShell Nat -> Boolean
+;; Credit the connection's reader with `n` bytes: #f if the core refuses it.
+(define (credited? sh n)
+  (guard (e ((assertion-violation? e) #f))
+    (fake-shell-deliver! sh (list 'body-credit n))
+    #t))
+
+;; every-size/crediting : Bytevector Limits (-> (values Handler Probe Take))
+;;                        (FakeShell Probe (Listof Nat) Nat -> Datum) -> (Listof Datum)
+;; every-size, on a connection that hands its readers their pieces on
+;; credit, the reader's credit given as feed-crediting gives it; the view
+;; also reads the credits and the delivery size.
+(define (every-size/crediting input limits make view)
+  (let loop ((size 1) (seen '()))
+    (if (> size (bytevector-length input))
+        (reverse seen)
+        (let-values (((handler probe take!) (make)))
+          (let* ((sh (make-fake-connection limits handler #f 0 #t))
+                 (credits (feed-crediting sh input size take!))
+                 (o (view sh probe credits size)))
+            (loop (+ size 1) (if (member o seen) seen (cons o seen))))))))
+
+;; held-one-read : FakeShell Probe (Listof Nat) Nat -> Datum
+;; What the connection did, what its readers were handed, and whether each
+;; held at most one read's bytes uncredited, and every credit was of one
+;; read's, with every action run from the outermost drain.
+(define (held-one-read sh probe credits size)
+  (let ((seen (probe)))
+    (list (outcome sh)
+          (list (car seen) (cadr seen))
+          (<= (caddr seen) size)
+          (for-all (lambda (n) (and (number? n) (<= 1 n size))) credits)
+          (fake-shell-violations sh))))
+
 ;; --- the inputs --------------------------------------------------------------
 
 (define post-a "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789")
@@ -345,4 +426,71 @@
     ;; --- run to completion (design §4.5) --------------------------------------------
     (test-equal "every action ran from the outermost drain, at every delivery size"
                 '(())
-                (every-size chunked-then-get default-limits streaming (seen-by fake-shell-violations)))))
+                (every-size chunked-then-get default-limits streaming (seen-by fake-shell-violations)))
+
+    ;; --- backpressure: a reader on credit (M6.2) ------------------------------------
+    ;; On a connection that hands its readers their pieces on credit, as M7's
+    ;; coroutine shell will: once a read's pieces are handed to the reader,
+    ;; reading waits for its credit, so it holds at most one read; given the
+    ;; credit, reading goes on.  The pieces the read that ends the message
+    ;; brings are handed over with its end, and need no credit: reading waits
+    ;; for the response then.
+    (test-equal "a reader on credit, every delivery size: the body in order, then its end, never more than one read held uncredited; the GET behind served"
+                '(((((call-handler (POST "/a")) (body "0123456789") (end) (write 200)
+                     (call-handler (GET "/b")) (end) (write 200))
+                    idle #f)
+                   ("0123456789" (end end)) #t #t ()))
+                (every-size/crediting post-then-get default-limits granting held-one-read))
+    (test-equal "chunked: the chunks' bytes, one read at most held uncredited"
+                '(((((call-handler (POST "/a")) (body "abcde") (end) (write 200)
+                     (call-handler (GET "/b")) (end) (write 200))
+                    idle #f)
+                   ("abcde" (end end)) #t #t ()))
+                (every-size/crediting chunked-then-get default-limits granting held-one-read))
+
+    ;; The refusal, not the wait: a body the parser refuses, or one past a
+    ;; cap, is answered with its status though the reader owes credit for
+    ;; the pieces before it, whatever the reads.
+    (let ((malformed (b (string-append "POST /a HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                       "3\r\nabc\r\nzz\r\n")))
+          (refused (lambda (sh probe credits size)
+                     (let ((seen (probe))) (list (outcome sh) (car seen) (cadr seen))))))
+      (test-equal "a reader on credit, a malformed chunked body, every delivery size: the pieces before the error, then 400, and no end"
+                  '(((((call-handler (POST "/a")) (body "abc") (write 400)) lingering parser-error) "abc" ()))
+                  (every-size/crediting malformed default-limits granting refused))
+      (test-equal "a reader on credit, max-body-bytes 4, a chunked 5, every delivery size: the first 4 bytes, then 413, and no end"
+                  '(((((call-handler (POST "/a")) (body "abcd") (write 413)) lingering body-too-large) "abcd" ()))
+                  (every-size/crediting chunked-then-get (capped 4) granting refused)))
+
+    ;; A reader answered with no word of credit, as v1's shells answer every
+    ;; one, takes each piece as it is handed over and never makes reading
+    ;; wait: reading stops only at each message's end (decision 0004's
+    ;; pause), whatever the reads.
+    (test-equal "a reader answered with no word of credit never makes reading wait: two read-stops, one per message, every delivery size"
+                '(2)
+                (every-size post-then-get default-limits streaming
+                            (seen-by (lambda (sh)
+                                       (length (filter (lambda (a) (eq? (car a) 'read-stop))
+                                                       (fake-shell-actions sh)))))))
+
+    ;; While the reader withholds its credit the server is the one waiting,
+    ;; so the body deadline does not run (plan §14's note of 2026-09-27): a
+    ;; timer firing past it ticks nothing.  Given the credit, reading starts
+    ;; and the deadline is armed again, and a client that then sends nothing
+    ;; is answered 408 once it passes.
+    (let-values (((handler probe take!) (granting)))
+      (let* ((sh (make-fake-connection default-limits handler #f 0 #t))
+             (head+3 (b "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n012"))
+             (body-ms (limits-deadline-ms default-limits 'body)))
+        (fake-shell-deliver! sh (list 'bytes-arrived head+3 0 (bytevector-length head+3)))
+        (let* ((waiting (list (conn-phase (fake-shell-conn-state sh)) (fake-shell-reading? sh)))
+               (ticks (lambda () (length (filter (lambda (e) (eq? (car e) 'tick)) (fake-shell-events sh)))))
+               (fired (begin (fake-shell-advance! sh (+ body-ms 1)) (fake-shell-fire! sh) (ticks)))
+               (after (list (conn-phase (fake-shell-conn-state sh)) (length (fake-shell-writes sh))))
+               (credited (and (credited? sh (take!))
+                              (list (conn-phase (fake-shell-conn-state sh)) (fake-shell-reading? sh))))
+               (stalled (begin (fake-shell-advance! sh (+ body-ms 1)) (fake-shell-fire! sh))))
+          (test-equal "a reader on credit withholding it past the body deadline: reading stopped, nothing ticked, nothing written; credited, reading starts and the deadline runs again, 408 once it passes"
+                      '((awaiting-credit #f) 0 (awaiting-credit 0) (body #t) (408))
+                      (list waiting fired after credited
+                            (map written-status (filter (lambda (a) (eq? (car a) 'write)) stalled)))))))))

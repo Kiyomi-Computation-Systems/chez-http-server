@@ -135,3 +135,74 @@ Found by the mutants, and settled before they were recorded:
 | M6.1-RF | `limits.sls` | CHEZ_HTTP_MAX_BODY_BYTES not read from the environment | limits 1; serve 1 |
 | M6.1-RG | `fake-shell.sls` | the suites' reading handler answers without reading | connection-deadlines 1; connection-head 2; connection-originated 1; libhtp-lane 5; message-loop 4; outcome-lane 2; ratchet 1 |
 | M6.1-RH | `connection.sls` | a piece past a cap handed over whole | connection-body 2; connection-table 2 |
+
+
+## M6.2, first step — the core waits for a reader's credit (2026-09-28)
+
+Red before green, in the first build: the table suite stopped at load, exit
+255, its reader that grants credit made with five arguments before
+`make-body-reader` took them; with the reader's field written, fifteen of its
+checks failed until the core's rows were: the state list, C1, C3 to C8, and
+D4's new instance. C2, C9 and T2's new instance passed at once, since each
+says nothing changes, which the core already did. The review then moved the
+credit's word from that field to the shell's answer; its rows and checks
+(C10, C11, C2's whole reader on credit, C6's credit while the body is read,
+and the two refusal flows) were written with the fixes. Every check was
+watched red by the mutants below.
+
+These ran on the first step's own tree, a scratch worktree cut from main at
+e9191ef with the step's files laid in, against all of its forty suites.
+M6.2-D is the plan's mutation: the credit ignored, reading goes on. Every
+check the step added or changed is reddened by at least one mutant:
+- C1 by D and E; C2 by I and RI; C3 by D, E and K; C4 by D, F and G; C5 by D
+  and G; C6 by H, I and RE; C7 by D and L; C8 by N; C9 by L and O; C10 by RA;
+  C11 by RD; T2's new instance by M; D4's by D, P and RC; the state list by C,
+  and a state refused outside it by U; the credit rows' count by RC and T,
+  under which building C4 raises;
+- the fake connection's flows: the one-read bound, both framings, by D, K,
+  RC, RH and T; the malformed body's 400 and the cap's 413 by RA and T; the
+  body deadline through the wait by D, E, F, K, RC, RH and T; and the reader
+  answered with no word of credit never making reading wait by I (its tenth
+  failure in the body suite, read by hand, since the runner prints eight).
+
+Found by the mutants, and settled before they were recorded:
+- M6.2-T first ended the body suite with a harness error: a credit the core
+  refused, an assertion violation of its own, raised out of the check that
+  gave it. The checks now take a refused credit as a result and fail by name.
+- The fake connection's deadline check was written to read what the timer's
+  firing asked for, which is nothing both when no tick comes and when a tick
+  asks for nothing, so it could not show a deadline run through the wait. It
+  counts the ticks instead, and M6.2-E reddens it.
+- M6.2-A and M6.2-B, run on the first build, mutated the reader's field
+  (`read-body` granting credit; a whole reader allowed to). The review took the
+  field out, so their code is gone, and they are withdrawn with the check they
+  reddened. The specs that cut code the review rewrote (G, H, I, O, T) were cut
+  again on the new code, with the same meaning.
+
+Not mutated: the entry suite's checks that every callback is answered, in every
+state, run over the new state as well; its answers are every state's
+else-branch, whose mutants are M2's.
+
+| # | mutated | mutation | observed |
+|---|---|---|---|
+| M6.2-C | `connection.sls` | awaiting-credit left out of conn-states | connection-table 1 |
+| M6.2-D | `connection.sls` | the plan's: the credit ignored, reading goes on regardless | connection-body 3; connection-table 9 |
+| M6.2-E | `connection.sls` | the wait keeps the body deadline armed | connection-body 1; connection-table 4 |
+| M6.2-F | `connection.sls` | the credit starts reading without arming the body deadline | connection-body 1; connection-table 2 |
+| M6.2-G | `connection.sls` | a partial credit starts reading | connection-table 2 |
+| M6.2-H | `connection.sls` | a credit past what was handed accepted | connection-table 2 |
+| M6.2-I | `connection.sls` | every streaming reader owes credit | connection-body 10; connection-deadlines 1; connection-head 1; connection-originated 1; connection-table 3; contract 2; libhtp-lane 3; message-loop 2; outcome-lane 2; ratchet 1; shell 5 |
+| M6.2-K | `connection.sls` | the pieces kept for the answer owe no credit | connection-body 3; connection-table 1 |
+| M6.2-L | `connection.sls` | handler-failed changes nothing in awaiting-credit | connection-table 2 |
+| M6.2-M | `connection.sls` | read-error changes nothing in awaiting-credit | connection-table 1 |
+| M6.2-N | `connection.sls` | bytes-arrived fed in awaiting-credit | connection-table 1 |
+| M6.2-O | `connection.sls` | a credit in handling or responding starts reading | connection-table 2 |
+| M6.2-P | `connection.sls` | a tick in awaiting-credit answers 408 | connection-table 1 |
+| M6.2-RA | `connection.sls` | the wait before the refusal: a feed that met an error waits for the credit owed | connection-body 2; connection-table 2 |
+| M6.2-RC | `connection.sls` | the answer's credit ignored | connection-body 3; connection-table 2 |
+| M6.2-RD | `connection.sls` | any word after the answer taken | connection-table 2 |
+| M6.2-RE | `connection.sls` | a credit while reading goes on is not read | connection-table 1 |
+| M6.2-RH | `fake-shell.sls` | the fake connection made on credit answers without it | connection-body 3 |
+| M6.2-RI | `connection.sls` | a whole reader's pieces owed on credit | connection-table 1 |
+| M6.2-T | `connection.sls` | every credit refused | connection-body 5; connection-table 1 |
+| M6.2-U | `connection.sls` | a state outside the eleven accepted | connection-table 1 |

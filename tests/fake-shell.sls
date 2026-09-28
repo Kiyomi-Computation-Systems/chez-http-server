@@ -76,7 +76,10 @@
 ;;;   disarm-deadline disarms it
 ;;;
 ;;; and records the rest (logs, a hand-off) without acting on them: the
-;;; hand-off is M8's.  (Since M2.5 the core serves an upgrade and closes after
+;;; hand-off is M8's.  A fake connection made on credit (M6.2) answers with
+;;; each handler's answer and `credit`, `(handler-responded answer credit)`,
+;;; as M7's coroutine shell will, which hands a reader its pieces on
+;;; credit: the test then gives the reader's credit, `(body-credit n)`.  (Since M2.5 the core serves an upgrade and closes after
 ;;; it, so its own loop never hands off.)
 ;;; Input is delivered only while the connection reads, as libuv delivers
 ;;; it.  An event the core cannot finish within `dispatch-cap` dispatches is
@@ -124,15 +127,17 @@
             (mutable shut?)                   ; whether a shutdown has run
             trace
             (mutable wheel) (mutable entry)   ; a connection's deadline; #f for a stub's
-            (mutable dated))                  ; instants its next writes are dated at, in order
+            (mutable dated)                   ; instants its next writes are dated at, in order
+            (mutable credit?))                ; whether it answers on credit (M6.2)
     (protocol (lambda (new)
                 (case-lambda
                   ((step state0 now0)
-                   (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f #f #f '()))
+                   (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f #f #f '() #f))
                   ((step state0 now0 perform)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f #f #f '()))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f #f #f '() #f))
                   ((step state0 now0 perform trace)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace #f #f '()))))))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace #f #f '()
+                        #f))))))
 
   ;; trace! : FakeShell Symbol Any -> Void
   (define (trace! s kind datum)
@@ -277,17 +282,19 @@
 
   ;; --- the connection ---------------------------------------------------------
 
-  ;; make-fake-connection : Limits (Request -> Response) [Trace [Nat]] -> FakeShell
+  ;; make-fake-connection : Limits (Request -> Response) [Trace [Nat [Boolean]]] -> FakeShell
   ;; A connection in idle, reading, the clock at `now` (0 unless given), and
   ;; its idle deadline armed there: (http-server connection)'s core through
   ;; the adapter, with a parser of its own and `handler` answering every
-  ;; request at once, traced as make-fake-shell traces.  Its state is the
+  ;; request at once, traced as make-fake-shell traces.  Made `on-credit?`,
+  ;; it answers with each answer and `credit` (M6.2).  Its state is the
   ;; adapter's context; fake-shell-conn-state reads the core's state from it.
   (define make-fake-connection
     (case-lambda
-      ((limits handler) (make-fake-connection limits handler #f 0))
-      ((limits handler trace) (make-fake-connection limits handler trace 0))
-      ((limits handler trace now)
+      ((limits handler) (make-fake-connection limits handler #f 0 #f))
+      ((limits handler trace) (make-fake-connection limits handler trace 0 #f))
+      ((limits handler trace now) (make-fake-connection limits handler trace now #f))
+      ((limits handler trace now on-credit?)
        (let* ((cell #f)
               (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f limits)
                                       (lambda (actions) (enqueue! cell actions))))
@@ -296,6 +303,7 @@
                                   (lambda (s a) (perform-connection! s a handler limits))
                                   trace)))
          (set! cell s)
+         (fake-shell-credit?-set! s on-credit?)
          (fake-shell-parser-set! s (make-conn-parser ctx))
          (fake-shell-wheel-set! s (make-wheel (limits-tick-ms limits)))
          (fake-shell-entry-set! s (make-wheel-entry s))
@@ -329,7 +337,9 @@
       ((call-handler)
        (let ((answer (guard (e (#t (list 'handler-failed e)))
                        (list 'handler-responded (handler (cadr a))))))
-         (fake-shell-deliver! s answer)))
+         (fake-shell-deliver! s (if (and (fake-shell-credit? s) (eq? (car answer) 'handler-responded))
+                                    (append answer '(credit))
+                                    answer))))
       ((deliver-body)
        (let ((r (conn-body-reader (fake-shell-conn-state s))))
          (when r
