@@ -2847,4 +2847,50 @@ Watched to fail (m6-mutations.md, the first step): eleven mutants on that tree, 
 
 Size: 301 inserted lines of code and tests.
 
-NEXT: the second step, on feat/m6.1-body-reading.
+
+M6.1 SECOND STEP: the core hands a body to a reader (feat/m6.1-body-reading).
+
+FOUND WHILE BUILDING, each raised with the owner, and recorded in decision 0013's section "Found while building":
+- The form's detail that kept the connection when the whole body came with the head was dropped before it was built, the owner told at once: whether the body came with the head depends on the reads, and the outcome lane holds the outcome to one.
+- Item 1 as first built made eight strict fixtures' outcomes depend on the reads (the outcome lane: `transfer-encoding.md` #9, #10, #12, #24, #25, #27, #29 and #31, chunked bodies with a bad chunk size). With the body in the head's read, the parser met the error before the handler was asked, and answered 400; in later reads the handler was asked first. Now what the feed that completes a head meets of the body waits for the handler's answer: its pieces, and an error or a cap passed.
+- Pausing the parser at the head instead was built and measured through the real core: the JSON POST cost 3,248 B read whole and 3,120 B streamed, over the gate. It was taken out.
+- A streaming reader past a cap was handed `abcd` at a byte a time and `abc` read whole: a piece that passes a cap is now handed over up to the cap.
+- Found by checking what each reader was handed, beside the core's actions: the core let a reader go when it wrote a status of its own, so the pieces already asked for, a prefix up to a cap or those met before an error, reached nobody at one read split and the reader at another. A reader is now let go when the connection lingers or closes, or when it raises.
+
+BUILT:
+- The core, `(http-server connection)`: a request whose head announces a body (chunked, or a Content-Length above 0) is handed to its handler with the feed's result, once the feed that completed the head has returned; what that feed met of the body, its pieces and an error or a cap passed, is kept for the answer. A reader is handed each read's pieces as `deliver-body`, the read's own spans, and `deliver-body-end` once the message has ended. A whole reader's body is copied as it arrives, into one bytevector grown to the declared length or joined when chunked, and handed over as its one piece. A response given instead of a reader is sent at once, and the connection closes after it, as `unread-body`. A body past `max-body-bytes`, or past a reader's cap, is refused as `body-too-large`, answered 413 (`(http-server decisions)`), and the piece that passes the cap is handed over up to it. A reader that raises is answered 500, as a handler that raises is. `conn-body-reader` is exported for the shells, and `conn-body-buffered`, the bytes the core buffers for a whole reader, for the checks. The parser is never paused inside a body.
+- Both shells perform `deliver-body` and `deliver-body-end`: the fake shell, and the libuv shell, which logs a reader's raise as a handler's.
+- The facade exports `read-body` and `read-whole-body`. `docs/handlers.org` gains "Reading the body"; `docs/configuration.org` and `docs/responses.org` say what the body cap does and when 413 is sent.
+- `tests/test-connection-body.sps` (27 checks, each row at every delivery size); nineteen body rows (B1 to B19) in the transition table, and H5 a reader's.
+- Suites that sent a body to a handler that answered at once now read it, where their checks need the connection kept, most through (fake-shell)'s `drops-body`: the message loop, entry, head, deadlines, originated (413 now driven end to end), allocation, the trace lane's driver, the outcome and libhtp lanes, the socket lane and the clients suite. The outcome lane runs every fixture with a handler that reads every body and with one that reads none. The contract test has reader scripts, among them readers that raise, and renders a reader by its cap and kind. The retention suite checks a body read whole is let go with its reader, and the serve suite a 413 from CHEZ_HTTP_MAX_BODY_BYTES set in the environment.
+
+DECIDED on the owner's word (2026-09-28), by form:
+- the four findings kept as built: what the head's read brings of the body waits for the handler's answer. Weighed: pausing the parser at the head (3,248 B and 3,120 B, over the gate); letting those outcomes depend on the reads, the outcome lane exempting eight fixtures;
+- a /code-review first, its findings fixed on the owner's word, then two stacked PRs, each layer proved green on its own tree. Weighed: the two PRs without a review; one PR.
+
+REVIEWED before the first commit, at high effort (/code-review), on the owner's "fix all findings" (2026-09-28): eight findings.
+- **A whole reader's buffer was made at the declared length as the reader answered**, before any of the body came: a head alone could take up to the reader's cap, 1 MiB by default, and with no cap a declared length past what memory holds raised in the core. Fixed: the buffer grows as the body arrives, to the declared length once that is at most twice what has arrived, and doubling before, so it is never more than twice what has arrived, the buffers it grows through come to less than twice the body, and it ends exactly full. `conn-body-buffered`, exported, says how many bytes the core buffers for a whole reader, and the new checks read it: nothing buffered before a declared 64 KiB's bytes arrive, never more than twice what has arrived, the body handed over exactly its length (the body suite); 64 KiB in 1,000-byte pieces allocates 128,657 B in buffers, under twice its length (the allocation suite). Decision 0013's item 2 says so, and its review note.
+- **A request refused mid-body kept a whole reader's buffer during its write**, since a status of the core's own no longer lets the reader go. Fixed: that status lets go of the buffer and the pieces kept, and keeps the reader. Checked: a whole reader past its cap mid-body buffers 3,000 bytes, then nothing, its 413 still being written.
+- **A chunked whole body is copied twice at its peak.** The finding's premise was measured first and is wrong: on a chunked MiB in 64 pieces, copying each piece and joining them allocates 2,099,391 B; a doubling buffer trimmed at the end, the fix it proposed, 3,129,692 B; both hold 2 MiB at most (a scratchpad probe, two runs, the same). No change; the core's comment says why.
+- **The request record's comment on its body field** said it would carry a body handle in M6. It now says the field stays #f: a handler reads a body through the reader it answers with.
+- **docs/handlers.org** called any request with a Content-Length one with a body: it now says a Content-Length above 0.
+- **body-piece answered one constant list in three arms.** Now `hand-on` hands a piece on by the handler's answer, and body-piece names its two answers once.
+- **The suites' reading handler was written five times**: `drops-body`, in (fake-shell), replaces the message loop's, the originated, deadlines and head suites', and the outcome lane's. The socket lane's and the clients suite's handlers read a POST's body inside routes of their own, and keep them.
+- **CHEZ_HTTP_MAX_BODY_BYTES never drove a 413 from the environment**: test-serve.sps starts its server with it set to 4, and a 5-byte body gets 413.
+
+Measured on the finished tree (2026-09-28, Darwin arm64):
+- `make test` green: forty suites, 1,069 expected passes, exit 0, 20.7 s.
+- The allocation suite: curl's GET 1,840 B, unchanged; the JSON POST 2,624 B read whole and 2,432 B streamed, against the 3,072 B gate, where before M6.1, its body dropped, it cost 2,320 B; a 64 KiB body read whole, in 1,000-byte pieces, 128,657 B in buffers.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree made with `COPYFILE_DISABLE=1`, curl 7.88.1 and ab 2.3 installed:
+- `make test`, less its submodule and pin checks: forty suites, 1,069 expected passes, the allocation figures the same;
+- the socket lane, three runs: 92 passes each.
+CI's runs are still the billing block.
+
+Watched to fail (m6-mutations.md, the second step): 64 mutants on the finished tree, and every check new or changed by the slice reddened by at least one. M6.1-CK is the bug the reader's own view found; M6.1-EM to M6.1-ER were written for six changed checks the first run left without a mutant; the review rewrote the code nine mutated, eight were written again, and M6.1-CD is withdrawn, its code gone; M6.1-RA to M6.1-RH witness the review's fixes.
+
+Records: decision 0013's sections "Found while building" and the review's, and its item 2; decision 0005's amendment (`max-body-bytes`); design §4.1, §4.4 (the body rows) and §6.5 (413); plan §14's M6.1 note, and §7's 413 note; the docs; m6-mutations.md.
+
+Size: 1,557 inserted lines of code and tests, 213 deleted, besides records and docs. It cannot be split further and stay green: once a request with a body is handed over at its head, every suite that sends one changes with it.
+
+NEXT: the two stacked PRs, merged bottom up on the owner's word. Then M6.2 (plan §14), which the M6.1 note re-scopes.

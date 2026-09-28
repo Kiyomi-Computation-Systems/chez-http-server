@@ -25,8 +25,16 @@
 ;;; what the outcome should be.  The lane checks that the pause protocol makes
 ;;; it independent of how the bytes were split.  It runs under the trace
 ;;; lane's `corpus-limits`, with no Host required, for the same reason.
+;;;
+;;; Two handlers (M6.1, decision 0013): `reads`, which reads every body,
+;;; dropping it, then answers 200, as every handler answered before M6; and
+;;; `answers`, which answers 200 at once, reading no body, so a request whose
+;;; head announces one is answered and the connection closes after it.  What
+;;; the feed that completed a head met of the body before the handler
+;;; answered, an error among it, waits for the answer, so both are
+;;; independent of the split too.
 (library (outcome-lane)
-  (export outcome-at outcome-mismatch render-request attempt)
+  (export outcome-at outcome-mismatch render-request attempt reads answers)
   (import (rnrs)
           (httparse test corpus-load)      ; fixture-input-text, fixture-meta-ref
           (httparse test corpus-decode)    ; corpus-decode-input
@@ -38,6 +46,11 @@
 
   ;; What every handler answers.
   (define ok (make-response 200 #f '() #f))
+
+  ;; reads : Request -> BodyReader — the body read and dropped, then `ok`.
+  ;; answers : Request -> Response — `ok`, at once.
+  (define reads (drops-body (lambda (request) ok)))
+  (define (answers request) ok)
 
   ;; render-request : Request -> Datum — the request as its bytes.
   (define (render-request r)
@@ -59,13 +72,13 @@
                     (else acc)))
                 '() actions))
 
-  ;; outcome-at : Bytevector Nat -> Datum
-  ;; What one connection did reading `bv` in `size`-byte deliveries, then
-  ;; the client's eof if it still reads: the decisive actions in order, the
-  ;; phase and close-after it ended with, and the actions run anywhere but
-  ;; the outermost drain.
-  (define (outcome-at bv size)
-    (let ((sh (make-fake-connection corpus-limits (lambda (request) ok))))
+  ;; outcome-at : Bytevector Nat [(Request -> Any)] -> Datum
+  ;; What one connection did reading `bv` in `size`-byte deliveries, with
+  ;; `handler` (`reads` unless given), then the client's eof if it still
+  ;; reads: the decisive actions in order, the phase and close-after it ended
+  ;; with, and the actions run anywhere but the outermost drain.
+  (define (outcome-at bv size . handler)
+    (let ((sh (make-fake-connection corpus-limits (if (null? handler) reads (car handler)))))
       (fake-shell-feed-input! sh bv size)
       (when (fake-shell-reading? sh)
         (fake-shell-deliver! sh '(eof))
@@ -75,14 +88,16 @@
               (conn-phase s) (conn-close-after s)
               (fake-shell-violations sh)))))
 
-  ;; outcome-mismatch : Fixture Symbol -> (U #f String)
+  ;; outcome-mismatch : Fixture Symbol [(Request -> Any)] -> (U #f String)
   ;; #f when the outcome at every scheduled chunk size is the whole input's,
-  ;; with every action run from the outermost drain; else what differed first.
-  (define (outcome-mismatch f selection)
+  ;; with every action run from the outermost drain, with `handler` (`reads`
+  ;; unless given); else what differed first.
+  (define (outcome-mismatch f selection . handler)
     (let* ((bv (corpus-decode-input (fixture-input-text f)))
            (len (bytevector-length bv))
            (no-scan (eq? #t (fixture-meta-ref f 'noScan #f)))
-           (whole (attempt (lambda () (outcome-at bv (max 1 len))))))
+           (h (if (null? handler) reads (car handler)))
+           (whole (attempt (lambda () (outcome-at bv (max 1 len) h)))))
       (cond
        ((string? whole) (string-append "the whole input " whole))
        ((pair? (cadddr whole)) (string-append "the whole input ran actions inside a feed or a nested drain"))
@@ -90,7 +105,7 @@
         (let loop ((sizes (corpus-scan-sizes len no-scan selection)))
           (if (null? sizes)
               #f
-              (let ((o (attempt (lambda () (outcome-at bv (max 1 (car sizes)))))))
+              (let ((o (attempt (lambda () (outcome-at bv (max 1 (car sizes)) h)))))
                 (cond
                  ((string? o) (string-append "size " (number->string (car sizes)) " " o))
                  ((equal? o whole) (loop (cdr sizes)))

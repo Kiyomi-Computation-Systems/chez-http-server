@@ -41,7 +41,41 @@ For ~GET /a/b?x=1~ with ~Host: example.com~:
 
 Each call makes its string when you ask, so a handler pays only for what it reads.
 
-The request's body cannot be read yet: that comes with streaming bodies (M6).
+* Reading the body
+
+A request with a body, one with a ~Content-Length~ above 0 or
+~Transfer-Encoding: chunked~, reaches your handler as soon as its headers are
+in, before its body. To read the body, answer with a reader instead of a
+response:
+
+#+begin_src scheme
+;; the whole body, as one bytevector
+(serve
+ (lambda (request)
+   (read-whole-body
+    (lambda (body) (make-response 200 #f '() body)))))
+
+;; the body piece by piece, as it arrives
+(serve
+ (lambda (request)
+   (let ((n 0))
+     (read-body
+      (lambda (bv start end) (set! n (+ n (- end start))))
+      (lambda () (make-response 200 #f '() (string->utf8 (number->string n))))))))
+#+end_src
+
+- ~read-whole-body~ keeps the body in memory, up to 1 MiB. A bigger body gets
+  ~413 Content Too Large~. A second argument sets another cap:
+  ~(read-whole-body proc 65536)~.
+- ~read-body~ calls its first procedure with each piece of the body, the bytes
+  ~bv[start, end)~, as the piece arrives. Once the body has ended it calls the
+  second, which returns the response.
+- A piece shares memory with the read it arrived in. Copy what you keep.
+- A request with no body gets its end at once, so a handler can answer every
+  request with a reader.
+- Answer with a response instead, and the server sends it at once, without
+  reading the body, and closes the connection after it.
+- If a reader raises, the client gets ~500 Internal Server Error~.
 
 * Keep strings, not the request
 

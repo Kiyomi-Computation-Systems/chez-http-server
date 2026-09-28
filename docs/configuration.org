@@ -37,7 +37,7 @@ with the port it got: ~listening 127.0.0.1 8080~.
 | ~CHEZ_HTTP_MAX_HEADER_FIELD_BYTES~  | 8192      | one header name                          |
 | ~CHEZ_HTTP_MAX_HEADER_VALUE_BYTES~  | 8192      | one header value                         |
 | ~CHEZ_HTTP_MAX_TARGET_BYTES~        | 8192      | size of the request-target               |
-| ~CHEZ_HTTP_MAX_BODY_BYTES~          | unbounded | request-body cap (~unbounded~ disables)  |
+| ~CHEZ_HTTP_MAX_BODY_BYTES~          | unbounded | every request body (~unbounded~: none)   |
 | ~CHEZ_HTTP_PIPELINE_CAP~            | 1         | must be 1: one request at a time         |
 | ~CHEZ_HTTP_READ_BUFFER_SIZE~        | 16384     | per-connection read buffer               |
 | ~CHEZ_HTTP_MAX_CONNECTIONS~         | 10000     | connections open at once                 |
@@ -52,8 +52,10 @@ one is in [[file:connections.org][connections.org]].
 checks deadlines once a tick, so a timeout acts at most one tick, and so at
 most a second, after it passes.
 
-A request over any of the four header limits gets ~431~, and one whose target
-is over its limit gets ~414~. Either way the connection closes. What else a
+A request over any of the four header limits gets ~431~, one whose target is
+over its limit gets ~414~, and one whose body is over ~CHEZ_HTTP_MAX_BODY_BYTES~
+gets ~413~. Either way the connection closes. ~read-whole-body~ has a cap of its
+own too, 1 MiB unless you give another ([[file:handlers.org][handlers.org]]). What else a
 target must be is in [[file:request-targets.org][request-targets.org]].
 
 When the server closes a connection after a response, it keeps reading, and

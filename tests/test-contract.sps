@@ -61,6 +61,7 @@
         (libuv) (uv-testing)
         (http-server private shell)
         (http-server request) (http-server response) (http-server span) (http-server limits)
+        (http-server body)
         (fake-shell) (shell-testing))
 
 (define (b s) (string->utf8 s))
@@ -70,7 +71,11 @@
 ;; The handler answers 200 with the request's target as the body, except
 ;; `/close`, whose response asks to close the connection, `/raise`, which
 ;; raises a message, and `/raise-who`, which raises a condition with no
-;; message.  Both shells call it, so it keeps nothing between calls.
+;; message; and it reads a body with a reader (decision 0013): `/read`
+;; streams it, dropping it, `/whole` reads it whole and answers with it,
+;; `/small` reads it whole, capped at 4 bytes, and `/piece-raises` and
+;; `/end-raises` have readers that raise, at the first piece and at the
+;; end.  Both shells call it, so it keeps nothing between calls.
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
     (cond ((bytevector=? target (b "/close"))
@@ -79,6 +84,18 @@
            (raise (make-message-condition "the handler failed")))
           ((bytevector=? target (b "/raise-who"))
            (raise (condition (make-error) (make-who-condition 'handler))))
+          ((bytevector=? target (b "/read"))
+           (read-body (lambda (bv start end) #t) (lambda () (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/whole"))
+           (read-whole-body (lambda (body) (make-response 200 #f '() body))))
+          ((bytevector=? target (b "/small"))
+           (read-whole-body (lambda (body) (make-response 200 #f '() body)) 4))
+          ((bytevector=? target (b "/piece-raises"))
+           (read-body (lambda (bv start end) (raise (make-message-condition "the reader failed")))
+                      (lambda () (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/end-raises"))
+           (read-body (lambda (bv start end) #t)
+                      (lambda () (raise (make-message-condition "the reader failed")))))
           (else (make-response 200 #f '() target)))))
 
 ;; The libuv shells call the handler through `held-handler`, which first
@@ -116,8 +133,18 @@
      (send "GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\n\r\nGET /3 HTTP/1.1\r\nHost: x\r\n\r\n"))
     ("a request split across two deliveries"
      (send "GET /split HTTP/1.1\r\nHo") (read) (send "st: x\r\n\r\n"))
-    ("a request with a body"
+    ("a request with a body, answered before it is read"
      (send "POST /body HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello"))
+    ("a body streamed to a reader, in two deliveries"
+     (send "POST /read HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234") (read) (send "56789"))
+    ("a chunked body read whole, then a GET"
+     (send "POST /whole HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\nGET /after HTTP/1.1\r\nHost: x\r\n\r\n"))
+    ("a body past a reader's cap"
+     (send "POST /small HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789"))
+    ("a reader that raises at its first piece"
+     (send "POST /piece-raises HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello"))
+    ("a reader that raises at its end"
+     (send "POST /end-raises HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello"))
     ("a response that closes the connection, then the linger"
      (send "GET /close HTTP/1.1\r\nHost: x\r\n\r\n"))
     ("input that arrives while the connection lingers"
@@ -156,9 +183,10 @@
 ;; An event or action as data `equal?` compares by content, made when it is
 ;; traced so nothing done with it later changes the trace: a bytevector as its
 ;; bytes, a span by its bytes, a request and a response by their fields, a
-;; condition by each of its simple conditions, and any other record by its
-;; type and fields.  `equal?` compares a record with fields by identity, so
-;; two shells' conditions would otherwise never match.
+;; reader by its cap and kind (each shell calls the handler, which makes its
+;; own), a condition by each of its simple conditions, and any other record by
+;; its type and fields.  `equal?` compares a record with fields by identity,
+;; so two shells' conditions would otherwise never match.
 (define (render x)
   (cond ((bytevector? x) (list 'bytes (latin-1 x)))
         ((span? x) (list 'span (latin-1 (span->bytevector x))))
@@ -169,6 +197,7 @@
         ((response? x)
          (list 'response (response-status x) (render (response-reason x))
                (render (response-headers x)) (render (response-body x))))
+        ((body-reader? x) (list 'reader (body-reader-max-bytes x) (body-reader-whole? x)))
         ((condition? x) (cons 'condition (map render-record (simple-conditions x))))
         ((record? x) (render-record x))
         ((pair? x) (cons (render (car x)) (render (cdr x))))

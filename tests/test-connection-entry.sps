@@ -25,7 +25,8 @@
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) statistics sstats-bytes)
         (http-server connection) (http-server response) (http-server request)
-        (http-server span) (http-server limits)
+        (http-server span) (http-server limits) (http-server body)
+        (only (httparse decisions) F-CONTENT-LENGTH)
         (httparse test adapter)          ; adapter-trace-names
         (generated httparse-message) (httparse modes) (byte-machine runtime))
 
@@ -57,6 +58,28 @@
   (case phase ((idle) 'idle) ((head) 'header) ((body) 'body) (else #f)))
 
 (define (fresh phase) (make-conn-state phase (armed phase) #f 0 0 #f #f default-limits))
+
+;; A reader that drops what it is handed and answers `resp` (defined below).
+(define reader (read-body (lambda (bv from to) #t) (lambda () (make-response 200 #f '() #f))))
+
+;; reading-state : -> ConnState
+;; A POST whose head announced a body of 1,000 bytes, its handler asked and
+;; answered with a streaming reader, reached by steps: in body, reading.
+(define (reading-state)
+  (let ((s (fresh 'head)) (target (string->utf8 "/")))
+    (conn-parser-step s 'on-url-data target 0 1)
+    (conn-parser-step s 'on-url-complete)
+    (let ((host (string->utf8 "Host: x")))
+      (conn-parser-step s 'on-header-field-data host 0 4)
+      (conn-parser-step s 'on-header-field-complete)
+      (conn-parser-step s 'on-header-value-data host 6 7)
+      (conn-parser-step s 'on-header-value-complete))
+    (conn-headers-complete-step s 3 1 1 F-CONTENT-LENGTH 1000 0)
+    (conn-step s '(parser-result need-input 0 0 #f #f))
+    (conn-step s (list 'handler-responded reader))
+    (unless (eq? (conn-body-reader s) reader)
+      (assertion-violation 'reading-state "the steps did not reach a reader reading" (conn-phase s)))
+    s))
 
 ;; A span for the span callbacks, and on-headers-complete's six fields for a
 ;; keep-alive GET: llhttp's method 1, HTTP/1.1, no flags, no content-length,
@@ -168,8 +191,14 @@
 
 ;; replay : (ConnState Payload -> (values ...)) (Listof Payload) -> (Listof Datum)
 ;; Drive one connection through the recorded callbacks, entering them `way`,
-;; with the handler cycle after each message so the next one starts from idle.
-;; The shell's own events go through conn-step either way.
+;; with the shell's part wherever the core paused the parser: the feed's
+;; result; the handler, if it was asked, answering with a reader; and, once
+;; the reader is handed its end, the reader's response and its write's
+;; completion, so the next message starts from idle.  A request whose head
+;; announces a body is asked with the feed's result (decision 0013), and a
+;; response given in place of a reader would close the connection, so every
+;; request is answered with one.  The shell's own events go through
+;; conn-step either way.
 (define (replay way callbacks)
   (let loop ((s (fresh 'idle)) (cs callbacks) (acc '()))
     (if (null? cs)
@@ -178,11 +207,18 @@
          (lambda () (way s (car cs)))
          (lambda (s actions)
            (let ((acc (cons (snapshot s actions) acc)))
-             (if (eq? (caar cs) 'on-message-complete)
-                 (let*-values (((s a1) (conn-step s (list 'handler-responded resp)))
-                               ((s a2) (conn-step s (list 'write-completed
-                                                          (caddr (assq 'write a1))))))
-                   (loop s (cdr cs) (cons (snapshot s a2) (cons (snapshot s a1) acc))))
+             (if (equal? (car actions) '(reply-parser pause))
+                 (let*-values (((s a0) (conn-step s '(parser-result paused 0 0 #f #f)))
+                               ((s a1) (if (or (assq 'call-handler actions) (assq 'call-handler a0))
+                                           (conn-step s (list 'handler-responded reader))
+                                           (values s '()))))
+                   (let ((acc (cons (snapshot s a1) (cons (snapshot s a0) acc))))
+                     (if (or (assq 'deliver-body-end actions) (assq 'deliver-body-end a1))
+                         (let*-values (((s a2) (conn-step s (list 'handler-responded resp)))
+                                       ((s a3) (conn-step s (list 'write-completed
+                                                                  (caddr (assq 'write a2))))))
+                           (loop s (cdr cs) (cons (snapshot s a3) (cons (snapshot s a2) acc))))
+                         (loop s (cdr cs) acc))))
                  (loop s (cdr cs) acc))))))))
 
 ;; --- allocation --------------------------------------------------------------
@@ -209,9 +245,14 @@
         (let-values (((s actions) (enter (vector-ref states i))))
           (loop (+ i 1)))))))
 
+;; fresh-states : Symbol Nat -> (Vectorof ConnState)
+;; `n` states in `phase`, or reading a body, reached by steps, for 'reading.
 (define (fresh-states phase n)
   (let ((v (make-vector n)))
-    (let loop ((i 0)) (when (< i n) (vector-set! v i (fresh phase)) (loop (+ i 1))))
+    (let loop ((i 0))
+      (when (< i n)
+        (vector-set! v i (if (eq? phase 'reading) (reading-state) (fresh phase)))
+        (loop (+ i 1))))
     v))
 
 ;; bytes-per-call : Symbol Symbol Nat -> Nat
@@ -247,15 +288,17 @@
 ;; The callbacks whose data the core keeps, and so may allocate: the target
 ;; and each header name and value are kept as spans, a completed value joins
 ;; its name as a header, the head's completion builds the request, a body span
-;; goes on to the handler, and the message's completion carries the request.
+;; goes on to the reader the handler answered with (decision 0013), and the
+;; message's completion carries the request.
 (define kept
   '(on-url-data on-header-field-data on-header-value-data on-header-value-complete
     on-headers-complete on-body-data on-message-complete))
 
-;; The span callbacks among them, and the state each arrives in.
+;; The span callbacks among them, and the state each arrives in: a body span
+;; while a reader reads the body.
 (define kept-spans
   '((head on-url-data) (head on-header-field-data) (head on-header-value-data)
-    (body on-body-data)))
+    (reading on-body-data)))
 
 (run-suite "connection-entry"
   (lambda ()

@@ -5,8 +5,9 @@
 ;;;
 ;;; Design §6.5's statuses, and decision 0009's 301, each provoked on a fake
 ;;; connection the way a client provokes it: a request the core refuses, a
-;;; head or a body left unfinished past its deadline, a handler that raises
-;;; or answers what cannot be written safely, the HTTP/2 preface.  Each response is
+;;; head or a body left unfinished past its deadline, a body past a cap, a
+;;; handler that raises or answers what cannot be written safely, the HTTP/2
+;;; preface.  Each response is
 ;;; written through the serializer and read back with chez-httparse's strict
 ;;; response parser, a client that is not our code ((response-reader)).
 ;;;
@@ -30,9 +31,11 @@
 ;;; The client's close ends the linger, and like every close it disarms the
 ;;; deadline first (M5.2).
 ;;;
-;;; 413 has no way in before M6's buffering helper (decision 0005's
-;;; max-body-bytes row), so its row is the serializer's alone: the response
-;;; the core would originate, framed as the core frames its own.
+;;; 413 has its way in since M6.1 (decision 0013 item 5): a body past a
+;;; cap, here the limits' max-body-bytes.  A request whose head announces a
+;;; body is handed to its handler at the head, and a response given instead
+;;; of a reader closes the connection (decision 0013), so the 408's body is
+;;; read by its handler.
 ;;;
 ;;; Oracles: design §6.5's table, and decision 0009 for the 301; RFC 9110
 ;;; §15's reason phrases, and RFC 6585 §5's for 431; decision 0010 item 6;
@@ -42,8 +45,7 @@
 ;;; 1970 00:01:00 GMT`.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
-        (only (http-server decisions) originated-reasons response-framing response-connection)
-        (only (http-server serializer) serialize-response)
+        (only (http-server decisions) originated-reasons)
         (fake-shell) (response-reader) (read-back))
 
 (define (b s) (string->utf8 s))
@@ -91,6 +93,8 @@
 (define (raises request) (raise 'boom))
 (define (frames-itself request)
   (make-response 200 #f (list (cons (b "Content-Length") (b "2"))) (b "ok")))
+;; reads : a handler that reads the body, dropping it, then answers.
+(define reads (drops-body answers))
 
 ;; sent : String -> (FakeShell -> Any)
 ;; The client sends `text` in one delivery.
@@ -107,17 +111,17 @@
     (fake-shell-advance! sh 60000)
     (fake-shell-fire! sh)))
 
-;; drive : (Request -> Response) (FakeShell -> Any) -> Outcome
-;; One connection under decision 0005's defaults, with `handler`: the
+;; drive : (Request -> Any) (FakeShell -> Any) Limits -> Outcome
+;; One connection under `limits`, with `handler`: the
 ;; client's moves, then every later turn; then, as a client does once it has
 ;; read a response that closes, another request and its close, each
 ;; delivered only while the connection reads, as libuv delivers them; then
 ;; every later turn.  The outcome: each write read back, the actions from
 ;; the core's own response on, and the phase and reason the connection
 ;; ended with; or `(raised)` if the run raised.
-(define (drive handler provoke)
+(define (drive handler provoke limits)
   (guard (e (#t '(raised)))
-    (let ((sh (make-fake-connection default-limits handler)))
+    (let ((sh (make-fake-connection limits handler)))
       (provoke sh)
       (fake-shell-settle! sh)
       (send! sh get)
@@ -128,8 +132,10 @@
               (from-response (fake-shell-actions sh))
               (conn-phase s) (conn-close-after s))))))
 
-;; A row: what it shows; the handler; the client's moves; the outcome.
-(define (row text handler provoke outcome) (list text handler provoke outcome))
+;; A row: what it shows; the handler; the client's moves; the outcome; and
+;; the limits, decision 0005's defaults unless given.
+(define (row text handler provoke outcome . limits)
+  (list text handler provoke outcome (if (null? limits) default-limits (car limits))))
 (define (row-status r) (car (car (car (list-ref r 3)))))
 (define (row-reason r) (list-ref (list-ref r 3) 3))
 
@@ -172,8 +178,14 @@
         answers (stalled "GET / HTTP/1.1\r\nHo")
         (refused 408 "Request Timeout" 'header-timeout (at a-minute-on)))
    (row "408: a body still unfinished when the body deadline passes"
-        answers (stalled "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab")
+        reads (stalled "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab")
         (refused 408 "Request Timeout" 'body-timeout (at a-minute-on)))
+   ;; 413: a declared length one byte past max-body-bytes, refused before
+   ;; any of the body is read or the handler asked (decision 0013 item 5).
+   (row "413: a declared length one byte past max-body-bytes"
+        reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello" get))
+        (refused 413 "Content Too Large" 'body-too-large (at epoch))
+        (limits-with default-limits '((max-body-bytes . 4))))
    ;; 414 and 431: one past a limit.
    (row "414: a target one byte past max-target-bytes"
         answers (sent (string-append "GET /" (make-string max-target #\a) " HTTP/1.1\r\nHost: x\r\n\r\n" get))
@@ -219,30 +231,14 @@
         answers (sent (string-append "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" get))
         (refused 505 "HTTP Version Not Supported" 'http2-preface (at epoch)))))
 
-;; serialized : Nat -> (Listof Datum)
-;; The response the core would originate with `status`, read back: no body,
-;; framed as the core frames a response to no request it has read, and
-;; closing (decision 0010 item 6).  `(raised)` if serializing it raised.
-(define (serialized status)
-  (guard (e (#t '(raised)))
-    (let-values (((segments nbytes)
-                  (serialize-response (make-response status #f '() #f)
-                                      (response-framing #f 1 1 status #f)
-                                      (response-connection #t 1 1))))
-      (list (read-response (write-wire segments nbytes 0) #f #f)))))
-
-;; The statuses driven end to end: design §6.5's but 413, and 0009's 301.
-(define end-to-end '(301 400 408 414 431 500 501 505))
+;; The statuses driven end to end: design §6.5's, and 0009's 301.
+(define end-to-end '(301 400 408 413 414 431 500 501 505))
 
 (run-suite "connection-originated"
   (lambda ()
     (for-each (lambda (r)
-                (test-equal (car r) (list-ref r 3) (drive (list-ref r 1) (list-ref r 2))))
+                (test-equal (car r) (list-ref r 3) (drive (list-ref r 1) (list-ref r 2) (list-ref r 4))))
               rows)
-
-    (test-equal "413, through the serializer alone: no body, Content-Length: 0 and Connection: close"
-                (list (message 413 "Content Too Large" (at epoch) ""))
-                (serialized 413))
 
     ;; The table is every status the core originates, not a sample of them.
     ;; A parser error's status is the error's, not a reason's (design §6.3).
@@ -253,6 +249,6 @@
                 (filter (lambda (reason)
                           (not (or (eq? reason 'parser-error) (memq reason originated-reasons))))
                         (map row-reason rows)))
-    (test-equal "design §6.5's statuses but 413, and decision 0009's 301, each have a row"
+    (test-equal "design §6.5's statuses, and decision 0009's 301, each have a row"
                 end-to-end
                 (filter (lambda (status) (memv status (map row-status rows))) end-to-end))))

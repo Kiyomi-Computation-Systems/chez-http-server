@@ -22,7 +22,8 @@
 ;;; arm, design §4.3's four and decision 0011's linger, each lasting one of
 ;;; the limits (M5.1).  And M5.2's two tick rows, from decision 0005's table:
 ;;; a body past its deadline is answered 408, and a write past its deadline
-;;; closes with no response.  With them, every way the core lets a connection
+;;; closes with no response.  And M6.1's nineteen rows for reading a body,
+;;; from decision 0013.  With them, every way the core lets a connection
 ;;; go, a close or the hand-off, disarms its deadline first (plan §14's note of
 ;;; 2026-09-27).
 ;;;
@@ -31,8 +32,8 @@
 ;;; (design §6.3, amended 2026-09-26).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
-        (http-server limits) (fake-shell)
-        (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE)
+        (http-server limits) (http-server body) (fake-shell)
+        (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE F-CHUNKED F-CONTENT-LENGTH)
         (only (chezscheme) display-condition))
 
 (define (b s) (string->utf8 s))
@@ -46,9 +47,9 @@
 
 ;; state : Symbol . Plist -> ConnState
 ;; A synthetic state: the phase, plus any of deadline / close-after /
-;; outstanding / outstanding-bytes / pending / request / target / host;
-;; every field not named
-;; takes its default, and the limits are decision 0005's defaults.  The head
+;; outstanding / outstanding-bytes / pending / request / target / host /
+;; limits; every field not named takes its default, and the limits are
+;; decision 0005's defaults unless given.  The head
 ;; is the core's own, so a target (a string) is read into it the way the
 ;; parser delivers one, on-url-data then on-url-complete, and a host (a
 ;; string) likewise, as a Host header line.
@@ -61,7 +62,7 @@
   (let ((s (make-conn-state phase
                             (get 'deadline #f) (get 'close-after #f) (get 'outstanding 0)
                             (get 'outstanding-bytes 0) (get 'pending #f) (get 'request #f)
-                            default-limits))
+                            (get 'limits default-limits)))
         (target (get 'target #f))
         (host (get 'host #f)))
     (when target
@@ -206,8 +207,11 @@
            '(parser-event on-headers-complete 1 1 1 0 0 0)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
+   ;; The piece goes to the reader the handler answered with (M6.1,
+   ;; decision 0013): here a streaming one, reading a body of 10 bytes.
    (row 'H5 "body, on-body-data -> body: continue, deliver-body, arm body"
-        (i (state 'body 'deadline 'body) `(parser-event on-body-data ,bv 3 8)
+        (i (reading 10 (read-body (lambda (bv from to) #t) (lambda () resp)))
+           `(parser-event on-body-data ,bv 3 8)
            `(body #f ((reply-parser continue) (deliver-body ,bv 3 8) (arm-deadline body)))))
 
    (row 'H6 "body, on-message-complete -> handling: pause, read-stop, disarm, call-handler"
@@ -573,6 +577,216 @@
         (i (state 'head 'deadline 'body) '(tick 60000)
            '(head #f () #f)))))
 
+;; ---------------------------------------------------------------------------
+;; M6.1: reading a body (decision 0013).  A request whose head announces a
+;; body, chunked or a Content-Length above 0, is handed to the handler once
+;; the feed that completed its head has returned; the handler answers with a
+;; response or a reader, and the core hands a reader the body.  What that feed
+;; met of the body before the handler was asked waits for its answer: the
+;; pieces, and an error or a cap passed.  The states are reached by steps,
+;; from a head being read: a POST (llhttp's method 3) whose head announces its
+;; body, as on-headers-complete's flags and content-length say.
+
+;; announced : (U Nat 'chunked) [Limits] -> ConnState
+;; A POST whose head, just complete, announced a body of `n` bytes by
+;; Content-Length, or a chunked one: in body, its handler to be asked.
+(define (announced framing . limits)
+  (let ((s (apply state 'head 'deadline 'header 'target "/" 'host "x"
+                  (if (null? limits) '() (list 'limits (car limits))))))
+    (conn-step s (if (eq? framing 'chunked)
+                     `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0)
+                     `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH ,framing 0)))
+    s))
+
+;; met : ConnState (Listof (List Nat Nat)) -> ConnState
+;; The same state, having met `pieces`, each bv[from, to), as body data.
+(define (met s pieces)
+  (for-each (lambda (p) (conn-step s `(parser-event on-body-data ,bv ,(car p) ,(cadr p)))) pieces)
+  s)
+
+;; asked : (U Nat 'chunked) . Piece -> ConnState
+;; A POST that met `pieces` in the feed that completed its head, which has
+;; returned and asked its handler.
+(define (asked framing . pieces)
+  (let ((s (met (announced framing) pieces)))
+    (conn-step s '(parser-result need-input 49 49 #f #f))
+    s))
+
+;; reading : (U Nat 'chunked) BodyReader -> ConnState
+;; The same, with no piece met, its handler having answered with `reader`.
+(define (reading framing reader)
+  (let ((s (asked framing)))
+    (conn-step s `(handler-responded ,reader))
+    s))
+
+;; ended : (U Nat 'chunked) . Piece -> ConnState
+;; A POST whose head and whole body, `pieces`, came in one feed: paused at
+;; the message's end, its handler to be asked.
+(define (ended framing . pieces)
+  (let ((s (met (announced framing) pieces)))
+    (conn-step s '(parser-event on-message-complete))
+    s))
+
+;; erred : (U Nat 'chunked) Event . Piece -> ConnState
+;; A POST whose head's feed met `pieces`, then the parser's error, an
+;; invalid chunk size: in handling, reading stopped, its handler asked and
+;; the error kept for its answer.
+(define (erred framing . pieces)
+  (let ((s (met (announced framing) pieces)))
+    (conn-step s '(parser-result error 60 60 invalid-chunk-size #f))
+    s))
+
+(define streamer (read-body (lambda (bv from to) #t) (lambda () resp)))
+(define (whole-reader . cap) (apply read-whole-body (lambda (body) resp) cap))
+(define (capped n) (limits-with default-limits (list (cons 'max-body-bytes n))))
+
+;; asked-by : ConnState Event -> (List Phase CloseAfter (Listof Datum))
+;; One step's outcome, a call-handler shown by its request's method: the
+;; request is the one the core built at the head.
+(define (asked-by s ev)
+  (let ((o (outcome s ev)))
+    (list (car o) (cadr o)
+          (map (lambda (a)
+                 (if (and (pair? a) (eq? (car a) 'call-handler))
+                     (list 'call-handler (request-method (cadr a)))
+                     a))
+               (caddr o)))))
+
+(define answered-closing
+  (written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 6\r\nConnection: close\r\n\r\n" "row H7"))
+
+(define (body-rows)
+  (list
+   (row 'B1 "head, on-headers-complete announcing a body -> body: continue, disarm, arm body; nothing asked yet"
+        (i (state 'head 'deadline 'header 'target "/" 'host "x")
+           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+        (i (state 'head 'deadline 'header 'target "/" 'host "x")
+           `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0)
+           '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
+
+   (row 'B2 "body or handling, the feed that completed the head returns -> the same: call-handler"
+        (i (announced 10) '(parser-result need-input 49 49 #f #f)
+           '(body #f ((call-handler POST))))
+        (i (ended 5 '(3 8)) '(parser-result paused 54 54 #f #f)
+           '(handling #f ((call-handler POST)))))
+
+   (row 'B3 "body, on-body-data before the handler answers -> body: continue, arm body, the piece kept"
+        (i (asked 10) `(parser-event on-body-data ,bv 3 8)
+           '(body #f ((reply-parser continue) (arm-deadline body)))))
+
+   (row 'B4 "body, handler-responded with a streaming reader -> body: the pieces kept, handed over in order"
+        (i (asked 10 '(3 5) '(5 8)) `(handler-responded ,streamer)
+           `(body #f ((deliver-body ,bv 3 5) (deliver-body ,bv 5 8)))))
+
+   (row 'B5 "handling, the message ended in the head's feed, handler-responded with a streaming reader -> handling: the pieces kept, then deliver-body-end"
+        (let ((s (ended 5 '(3 8))))
+          (conn-step s '(parser-result paused 54 54 #f #f))
+          (i s `(handler-responded ,streamer)
+             `(handling #f ((deliver-body ,bv 3 8) (deliver-body-end))))))
+
+   (row 'B6 "body, handler-responded with a whole reader -> body: the pieces kept, buffered"
+        (i (asked 10 '(3 8)) `(handler-responded ,(whole-reader))
+           '(body #f ())))
+
+   (row 'B7 "body, on-body-data, a whole reader reading -> body: continue, arm body, the piece buffered"
+        (i (reading 10 (whole-reader)) `(parser-event on-body-data ,bv 3 8)
+           '(body #f ((reply-parser continue) (arm-deadline body)))))
+
+   (row 'B8 "body, on-message-complete, a streaming reader reading -> handling: pause, read-stop, disarm, deliver-body-end"
+        (i (reading 10 streamer) '(parser-event on-message-complete)
+           '(handling #f ((reply-parser pause) (read-stop) (disarm-deadline) (deliver-body-end)))))
+
+   ;; The body, "GET /" and " HTTP" of the delivery, whole in a bytevector
+   ;; of its own.
+   (row 'B9 "body, on-message-complete, a whole reader reading -> handling: pause, read-stop, disarm, the body as one piece, deliver-body-end"
+        (let ((s (met (reading 10 (whole-reader)) '((0 5) (5 10)))))
+          (i s '(parser-event on-message-complete)
+             `(handling #f ((reply-parser pause) (read-stop) (disarm-deadline)
+                            (deliver-body ,(b "GET / HTTP") 0 10) (deliver-body-end))))))
+
+   (row 'B10 "handling, handler-responded with the reader's response -> responding: write, arm write"
+        (let ((s (reading 10 streamer)))
+          (conn-step s '(parser-event on-message-complete))
+          (i s `(handler-responded ,resp)
+             `(responding #f (,(written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 6\r\n\r\n" "row H7")
+                              (arm-deadline write))))))
+
+   ;; Item 4: sent at once, and the connection closes after it, whether the
+   ;; body is still arriving or came whole with the head.
+   (row 'B11 "body or handling, handler-responded with a response to a request that announced a body -> responding, close-after unread-body"
+        (i (asked 10) `(handler-responded ,resp)
+           `(responding unread-body (,answered-closing (read-stop) (arm-deadline write))))
+        (let ((s (ended 5 '(3 8))))
+          (conn-step s '(parser-result paused 54 54 #f #f))
+          (i s `(handler-responded ,resp)
+             `(responding unread-body (,answered-closing (arm-deadline write))))))
+
+   ;; Item 6: a whole reader of no body has an empty one, no piece.
+   (row 'B12 "handling, handler-responded with a reader, for a request with no body -> handling: deliver-body-end"
+        (i (state 'handling 'request req) `(handler-responded ,streamer)
+           '(handling #f ((deliver-body-end))))
+        (i (state 'handling 'request req) `(handler-responded ,(whole-reader))
+           '(handling #f ((deliver-body-end)))))
+
+   ;; Item 5: the limits' max-body-bytes caps every body, and a reader's own
+   ;; cap its body.
+   (row 'B13 "head, on-headers-complete declaring a length past max-body-bytes -> head: fail body-too-large"
+        (i (state 'head 'deadline 'header 'target "/" 'host "x" 'limits (capped 5))
+           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           '(head #f ((reply-parser (fail body-too-large))))))
+
+   ;; The piece up to the cap, bv[3, 7), is handed to a streaming reader, or
+   ;; kept for the answer; a whole reader's buffer is let go with the rest.
+   (row 'B14 "body, on-body-data past max-body-bytes or a reader's cap -> body: fail body-too-large, the piece up to the cap handed over or kept"
+        (let ((s (announced 'chunked (capped 4))))
+          (conn-step s '(parser-result need-input 49 49 #f #f))
+          (conn-step s `(handler-responded ,streamer))
+          (i s `(parser-event on-body-data ,bv 3 8)
+             `(body #f ((reply-parser (fail body-too-large)) (deliver-body ,bv 3 7)))))
+        (i (announced 'chunked (capped 4)) `(parser-event on-body-data ,bv 3 8)
+           '(body #f ((reply-parser (fail body-too-large)))))
+        (i (reading 'chunked (whole-reader 4)) `(parser-event on-body-data ,bv 3 8)
+           '(body #f ((reply-parser (fail body-too-large))))))
+
+   ;; A reader's cap, passed before it reads: the declared length, or the
+   ;; pieces met before it answered.
+   (row 'B15 "body, handler-responded with a reader whose cap the body passes -> responding 413, read-stop, close-after"
+        (i (asked 10) `(handler-responded ,(whole-reader 5))
+           `(responding body-too-large (,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write))))
+        (i (asked 'chunked '(3 8)) `(handler-responded ,(whole-reader 4))
+           `(responding body-too-large (,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write)))))
+
+   ;; What the feed that completed the head met in the body before the
+   ;; handler was asked waits for its answer (design §8.1's second property).
+   (row 'B16 "body, the head's feed met an error in the body -> handling: read-stop, disarm, call-handler, the error kept"
+        (i (met (announced 'chunked) '((3 8))) '(parser-result error 60 60 invalid-chunk-size #f)
+           '(handling #f ((read-stop) (disarm-deadline) (call-handler POST))))
+        (let ((s (met (announced 'chunked (capped 4)) '((3 7)))))
+          (conn-step s `(parser-event on-body-data ,bv 7 9))
+          (i s '(parser-result error 60 60 body-too-large #f)
+             '(handling #f ((read-stop) (disarm-deadline) (call-handler POST))))))
+
+   (row 'B17 "handling, an error kept, handler-responded with a streaming reader -> responding: the pieces kept, then the error's status"
+        (i (erred 'chunked '(3 8)) `(handler-responded ,streamer)
+           `(responding parser-error ((deliver-body ,bv 3 8) ,(status-write 400 "Bad Request") (arm-deadline write))))
+        (let ((s (met (announced 'chunked (capped 4)) '((3 7)))))
+          (conn-step s `(parser-event on-body-data ,bv 7 9))
+          (conn-step s '(parser-result error 60 60 body-too-large #f))
+          (i s `(handler-responded ,streamer)
+             `(responding body-too-large ((deliver-body ,bv 3 7)
+                                          ,(status-write 413 "Content Too Large") (arm-deadline write))))))
+
+   (row 'B18 "handling, an error kept, handler-responded with a response -> responding, close-after unread-body: the error not answered"
+        (i (erred 'chunked '(3 8)) `(handler-responded ,resp)
+           `(responding unread-body (,answered-closing (arm-deadline write)))))
+
+   (row 'B19 "body, handler-failed -> responding 500, read-stop, close-after"
+        (i (asked 10) '(handler-failed boom)
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (read-stop) (arm-deadline write))))
+        (i (reading 10 streamer) '(handler-failed boom)
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (read-stop) (arm-deadline write)))))))
+
 ;; index : Any (Listof Any) -> Nat — where `x` stands in `xs`.
 (define (index x xs)
   (let loop ((xs xs) (n 0))
@@ -721,7 +935,8 @@
            (answered (count-rows "response" response-rows outcome))
            (accounting (count-rows "accounting" accounting-rows accounted))
            (linger (count-rows "linger" linger-rows outcome))
-           (ticks (count-rows "tick" deadline-rows ticked)))
+           (ticks (count-rows "tick" deadline-rows ticked))
+           (bodies (count-rows "body" body-rows asked-by)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
       (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
@@ -729,16 +944,17 @@
       (test-eqv "M3.2: both response rows have a test" 2 answered)
       (test-eqv "M3.3: all 5 accounting rows have a test" 5 accounting)
       (test-eqv "M3.5: all 4 linger rows have a test" 4 linger)
-      (test-eqv "M5.2: all 4 tick rows have a test" 4 ticks))
+      (test-eqv "M5.2: all 4 tick rows have a test" 4 ticks)
+      (test-eqv "M6.1: all 19 body rows have a test" 19 bodies))
 
     ;; Every action the table produced is in the vocabulary, and the table
-    ;; uses all of it but the two body-streaming actions (M6's).
+    ;; uses all of it but `notify-producer`, a streamed response's (M6.3).
     (test-equal "no row emits an action outside the vocabulary" '()
                 (filter (lambda (k) (not (memq k conn-actions))) emitted))
-    (test-equal "the rows use fourteen of the sixteen actions"
+    (test-equal "the rows use fifteen of the sixteen actions"
                 '(reply-parser feed-parser resume-parser write read-stop read-start
-                  call-handler deliver-body arm-deadline disarm-deadline shutdown
-                  close log hand-off)
+                  call-handler deliver-body deliver-body-end arm-deadline disarm-deadline
+                  shutdown close log hand-off)
                 (filter (lambda (k) (memq k emitted)) conn-actions))
     (test-equal "the rows arm all five deadline kinds, and no other"
                 (list conn-deadline-kinds '())

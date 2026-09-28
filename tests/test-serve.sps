@@ -93,15 +93,16 @@
     ;; --- what the facade exports ---
     (test-equal "the facade exports the handler's names, the server's start, and its errors"
                 '(&http-server-config-error &http-server-error http-server-config-error?
-                  http-server-error? make-response request-header request-host request-method
-                  request-path request-query request? response? serve)
+                  http-server-error? make-response read-body read-whole-body request-header
+                  request-host request-method request-path request-query request? response? serve)
                 (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
                            (library-exports '(http-server))))
 
     ;; --- a server started through an environment, serving ---
     (let* ((loop (make-uv-loop))
            (sh (start-server loop handler
-                             (env '("CHEZ_HTTP_PORT" . "0") '("CHEZ_HTTP_MAX_TARGET_BYTES" . "64"))
+                             (env '("CHEZ_HTTP_PORT" . "0") '("CHEZ_HTTP_MAX_TARGET_BYTES" . "64")
+                                  '("CHEZ_HTTP_MAX_BODY_BYTES" . "4"))
                              log!))
            (port (let ((entry (assq 'listening logged))) (and entry (caddr entry)))))
       (test-equal "it listens where the environment says, and logs where, with the kernel's port"
@@ -119,6 +120,10 @@
                   '(414 "" complete)
                   (exchange loop sh port
                             (b (string-append "GET /" (make-string 70 #\a) " HTTP/1.1\r\nHost: h\r\n\r\n"))))
+      (test-equal "and a body over CHEZ_HTTP_MAX_BODY_BYTES gets 413"
+                  '(413 "" complete)
+                  (exchange loop sh port
+                            (b "POST /u HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello")))
       (shell-shutdown! sh)
       (run-until-drained loop cap)
       (test-equal "shut down, the server leaves nothing on the loop" '() (uv-loop-live-handles loop))

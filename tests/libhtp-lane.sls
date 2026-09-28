@@ -7,7 +7,8 @@
 ;;; every later turn in between.  After the last, the client's `eof` arrives if
 ;;; the connection still reads, as when a capture ends.  The `<<<` chunks are a
 ;;; recorded origin's replies, not an oracle (decision 0007), so none is
-;;; delivered, and every handler answers 200.  The lane runs under the trace
+;;; delivered, and every handler reads the body, if the request has one, and
+;;; answers 200 ((outcome-lane)'s `reads`; decision 0013).  The lane runs under the trace
 ;;; lane's `corpus-limits`, with no Host required, like the llhttp lanes: six
 ;;; of the twelve send HTTP/1.1 without one (the owner's word, 2026-09-25).
 ;;;
@@ -26,7 +27,7 @@
   (import (rnrs)
           (libhtp-corpus) (fake-shell)
           (http-server connection) (http-server response)
-          (only (outcome-lane) render-request attempt)
+          (only (outcome-lane) render-request attempt reads)
           (only (trace-lane) corpus-limits))
 
   ;; --- the expectations ------------------------------------------------------
@@ -58,14 +59,15 @@
       closed #f ()))
 
   ;; A chunked POST: chunks of 11 and 1 bytes, then a trailer, `Cookie: 2`,
-  ;; split across packets.  The body arrives whole before the handler, which
-  ;; is called at the message's end.  The trailer is not part of the request,
-  ;; which is built at on-headers-complete (design §4.2; trailers are M6's).
+  ;; split across packets.  The handler is asked once the head is in, and its
+  ;; reader is handed the body (decision 0013).  The trailer is not part of
+  ;; the request, which is built at on-headers-complete (design §4.2;
+  ;; trailers are M6.4's).
   (define chunked-post
-    '(((body "p=0123456789")
-       (call-handler (POST "/" 1 1 (("Transfer-Encoding" . "chunked")
+    '(((call-handler (POST "/" 1 1 (("Transfer-Encoding" . "chunked")
                                     ("Content-Type" . "application/x-www-form-urlencoded")
                                     ("User-Agent" . "Mozilla") ("Cookie" . "1"))))
+       (body "p=0123456789")
        (write 200)
        (close eof))
       closed #f ()))
@@ -90,36 +92,37 @@
      ;; another server or port.  "When an origin server receives a request
      ;; with an absolute-form of request-target, the origin server MUST ignore
      ;; the received Host header field" (RFC 9112 §3.2.2), so all five are
-     ;; served.  Each POST's 8-byte body arrives before its handler.
+     ;; served.  Each POST's handler is asked once its head is in, and its
+     ;; reader is handed the 8-byte body.
      (cons "20-ambiguous-host.t"
            '(((call-handler (GET "http://example.com/1" 1 1 (("Host" . "example.com"))))
               (write 200)
               (call-handler (GET "http://example.com/2" 1 1 (("Host" . "foo.com"))))
               (write 200)
-              (body "12345678")
               (call-handler (POST "http://www.example.com:8001/3" 1 1
                                   (("Host" . "www.example.com:8001") ("Content-Length" . "8"))))
-              (write 200)
               (body "12345678")
+              (write 200)
               (call-handler (POST "http://www.example.com:8002/4" 1 1
                                   (("Host" . "www.example.com:8003") ("Content-Length" . "8"))))
-              (write 200)
               (body "12345678")
+              (write 200)
               (call-handler (POST "http://www.example.com:80/5" 1 1
                                   (("Host" . "www.example.com") ("Content-Length" . "8"))))
+              (body "12345678")
               (write 200)
               (close eof))
              closed #f ()))
      ;; the chunked POST again: libhtp's trailer test sends 04's bytes
      (cons "27-request-trailer-raw.t" chunked-post)
      ;; An HTTP/1.0 POST whose 12-byte body is the second packet.  The origin
-     ;; recorded here answered 400 before the body; ours answers when the
-     ;; message ends, and closes.
+     ;; recorded here answered 400 before the body; ours, its handler reading
+     ;; the body, answers when the message ends, and closes.
      (cons "35-early-response.t"
-           '(((body "p=0123456789")
-              (call-handler (POST "/" 1 0 (("Content-Length" . "12")
+           '(((call-handler (POST "/" 1 0 (("Content-Length" . "12")
                                            ("Content-Type" . "application/x-www-form-urlencoded")
                                            ("User-Agent" . "Mozilla"))))
+              (body "p=0123456789")
               (write 200)
               (close not-keep-alive))
              closed not-keep-alive ()))
@@ -168,7 +171,7 @@
   ;; What one fake connection did with the stream `name`'s client packets, one
   ;; delivery each, then the client's eof if it still reads.
   (define (libhtp-outcome name)
-    (let ((sh (make-fake-connection corpus-limits (lambda (request) ok))))
+    (let ((sh (make-fake-connection corpus-limits reads)))
       (for-each (lambda (bv) (fake-shell-feed-input! sh bv (bytevector-length bv)))
                 (packets name))
       (fake-shell-settle! sh)

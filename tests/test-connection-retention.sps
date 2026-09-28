@@ -25,12 +25,17 @@
 ;;; for the next message, and not the request, whose spans point into it.
 ;;; The same instrument checks that while it lingers.
 ;;;
+;;; M6.1: a body read whole is copied into one bytevector, which the core
+;;; hands to the reader the handler answered with (decision 0013).  Once the
+;;; reader's response is written, the connection keeps neither the reader
+;;; nor that body: a handler's body can be up to its cap, 1 MiB.
+;;;
 ;;; Oracles: design §7.3; decision 0011; and the instrument's calibration
 ;;; below: an object still held is seen held, and a dropped one released.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?)
         (http-server connection) (http-server private adapter)
-        (http-server response) (http-server limits)
+        (http-server response) (http-server limits) (http-server body)
         (only (fake-shell) write-wire)
         (byte-machine runtime))
 
@@ -151,6 +156,43 @@
               (parser-resume! p)
               (list seen during after)))))))
 
+;; read-whole! : -> (List (U (Listof (Pair Symbol Symbol)) Symbol) Datum)
+;; A POST with a 4,096-byte body on a fresh connection, read by a whole
+;; reader made here, whose procedure answers with a response of its own:
+;; what a full collection releases once the reader's response is written,
+;; while its write is outstanding, and the phase and writes outstanding then.
+;; A core that asks for no handler, hands over no body or asks for no write
+;; answers what went wrong instead, so the checks fail rather than the suite
+;; ending.
+(define (read-whole!)
+  (let-values (((ctx p) (open-connection)))
+    (let* ((post (b (string-append "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 4096\r\n\r\n"
+                                   (make-string 4096 #\a))))
+           (len (bytevector-length post))
+           (r (begin (conn-context-step! ctx (list 'bytes-arrived post 0 len))
+                     (parser-feed! p post 0 len)))
+           (asked (conn-context-step! ctx (list 'parser-result (parser-result-status r)
+                                                (parser-result-consumed r) (parser-result-next r) #f #f))))
+      (if (not (assq 'call-handler asked))
+          (list 'not-asked #f)
+          (let* ((reader (read-whole-body (lambda (body) (make-response 200 #f '() #f))))
+                 (handed (conn-context-step! ctx (list 'handler-responded reader)))
+                 (piece (assq 'deliver-body handed)))
+            (if (not piece)
+                (list 'no-body #f)
+                (let ((body (cadr piece)))
+                  ((body-reader-on-piece reader) body (caddr piece) (cadddr piece))
+                  (let ((w (assq 'write (conn-context-step!
+                                         ctx (list 'handler-responded ((body-reader-on-end reader)))))))
+                    (if (not w)
+                        (list 'no-write #f)
+                        (begin
+                          (write-wire (cadr w) (caddr w) 0)
+                          (let ((seen (after-collection (list (weakly 'reader reader) (weakly 'body body)))))
+                            (parser-resume! p)
+                            (list seen (list (conn-phase (conn-context-state ctx))
+                                             (conn-outstanding (conn-context-state ctx)))))))))))))))
+
 (define released
   '((response . released) (body . released) (segments . released) (header-block . released)))
 
@@ -187,6 +229,13 @@
                   '(responding 1) (cadr r))
       (test-eq "a response with a fault: the completion starts the staged close"
                'lingering (caddr r)))
+
+    ;; M6.1: a body read whole, once its reader's response is written.
+    (let ((r (read-whole!)))
+      (test-equal "a body read whole: once the reader's response is written, the connection holds neither the reader nor the body"
+                  '((reader . released) (body . released)) (car r))
+      (test-equal "a body read whole: collected in responding, the response's write outstanding"
+                  '(responding 1) (cadr r)))
 
     ;; M3.5: a lingering connection reads only to drop what arrives, so it
     ;; keeps nothing of the input it read (decision 0011).
