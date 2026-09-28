@@ -406,3 +406,14 @@ Every check the exit added or changed is reddened by one mutant at least:
 - slow read by C and E, and by the calibrations I and J.
 
 D, E and F redden the socket lane alone: the table and the fake shell never see the limit the libuv shell arms a kind for, or a re-arm the shell makes on its own.
+
+## chez-libuv v0.7.1, the pin (2026-09-28)
+
+The pin adds one check to the socket lane (`tests/test-shell.sps`): the slow reader's MiB write holds the loop less than a tick. The lane reads the loop's time at each write the shell begins, as at each arm, and the check holds the time from the write's start to the write deadline armed after it under the quick shell's `tick-ms`, 10 ms. Its red is the old pin's, not a mutant's.
+
+| Tree | The check |
+|---|---|
+| chez-libuv v0.7.0, its shim built from its sources | shell 1 — the write's hold, three runs of three: the MiB write held the loop 62, 62 and 63 ms (85 passes and 1 failure each) |
+| chez-libuv v0.7.1 | green, three runs of three (86 passes): the write held the loop 0 ms by the loop's clock each time |
+
+The red also shows the check reads the write's time before the call and the arm's after it. A trace that read both after the call would pass whether the copies were slow or fast.

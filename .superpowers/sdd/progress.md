@@ -2763,3 +2763,45 @@ DECIDED on the owner's word (2026-09-27), by form, after the measurements:
 - **M5's close waits for the fix**, as M3's waited for byte-machine #139. This branch merges; the pin moves on a commit of its own when a release carries the fix, and M5 closes then. Weighed: closing M5 now on its own criteria and carrying the copies to M6.
 
 NEXT: the PR, feat/m5-exit, merged on the owner's word. Then chez-libuv #35: when a release carries it, its pin moves on a commit of its own, and M5 closes.
+
+UPSTREAM LANDED (2026-09-28): chez-libuv v0.7.1 is tagged (fe3cc3e, 06:04 -0400; annotated tag c62a9f3). #35, filed the day before at the M5 exit on the owner's form, closed via PR #36 (6e8a829), and the release is PR #38:
+- each write's, read's and spawned argument's bytes move with one `memcpy` in the shim, and each handle's and request's block is zeroed with one `memset`;
+- no API changes, but the shim gains three exports, `chez_uv_copy_in`, `chez_uv_copy_out` and `chez_uv_zero`. A shim built from older sources fails `(import (libuv))` with `&uv-shim-unavailable`, so `make build` runs again after the upgrade, as its CHANGELOG, README and docs/building.md say (the owner relayed it).
+
+Between the tags, the library path changes in `(libuv private native)` alone, whose export list is unchanged, and gains `(uv-bulk)`, chez-libuv's own test library, which nothing here imports. `tests/uv-testing.sls` is byte-identical.
+
+THE PIN, branch chore/chez-libuv-v0.7.1 on feat/m5-exit; 2026-09-28, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. `vendor/chez-libuv` is at fe3cc3e. Watched to fail:
+- with the checkout moved and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2);
+- with the checkout moved and its shim not rebuilt, the socket lane refused to load, `&uv-shim-unavailable` naming `vendor/chez-libuv/build/lib/libchezlibuv.dylib` (exit 255);
+- `make build` then put the checkout back at v0.7.0 and rebuilt v0.7.0's shim, since its `submodules` step checks out the commit the superproject's index records. With the gitlink staged, it rebuilt the shim from v0.7.1's sources, which exports the three.
+
+The pin's check, in `tests/test-shell.sps`: the slow reader's MiB write holds the loop less than a tick. The lane reads the loop's time at each write the shell begins, as at each arm, and holds the time from the write's start to the write deadline armed after it under the quick shell's tick, 10 ms:
+- at v0.7.0 it failed three runs of three, the write holding the loop 62, 62 and 63 ms (85 passes and 1 failure each). `m5-exit-copy.sps` prices the MiB's copy at 31.2 ms. The rest is the zeroing: v0.7.0's `uv-write*!` allocates the block it copies into with `alloc-zeroed`, which zeroes it a byte at a time (its `stream.sls` and `private/native.sls`);
+- at v0.7.1 it passes three runs of three, 86 passes, the write holding the loop 0 ms by the loop's clock each time. The lane took 3.09 to 3.37 s, three runs, where the M5 exit's took 4.02 to 4.04 at v0.7.0.
+
+Smoke evidence: `m5-exit-copy.sps` at the tag, two runs (`out/m5-exit-copy.v071.run{1,2}.txt`), beside v0.7.0's (`out/m5-exit-copy.run{1,2}.txt`):
+- at 1 and 4 MiB, `copy-in!` costs 0.02 to 0.03 ns a byte, where it cost 29.72 to 29.78, and `copy-out` 0.02 to 0.1, where it cost 28.46 to 28.59. One `memcpy` there costs 0.02 to 0.03 ns a byte in and 0.02 to 0.09 out: the copies cost what it does;
+- at 16 KiB, the shell's read buffer, every copy is at the clock's floor, a microsecond: `copy-out` reads 0.06 ns a byte, where it read 28.44 to 29.54;
+- `copy-out` allocates what it did, 16,560 B a call at 16 KiB, at both pins;
+- (c), the 4 MiB answer: its segments are copied in 0.108 and 0.12 ms, where they took 124.6 and 125.0, and its body made in 0.433 and 0.446 ms, where it took 0.418 and 0.425.
+
+`make test` green at v0.7.1: thirty-seven suites, 973 expected passes (shell 86), exit 0, 20.1 s.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree with the shim built there from v0.7.1's sources, which exports the three:
+- `make test`, less its submodule and pin checks: thirty-six suites pass, 962 expected passes. The clients suite cannot start `ab` in that image (status 2);
+- the clients suite, in a second container with curl 7.88.1 and ab 2.3 installed: 11 passes;
+- the socket lane, three runs: 86 passes each, 5.1 to 6.0 s.
+
+The copy is made with `COPYFILE_DISABLE=1`. macOS's tar otherwise adds `._` AppleDouble files, and five suites (corpus-inventory, exports, libhtp, libhtp-lane and ratchet) failed on them as files of their own. CI's runs are still the billing block.
+
+Records: decision 0008's #35 row, LANDED, and its dated note (all twenty-one filed asks have landed); design §7.3's note; plan §14's M5 and M6 notes; global-constraints; the research README; test-integration's version comment; m5-mutations.md, "chez-libuv v0.7.1, the pin".
+
+The M5 exit's own records are corrected on feat/m5-exit. Plan §14's M5 note now says a 4 MiB response holds the loop 125 ms "in the copy". Its M6 note says the 16 MiB are copied at about 30 ns a byte "as measured up to 4 MiB", where it had carried that rate to half a second, unmeasured.
+
+M5 CLOSES with the pin: its exit is met, and the copies it was held for cost what a `memcpy` does.
+
+DECIDED on the owner's word (2026-09-28), by form: two stacked PRs, each layer proved green on its own tree before it is committed. Weighed: review first, both left uncommitted.
+- **feat/m5-exit**, the exit as built and verified at v0.7.0, with plan §14's two notes corrected: 117 inserted and 31 deleted lines of tests, and 272 of spikes;
+- **chore/chez-libuv-v0.7.1**, on it: the pin, its check, and M5's close. 121 inserted and 11 deleted besides the gitlink, as the form weighed them, before this decision's own lines.
+
+NEXT: the two stacked PRs, merged bottom up on the owner's word. Then M6 (plan §14), when the owner asks.

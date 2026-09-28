@@ -1,0 +1,11 @@
+(a) and (b): ns per byte, the least of five; the five in ns
+  16384 B: copy-in! 0 ns/B (0 0 0 1000 1000); copy-out 0.06 ns/B (1000 1000 1000 2000 4000), allocating 16560 B a call
+  16384 B: memcpy in 0 ns/B (0 0 0 1000 1000); memcpy out, into a fresh bytevector, 0 ns/B (0 1000 1000 1000 2000)
+  262144 B: copy-in! 0.02 ns/B (5000 5000 5000 5000 6000); copy-out 0.02 ns/B (5000 5000 5000 7000 8000), allocating 262320 B a call
+  262144 B: memcpy in 0.02 ns/B (5000 5000 5000 5000 6000); memcpy out, into a fresh bytevector, 0.02 ns/B (5000 5000 5000 6000 7000)
+  1048576 B: copy-in! 0.02 ns/B (23000 23000 24000 26000 28000); copy-out 0.02 ns/B (23000 25000 25000 27000 44000), allocating 1048752 B a call
+  1048576 B: memcpy in 0.02 ns/B (21000 22000 22000 24000 24000); memcpy out, into a fresh bytevector, 0.02 ns/B (22000 25000 25000 26000 26000)
+  4194304 B: copy-in! 0.03 ns/B (116000 117000 123000 133000 153000); copy-out 0.1 ns/B (438000 454000 490000 579000 694000), allocating 4195136 B a call
+  4194304 B: memcpy in 0.03 ns/B (146000 146000 149000 152000 161000); memcpy out, into a fresh bytevector, 0.08 ns/B (353000 356000 368000 386000 407000)
+(c) the four MiB answer's work, the least of five, in ms:
+  the body made: 0.433; serialized: 0; its 4 segments copied: 0.108
