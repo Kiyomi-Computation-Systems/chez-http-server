@@ -2805,3 +2805,18 @@ DECIDED on the owner's word (2026-09-28), by form: two stacked PRs, each layer p
 - **chore/chez-libuv-v0.7.1**, on it: the pin, its check, and M5's close. 121 inserted and 11 deleted besides the gitlink, as the form weighed them, before this decision's own lines.
 
 NEXT: the two stacked PRs, merged bottom up on the owner's word. Then M6 (plan §14), when the owner asks.
+
+MERGED to main on 2026-09-28, on the owner's "do the closing ritual": **the M5 exit and chez-libuv v0.7.1, as two stacked PRs.**
+- **#67, the M5 exit,** as fd5c2a0. Its squash tree (cb3e7f4) is the tested tip's, 53bf4d1's, and its parent is 2f730a1. It merged first and kept its branch, since #68 was based on it.
+- **#68, the pin and M5's close,** as 06b7946. It was retargeted to main and rebased from #67's tip, 53bf4d1. The rebased tip, 32233bb, has the tested tree (d6e84d1, 4f06027's), and so does the squash, whose parent is fd5c2a0.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36417758819 (#67), 36417783537 (#68 as opened) and 36418170694 (#68 rebased).
+- **Branches.** Both deleted local and remote, and refs pruned. No PR is open. `gh pr merge --delete-branch` merged #68 and deleted its remote branch, but left the checkout on it, so the switch to main, the fast-forward and the local deletions were done by hand.
+
+`make test` green on main: thirty-seven suites, 973 expected passes.
+
+DONE and merged (fd5c2a0, PR #67; 06b7946, PR #68): **M5 COMPLETE.**
+- The brief's M5 exit is met: fake-clock table tests; slow clients, slowhttptest's three shapes among them, closed within a tick of their deadlines; one timer per server, none per connection. The budget spike prices a connection's wheel entry at 48 B.
+- chez-libuv is pinned at v0.7.1: bytes cross its FFI boundary in bulk, and the socket lane holds a MiB write under a tick.
+- All twenty-one filed asks have landed; nothing is open upstream.
+
+NEXT: M6 (plan §14), body streaming and backpressure, on a fresh branch cut from main after this commit, when the owner asks.
