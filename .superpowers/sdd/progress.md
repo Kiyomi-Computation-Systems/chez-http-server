@@ -2950,3 +2950,27 @@ Watched to fail (m6-mutations.md, the first step): twenty-one mutants on that tr
 Size: 432 inserted lines of code and tests, 46 deleted.
 
 NEXT: the second step, the libuv shell's credit, stacked on this one.
+
+
+M6.2 SECOND STEP: the libuv shell's credit (feat/m6.2-shell-credit).
+- `(http-server private shell)`: a shell made on credit answers with each handler's answer and `credit`; v1's server never makes one. `connection-body-credit!` dispatches `(body-credit n)`, and a credit the core refuses closes the connection and raises to the caller, as any bug in a dispatch does.
+- The checks:
+  - `tests/test-shell.sps`, on a shell made on credit: a 64 KiB body sent at once to a streaming reader. While the reader withholds its credit, past the body deadline's length, the connection has no deadline armed, the shell's timer stops and the connection stays (plan §14's note of 2026-09-27, M5.3's); credited each time it waits, the reader is handed the body a read at a time, in order, and the response is written; and a credit for more than the reader was handed raises to the caller, and the connection is closed;
+  - `tests/test-contract.sps`: a credit script, played to a libuv shell made on credit and replayed to a fake made on credit. Its waits credit the script's connection each time it waits, the replay gives the fake each credit, and a credit the fake's core refuses shows in its trace rather than raising.
+
+Measured on the finished tree (2026-09-28, Darwin arm64):
+- `make test` green: forty suites, 1,107 expected passes, exit 0, 21.9 s.
+- The allocation suite, the same before and after the slice: curl's GET 1,840 B; the JSON POST 2,624 B read whole and 2,432 B streamed; a 64 KiB body read whole, in 1,000-byte pieces, 128,657 B in buffers.
+- On a socket, by a scratch copy of the shell suite printing them, two runs, the same: the reader handed the 64 KiB body sent at once was credited four times, 16,327 B, the first read less the 57-byte head, then 16,384 B three times, and held 16,384 B at most, one read.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree made with `COPYFILE_DISABLE=1`, curl 7.88.1 and ab 2.3 installed:
+- `make test`, less its submodule and pin checks: forty suites, 1,107 expected passes, the allocation figures the same;
+- the shell suite and the contract, three runs each: 95 and 56 passes each time.
+
+Watched to fail (m6-mutations.md, the second step): twenty-seven mutants on the finished tree, the first step's twenty-one again and the second step's six, and every check new or changed by the slice reddened by at least one. The plan's mutation, M6.2-D, reddens the slow reader's bound on the socket as well. M6.2-Q, the timer stopped only once no connection is left, is the first mutant a check can tell from the timer's stop at an empty wheel (M5.3's note).
+
+Records: design §4.1 (the answer's `credit`), §4.3 (the state) and §4.4's M6.2 amendment (the rows); plan §14's M6.2 note, and the note carried to M7; decision 0013's note on the consequence M6.2 built; m6-mutations.md. The docs are unchanged: a v1 handler cannot withhold its credit.
+
+Size: 242 inserted lines of code and tests, 37 deleted; the slice, 674 and 83.
+
+NEXT: the two stacked PRs, merged bottom up on the owner's word. Then M6.3, a streamed response (plan §14).

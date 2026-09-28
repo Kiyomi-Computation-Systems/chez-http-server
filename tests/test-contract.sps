@@ -60,6 +60,7 @@
         (only (chezscheme) current-time time-second time-nanosecond)
         (libuv) (uv-testing)
         (http-server private shell)
+        (only (http-server connection) conn-phase)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (http-server body)
         (fake-shell) (shell-testing))
@@ -163,6 +164,15 @@
   (limits-with default-limits
                '((read-header-timeout-ms . 200) (idle-timeout-ms . 250) (linger-timeout-ms . 300)
                  (tick-ms . 10))))
+
+;; The scripts played to a shell made on credit (M6.2), which answers with
+;; each answer and `credit`, as M7's coroutine shell will, handing a reader
+;; its pieces on credit; the fake is made on credit too.  Whenever the
+;; script's connection waits for its reader's credit, the script's waits
+;; credit it, so a script reads the same however the reads divide.
+(define credit-scripts
+  '(("a body streamed to a reader on credit, credited each time it waits"
+     (send "POST /read HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234") (read) (send "56789"))))
 
 (define stalling-scripts
   '(("a head never finished: 408 once its deadline passes, then closed once the linger's does"
@@ -290,14 +300,54 @@
 ;; raises again (design §6.4), which ends the suite, as it would end a server.
 (define (wait-for pred) (run-shell-until loop shell pred cap))
 
-;; play! : Nat Script -> (List Bytevector Client Datum)
-;; Play a script to the libuv shell listening on `port`: the bytes the
+;; The libuv shell a script plays to, and its connections as the script
+;; began: the script's own is any other.
+(define playing #f)
+(define earlier '())
+
+;; credit-owed : -> (U #f (Pair Connection Nat))
+;; When the script's connection waits for its reader's credit, it and the
+;; bytes it was handed since its last credit, read from its trace: the
+;; `deliver-body` actions since the last `body-credit` event.  Otherwise #f.
+(define (credit-owed)
+  (let ((cs (filter (lambda (c) (not (memq c earlier))) (shell-connections playing))))
+    (and (pair? cs)
+         (eq? (conn-phase (connection-state (car cs))) 'awaiting-credit)
+         (cons (car cs)
+               (let scan ((t traced) (n 0))
+                 (cond ((null? t) n)
+                       ((and (eq? (caar t) 'event) (eq? (car (cadar t)) 'body-credit)) n)
+                       ((and (eq? (caar t) 'action) (eq? (car (cadar t)) 'deliver-body))
+                        (let ((a (cadar t))) (scan (cdr t) (+ n (- (cadddr a) (caddr a))))))
+                       (else (scan (cdr t) n))))))))
+
+;; wait-crediting : (-> Boolean) -> Symbol
+;; wait-for, crediting the script's connection each time it waits for its
+;; reader's credit with what it owes, `(credit-owed)`.  'credit-refused if
+;; the core refuses a credit, an assertion violation of its own, and
+;; 'credit-cap-reached after `cap` credits with `pred` still unmet.
+(define (wait-crediting pred)
+  (let again ((n 0))
+    (let* ((w (wait-for (lambda () (or (pred) (and (credit-owed) #t)))))
+           (owed (credit-owed)))
+      (cond ((not owed) w)
+            ((>= n cap) 'credit-cap-reached)
+            ((guard (e ((assertion-violation? e) #f))
+               (connection-body-credit! (car owed) (cdr owed))
+               #t)
+             (again (+ n 1)))
+            (else 'credit-refused)))))
+
+;; play! : Shell Nat Script -> (List Bytevector Client Datum)
+;; Play a script to the libuv shell `sh`, listening on `port`: the bytes the
 ;; client sent, the client, and 'satisfied if every wait was, each `(read)`
 ;; and the connection's close with its client at the stream's end;
 ;; otherwise the outcomes of the waits, in order.  A client that does not
 ;; connect plays nothing, and answers how its connect ended.  The client's
 ;; handle is closed after.
-(define (play! port script)
+(define (play! sh port script)
+  (set! playing sh)
+  (set! earlier (shell-connections sh))
   (set! traced '())
   (set! received '())
   (set! written-at '())
@@ -318,13 +368,14 @@
                                (step (cdr steps) waits)))
                             ((read)
                              (step (cdr steps)
-                                   (cons (wait-for (lambda () (= (collector-count delivered)
-                                                                 (collector-count sent))))
+                                   (cons (wait-crediting (lambda () (= (collector-count delivered)
+                                                                       (collector-count sent))))
                                          waits)))
                             ((stall) (step '() waits)))
                           (begin
                             (unless (stalls? script) (client-shut! cl))
-                            (reverse (cons (wait-for (lambda () (and closed (not (eq? (client-end cl) 'open)))))
+                            (reverse (cons (wait-crediting
+                                            (lambda () (and closed (not (eq? (client-end cl) 'open)))))
                                            waits)))))
                     (list (list 'not-connected connecting (client-connected cl))))))
     (client-close! cl)
@@ -334,29 +385,39 @@
 
 ;; --- the fake shell -----------------------------------------------------------
 
-;; replay : Limits (Listof (Pair Nat Event)) (Listof Nat) -> (values FakeShell (Listof Entry))
+;; replay : Limits Boolean (Listof (Pair Nat Event)) (Listof Nat) -> (values FakeShell (Listof Entry))
 ;; The libuv shell's events given to a fake connection under the same
-;; limits, made at the instant the libuv shell adopted its own, its clock
+;; limits, made on credit if the libuv shell was (M6.2), and at the instant
+;; the libuv shell adopted its own, its clock
 ;; moved to each event's instant before it is given: a delivery, the
-;; client's end and a read's error delivered as they are, a completion as
+;; client's end, a read's error and a reader's credit delivered as they
+;; are, a completion as
 ;; the fake's own oldest one waiting, a tick as the fake's timer firing,
 ;; and the events a shell makes itself left to the fake.  Then whatever the
 ;; fake still has waiting.  Its writes are dated at `writes`, the instants
 ;; the libuv shell's were, in order (ONE CLOCK).  Answers the fake and its
 ;; trace, in order.  A client the libuv shell never adopted has no events,
 ;; and its fake is made at 0.
-(define (replay limits events writes)
+(define (replay limits on-credit? events writes)
   (let* ((seen '())
          (fake (make-fake-connection limits handler
                                      (lambda (kind datum)
                                        (set! seen (cons (list kind (render datum)) seen)))
-                                     (or adopted-at 0))))
+                                     (or adopted-at 0)
+                                     on-credit?)))
     (fake-shell-date-writes! fake writes)
     (for-each (lambda (e)
                 (fake-shell-advance! fake (- (car e) (fake-shell-now fake)))
                 (let ((event (cdr e)))
                   (case (car event)
                     ((bytes-arrived eof read-error) (fake-shell-deliver! fake event))
+                    ;; A credit the fake's core refuses, where the libuv shell
+                    ;; took it, is a difference the traces show, not a raise
+                    ;; out of the suite.
+                    ((body-credit)
+                     (guard (e ((assertion-violation? e)
+                                (set! seen (cons (list 'refused (render event)) seen))))
+                       (fake-shell-deliver! fake event)))
                     ((write-completed shutdown-completed closed) (fake-shell-deliver-later! fake))
                     ((tick) (fake-shell-fire! fake))
                     (else (values)))))
@@ -364,16 +425,17 @@
     (fake-shell-settle! fake)
     (values fake (reverse seen))))
 
-;; check-script! : Nat Limits Script -> Void
-;; Play `script` to the libuv shell listening on `port`, replay its events
-;; to a fake under `limits`, and check the three things the contract holds.
-(define (check-script! port limits script)
-  (let* ((played (play! port script))
+;; check-script! : Shell Nat Limits Boolean Script -> Void
+;; Play `script` to the libuv shell `sh`, listening on `port`, replay its
+;; events to a fake under `limits`, made on credit if `sh` was, and check the
+;; three things the contract holds.
+(define (check-script! sh port limits on-credit? script)
+  (let* ((played (play! sh port script))
          (sent (car played)) (cl (cadr played)) (finished (caddr played))
          (libuv (reverse traced))
          (evs (reverse received))
          (name (car script)))
-    (let-values (((fake fake-trace) (replay limits evs (reverse written-at))))
+    (let-values (((fake fake-trace) (replay limits on-credit? evs (reverse written-at))))
       ;; No script resets its connection, so the client's end is the one
       ;; input besides the bytes: a read error there would be the libuv
       ;; shell's own, which the replay would hand the fake too.  A client
@@ -399,7 +461,9 @@
     (set! shell (make-shell loop held-handler default-limits (lambda () (uv-now loop))
                             (lambda (what details) #f) trace!))
     (let ((quick (make-shell loop held-handler quick-limits (lambda () (uv-now loop))
-                             (lambda (what details) #f) trace!)))
+                             (lambda (what details) #f) trace!))
+          (on-credit (make-shell loop held-handler default-limits (lambda () (uv-now loop))
+                                 (lambda (what details) #f) trace! #t)))
       ;; A client the libuv shell never adopted, one that did not connect,
       ;; has no events to replay: the fake writes and traces nothing, so of
       ;; its script's checks only the first fails, naming how the connect
@@ -407,19 +471,23 @@
       (test-equal "a client the libuv shell never adopted replays as nothing"
                   '(() ())
                   (begin (set! adopted-at #f)
-                         (let-values (((fake fake-trace) (replay default-limits '() '())))
+                         (let-values (((fake fake-trace) (replay default-limits #f '() '())))
                            (list (fake-shell-writes fake) fake-trace))))
       (let ((port (shell-listen! shell "127.0.0.1" 0)))
-        (for-each (lambda (script) (check-script! port default-limits script)) scripts))
+        (for-each (lambda (script) (check-script! shell port default-limits #f script)) scripts))
       (let ((port (shell-listen! quick "127.0.0.1" 0)))
-        (for-each (lambda (script) (check-script! port quick-limits script)) stalling-scripts))
+        (for-each (lambda (script) (check-script! quick port quick-limits #f script)) stalling-scripts))
+      (let ((port (shell-listen! on-credit "127.0.0.1" 0)))
+        (for-each (lambda (script) (check-script! on-credit port default-limits #t script))
+                  credit-scripts))
 
       (shell-shutdown! shell)
       (shell-shutdown! quick)
-      (test-equal "at the end, no connection is left, and no handle on the loop" '(() () ())
+      (shell-shutdown! on-credit)
+      (test-equal "at the end, no connection is left, and no handle on the loop" '(() () () ())
                   (begin (wait-for (lambda ()
                                      (for-all (lambda (sh) (eq? (uv-handle-state (shell-listener sh)) 'closed))
-                                              (list shell quick))))
+                                              (list shell quick on-credit))))
                          (list (shell-connections shell) (shell-connections quick)
-                               (uv-loop-live-handles loop)))))
+                               (shell-connections on-credit) (uv-loop-live-handles loop)))))
     (uv-loop-teardown! loop)))
