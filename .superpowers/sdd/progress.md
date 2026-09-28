@@ -2820,3 +2820,31 @@ DONE and merged (fd5c2a0, PR #67; 06b7946, PR #68): **M5 COMPLETE.**
 - All twenty-one filed asks have landed; nothing is open upstream.
 
 NEXT: M6 (plan §14), body streaming and backpressure, on a fresh branch cut from main after this commit, when the owner asks.
+
+
+M6.1: HOW A HANDLER READS A BODY. Two stacked steps, cut from main at f21ab76: feat/m6.1-readers, then feat/m6.1-body-reading on it; 2026-09-28, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+
+MEASURED FIRST (plan §14: "measured first and settled by form, as 0012 was"): `research/spike/m6-body-reading.sps`, two runs, whose allocation rows are the same.
+- Brief risk 3, at chez-httparse v0.4.3: a pause inside on-body-data, fed again from `next`, delivers each body byte once, framed by Content-Length and chunked. After a pause on a body's last byte, one empty feed at `next` completes the message, and nothing else does. The plan's mutation, feeding again from where the read started, hands the head's first bytes over as body.
+- The gate's JSON POST, through the real parser, adapter and core, with its body dropped as before M6: 2,320 B, 752 B under the 3,072 B gate.
+- Each way of reading, a cycle modelled over the real parser, adds to that cycle: a reader handed each read's pieces as the parser meets them, 208 B (2,256 B a MiB); the plan's one-slot mailbox, the parser paused at each piece, 816 B (45,877 B a MiB); the buffering helper, 224 B; the server buffering every body, 32 B; `(handler request respond)`, 224 B. Streaming holds 80 B past today's connection once a MiB is in, and buffering 1,048,656 B.
+- A body of unknown length, per 16 KiB piece: a thunk 64 B, a port 71 B, `emit`/`done` 114 B.
+
+DECIDED on the owner's word (2026-09-28), by form, then "looks good" to the detail asked for on the first answer: decision 0013.
+- A reader, answered at the head: `read-body` streams, `read-whole-body` buffers, 1 MiB, 413 past it. Weighed: the server buffering every body; `(handler request respond)`.
+- Pieces as the parser meets them. Weighed: the one-slot mailbox.
+- A response given instead of a reader: sent at once, then close. Weighed: after the body, keeping the connection; Go's rule.
+- A body of unknown length is a thunk (M6.3). Weighed: a port; `emit` and `done`.
+
+M6.1 FIRST STEP: the readers, and brief risk 3's pins (feat/m6.1-readers).
+- `(http-server body)`, pure: `read-body` and `read-whole-body`, the readers a handler answers with, each carrying its cap and whether the core buffers the body for it. Nothing hands a body to them yet: the second step does.
+- `tests/test-body.sps` (8 checks) and `tests/test-pause-pins.sps` (3). The core never pauses inside a body (decision 0013 item 3), so brief risk 3's two facts are pinned as the parser's, and the plan's mutation runs on the pins suite's own feed loop, whose feeds are capped by count.
+- Decision 0013 as decided; the spike and its two runs; the research README.
+
+`make test` green on this step's own tree, a scratch worktree cut from main with the step's files laid in: thirty-nine suites, 984 expected passes, exit 0.
+
+Watched to fail (m6-mutations.md, the first step): eleven mutants on that tree, each reddening its own suite's checks and nothing else, every one of the step's eleven checks among them. The plan's mutation, M6.1-PA, turns the two pinned rows red.
+
+Size: 301 inserted lines of code and tests.
+
+NEXT: the second step, on feat/m6.1-body-reading.

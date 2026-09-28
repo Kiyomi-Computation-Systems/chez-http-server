@@ -1,0 +1,118 @@
+# 0013: A handler reads a body through a reader it answers with at the head, and writes one of unknown length through a thunk
+
+Date: 2026-09-28
+Status: accepted (user decision, 2026-09-28)
+Plan: [the milestone plan](../2026-09-20-chez-http-server-milestone-plan.md) §14, M6.1
+
+## Context
+
+Reading a request body, and writing a response of unknown length, are public API, so
+M6 opens with them (plan §14, M6.1). In v1 so far a handler is `request → response`,
+called once the message has ended (decision 0012). The core emits `deliver-body` for
+each piece of a body, and neither shell performs it: the body is dropped. Decision
+0005 says bodies stream to the handler and only a buffering helper takes a limit,
+1 MiB by default, past which the answer is 413. The brief asks for `100 Continue` only
+when the handler pulls the body, and for 16 MiB each way with memory bounded.
+
+Measured by `research/spike/m6-body-reading.sps` (2026-09-28, Darwin arm64, Chez
+10.4.1, chez-httparse v0.4.3; two runs, whose allocation rows are identical). Each way
+of reading is modelled as a cycle over the real parser: the pauses it asks for are
+the parser's own, and the lists the core and shell would make for them are made as
+the core makes them (M2.4's cycle). The figures are what a way adds to today's
+cycle, in which the body is dropped. Today the gate's JSON POST costs 2,320 B
+through the real parser, adapter and core, 752 B under the 3,072 B gate.
+
+| way | JSON POST, 13 B | a MiB, Content-Length | a MiB, chunked | held once a MiB is in |
+|---|---|---|---|---|
+| a reader, pieces handed over as the parser meets them | 208 | 2,256 | 4,272 | 80 |
+| the same, the parser paused at each piece (the plan's one-slot mailbox) | 816 | 45,877 | 86,199 | 80 |
+| the buffering helper, a reader | 224 | 1,050,919 | 2,107,760 | 1,048,656 |
+| the server buffering every body, the handler at the end | 32 | 1,048,679 | 2,103,504 | 1,048,592 |
+| `(handler request respond)`, the design sketch's | 224 | 2,272 | 4,288 | 96 |
+
+"Held" is what the connection holds, past what it holds today, once a MiB body's
+last piece is taken and before its response: in 16 KiB reads with Content-Length,
+the same in both runs. Chunked, the buffering ways hold 1,052,736 and 1,052,672 B.
+
+A body of unknown length, per 16 KiB piece, the protocol's own cost with a
+producer that hands out one bytevector again: a thunk answering a bytevector or the
+eof object, 64 B (4,144 B for a 64-piece response); a binary input port read into
+the server's own buffer, 71 B (4,576 B); the design sketch's `(lambda (emit done)
+...)`, 114 B (7,296 B).
+
+Brief risk 3, at chez-httparse v0.4.3, the same in both runs: a pause inside
+on-body-data re-feeds from `parser-result-next`, and each body byte is delivered
+once, framed by Content-Length and chunked. After a pause on a body's last byte the
+message has not completed, and one empty feed at `next` completes it. Fed again from
+where the read started, the parser takes the head's first bytes as body.
+
+## Decision
+
+1. **A request whose framing announces a body**, chunked or a Content-Length above
+   0, **is handed to the handler once the feed that completed its head has
+   returned**, before any of its body is handed over. A request with no body is
+   handed over at its end, as before.
+2. **The handler answers a response or a reader**, made by one of two procedures:
+   - `(read-body on-piece on-end)` streams. `on-piece` is called with each piece of
+     the body as `bv start end`, a span of the read the piece arrived in, with any
+     chunk framing removed. `on-end` is called once, after the last piece, and gives
+     the response;
+   - `(read-whole-body proc)`, or `(read-whole-body proc max-bytes)`, buffers.
+     `proc` is called with the body as one bytevector, allocated once from the
+     Content-Length, or copied and joined when chunked. `max-bytes` is 1 MiB
+     (1,048,576 B) by default.
+3. **A read's pieces are handed over as the parser meets them**, once that read's
+   feed has returned, in order. The parser is never paused at a piece (weighed: the
+   plan's one-slot mailbox, which adds 816 B to the JSON POST, more than the gate
+   leaves it).
+4. **A response given instead of a reader**, to a request whose framing announces a
+   body, **is sent at once, with `Connection: close`**, and the connection closes in
+   stages after it (decision 0011), dropping what arrives. So a handler that ignores
+   a body loses keep-alive on that request (weighed: the response after the body is
+   dropped, keeping the connection; Go's rule, dropping up to 256 KiB after it).
+5. **A cap is answered 413 Content Too Large, then close.** `CHEZ_HTTP_MAX_BODY_BYTES`,
+   unset by default, caps every body, streamed or buffered; `read-whole-body` has its
+   own cap. A declared Content-Length over a cap is answered at once, before any of
+   the body is handed over; a chunked body at the piece that passes it.
+6. **A reader answered for a request with no body** gets no pieces, and its `on-end`
+   at once, so a handler may read every request with `read-whole-body`.
+7. **`on-piece`, `on-end` and `read-whole-body`'s procedure raising** is the handler
+   raising: 500, then close, logged as `handler-failed`.
+8. **A body of unknown length is a thunk** (M6.3). `(make-response status reason
+   headers thunk)`: the server calls `thunk` for each piece, and it answers a
+   bytevector, or the eof object at the end, as `get-bytevector-some` does, so
+   `(lambda () (get-bytevector-some port))` streams a port. It is called only below
+   the write's high water, so at most one piece passes it. Such a body is chunked to
+   HTTP/1.1 and close-delimited to 1.0 (M3.2's carried arm). Weighed: a binary input
+   port as the body; the design sketch's `emit` and `done`, one call of which can
+   emit any number of pieces past high water.
+
+The alternatives weighed for reading: the server buffering every body up to a
+default cap of 1 MiB, the handler called at the end as today, with a second kind of
+handler for the brief's 16 MiB; and the design sketch's `(handler request respond)`,
+which changes every handler's arity.
+
+## Consequences
+
+- A handler that reads nothing pays nothing for a body, and a GET sees no change. A
+  reader that keeps no piece holds no more than the read in flight, 16 KiB, however
+  long the body is.
+- A piece is a span of its read, as the request's fields are (decision 0012): a
+  reader that keeps one keeps that read, up to `read-buffer-size` bytes, so what it
+  keeps it copies.
+- Item 4 keeps the outcome independent of how the bytes were split into reads
+  (design §8.1's second property, the outcome lane). The form's detail that would
+  have kept the connection when the whole body arrived with the head is not taken:
+  whether it had arrived depends on the reads.
+- 413 has its first way in (design §6.5, plan §7's M3.4 note).
+- M6.2's credit: a reader answered in v1 takes each read's pieces as they are handed
+  over, so reading goes on at once. Reading waits on the credit, and at most one
+  read is ever waiting, for M7's awaiting readers.
+- Brief risk 3: no pause inside a body happens in v1, so its two facts are pinned as
+  the parser's, at the pin (`tests/test-pause-pins.sps`), until a reader needs the
+  one-slot pause (M7).
+- M6.4: answering with a reader is pulling the body, so `100 Continue` is written
+  then, when the request asked for it. Answering with a response writes the final
+  status and closes (item 4).
+- The facade exports `read-body` and `read-whole-body`, and `docs/handlers.org`
+  gains bodies.
