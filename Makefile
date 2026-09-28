@@ -18,7 +18,7 @@ URIPARSE_DIR     := vendor/uriparse
 SRFI_DIR         := vendor/chez-srfi
 BYTE_MACHINE_DIR := $(HTTPARSE_DIR)/vendor/byte-machine
 
-LIBUV_PIN        := fe3cc3ee6d222f27ccfb2fe4d28ba069b697f1d4  # v0.7.1
+LIBUV_PIN        := d46654c64f123a6bb861de4cc0e100152cc4d295  # v0.7.3
 HTTPARSE_PIN     := bdcdfe2b0d27285e574010199979e8be3867660e  # v0.4.3
 URIPARSE_PIN     := 88d538f461fc2ee94a86f323bf796ece7ebc0db5  # v0.6.1
 SRFI_PIN         := 7879b527f267f067416552fb989135ad1b4ea436

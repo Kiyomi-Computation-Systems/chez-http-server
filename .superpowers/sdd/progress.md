@@ -2989,3 +2989,33 @@ DONE and merged (231a6ad, PR #71; b36cd7f, PR #72): **M6.2.**
 - The libuv shell's timer stops while a connection waits for credit and stays, the row M5.3's note asked for.
 
 NEXT: M6.3 (plan §14), a streamed response: `handler-body-chunk` and `handler-body-end` get their rows, chunked to HTTP/1.1 and close-delimited to 1.0 (M3.2's carried arm); `write-high-water` and `write-low-water` arrive, and with them `notify-producer`; and a handler that fails after its head is on the wire gets a bare close. Decision 0013 item 8 already settled the body of unknown length: a thunk, called only below the write's high water. On a fresh branch cut from main after this commit, when the owner asks.
+
+
+THE CHEZ-LIBUV v0.7.3 PIN, on the owner's word, with the release note the owner relayed. Branch chore/chez-libuv-v0.7.3, cut from main at e992ea5; 2026-09-28, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. `vendor/chez-libuv` is at d46654c.
+
+UPSTREAM: chez-libuv tagged v0.7.2 (e358156; annotated tag c26a31e, 08:37 -0400) and v0.7.3 (d46654c; annotated tag 410df26, 18:20 -0400) the day it tagged v0.7.1. GitHub's objects are the sibling checkout's. Neither carries an ask of ours, so decision 0008 is unchanged:
+- v0.7.2 (PR #39, release PR #40) tightens chez-libuv's own memory-gate check. Nothing under its `src/` changed;
+- v0.7.3 (PRs #42 and #43, release PR #44): a Chez without threads is refused by name at import (#41), where the import failed at `make-mutex`; `uv-async-send!` is fenced against `uv-close!` (#33), so a send that races a close either completes first or raises `&uv-handle-closed`, where it could reach freed memory; and `uv-close!` is one step, even inside an engine.
+
+Checked against chez-libuv's history between the tags, as the note said:
+- no C or header file changed, so the shim is v0.7.1's, and `make build` did not rebuild it;
+- the facade and every public library but `(libuv async)` are byte-identical, and `(libuv async)`'s export list is unchanged, so no new name can collide with one of ours. The library path gains `(libuv private require-threaded)`, which exports nothing. `tests/uv-testing.sls` is byte-identical;
+- the server's exposure: `src/` calls `uv-close!` once, in `handle-close!`, and makes no async handle and no engine. README.org and global-constraints already ask for a threaded Chez, and CI builds one with `--threads`.
+
+Watched to fail: with the checkout moved and its gitlink staged, and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2). With both moved, it passes.
+
+`make test` green at v0.7.3: forty suites, 1,107 expected passes (shell 95), exit 0, 21 s, as main counted at v0.7.1.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1 `tarm64le`, `(threaded?)` #t), from a copy of the tree made with `COPYFILE_DISABLE=1`, the shim built there from v0.7.3's sources, curl 7.88.1 and ab 2.3 installed:
+- `make test`, less its submodule and pin checks: forty suites, 1,107 expected passes;
+- the shell suite, the contract and the integration suite, three runs each: 95, 56 and 5 passes each time.
+
+CI's runs are still the billing block.
+
+Records: global-constraints; design §5.4's note on the threads door; test-integration's version comment.
+
+The pin moves alone: the gitlink and two changed lines, the Makefile's pin and test-integration's comment, besides these records.
+
+DECIDED on the owner's word (2026-09-28), by form: one PR, the pin alone. Weighed: a review first; nothing committed.
+
+NEXT: the PR, merged on the owner's word. Then M6.3 (plan §14), when the owner asks.
