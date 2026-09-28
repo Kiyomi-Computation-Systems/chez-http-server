@@ -49,7 +49,11 @@
 ;;;                   plus the kind's limit (below)
 ;;;   disarm-deadline its entry taken out of the wheel
 ;;; A streamed response's `notify-producer` (M6.3) and the hand-off (M8) are
-;;; never asked for in v1's flow.
+;;; never asked for in v1's flow.  A shell made on credit (M6.2) answers
+;;; with each handler's answer and `credit`, and a streaming reader's credit
+;;; reaches the core through connection-body-credit!, which no action asks
+;;; for.  v1's server never makes one: the checks do, standing in for M7's
+;;; coroutine shell, which hands a reader its pieces on credit.
 ;;;
 ;;; DEADLINES (decision 0005 and its amendments of 2026-09-27; M5.3).  The
 ;;; shell keeps the deadlines of its connections in one wheel, (http-server
@@ -128,7 +132,7 @@
           shell-connections shell-server shell-listener shell-timer shell-deadlines
           connection? connection-state connection-tcp connection-violations
           connection-deadline
-          connection-close!
+          connection-close! connection-body-credit!
           wall-clock)
   (import (rnrs)
           (only (chezscheme) current-time time-second time-nanosecond)
@@ -146,7 +150,7 @@
 
   ;; make-shell :
   ;;   UvLoop (Request -> Response) Limits (-> Nat) (Symbol (Listof Any) -> Any)
-  ;;   [(Connection Symbol Any -> Any)] -> Shell
+  ;;   [(U #f (Connection Symbol Any -> Any)) [Boolean]] -> Shell
   ;; A shell on `loop`: the handler every connection calls, the limits every
   ;; connection is held to and the server's cap and backlog, the clock
   ;; (milliseconds since the epoch, read at most once a second for the
@@ -158,7 +162,10 @@
   ;; steps and each action of its the shell performs, as (shell 'server-event
   ;; datum) and (shell 'server-action datum).  The datum is the event or the
   ;; action itself, not a copy: a trace that keeps it keeps what it holds, a
-  ;; response's body among them.
+  ;; response's body among them.  Made `on-credit?`, the shell answers with
+  ;; each handler's answer and `credit`, `(handler-responded answer credit)`
+  ;; (M6.2): a streaming reader it answers then owes credit for the pieces
+  ;; it is handed, and reading waits for connection-body-credit!.
   ;; shell? : Any -> Boolean
   ;; shell-server : Shell -> ServerState — the server's state (design §4.6)
   ;; shell-listener : Shell -> (U #f UvTcp)
@@ -170,7 +177,7 @@
   ;; The limits' tick-ms is its wheel's bucket, and one below 1 is an
   ;; assertion violation (make-wheel's).
   (define-record-type (shell %make-shell shell?)
-    (fields loop handler limits clock log trace table wheel
+    (fields loop handler limits clock log trace on-credit? table wheel
             (mutable server)
             (mutable listener)
             (mutable timer) (mutable ticking?)  ; the timer, and whether it runs
@@ -179,9 +186,10 @@
 
   (define make-shell
     (case-lambda
-      ((loop handler limits clock log) (make-shell loop handler limits clock log #f))
-      ((loop handler limits clock log trace)
-       (%make-shell loop handler limits clock log trace (make-eq-hashtable)
+      ((loop handler limits clock log) (make-shell loop handler limits clock log #f #f))
+      ((loop handler limits clock log trace) (make-shell loop handler limits clock log trace #f))
+      ((loop handler limits clock log trace on-credit?)
+       (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
                     (make-wheel (limits-tick-ms limits))
                     (make-server-state 'listening 0 limits) #f #f #f #f #f #f #f))))
 
@@ -476,10 +484,15 @@
   (define (code e) (and e (parser-error-code e)))
 
   ;; call-handler! : Connection Request -> Void
+  ;; The handler's answer, and `credit` after it on a shell made on credit.
   (define (call-handler! c request)
-    (let ((answer (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
-                                (list 'handler-failed e)))
-                    (list 'handler-responded ((shell-handler (connection-shell c)) request)))))
+    (let* ((sh (connection-shell c))
+           (answer (guard (e (#t (log! sh 'handler-failed (list e))
+                                 (list 'handler-failed e)))
+                     (let ((a ((shell-handler sh) request)))
+                       (if (shell-on-credit? sh)
+                           (list 'handler-responded a 'credit)
+                           (list 'handler-responded a))))))
       (dispatch! c answer)))
 
 ;; deliver-body! : Connection Bytevector Nat Nat -> Void
@@ -634,6 +647,18 @@
   ;; connection-close! : Connection -> Void — close the connection's handle.
   (define (connection-close! c)
     (handle-close! (connection-shell c) (connection-tcp c)))
+
+  ;; connection-body-credit! : Connection Nat -> Void
+  ;; The reader the core hands the body to, answered on credit, has taken
+  ;; `n` more bytes of what it was handed: `(body-credit n)`, dispatched
+  ;; (M6.2).  Reading waits for it once a read's pieces are handed over.
+  ;; M7's scheduler will give it as an awaiting reader takes its pieces; in
+  ;; v1 only the checks do.  A credit the core refuses, for more than the
+  ;; reader was handed and has not credited, is a bug, and a bug closes its
+  ;; connection (the header): the connection is closed, and the core's
+  ;; assertion violation raised to the caller.
+  (define (connection-body-credit! c n)
+    (dispatch! c (list 'body-credit n)))
 
   ;; handle-close! : Shell UvHandle -> Void
   ;; Close a handle: a connection's, the listener, the timer, or one the

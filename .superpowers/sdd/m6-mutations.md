@@ -206,3 +206,64 @@ else-branch, whose mutants are M2's.
 | M6.2-RI | `connection.sls` | a whole reader's pieces owed on credit | connection-table 1 |
 | M6.2-T | `connection.sls` | every credit refused | connection-body 5; connection-table 1 |
 | M6.2-U | `connection.sls` | a state outside the eleven accepted | connection-table 1 |
+
+## M6.2, second step — the libuv shell's credit (2026-09-28)
+
+The socket checks and the contract's credit script were written once the
+core's rows passed, and each was watched red by a mutant. These ran on the
+finished tree against all of its forty suites: the first step's twenty-one
+again, which redden more suites here, and the second step's six. Every check
+the step added or changed is reddened by at least one mutant:
+- the shell suite, on a shell made on credit: the timer stopped while the
+  connection waits and stays, by D, E, K, Q, RC and RG; the reader handed the
+  whole body a read at a time, by D, K, R, RC, RG and T; a refused credit
+  raising to the caller and closing the connection, by RB, and by D, H, K, R,
+  RC and RG, under which the second client never waits or the credit is
+  taken;
+- the contract's credit script: the libuv shell reading what was sent by R
+  and T; the bytes the fake wrote by RG and S; the two traces by RG, RH, S and
+  T; and the check at the end, now over three shells, by R.
+
+Found by the mutants, and settled before they were recorded:
+- M6.2-K, M6.2-R and M6.2-T first ended the shell suite, and the contract
+  under R, as exit 2: a credit the core refused raised out of the check that
+  gave it. The checks take a refusal as a result now.
+- The contract's crediting credits only the script's own connection: under R
+  the connection left waiting stayed on the shell, and a later script's waits
+  credited it.
+- M6.2-T, M6.2-RF and M6.2-RH then still ended the contract as exit 2: its
+  replay handed the fake a credit the libuv shell had taken and the fake's
+  core refused, and the fake raised it. The replay now records such a refusal
+  in the fake's trace, which then differs from the libuv shell's, and the
+  four mutants touching it (S, cut again on the new replay, T, RF and RH) were
+  run again.
+
+| # | mutated | mutation | observed |
+|---|---|---|---|
+| M6.2-C | `connection.sls` | awaiting-credit left out of conn-states | connection-table 1 |
+| M6.2-D | `connection.sls` | the plan's: the credit ignored, reading goes on regardless | connection-body 3; connection-table 9; shell 3 |
+| M6.2-E | `connection.sls` | the wait keeps the body deadline armed | connection-body 1; connection-table 4; shell 1 |
+| M6.2-F | `connection.sls` | the credit starts reading without arming the body deadline | connection-body 1; connection-table 2 |
+| M6.2-G | `connection.sls` | a partial credit starts reading | connection-table 2 |
+| M6.2-H | `connection.sls` | a credit past what was handed accepted | connection-table 2; shell 3 |
+| M6.2-I | `connection.sls` | every streaming reader owes credit | connection-body 10; connection-deadlines 1; connection-head 1; connection-originated 1; connection-table 3; libhtp-lane 3; message-loop 2; outcome-lane 2; ratchet 1; shell 5 |
+| M6.2-K | `connection.sls` | the pieces kept for the answer owe no credit | connection-body 3; connection-table 1; shell 3 |
+| M6.2-L | `connection.sls` | handler-failed changes nothing in awaiting-credit | connection-table 2 |
+| M6.2-M | `connection.sls` | read-error changes nothing in awaiting-credit | connection-table 1 |
+| M6.2-N | `connection.sls` | bytes-arrived fed in awaiting-credit | connection-table 1 |
+| M6.2-O | `connection.sls` | a credit in handling or responding starts reading | connection-table 2 |
+| M6.2-P | `connection.sls` | a tick in awaiting-credit answers 408 | connection-table 1 |
+| M6.2-Q | `shell.sls` | the timer stops only once no connection is left | shell 1 |
+| M6.2-R | `shell.sls` | the libuv shell's credit dispatches nothing | contract 2; shell 4 |
+| M6.2-RA | `connection.sls` | the wait before the refusal: a feed that met an error waits for the credit owed | connection-body 2; connection-table 2 |
+| M6.2-RB | `shell.sls` | a refused credit neither closes nor raises to the caller | shell 1 |
+| M6.2-RC | `connection.sls` | the answer's credit ignored | connection-body 3; connection-table 2; shell 3 |
+| M6.2-RD | `connection.sls` | any word after the answer taken | connection-table 2 |
+| M6.2-RE | `connection.sls` | a credit while reading goes on is not read | connection-table 1 |
+| M6.2-RF | `shell.sls` | the libuv shell answers on credit when not made so | contract 12; shell 5 |
+| M6.2-RG | `shell.sls` | the libuv shell made on credit answers without it | contract 2; shell 3 |
+| M6.2-RH | `fake-shell.sls` | the fake connection made on credit answers without it | connection-body 3; contract 1 |
+| M6.2-RI | `connection.sls` | a whole reader's pieces owed on credit | connection-table 1 |
+| M6.2-S | `test-contract.sps` | the contract's replay never gives the fake the credit | contract 2 |
+| M6.2-T | `connection.sls` | every credit refused | connection-body 5; connection-table 1; contract 2; shell 1 |
+| M6.2-U | `connection.sls` | a state outside the eleven accepted | connection-table 1 |

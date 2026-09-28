@@ -1135,8 +1135,12 @@ decision 0013's consequences already say v1's readers take their pieces as hande
   (M5.2's note). A body the parser refuses, or one past a cap, is still answered with
   its status: the refusal, not the wait. Design §4.3's table gains the state, and §4.4
   its rows.
-- The plan's mutation, the credit ignored, turns the slow reader's bound red, at every
-  delivery size in the fake shell.
+- M5.3's row: on a socket, the libuv shell's timer stops while a connection waits for
+  credit, and the connection stays (`tests/test-shell.sps`). A mutant that stops the
+  timer only once no connection is left reddens it.
+- The plan's mutation, the credit ignored, turns the slow reader's bound red: at every
+  delivery size in the fake shell, and on a socket, where a 64 KiB body sent at once is
+  handed to the reader a read at a time, never more than 16,384 B, the read buffer.
 - In v1 only the checks make a shell on credit, standing in for M7's coroutine shell.
   What an awaiting handler asked at the head leaves reading doing is carried to M7
   (below).

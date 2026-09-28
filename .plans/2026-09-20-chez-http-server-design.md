@@ -604,7 +604,10 @@ Termination and error rows:
 > `read-error` in `awaiting-credit` closes, as in every live state, and a tick finds no
 > deadline there. `tests/test-connection-table.sps` holds each row (C1 to C11);
 > `tests/test-connection-body.sps` the flow at every delivery size, on a fake connection
-> made on credit, reading what the reader was handed.
+> made on credit, reading what the reader was handed; and `tests/test-shell.sps`, on a
+> libuv shell made on credit, the timer, which stops while a connection waits for credit
+> and stays (plan §14's note of 2026-09-27, M5.3's), and a credit the core refuses,
+> which closes the connection and raises to the caller.
 
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with

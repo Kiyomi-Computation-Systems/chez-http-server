@@ -63,6 +63,14 @@
 ;;;     one before an adoption, neither shortens the deadline armed after it
 ;;;     nor dates the response written after it early (chez-libuv #28).  A
 ;;;     connection closed from outside the core is armed no more;
+;;;   - backpressure on the read side (M6.2), on a shell made on credit: a
+;;;     reader handed a read of a 64 KiB body sent at once makes reading wait
+;;;     for its credit, so the connection has no deadline armed and the
+;;;     shell's timer stops while the connection stays, past the body
+;;;     deadline's length; credited each time it waits, it is handed the
+;;;     whole body in order, never holding more than one read, and the
+;;;     response is written; and a credit for more than it was handed closes
+;;;     the connection and raises to the caller;
 ;;;   - the shell's one timer: four connections add one timer to the loop;
 ;;;     its wheel empty, it stops, and the shell keeps it for its next
 ;;;     deadline, and closes it once shut down with no connection left; when
@@ -200,8 +208,12 @@
 ;; connection after it, so the client knows it has the whole response when it
 ;; reads the stream's end; `/wide`, a MiB, more than the kernel holds for a
 ;; client that never reads once the connection's send buffer is made small,
-;; as the slow reader's is; and `/slow`, answered once the handler has held
-;; the loop `slow-ms`, as a handler that computes for a while does.
+;; as the slow reader's is; `/slow`, answered once the handler has held
+;; the loop `slow-ms`, as a handler that computes for a while does; and
+;; `/credit`, read by a streaming reader that keeps what it is handed in
+;; `credit-pieces`, newest first, counts in `credit-held` the bytes it has
+;; not credited, and in `credit-most` the most it held at once: on a shell
+;; made on credit (M6.2), it owes credit for them.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -213,6 +225,9 @@
 (define (hold! ms)
   (let ((until (+ (monotonic-ms) ms)))
     (let spin () (when (< (monotonic-ms) until) (spin)))))
+(define credit-pieces '())
+(define credit-held 0)
+(define credit-most 0)
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
     (when (bytevector=? target (b "/slow"))
@@ -230,6 +245,12 @@
           ((bytevector=? target (b "/early")) (make-response 200 #f '() target))
           ((bytevector=? target (b "/small"))
            (read-whole-body (lambda (body) (make-response 200 #f '() body)) 4))
+          ((bytevector=? target (b "/credit"))
+           (read-body (lambda (bv start end)
+                        (set! credit-pieces (cons (bytes-between bv start end) credit-pieces))
+                        (set! credit-held (+ credit-held (- end start)))
+                        (set! credit-most (max credit-most credit-held)))
+                      (lambda () (make-response 200 #f '() target))))
           ((eq? (request-method req) 'POST)
            (read-body (lambda (bv start end) #t) (lambda () (make-response 200 #f '() target))))
           (else (make-response 200 #f '() target)))))
@@ -307,6 +328,15 @@
   (case-lambda
     ((request) (open-client-to! port request #t))
     ((request read?) (open-client-to! port request read?))))
+
+;; joined : (Listof Bytevector) -> Bytevector — the bytevectors end to end.
+(define (joined bvs)
+  (let ((out (make-bytevector (fold-left (lambda (n bv) (+ n (bytevector-length bv))) 0 bvs))))
+    (fold-left (lambda (at bv)
+                 (bytevector-copy! bv 0 out at (bytevector-length bv))
+                 (+ at (bytevector-length bv)))
+               0 bvs)
+    out))
 
 ;; bytes-between : Bytevector Nat Nat -> Bytevector
 (define (bytes-between bv from to)
@@ -1147,6 +1177,88 @@
                     '(#f #t)
                     (list (shell-timer quick)
                           (and timer (memq (uv-handle-state timer) '(closing closed)) #t)))))
+
+    ;; Backpressure on the read side (M6.2), on a shell of its own with the
+    ;; short limits, made on credit, as M7's coroutine shell will hand a
+    ;; reader its pieces.  A client sends a 64 KiB body at once to `/credit`:
+    ;; handed a read's pieces, its reader makes reading wait for its credit,
+    ;; so the connection has no deadline armed, and its shell's wheel is
+    ;; empty.  The timer then stops, firing once more at
+    ;; most, while the connection stays, and a wait past the body deadline's
+    ;; 175 ms answers nothing: the server, not the client, is the one waiting
+    ;; (plan §14's notes of 2026-09-27).  Credited each time it waits, the
+    ;; reader is handed the rest a read at a time.  The body's bytes count up
+    ;; modulo 251, so their order shows.
+    (let* ((waiter (make-shell loop handler quick-limits clock log! trace! #t))
+           (fired (lambda ()
+                    (length (filter (lambda (e) (and (eq? (car e) 'fire) (eq? (cadr e) waiter)))
+                                    timed))))
+           (size 65536)
+           (body (let ((bv (make-bytevector size)))
+                   (do ((i 0 (+ i 1))) ((= i size) bv) (bytevector-u8-set! bv i (mod i 251)))))
+           (read-buffer (limits-read-buffer-size quick-limits)))
+      (set! adopting waiter)
+      (set! credit-pieces '())
+      (set! credit-held 0)
+      (set! credit-most 0)
+      (let* ((p (open-adopted! (joined (list (b (string-append "POST /credit HTTP/1.1\r\nHost: x\r\n"
+                                                                "Content-Length: 65536\r\n\r\n"))
+                                             body))))
+             (c (cdr p))
+             (answered? (lambda () (pair? (responses (client-bytes (car p))))))
+             ;; let*, since Chez evaluates a call's arguments in no fixed order.
+             (waiting (wait-for (lambda () (and (connection? c) (eq? (phase c) 'awaiting-credit)))))
+             (before (fired))
+             (from (uv-now loop))
+             (waited (wait-for (lambda () (>= (uv-now loop) (+ from 250))))))
+        (test-equal "a reader withholding its credit 250 ms, past the body deadline: reading stopped, no deadline armed, the timer stopped, firing once more at most, the connection kept, one read at most held, nothing answered"
+                    '(satisfied satisfied awaiting-credit #f #t #t #t #f)
+                    (list waiting waited (phase c) (connection-deadline c)
+                          (<= (- (fired) before) 1)
+                          (and (memq c (shell-connections waiter)) #t)
+                          (<= 1 credit-held read-buffer)
+                          (answered?)))
+        ;; A credit the core refuses, an assertion violation of its own,
+        ;; ends the credits as 'refused.
+        (let* ((credits (let credit ((n 0) (given '()))
+                          (wait-for (lambda () (or (eq? (phase c) 'awaiting-credit) (answered?))))
+                          (if (and (eq? (phase c) 'awaiting-credit) (< n 1000))
+                              (let ((k credit-held))
+                                (set! credit-held 0)
+                                (if (guard (e ((assertion-violation? e) #f))
+                                      (connection-body-credit! c k)
+                                      #t)
+                                    (credit (+ n 1) (cons k given))
+                                    (reverse (cons 'refused given))))
+                              (reverse given))))
+               (read (wait-for answered?)))
+          (test-equal "credited each time it waits, the reader is handed the whole body in order, never more than one read held, and the response is written"
+                      '(satisfied (200) #t #t #t)
+                      (list read (map status (responses (client-bytes (car p))))
+                            (bytevector=? body (joined (reverse credit-pieces)))
+                            (<= credit-most read-buffer)
+                            (for-all (lambda (k) (and (number? k) (<= 1 k read-buffer))) credits))))
+        (client-close! (car p))
+        (wait-for (lambda () (null? (shell-connections waiter)))))
+      ;; A credit for more than the reader was handed is a bug, and a bug
+      ;; closes its connection: the connection is closed, and the core's
+      ;; assertion violation raised to the caller.
+      (set! credit-held 0)
+      (let* ((p (open-adopted! (joined (list (b (string-append "POST /credit HTTP/1.1\r\nHost: x\r\n"
+                                                                "Content-Length: 100\r\n\r\n"))
+                                             (make-bytevector 50 97)))))
+             (c (cdr p))
+             (waiting (wait-for (lambda () (and (connection? c) (eq? (phase c) 'awaiting-credit)))))
+             (credited (guard (e ((assertion-violation? e) 'refused))
+                         (connection-body-credit! c (+ credit-held 1))
+                         'taken))
+             (gone (wait-for (lambda () (closed-and-gone? waiter c)))))
+        (test-equal "a credit for more than the reader was handed raises to the caller, and the connection is closed"
+                    '(satisfied refused satisfied)
+                    (list waiting credited gone))
+        (client-close! (car p)))
+      (shell-shutdown! waiter)
+      (set! adopting shell))
 
     ;; The end.  The suite's own shell, shut down with no connection left,
     ;; closes the timer it kept.
