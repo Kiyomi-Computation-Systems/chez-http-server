@@ -770,6 +770,12 @@ pre-fork worker processes sharing the listening socket through `uv-spawn!`'s
 `inherit-stream`, because the reuseport bind flag answers errno −45 on macOS
 (`smoke-v060-tcp.sps`) and is Linux/BSD-only.
 
+> *Noted 2026-09-28 (chez-libuv v0.7.3, pinned):* a pool's senders no longer race the
+> async's close. A send either completes before the close begins or is refused with
+> `&uv-handle-closed` (chez-libuv #33), where before the handle had to outlive every
+> sender, or a send could reach freed memory. A close still drops the wakes pending
+> at it. v1 makes no async handle.
+
 ---
 
 ## 6. The condition hierarchy
