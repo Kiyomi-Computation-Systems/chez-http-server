@@ -2894,3 +2894,18 @@ Records: decision 0013's sections "Found while building" and the review's, and i
 Size: 1,557 inserted lines of code and tests, 213 deleted, besides records and docs. It cannot be split further and stay green: once a request with a body is handed over at its head, every suite that sends one changes with it.
 
 NEXT: the two stacked PRs, merged bottom up on the owner's word. Then M6.2 (plan §14), which the M6.1 note re-scopes.
+
+MERGED to main on 2026-09-28, on the owner's "do closing ritual": **M6.1, as two stacked PRs.**
+- **#69, the readers and brief risk 3's pins,** as fcd00b7. Its squash tree (d7408ab) is the tested tip's, 4edb4a2's, and its parent is f21ab76. It merged first and kept its branch, since #70 was based on it.
+- **#70, the core hands a body to a reader,** as 780f4c0. It was retargeted to main and rebased from #69's tip, 4edb4a2. The rebased tip, 24b22ee, has the tested tree (d3af745, 1cda330's), and so does the squash, whose parent is fcd00b7.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36451927716 (#69), 36451961940 (#70 as opened) and 36452623653 (#70 rebased).
+- **Branches.** Both deleted local and remote, and refs pruned. No PR is open. `gh pr merge --delete-branch` merged #70 and deleted its remote branch, but left the checkout on it, so the switch to main, the fast-forward and the local deletions were done by hand.
+
+`make test` green on main: forty suites, 1,069 expected passes.
+
+DONE and merged (fcd00b7, PR #69; 780f4c0, PR #70): **M6.1.**
+- A handler reads a request's body through the reader it answers with at the head: `read-body` streams it, and `read-whole-body` buffers it, up to 1 MiB unless given a cap. `CHEZ_HTTP_MAX_BODY_BYTES` caps every body, and 413 has its first way in.
+- The parser is never paused inside a body, so brief risk 3's two facts are pinned as the parser's.
+- What the head's read brings of the body waits for the handler's answer, so the outcome never depends on how the bytes were split into reads.
+
+NEXT: M6.2 (plan §14), backpressure on the read side, as the M6.1 note re-scopes it: a reader in v1 takes each read's pieces as they are handed over, so reading waits on a credit only for an awaiting reader (M7). M6.2's check is that wait, and the body deadline stopped through it, with a reader that withholds its credit. On a fresh branch cut from main after this commit, when the owner asks.
