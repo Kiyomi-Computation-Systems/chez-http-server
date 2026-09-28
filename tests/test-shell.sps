@@ -43,19 +43,24 @@
 ;;;     used at a shutdown, and never listens after it; listens with the
 ;;;     limits' backlog; and closes a listener that cannot listen, after which
 ;;;     the shell may listen again;
-;;;   - deadlines (M5.3; decision 0005), under short limits and the loop's
-;;;     own clock: a client that sends half a head is answered 408, then
-;;;     closed once its linger passes; an idle keep-alive connection is
-;;;     closed; a lingering client that never closes is closed; and so is one
-;;;     that connects and sends nothing, whose idle deadline the shell armed
-;;;     as it adopted it.  Each deadline is met at the first time the shell's
-;;;     timer fires at or after it, the timer firing every tick-ms: within a
-;;;     tick of the deadline, never before it.  The loop's clock is brought
-;;;     up to date as each deadline is armed and each response written, so
-;;;     a hold of the loop, a handler's, the shell's own work's or one before
-;;;     an adoption, neither shortens the deadline armed after it nor dates
-;;;     the response written after it early (chez-libuv #28).  A connection
-;;;     closed from outside the core is armed no more;
+;;;   - deadlines (M5.3; decision 0005), under short limits and the loop's own
+;;;     clock: a client that sends half a head is answered 408, then closed
+;;;     once its linger passes; an idle keep-alive connection is closed; a
+;;;     lingering client that never closes is closed; and so is one that
+;;;     connects and sends nothing, whose idle deadline the shell armed as it
+;;;     adopted it.  Then slowhttptest's three shapes (the M5 exit): a head
+;;;     sent a piece at a time is answered 408 at the deadline armed as it
+;;;     began, which its pieces never move; a body sent a piece at a time,
+;;;     then stopped, is answered 408 at the deadline armed again at its last
+;;;     piece; and a client that never reads a MiB answer is closed at its
+;;;     write's deadline.  Each deadline is met at the first time the
+;;;     shell's timer fires at or after it, the timer firing every tick-ms:
+;;;     within a tick of the deadline, never before it.  The loop's clock is
+;;;     brought up to date as each deadline is armed and each response
+;;;     written, so a hold of the loop, a handler's, the shell's own work's or
+;;;     one before an adoption, neither shortens the deadline armed after it
+;;;     nor dates the response written after it early (chez-libuv #28).  A
+;;;     connection closed from outside the core is armed no more;
 ;;;   - the shell's one timer: four connections add one timer to the loop;
 ;;;     its wheel empty, it stops, and the shell keeps it for its next
 ;;;     deadline, and closes it once shut down with no connection left; when
@@ -184,10 +189,13 @@
 ;; `/raise` raises; `/big`, four MiB, held weakly here so the retention
 ;; check can ask whether anything else still holds it, and closing the
 ;; connection after it, so the client knows it has the whole response when it
-;; reads the stream's end; and `/slow`, answered once the handler has held
+;; reads the stream's end; `/wide`, a MiB, more than the kernel holds for a
+;; client that never reads once the connection's send buffer is made small,
+;; as the slow reader's is; and `/slow`, answered once the handler has held
 ;; the loop `slow-ms`, as a handler that computes for a while does.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
+(define wide-size (* 1024 1024))
 (define slow-ms 300)
 (define (monotonic-ms)
   (let ((t (current-time 'time-monotonic)))
@@ -204,6 +212,8 @@
            (let ((body (make-bytevector big-size 120)))
              (set! big-body (weak-cons body '()))
              (make-response 200 #f (list (cons (b "Connection") (b "close"))) body)))
+          ((bytevector=? target (b "/wide"))
+           (make-response 200 #f '() (make-bytevector wide-size 120)))
           ((bytevector=? target (b "/raise"))
            (raise (make-message-condition "the handler failed")))
           (else (make-response 200 #f '() target)))))
@@ -342,23 +352,28 @@
 
 ;; --- deadlines (M5.3) -------------------------------------------------------------
 
-;; Short limits, so the suite waits for its deadlines briefly: a fifth of a
-;; second or a little more for a head, an idle connection and a linger, each
-;; its own, so a deadline armed for the wrong kind shows, and a tick of 10
-;; ms.  Loopback moves a client's bytes in a few milliseconds, so no
+;; Short limits, so the suite waits for its deadlines briefly: under a third
+;; of a second for a body, a head, a write, an idle connection and a linger,
+;; each its own, so a deadline armed for the wrong kind shows, and a tick of
+;; 10 ms.  Loopback moves a client's bytes in a few milliseconds, so no
 ;; deadline passes before the client has made its move.
 (define quick-limits
   (limits-with default-limits
-               '((read-header-timeout-ms . 200) (idle-timeout-ms . 250) (linger-timeout-ms . 300)
+               '((body-inactivity-timeout-ms . 175) (read-header-timeout-ms . 200)
+                 (write-timeout-ms . 225) (idle-timeout-ms . 250) (linger-timeout-ms . 300)
                  (tick-ms . 10))))
 
-;; open-adopted! : (U #f Bytevector) -> (Pair Client (U Connection #f))
+;; open-adopted! : (U #f Bytevector) [Boolean] -> (Pair Client (U Connection #f))
 ;; A client that connects to the suite's listener, sends `request` unless it
-;; is #f, and reads; and the connection it was adopted as, once it is.
-(define (open-adopted! request)
-  (let* ((before (newest)) (cl (open-client! request)))
-    (wait-for (lambda () (and (adopted-since before) #t)))
-    (cons cl (adopted-since before))))
+;; is #f, and reads unless told not to; and the connection it was adopted
+;; as, once it is.
+(define open-adopted!
+  (case-lambda
+    ((request) (open-adopted! request #t))
+    ((request read?)
+     (let* ((before (newest)) (cl (open-client! request read?)))
+       (wait-for (lambda () (and (adopted-since before) #t)))
+       (cons cl (adopted-since before))))))
 
 ;; deadlines-passed : Shell Connection -> (Listof (List Symbol Datum))
 ;; Each tick `c` was given, in order: the kind of the deadline armed last
@@ -394,6 +409,44 @@
 (define (deadline-outcome sh p)
   (list (map status (responses (client-bytes (car p)))) (client-end (car p))
         (deadlines-passed sh (cdr p))))
+
+;; arms : Connection Symbol -> Nat — how many times `c` had a deadline of
+;; `kind` armed.
+(define (arms c kind)
+  (length (filter (lambda (e) (and (eq? (car e) 'arm) (eq? (cadr e) c) (eq? (caddr e) kind)))
+                  timed)))
+
+;; last-armed : Connection Symbol -> (U Nat #f) — the loop's time `c` last
+;; had a deadline of `kind` armed at, or #f if it never had one.
+(define (last-armed c kind)
+  (let ((e (find (lambda (e) (and (eq? (car e) 'arm) (eq? (cadr e) c) (eq? (caddr e) kind)))
+                 timed)))
+    (and e (cadddr e))))
+
+;; slowhttptest's slow headers and slow body send a request a piece at a
+;; time, each piece `gap-ms` after the last, well within every limit above.
+(define gap-ms 60)
+
+;; open-trickling! : Bytevector (Listof Bytevector)
+;;                   -> (Pair (Pair Client (U Connection #f)) (-> (U Nat #f)))
+;; A client adopted as it sends `first`, which then sends each of `pieces`
+;; in turn, one every `gap-ms`, from a timer of its own on the loop, closed
+;; after the last; and a procedure that answers the loop's time it sent its
+;; last piece at, or #f until it has.
+(define (open-trickling! first pieces)
+  (let* ((p (open-adopted! first))
+         (left pieces)
+         (last-sent #f)
+         (timer (make-uv-timer loop)))
+    (uv-timer-start! timer
+                     (lambda (t)
+                       (client-send! (car p) (car left))
+                       (set! left (cdr left))
+                       (when (null? left)
+                         (set! last-sent (uv-now loop))
+                         (uv-close! t)))
+                     gap-ms gap-ms)
+    (cons p (lambda () last-sent))))
 
 ;; --- the byte-machine contract condition, provoked ------------------------------
 
@@ -872,13 +925,30 @@
              (idle (open-adopted! (b "GET /idle HTTP/1.1\r\nHost: x\r\n\r\n")))
              (bye (open-adopted! (b "GET /bye HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")))
              (silent (open-adopted! #f))
-             (all (list half idle bye silent)))
+             ;; slowhttptest's shapes: slow headers, slow body, slow read.
+             (loris (open-trickling! (b "GET /loris HTTP/1.1\r\n")
+                                     (map b '("Host: x\r\n" "X-1: 1\r\n" "X-2: 2\r\n"
+                                              "X-3: 3\r\n" "X-4: 4\r\n"))))
+             (rudy (open-trickling! (b "POST /rudy HTTP/1.1\r\nHost: x\r\nContent-Length: 12\r\n\r\nab")
+                                    (map b '("cd" "ef" "gh"))))
+             ;; A client that never reads.  The connection's send buffer is
+             ;; made small as the listener accepts it, so what the kernel
+             ;; holds of the answer is about the client's receive buffer: on
+             ;; loopback, 408,300 B on Darwin and 131,072 B on Linux, left
+             ;; as they are, since Darwin grows one made small after the
+             ;; connect (the M5 exit's spike, m5-exit-rcvbuf.sps).
+             (reader (let ((p (begin (set! small-send-buffer 4096) (open-adopted! #f #f))))
+                       (set! small-send-buffer #f)
+                       (client-send! (car p) (b "GET /wide HTTP/1.1\r\nHost: x\r\n\r\n"))
+                       p))
+             (all (list half idle bye silent (car loris) (car rudy))))
         (test-eq "each of them closes once its deadlines pass" 'satisfied
                  (wait-for (lambda ()
-                             (for-all (lambda (p)
-                                        (and (closed-and-gone? quick (cdr p))
-                                             (not (eq? (client-end (car p)) 'open))))
-                                      all))))
+                             (and (for-all (lambda (p)
+                                             (and (closed-and-gone? quick (cdr p))
+                                                  (not (eq? (client-end (car p)) 'open))))
+                                           all)
+                                  (closed-and-gone? quick (cdr reader))))))
         (test-equal "a client that sends half a head reads 408 once its head's deadline passes, and the stream's end; it is closed once its linger's does"
                     '((408) eof ((header on-time) (linger on-time)))
                     (deadline-outcome quick half))
@@ -891,7 +961,23 @@
         (test-equal "a client that connects and sends nothing is closed at the idle deadline armed as it was adopted"
                     '(() eof ((idle on-time)))
                     (deadline-outcome quick silent))
-        (for-each (lambda (p) (client-close! (car p))) all))
+        (test-equal "a client that sends its head a piece at a time reads 408 once the deadline armed as the head began passes, which its pieces never move: slowhttptest's slow headers"
+                    '((408) eof ((header on-time) (linger on-time)) 1)
+                    (append (deadline-outcome quick (car loris)) (list (arms (cdr (car loris)) 'header))))
+        (test-equal "a client that sends its body a piece at a time, then stops, reads 408 once the deadline armed again at its last piece passes: slowhttptest's slow body"
+                    '((408) eof ((body on-time) (linger on-time)) #t)
+                    (append (deadline-outcome quick (car rudy))
+                            (list (let ((armed (last-armed (cdr (car rudy)) 'body)) (sent ((cdr rudy))))
+                                    (and armed sent (>= armed sent))))))
+        ;; let*, since Chez evaluates a call's arguments in no fixed order.
+        (test-equal "a client that never reads a MiB answer is closed once its write's deadline passes, sent less than the whole: slowhttptest's slow read"
+                    '(((write on-time)) satisfied eof #t)
+                    (let* ((passed (deadlines-passed quick (cdr reader)))
+                           (reading (client-read! (car reader)))
+                           (read (wait-for (lambda () (not (eq? (client-end (car reader)) 'open))))))
+                      (list passed read (client-end (car reader))
+                            (< (bytevector-length (client-bytes (car reader))) wide-size))))
+        (for-each (lambda (p) (client-close! (car p))) (cons reader all)))
 
       ;; A handler that holds the loop past a deadline's length (M5.3's
       ;; review).  libuv reads its clock once a turn, so the shell brings it

@@ -1051,6 +1051,14 @@ notes (`configuration.org`, `connections.org`, `responses.org`, README). *Done i
 after its review (2026-09-27).* The budget
 spike is run again with deadlines armed, so a connection's wheel entry is priced.
 
+*Noted 2026-09-27 (the M5 exit):* the brief's exit is checked on the merged tree. The
+socket lane gains slowhttptest's three shapes: slow headers, slow body and slow read.
+The budget spike, run again, prices the wheel entry at 48 B, and arming it at nothing.
+The slow reader found chez-libuv #35: every write and every read is copied a byte at a
+time, about 30 ns a byte, so a 4 MiB response holds the loop 125 ms in the copy. The
+owner held M5's close for the fix. Its pin moves on a commit of its own when a release
+carries it, and M5 closes then.
+
 ### M6 — body streaming and backpressure
 
 **M6.1 — how a handler reads a body, decided first.** Reading a request body, and
@@ -1117,6 +1125,10 @@ without waiting re-arms it, as any body does.
 read as the M4 exit read a connection: the server's heap, the client in a process of
 its own. libhtp's Expect and early-response files pass. `docs/handlers.org` gains
 bodies.
+
+*Noted 2026-09-27 (the M5 exit):* at chez-libuv v0.7.0 those 16 MiB are copied a byte
+at a time each way, about 30 ns a byte as measured up to 4 MiB, until chez-libuv #35
+lands.
 
 ### M7 — the scheduler and awaiting handlers
 

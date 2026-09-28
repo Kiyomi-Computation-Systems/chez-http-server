@@ -1016,6 +1016,14 @@ Three consequences for M3:
 > collects with a write outstanding and finds the response, its body and its segments
 > released.
 
+> *Noted 2026-09-27 (the M5 exit; Darwin arm64, Chez 10.4.1):* at chez-libuv v0.7.0
+> this copy, and §7.1's out of the read buffer, move one byte at a time in Scheme:
+> 29.7 to 31.1 ns a byte written and 28.4 to 29.7 ns a byte read, where one `memcpy`
+> costs 0.01 to 0.02 ns (`research/spike/m5-exit-copy.sps`). A 4 MiB response holds
+> the loop 125 ms in the copy, and a 16 KiB read about 0.47 ms: time in which no other
+> connection is read, written or ticked. chez-libuv #35 asks for bulk copies, and the
+> owner held M5's close for it.
+
 ### 7.4 The collect-safe rendezvous
 
 At chez-libuv v0.6.0 `uv_run` is `(foreign-procedure __collect_safe "uv_run" …)`
@@ -1112,6 +1120,19 @@ passes the connection through the parser's user-context argument.
 >
 > The buffer, a limit, is 90% of the cost. The runs are
 > `out/m4-exit-budget.run{1,2}.txt`.
+
+> *Re-measured 2026-09-27 (the M5 exit; Darwin arm64, Chez 10.4.1, libuv 1.52.1):*
+> with its deadline armed, a connection held idle costs about **18.3 KB**.
+> `research/spike/m5-exit-budget.sps` runs the M4 exit's spike again on the merged
+> tree, where the shell arms each connection's idle deadline in the wheel entry it
+> keeps (0005's amendment of 2026-09-27). Every held connection had its deadline
+> armed, and the loop held one timer however many were held. The heap grows by 1,569
+> to 1,746 B per connection over sixteen readings, median about 1,640 B, with no trend
+> in the GETs. That median is about 100 B above the M4 exit's. The wheel entry, made
+> fresh, is 48 B of it, and the rest is inside the readings' spread. Arming and
+> disarming the entry allocate nothing: a million of each read 160 B, the measuring
+> loop's own. The shell's one timer, a `uv_timer_t` of 152 B outside the heap, is the
+> server's, not a connection's. The runs are `out/m5-exit-budget.run{1,2}.txt`.
 
 Per request, allocation:
 
