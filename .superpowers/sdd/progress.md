@@ -3019,3 +3019,14 @@ The pin moves alone: the gitlink and two changed lines, the Makefile's pin and t
 DECIDED on the owner's word (2026-09-28), by form: one PR, the pin alone. Weighed: a review first; nothing committed.
 
 NEXT: the PR, merged on the owner's word. Then M6.3 (plan §14), when the owner asks.
+
+MERGED to main on 2026-09-28, on the owner's "do closing ritual": **the chez-libuv v0.7.3 pin, as one PR.**
+- **#73, the pin,** as cfbf8cc. Its squash tree (1917601) is the tested tip's, 959e89d's, and its parent is e992ea5.
+- **CI.** Its one run was the billing block, the `linux` job with 0 steps: 36493691705.
+- **Branch.** Deleted local and remote, and refs pruned. No PR is open. `gh pr merge --delete-branch` merged #73 and deleted its remote branch, but left the checkout on it, so the switch to main, the fast-forward and the local deletion were done by hand.
+
+`make test` green on main: forty suites, 1,107 expected passes.
+
+DONE and merged (cfbf8cc, PR #73): **chez-libuv is pinned at v0.7.3.** A send that races an async handle's close is refused, where it could reach freed memory; `uv-close!` is one step; and a Chez without threads is refused by name. The server's code and counts are unchanged.
+
+NEXT: M6.3 (plan §14), a streamed response, as M6.2's NEXT sets it out, on a fresh branch cut from main after this commit, when the owner asks.
