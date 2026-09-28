@@ -109,6 +109,14 @@ which changes every handler's arity.
 - M6.2's credit: a reader answered in v1 takes each read's pieces as they are handed
   over, so reading goes on at once. Reading waits on the credit, and at most one
   read is ever waiting, for M7's awaiting readers.
+  *Built 2026-09-28 (M6.2):* the reader stays the handler's; whether reading waits
+  for it is the shell's to say, since the shell hands the pieces over. A shell that
+  hands a streaming reader its pieces on credit answers with the reader and
+  `credit`, as M7's coroutine shell will; v1's shells never do. With credit owed once
+  a read's pieces are handed over, the connection waits in `awaiting-credit`,
+  reading stopped and no deadline armed, until `(body-credit n)` covers what the
+  reader was handed (design §4.4's M6.2 rows). A whole reader's pieces the core
+  copies, so it owes none. The facade exports nothing new.
 - Brief risk 3: no pause inside a body happens in v1, so its two facts are pinned as
   the parser's, at the pin (`tests/test-pause-pins.sps`), until a reader needs the
   one-slot pause (M7).

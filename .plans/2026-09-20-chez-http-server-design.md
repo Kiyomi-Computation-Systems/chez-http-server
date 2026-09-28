@@ -318,7 +318,7 @@ violation, a test-caught bug and never a runtime path):
 | `tick` | `now` | the per-loop tick timer via the wheel |
 | `parser-event` | callback name + payload | inside `parser-feed!` |
 | `parser-result` | status, consumed, next, error/pause | after `parser-feed!` returns |
-| `handler-responded` | a `response` record, or a reader (decision 0013, M6.1) | the `call-handler` executor, and a reader's end |
+| `handler-responded` | a `response` record, or a reader (decision 0013, M6.1), and `credit` after it when the shell hands the reader its pieces on credit (M6.2) | the `call-handler` executor, and a reader's end |
 | `handler-body-chunk` | `bv start end` | a streaming producer |
 | `handler-body-end` | — | a streaming producer |
 | `handler-failed` | the raised object | the executor or the coroutine trampoline |
@@ -384,6 +384,7 @@ being read:
 | `idle` | yes | `idle-timeout-ms` | open, keep-alive, nothing in flight |
 | `head` | yes | `read-header-timeout-ms` | `on-message-begin` seen, head incomplete |
 | `body` | yes | `body-inactivity-timeout-ms`, re-armed per `on-body-data` | head complete, body expected |
+| `awaiting-credit` | **no** | none | a read's pieces handed to a reader on credit, not yet credited; reading waits for its credit (M6.2, 2026-09-28) |
 | `handling` | **no** | none in v1 | parser paused at `on-message-complete`, handler running |
 | `responding` | **no** | write deadline per completion | segments written, awaiting completions |
 | `lingering` | yes | `linger-timeout-ms`, armed once | the last response written and the write side shut; what arrives is dropped until the client closes (decision 0011, M3.5, 2026-09-26) |
@@ -569,6 +570,41 @@ Termination and error rows:
 > handed the pieces, then the error's status; a response is sent, the body not read, and
 > the error not answered. `tests/test-connection-table.sps` holds each row (B1 to B19),
 > and `tests/test-connection-body.sps` the flow at every delivery size.
+
+> *Amended 2026-09-28 (M6.2; plan §14):* backpressure on the read side. Whether reading
+> waits for a reader is the shell's to say, since the shell hands the pieces over: one that
+> hands a streaming reader its pieces on credit answers with the reader and `credit`,
+> `(handler-responded reader credit)`, as M7's coroutine shell will, handing each piece
+> to the handler's coroutine. `(body-credit n)` then says the reader has taken `n` more
+> bytes of what it was handed. v1's shells call a reader in place, as each piece is
+> handed over, and answer with no word of credit, so for them reading goes on at once
+> (decision 0013's consequences). Once a read's pieces are handed to a reader on credit,
+> the connection waits in an eleventh state, `awaiting-credit` (§4.3's table): it reads
+> nothing, and it arms no deadline, since the server, not the client, is the one waiting
+> (plan §14's note of 2026-09-27). So a slow reader holds at most one read. A whole
+> reader's pieces the core copies, so it owes none. The rows:
+>
+> | State | Event | State' | Actions |
+> |---|---|---|---|
+> | `body` | `parser-result` of a feed that handed a reader on credit pieces it has not credited | `awaiting-credit` | `read-stop`, `disarm-deadline` |
+> | `body` | `parser-result` of such a feed, an error or a cap passed | `responding` | the status, as for any reader: the refusal, not the wait |
+> | `body` | `handler-responded`, a reader on credit, pieces kept for it | `awaiting-credit` | the pieces as `deliver-body`, then `read-stop`, `disarm-deadline` |
+> | `awaiting-credit` | `body-credit` covering what it was handed | `body` | `read-start`, `arm-deadline body` |
+> | `awaiting-credit` | `body-credit` for part of it | `awaiting-credit` | — |
+> | `body`/`awaiting-credit` | `body-credit` for more than it was handed and has not credited | — | an assertion violation: the grantor's bug |
+> | `body`/`handling` | `handler-responded` with a word after the answer other than `credit` | — | an assertion violation |
+> | `awaiting-credit` | `handler-failed` | `responding` | `write` 500, `arm-deadline write`; reading stopped already |
+> | `awaiting-credit` | `bytes-arrived` | `awaiting-credit` | — nothing is fed |
+> | `handling`/`responding` | `body-credit` | the same | — the message has ended, or the reader was let go |
+>
+> In `body`, nothing is owed once a feed has returned, since the core waits at the end of
+> every feed that hands a reader on credit a piece, so only a credit of none is taken
+> there. A read that ends the message hands its pieces over with the end, and waits for
+> nothing: reading stops at the pause for the response, as for every message. A
+> `read-error` in `awaiting-credit` closes, as in every live state, and a tick finds no
+> deadline there. `tests/test-connection-table.sps` holds each row (C1 to C11);
+> `tests/test-connection-body.sps` the flow at every delivery size, on a fake connection
+> made on credit, reading what the reader was handed.
 
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with
