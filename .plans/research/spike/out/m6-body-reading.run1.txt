@@ -1,0 +1,38 @@
+=== PART 1: brief risk 3 at the pin
+(1a) Content-Length 10, in two deliveries, a GET behind it; every piece pauses
+  delivery 1: ((paused consumed 54 next 54))
+  delivery 2: ((paused consumed 5 next 5) (paused consumed 0 next 5) (paused consumed 28 next 33))
+  delivered: ((message-begin) (url /a) (body 01234) (body 56789) (message-complete) (message-begin) (url /b) (message-complete))
+(1a) chunked, two chunks and a GET, in one delivery
+  ((paused consumed 63 next 63) (paused consumed 7 next 70) (paused consumed 7 next 77) (paused consumed 28 next 105))
+  delivered: ((message-begin) (url /a) (body abc) (body de) (message-complete) (message-begin) (url /b) (message-complete))
+(1b) the delivery ends on the body's last byte
+  the feed: (paused consumed 53 next 53)  delivered: ((message-begin) (url /a) (body hello))
+  resumed, nothing fed: message complete? #f
+  one empty feed at next: (paused consumed 0 next 53)  delivered: ((message-begin) (url /a) (body hello) (message-complete))
+(1c) the mutation: after the pause, feed from where the delivery started
+  delivery 1: (paused consumed 54 next 54)
+  delivery 1 again from 0: (paused consumed 5 next 5)
+  delivered: ((message-begin) (url /a) (body 01234) (body POST ))
+
+=== PART 2: reading
+the JSON POST through the real parser, adapter and core, today: 2320 B, against the 3,072 B gate
+bytes a way adds per request to the model's cycle today (the body dropped):
+the JSON POST, 13-byte body, fed whole        today's cycle 1264 B;  adds: ((A 208) (Am 816) (A+ 224) (B 32) (C 224))
+a MiB, Content-Length, 64 deliveries of 16 KiB today's cycle 42179 B;  adds: ((A 2256) (Am 45877) (A+ 1050919) (B 1048679) (C 2272))
+a MiB, chunked 16 KiB, 64 deliveries           today's cycle 47092 B;  adds: ((A 4272) (Am 86199) (A+ 2107760) (B 2103504) (C 4288))
+
+what a connection holds once a MiB body's last piece is taken, before its response
+(the connection, its parser and what the way keeps; the deliveries not counted):
+  today  Content-Length 736 B,  chunked 736 B
+  A  Content-Length 816 B,  chunked 816 B
+  Am  Content-Length 816 B,  chunked 816 B
+  A+  Content-Length 1049392 B,  chunked 1053472 B
+  B  Content-Length 1049328 B,  chunked 1053408 B
+  C  Content-Length 832 B,  chunked 1648 B
+
+=== PART 3: writing a body of unknown length, bytes per 16 KiB piece, protocol only
+  (i)   thunk, bytevector or eof:    per response, per piece (4144 64)
+  (ii)  binary input port, read in:  per response, per piece (4576 71)
+  (iii) emit and done:               per response, per piece (7296 114)
+exit=0
