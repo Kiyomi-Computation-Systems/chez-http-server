@@ -53,9 +53,11 @@
 ;;;     began, which its pieces never move; a body sent a piece at a time,
 ;;;     then stopped, is answered 408 at the deadline armed again at its last
 ;;;     piece; and a client that never reads a MiB answer is closed at its
-;;;     write's deadline.  Each deadline is met at the first time the
-;;;     shell's timer fires at or after it, the timer firing every tick-ms:
-;;;     within a tick of the deadline, never before it.  The loop's clock is
+;;;     write's deadline, the write having held the loop less than a tick
+;;;     (chez-libuv #35: bytes copied in bulk since v0.7.1).  Each deadline
+;;;     is met at the first time the shell's timer fires at or after it, the
+;;;     timer firing every tick-ms: within a tick of the deadline, never
+;;;     before it.  The loop's clock is
 ;;;     brought up to date as each deadline is armed and each response
 ;;;     written, so a hold of the loop, a handler's, the shell's own work's or
 ;;;     one before an adoption, neither shortens the deadline armed after it
@@ -75,8 +77,8 @@
 ;;; live-handle list and its dev-build counters; byte-machine's own contract
 ;;; condition, provoked by a feed from inside a callback; the weak-pair
 ;;; instrument, calibrated below; and for deadlines, the loop's time
-;;; (uv_now) each was armed at, read where it was armed, and the suite's
-;;; own limits.
+;;; (uv_now) each was armed at, read where it was armed, and each write
+;;; began at, and the suite's own limits.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?
               current-time time-second time-nanosecond)
@@ -136,6 +138,7 @@
   (set! traced (cons (list c kind (car datum)) traced))
   (case (car datum)
     ((arm-deadline) (time! (list 'arm c (cadr datum) (uv-now loop))))
+    ((write) (time! (list 'write c (uv-now loop))))
     ((tick) (time! (list (if (connection? c) 'tick 'fire) c (cadr datum)))))
   (when (and closing-at (connection? c) (eq? kind 'action) (equal? datum closing-at))
     (set! closing-at #f)
@@ -158,9 +161,10 @@
 
 ;; What the deadlines' checks read, newest first: each deadline armed, as
 ;; (arm connection kind at), `at` the loop's time where it was armed; each
-;; tick a connection was given, as (tick connection now); and each time a
-;; shell's timer fired, as (fire shell now), which it tells its server.  The
-;; first idle deadline, which the shell arms as it adopts a connection, is
+;; write a connection began, as (write connection at); each tick a
+;; connection was given, as (tick connection now); and each time a shell's
+;; timer fired, as (fire shell now), which it tells its server.  The first
+;; idle deadline, which the shell arms as it adopts a connection, is
 ;; recorded where the suite's listener adopts it.
 (define timed '())
 (define (time! entry) (set! timed (cons entry timed)))
@@ -422,6 +426,12 @@
   (let ((e (find (lambda (e) (and (eq? (car e) 'arm) (eq? (cadr e) c) (eq? (caddr e) kind)))
                  timed)))
     (and e (cadddr e))))
+
+;; last-written : Connection -> (U Nat #f) — the loop's time `c` last began
+;; a write at, or #f if it never wrote.
+(define (last-written c)
+  (let ((e (find (lambda (e) (and (eq? (car e) 'write) (eq? (cadr e) c))) timed)))
+    (and e (caddr e))))
 
 ;; slowhttptest's slow headers and slow body send a request a piece at a
 ;; time, each piece `gap-ms` after the last, well within every limit above.
@@ -977,6 +987,12 @@
                            (read (wait-for (lambda () (not (eq? (client-end (car reader)) 'open))))))
                       (list passed read (client-end (car reader))
                             (< (bytevector-length (client-bytes (car reader))) wide-size))))
+        (test-equal "a MiB answer's write holds the loop less than a tick: the loop's time moves less than tick-ms from the write's start to the write deadline armed after it"
+                    'under-a-tick
+                    (let ((written (last-written (cdr reader))) (armed (last-armed (cdr reader) 'write)))
+                      (cond ((not (and written armed)) (list written armed))
+                            ((< (- armed written) (limits-tick-ms quick-limits)) 'under-a-tick)
+                            (else (- armed written)))))
         (for-each (lambda (p) (client-close! (car p))) (cons reader all)))
 
       ;; A handler that holds the loop past a deadline's length (M5.3's

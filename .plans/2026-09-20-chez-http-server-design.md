@@ -1024,6 +1024,16 @@ Three consequences for M3:
 > connection is read, written or ticked. chez-libuv #35 asks for bulk copies, and the
 > owner held M5's close for it.
 
+> *Noted 2026-09-28 (chez-libuv v0.7.1, pinned):* #35 landed. Each copy, and each
+> zeroing of a handle's or a request's block, is one call into the shim. The copies
+> cost 0.02 to 0.03 ns a byte written and 0.02 to 0.1 ns a byte read at 1 and 4 MiB,
+> what one `memcpy` costs, and the 4 MiB answer's copy takes 0.11 to 0.12 ms
+> (`research/spike/out/m5-exit-copy.v071.run{1,2}.txt`). The socket lane's slow reader
+> shows the whole write. Its MiB write held the loop 62 to 63 ms at v0.7.0, twice its
+> copy, since the block the bytes were copied into had been zeroed a byte at a time too.
+> At v0.7.1 it holds the loop under the loop clock's millisecond, and a check holds it
+> under a tick.
+
 ### 7.4 The collect-safe rendezvous
 
 At chez-libuv v0.6.0 `uv_run` is `(foreign-procedure __collect_safe "uv_run" …)`

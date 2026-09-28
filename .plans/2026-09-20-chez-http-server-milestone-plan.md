@@ -1059,6 +1059,12 @@ time, about 30 ns a byte, so a 4 MiB response holds the loop 125 ms in the copy.
 owner held M5's close for the fix. Its pin moves on a commit of its own when a release
 carries it, and M5 closes then.
 
+*Noted 2026-09-28 (M5 closes):* chez-libuv v0.7.1 carries #35, and the pin moves to it
+on a commit of its own. The socket lane gains a check that the slow reader's MiB write
+holds the loop less than a tick. At v0.7.0 it failed, the write holding the loop 62 to
+63 ms: its copy, and the zeroing of the block it was copied into, a byte at a time too.
+At v0.7.1 it passes. M5 closes with the pin.
+
 ### M6 — body streaming and backpressure
 
 **M6.1 — how a handler reads a body, decided first.** Reading a request body, and
@@ -1129,6 +1135,9 @@ bodies.
 *Noted 2026-09-27 (the M5 exit):* at chez-libuv v0.7.0 those 16 MiB are copied a byte
 at a time each way, about 30 ns a byte as measured up to 4 MiB, until chez-libuv #35
 lands.
+
+*Noted 2026-09-28:* #35 landed in chez-libuv v0.7.1, which is pinned. A copy costs what
+one `memcpy` does, 0.02 to 0.1 ns a byte as measured at 1 and 4 MiB.
 
 ### M7 — the scheduler and awaiting handlers
 
