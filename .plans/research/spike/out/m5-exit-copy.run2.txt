@@ -1,0 +1,11 @@
+(a) and (b): ns per byte, the least of five; the five in ns
+  16384 B: copy-in! 29.66 ns/B (486000 487000 488000 488000 495000); copy-out 28.44 ns/B (466000 466000 467000 467000 467000), allocating 16560 B a call
+  16384 B: memcpy in 0 ns/B (0 0 0 1000 1000); memcpy out, into a fresh bytevector, 0 ns/B (0 0 1000 1000 2000)
+  262144 B: copy-in! 29.72 ns/B (7790000 7798000 7802000 7812000 7846000); copy-out 28.44 ns/B (7456000 7480000 7498000 7502000 7599000), allocating 262320 B a call
+  262144 B: memcpy in 0.02 ns/B (4000 4000 4000 4000 5000); memcpy out, into a fresh bytevector, 0.02 ns/B (4000 4000 5000 5000 5000)
+  1048576 B: copy-in! 29.74 ns/B (31187000 31259000 31259000 31281000 31293000); copy-out 28.46 ns/B (29838000 29864000 29881000 29916000 30304000), allocating 1048752 B a call
+  1048576 B: memcpy in 0.01 ns/B (15000 15000 15000 15000 15000); memcpy out, into a fresh bytevector, 0.02 ns/B (22000 23000 23000 23000 24000)
+  4194304 B: copy-in! 29.78 ns/B (124922000 125087000 125104000 125198000 125474000); copy-out 28.56 ns/B (119806000 119835000 119887000 120221000 120242000), allocating 4195136 B a call
+  4194304 B: memcpy in 0.02 ns/B (100000 101000 101000 102000 103000); memcpy out, into a fresh bytevector, 0.09 ns/B (361000 396000 412000 424000 565000)
+(c) the four MiB answer's work, the least of five, in ms:
+  the body made: 0.418; serialized: 0; its 4 segments copied: 124.643

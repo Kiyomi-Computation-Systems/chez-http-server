@@ -2715,3 +2715,51 @@ DONE and merged (c694cc6, PR #66): the contract's fake dates each write at the i
 NEXT: the M5 exit (plan §14), on a fresh branch cut from main after this commit, when the owner asks:
 - the brief's exit checked on the merged tree: fake-clock table tests, slow clients closed within a tick of their deadlines, and no timer handle per connection;
 - the budget spike run again with deadlines armed, so a connection's wheel entry is priced.
+
+M5 EXIT (plan §14). Branch feat/m5-exit, cut from main at 2f730a1; 2026-09-27, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. Mutation log: m5-mutations.md, "The M5 exit".
+
+Gathered before the first test, from the brief's M5 and plan §14:
+- the brief's exit: fake-clock table tests; slow-client socket tests, slowhttptest's shapes, closed within a tick of the deadline; no per-connection timer handle;
+- plan §14: the budget spike run again with deadlines armed, so a connection's wheel entry is priced. Its docs item was done in M5.3.
+
+Met before this branch, each with its check:
+- fake-clock table tests: `tests/test-connection-table.sps` (each deadline a row leaves armed, ticked in the state it leaves, moves the connection on; each tick row has a test), `tests/test-connection-deadlines.sps` (a row for each kind), `tests/test-wheel.sps` (a deadline of D fires within [D, D + tick-ms], never before) and `tests/test-connection-linger.sps`;
+- one timer, none per connection: the socket lane's "four connections open on one shell add one timer to the loop", which M5.3-A reddens, and test-clients' idle server, which holds the listener and that timer;
+- slow clients closed within a tick: the socket lane's four M5.3 clients (half a head, an idle keep-alive connection, a lingering client, one that sends nothing), each met at the first firing at or after its deadline.
+
+Missing, of slowhttptest's shapes (its slow headers, slow body and slow read; its range attack does not apply): a head sent a piece at a time, a body sent a piece at a time then stopped, and a client that never reads. The half head is slow headers' simplest form, but no socket check held what 0005 says of the pieces: a head's never move its deadline, armed once at on-message-begin, and a body's each arm it again.
+
+BUILT:
+- `tests/test-shell.sps`, 85 checks (main's 82). The deadline shell's limits gain a body, 175 ms, and a write, 225 ms, each its own:
+  - slow headers: a client that sends its head in five more pieces, one every 60 ms, reads 408 once the deadline armed as the head began passes, that deadline armed once; then the stream's end, and it is closed once its linger passes;
+  - slow body: a client that sends its body a piece at a time, then stops, reads 408 once the deadline armed again at its last piece passes;
+  - slow read: a client that never reads a MiB answer is closed once its write's deadline passes, sent less than the whole. The connection's send buffer is made 4,096 B as the listener accepts it; the client's receive buffer is left alone (below);
+  - each deadline is met at the first firing at or after it, as the lane's other clients' are. The three run beside M5.3's four, and the suite takes 4.02 to 4.04 s, three runs, against main's 3.84 to 3.87.
+- `.plans/research/spike/m5-exit-budget.sps`, `m5-exit-copy.sps` and `m5-exit-rcvbuf.sps`, new, with their runs in `out/`.
+- Records: decision 0008's chez-libuv #35 row and note; design §7.3's and §7.5's notes; plan §14's M5 exit and M6 notes; the research README.
+
+MEASURED, the budget with deadlines armed (`out/m5-exit-budget.run{1,2}.txt`): every held connection had its idle deadline armed, and the loop held one timer, with 100 held or 500. The heap per held connection over sixteen readings is 1,569 to 1,746 B, median about 1,640 B, with no trend in the GETs: about 100 B above the M4 exit's median. The parts, made fresh: the core's state 192 B, the adapter's context 32 B, a parser 592 B, chez-libuv's TCP handle 200.8 to 237.2 B, and the wheel entry 48 B. A disarm then an arm, a million times, allocate 160 B, the measuring loop's own. So an idle connection holds about 18.3 KB, 16,384 B of it the read buffer. The server's one timer is a `uv_timer_t` of 152 B.
+
+FOUND, chez-libuv's copies (now chez-libuv #35):
+- The slow reader's first form asked for `/big`, 4 MiB, and the slow body check failed on its first run. In a scratch probe of the lane, the loop's timer, due every 10 ms, did not fire for 254 ms after that request, so the slow body client sent none of its pieces in that time, and its body deadline passed first.
+- chez-libuv v0.7.0 copies each write's bytes into foreign memory, and each read's out of the read buffer, one byte at a time in Scheme: `copy-in!` and `copy-out` in `(libuv private native)`. `m5-exit-copy.sps` (`out/m5-exit-copy.run{1,2}.txt`) prices them at 16 KiB, 256 KiB, 1 MiB and 4 MiB: `copy-in!` 29.7 to 31.1 ns a byte and `copy-out` 28.4 to 29.7. One `memcpy` through a foreign call costs 0.01 to 0.02 ns a byte into foreign memory, and 0.02 to 0.09 ns out into a fresh bytevector. The 4 MiB answer's work before its write is under way: the body made in 0.4 ms, serialized at once, and its segments copied in 124.6 to 125.0 ms. So a 4 MiB response holds the loop 125 ms in the copy, and a full 16 KiB read 0.47 to 0.48 ms.
+- The shell cannot work around it: the copies are private, and `make check-imports` refuses chez-libuv's private libraries in shipped code (#65).
+- The slow reader now asks for 1 MiB (`/wide`), whose copy is 31.2 ms, and the three new clients run beside each other.
+
+FOUND, Darwin grows a receive buffer made small after the connect (`m5-exit-rcvbuf.sps`, two runs on each platform). A server writes 512 KiB, then 2 MiB, to a client that never reads, its send buffer made 4,096 B:
+- left as the kernel makes it, the client's receive buffer is 408,300 B on Darwin and 131,072 B on Linux, and neither write completes in 2 s;
+- made 16,384 B after the connect, it grew to 539,008 B on Darwin, where the 512 KiB write completed after 912 and 915 ms. On Linux it read 32,768 B, and nothing completed;
+- made 16,384 B before the connect, it read 326,640 B on Darwin and 32,768 B on Linux, and nothing completed.
+So the slow reader leaves the client's buffer alone. The lane's first form made it small after the connect, and under M5X-C its half MiB completed (m5-mutations.md).
+
+On Linux: the socket lane in its final form ran in Docker's `chez-libuv-valgrind:10.4.1` image (Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree with chez-libuv's shim built there: 85 passes, three runs of three, 7.08 to 7.22 s. CI's runs are still the billing block, so this is the new checks' only Linux run.
+
+Watched to fail (m5-mutations.md, "The M5 exit"): six mutants, M5X-A to F, each against all thirty-seven suites and again against the socket lane in its final form, with two calibrations. Every check the exit added or changed is reddened by one at least, and D, E and F redden the socket lane alone.
+
+`make test` green: thirty-seven suites, 972 expected passes (shell 85), exit 0, 20.0 s. Size: 117 inserted and 31 deleted lines of tests, and 272 of spikes: one PR.
+
+DECIDED on the owner's word (2026-09-27), by form, after the measurements:
+- **chez-libuv #35, filed from here**: copy writes and reads in bulk. Weighed: recording it for M6, and the owner filing it;
+- **M5's close waits for the fix**, as M3's waited for byte-machine #139. This branch merges; the pin moves on a commit of its own when a release carries the fix, and M5 closes then. Weighed: closing M5 now on its own criteria and carrying the copies to M6.
+
+NEXT: the PR, feat/m5-exit, merged on the owner's word. Then chez-libuv #35: when a release carries it, its pin moves on a commit of its own, and M5 closes.

@@ -381,3 +381,28 @@ Every check this change added is reddened by one mutant at least:
 - the new script's read check by M4.4-R;
 - its bytes check by A, B, C, D, F, G, H and M4.4-A;
 - its trace check by M4.4-T2.
+
+## The M5 exit (2026-09-27)
+
+The exit adds slowhttptest's three shapes to the socket lane (`tests/test-shell.sps`): slow headers, slow body and slow read. The behaviour they check was already on the tree, so each check is watched to fail by mutants, not by a red before its code.
+
+A to F ran against all thirty-seven suites, three at a time, with the slow reader's first form: half a MiB, and the client's receive buffer made small after the connect. The socket lane then took its final form, a MiB and the client's buffer left alone, and A to F ran against it again, with the calibrations I and J. No other suite changed between the two runs. None failed to load. Where a row names no other suite, the others were green.
+
+| Mutant | Mutation (`src/http-server/connection.sls` unless named) | Killed by |
+|---|---|---|
+| M5X-A | the core arms the header deadline again as each delivery arrives in `head` | shell 1 — slow headers; connection-head 1 — "bytes-arrived asks for feed-parser in idle, head and body, not handling" |
+| M5X-B | the core does not arm the body deadline again at each `on-body-data` | shell 1 — slow body; connection-table 1 — H5 |
+| M5X-C | the write row removed: `responding` past the write deadline asks for nothing (M5.2's mutation) | shell 2 — the closes, and slow read; connection-deadlines 1 — the write row; connection-table 3 — D2, twice, and the armed deadlines' tick check. With the first form, shell 1 — slow read alone: the half MiB's write completed 840 ms after it began, and the connection closed at its idle deadline |
+| M5X-D | the shell arms a body deadline for the head's limit (`shell.sls`) | shell 1 — slow body |
+| M5X-E | the shell arms a write deadline for the idle limit (`shell.sls`) | shell 1 — slow read |
+| M5X-F | the shell arms the header deadline again as each delivery arrives in `head` (`shell.sls`) | shell 1 — slow headers |
+| M5X-I | calibration: the slow reader's connection keeps the kernel's send buffer (`tests/test-shell.sps`) | shell 1 — slow read. The send buffer made small is load-bearing on Darwin |
+| M5X-J | calibration: the slow reader asks for a two-byte answer (`tests/test-shell.sps`) | shell 1 — slow read: a write that completes passes no write deadline |
+
+Every check the exit added or changed is reddened by one mutant at least:
+- the closes, which now wait for the three new clients too, by C;
+- slow headers by A and F;
+- slow body by B and D;
+- slow read by C and E, and by the calibrations I and J.
+
+D, E and F redden the socket lane alone: the table and the fake shell never see the limit the libuv shell arms a kind for, or a re-arm the shell makes on its own.

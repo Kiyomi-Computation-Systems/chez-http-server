@@ -1,0 +1,6 @@
+unset, 524288 B: write not completed in 2 s; the client's receive buffer then 408300 B
+unset, 2097152 B: write not completed in 2 s; the client's receive buffer then 408300 B
+after, 524288 B: write completed after 912 ms; the client's receive buffer then 539008 B
+after, 2097152 B: write not completed in 2 s; the client's receive buffer then 539008 B
+before, 524288 B: write not completed in 2 s; the client's receive buffer then 326640 B
+before, 2097152 B: write not completed in 2 s; the client's receive buffer then 326640 B
