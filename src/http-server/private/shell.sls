@@ -24,8 +24,14 @@
 ;;;   feed-parser     parser-feed!, counted in the depth, then its result as
 ;;;                   `parser-result`
 ;;;   resume-parser   parser-resume!
-;;;   call-handler    the handler's response as `handler-responded`, or, if
-;;;                   the handler raises, `handler-failed`, logged
+;;;   call-handler    the handler's answer, a response or a reader, as
+;;;                   `handler-responded`, or, if the handler raises,
+;;;                   `handler-failed`, logged
+;;;   deliver-body    the piece to the reader the core is handing the body to
+;;;                   (conn-body-reader; decision 0013), or, if it raises,
+;;;                   `handler-failed`, logged; with no reader, nothing
+;;;   deliver-body-end  the reader's end: its response as `handler-responded`,
+;;;                   or, if it raises, `handler-failed`, logged
 ;;;   write           uv-write*!, the Date slot filled from the clock (decision
 ;;;                   0010); its completion reports `write-completed` with the
 ;;;                   action's byte count, which is all the completion keeps:
@@ -42,7 +48,8 @@
 ;;;   arm-deadline    the connection's entry in the wheel, at the loop's now
 ;;;                   plus the kind's limit (below)
 ;;;   disarm-deadline its entry taken out of the wheel
-;;; Bodies (M6) and the hand-off (M8) are never asked for in v1's flow.
+;;; A streamed response's `notify-producer` (M6.3) and the hand-off (M8) are
+;;; never asked for in v1's flow.
 ;;;
 ;;; DEADLINES (decision 0005 and its amendments of 2026-09-27; M5.3).  The
 ;;; shell keeps the deadlines of its connections in one wheel, (http-server
@@ -128,7 +135,8 @@
           (libuv)
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
-          (only (http-server connection) make-conn-state)
+          (only (http-server connection) make-conn-state conn-body-reader)
+          (only (http-server body) body-reader-on-piece body-reader-on-end)
           (only (http-server limits)
                 limits-read-buffer-size limits-backlog limits-tick-ms limits-deadline-ms)
           (http-server wheel)
@@ -431,6 +439,8 @@
       ((feed-parser) (feed! c (cadr a) (caddr a) (cadddr a)))
       ((resume-parser) (parser-resume! (connection-parser c)))
       ((call-handler) (call-handler! c (cadr a)))
+      ((deliver-body) (deliver-body! c (cadr a) (caddr a) (cadddr a)))
+      ((deliver-body-end) (deliver-body-end! c))
       ((write) (write! c (cadr a) (caddr a)))
       ((read-stop) (read-stop! c))
       ((read-start) (read-start! c))
@@ -471,6 +481,27 @@
                                 (list 'handler-failed e)))
                     (list 'handler-responded ((shell-handler (connection-shell c)) request)))))
       (dispatch! c answer)))
+
+;; deliver-body! : Connection Bytevector Nat Nat -> Void
+  ;; Hand bv[start, end) to the reader the core is handing the body to; if
+  ;; the reader raises, `handler-failed`, logged.  With no reader, nothing:
+  ;; the core let it go after this piece was asked for.
+  (define (deliver-body! c bv start end)
+    (let ((r (conn-body-reader (connection-state c))))
+      (when r
+        (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
+                      (dispatch! c (list 'handler-failed e))))
+          ((body-reader-on-piece r) bv start end)))))
+
+  ;; deliver-body-end! : Connection -> Void
+  ;; The reader's end: its response as `handler-responded`, or, if it raises,
+  ;; `handler-failed`, logged.
+  (define (deliver-body-end! c)
+    (let ((r (conn-body-reader (connection-state c))))
+      (when r
+        (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
+                                   (list 'handler-failed e)))
+                       (list 'handler-responded ((body-reader-on-end r))))))))
 
   ;; write! : Connection (Listof Segment) Nat -> Void
   ;; One uv-write*! of the segments, the Date slot filled.

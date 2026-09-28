@@ -318,7 +318,7 @@ violation, a test-caught bug and never a runtime path):
 | `tick` | `now` | the per-loop tick timer via the wheel |
 | `parser-event` | callback name + payload | inside `parser-feed!` |
 | `parser-result` | status, consumed, next, error/pause | after `parser-feed!` returns |
-| `handler-responded` | a `response` record | the `call-handler` executor |
+| `handler-responded` | a `response` record, or a reader (decision 0013, M6.1) | the `call-handler` executor, and a reader's end |
 | `handler-body-chunk` | `bv start end` | a streaming producer |
 | `handler-body-end` | — | a streaming producer |
 | `handler-failed` | the raised object | the executor or the coroutine trampoline |
@@ -539,6 +539,36 @@ Termination and error rows:
 > the kind the state records is what the row's actions leave armed, starting from nothing
 > at a tick, and each kind a row leaves armed, ticked in the state it leaves, moves the
 > connection on.
+
+> *Amended 2026-09-28 (M6.1; decision 0013):* reading a body. A request whose head
+> announces a body, chunked or a Content-Length above 0, is handed to the handler once
+> the feed that completed its head has returned, and the handler answers with a response
+> or a reader. The rows:
+>
+> | State | Event | State' | Actions |
+> |---|---|---|---|
+> | `head` | `on-headers-complete`, a body announced | `body` | `reply-parser continue`, `disarm-deadline`, `arm-deadline body`; the handler to be asked |
+> | `head` | `on-headers-complete`, a declared length past `max-body-bytes` | `head` | `reply-parser (fail body-too-large)`, answered `413` |
+> | `body`/`handling` | `parser-result` of that feed | the same | `call-handler` |
+> | `body` | `on-body-data`, the answer to come | `body` | `reply-parser continue`, `arm-deadline body`; the piece kept |
+> | `body` | `on-body-data`, a streaming reader reading | `body` | `reply-parser continue`, `deliver-body`, `arm-deadline body` |
+> | `body` | `on-body-data`, a whole reader reading | `body` | `reply-parser continue`, `arm-deadline body`; the piece copied into its body |
+> | `body` | `on-body-data` past a cap | `body` | `reply-parser (fail body-too-large)`, and the piece up to the cap to a streaming reader, or kept |
+> | `body`/`handling` | `handler-responded`, a reader | the same | the pieces kept, as `deliver-body` (a whole reader's buffered), then `deliver-body-end` if the message has ended; `413` if the reader's cap is passed already |
+> | `body`/`handling` | `handler-responded`, a response | `responding` | `write`, with `Connection: close`, `read-stop` from `body`, `arm-deadline write`; close-after `unread-body` |
+> | `body` | `on-message-complete`, a streaming reader | `handling` | `reply-parser pause`, `read-stop`, `disarm-deadline`, `deliver-body-end` |
+> | `body` | `on-message-complete`, a whole reader | `handling` | the same, the whole body as one `deliver-body` before the end |
+> | `handling` | `handler-responded`, the reader's response | `responding` | `write`, `arm-deadline write` |
+> | `handling` | `handler-responded`, a reader, for a request with no body | `handling` | `deliver-body-end` |
+> | `body` | `parser-result` error, the handler not yet asked | `handling` | `read-stop`, `disarm-deadline`, `call-handler`; the error kept |
+> | `body` | `handler-failed` | `responding` | `write` 500, `read-stop`, `arm-deadline write` |
+>
+> What the feed that completes a head meets of the body before the handler is asked waits
+> for its answer, the pieces and an error or a cap passed alike, so the outcome never
+> depends on how the bytes were split into reads (§8.1's second property): a reader is
+> handed the pieces, then the error's status; a response is sent, the body not read, and
+> the error not answered. `tests/test-connection-table.sps` holds each row (B1 to B19),
+> and `tests/test-connection-body.sps` the flow at every delivery size.
 
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with
@@ -902,7 +932,7 @@ Every status the server can originate, and who decides it:
 |---|---|---|
 | `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26) | yes |
 | `408` | header or body-inactivity deadline (policy) | yes |
-| `413` | body cap, buffering helper only (policy) | yes |
+| `413` | a body past `max-body-bytes`, or past a reader's own cap, `read-whole-body`'s 1 MiB by default (policy; decision 0013, since 2026-09-28) | yes |
 | `414` | request-target over `max-target-bytes` (policy) | yes |
 | `431` | header bytes or header count (policy) | yes |
 | `500` | handler raise | yes |
@@ -913,7 +943,8 @@ Every originated status closes the connection. That is not a simplification to r
 each of them means either the framing is untrustworthy or a bound was exceeded, and in
 both cases the remaining bytes on the connection cannot be interpreted safely. `100
 Continue` is the one server-originated response that does *not* close, and it is not an
-error — it is written only when the handler pulls the body (M6).
+error — it is written only when the handler pulls the body (M6), which is when it answers
+with a reader (decision 0013, M6.4).
 
 ---
 

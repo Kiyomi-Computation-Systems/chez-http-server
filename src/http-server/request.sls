@@ -20,7 +20,10 @@
   ;;   Span    = the request-target, as it arrived
   ;;   Nat Nat = the HTTP major and minor version
   ;;   Headers = (Listof (Pair Span Span))      ; name . value, wire order
-  ;;   Body    = Any                            ; a body handle in M6; #f until then
+  ;;   Body    = Any                            ; #f: a handler reads a body through
+  ;;                                            ; the reader it answers with (decision
+  ;;                                            ; 0013), and the core builds every
+  ;;                                            ; request with #f here
   ;; request? : Any -> Boolean
   ;; request-method / -target / -http-major / -http-minor / -headers / -body :
   ;;   Request -> the corresponding field

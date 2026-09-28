@@ -172,6 +172,38 @@
 ;;; request, as design §4.3 says `responding` does, so the client's end
 ;;; waits in the kernel for the linger, and nothing has to remember it.
 ;;;
+;;; A BODY IS READ BY A READER (M6.1; decision 0013).  A request whose
+;;; framing announces a body, chunked or a Content-Length above 0, is handed
+;;; to the handler once the feed that completed its head has returned, before
+;;; any of its body: the `call-handler` comes with that feed's
+;;; `parser-result`.  The handler answers a response or a reader, (http-server
+;;; body)'s, as `handler-responded`.  A reader is handed each piece the parser
+;;; meets as `deliver-body`, the read's own span, in order, and
+;;; `deliver-body-end` once the message has ended; the reader's response
+;;; comes back as `handler-responded` too.  A whole reader is handed its body
+;;; instead as one piece at the end, which the core copies from the pieces as
+;;; they arrive, into one bytevector grown to the declared length, or joined
+;;; when chunked.  A response given instead of a reader is sent at once, and the
+;;; connection closes after it, as 'unread-body: the body is not read.  A body
+;;; past a cap is refused as 'body-too-large, answered 413: the limits'
+;;; max-body-bytes caps every body, and a reader may carry a cap of its own.
+;;; A declared length past the limits' cap is refused before the handler is
+;;; asked, past a reader's once it answers, and a counted one at the piece
+;;; that passes it, a streaming reader handed the piece up to the cap.  A
+;;; request with no body is handed over at its end, as before, and a reader
+;;; answered for one is handed its end at once.  The parser is never paused
+;;; inside a body (decision 0013 item 3).  The shells find the reader a piece
+;;; goes to with `conn-body-reader`.
+;;;
+;;; WHAT HAPPENS NEVER DEPENDS ON HOW THE BYTES WERE SPLIT INTO READS (design
+;;; §8.1's second property).  The feed that completes a head can go on into
+;;; its body before the handler is asked.  What it meets there waits for the
+;;; handler's answer, as it would have come after it had the body arrived in
+;;; a later read: the pieces are kept, and handed to a reader once it
+;;; answers; and an error the parser meets, or a cap the body passes, is kept
+;;; too, and answered after those pieces, or not at all if the handler
+;;; answers with a response, since the body is then not read.
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body, write (design §4.3) or
 ;;; linger (decision 0011) — to arm, and carries no time: no event but `tick`
@@ -190,16 +222,18 @@
           conn-parser-callbacks conn-span-callbacks
           make-conn-state conn-state?
           conn-phase conn-deadline conn-close-after conn-outstanding
-          conn-outstanding-bytes conn-pending conn-request conn-limits
+          conn-outstanding-bytes conn-pending conn-request conn-limits conn-body-reader
+          conn-body-buffered
           conn-step conn-parser-step conn-headers-complete-step)
   (import (rnrs)
           (http-server response) (http-server request) (http-server span)
           (http-server limits) (http-server decisions) (http-server target)
+          (only (http-server body) body-reader? body-reader-max-bytes body-reader-whole?)
           (only (http-server host) host-fault)
           (only (http-server transfer-coding) unsupported-transfer-coding? faulty-framing?)
           (only (http-server serializer)
                 serialize-response serialize-checked-response response-fault response-closes?)
-          (only (httparse decisions) should-keep-alive?)
+          (only (httparse decisions) should-keep-alive? F-CHUNKED)
           (only (httparse methods) httparse-method-numbers))
 
   ;; conn-states : (Listof Symbol)
@@ -273,8 +307,11 @@
   ;; conn-phase / -deadline / -close-after / -outstanding / -outstanding-bytes
   ;;   / -pending / -request / -limits : ConnState -> the corresponding field
   ;; The request head being read is kept in the state too, and so are the
-  ;; connection's target judge (M2.3) and the last delivery it fed the
-  ;; parser, `(bv start end)` or #f (M2.4); none of them is exported.
+  ;; request body being read (M6.1), the connection's target judge (M2.3)
+  ;; and the last delivery it fed the parser, `(bv start end)` or #f (M2.4);
+  ;; none of them is exported.  A state made in `handling` has a message that
+  ;; has ended, and is waiting for its handler's answer, as a request with no
+  ;; body is.
   (define-record-type (conn-state make-conn-state conn-state?)
     (fields (mutable phase       conn-phase       conn-phase-set!)
             (mutable deadline    conn-deadline    conn-deadline-set!)
@@ -285,6 +322,7 @@
             (mutable request     conn-request     conn-request-set!)
             (immutable limits    conn-limits)
             (immutable head      conn-head)
+            (immutable body      conn-body)
             (immutable judge     conn-judge)
             (mutable delivery    conn-delivery    conn-delivery-set!))
     (protocol
@@ -300,8 +338,27 @@
            (assertion-violation 'make-conn-state
              "not writes and bytes outstanding, counts that are zero together"
              outstanding outstanding-bytes))
-         (new phase deadline close-after outstanding outstanding-bytes pending request limits
-              (make-head) (make-target-judge) #f)))))
+         (let ((body (make-body-state)))
+           (when (eq? phase 'handling)
+             (body-answer-set! body 'asked)
+             (body-complete?-set! body #t))
+           (new phase deadline close-after outstanding outstanding-bytes pending request limits
+                (make-head) body (make-target-judge) #f))))))
+
+  ;; conn-body-reader : ConnState -> (U #f BodyReader)
+  ;; The reader the handler answered with, while the core hands it the body:
+  ;; the one each `deliver-body` and `deliver-body-end` goes to, until its
+  ;; response comes back, and #f otherwise (decision 0013).
+  (define (conn-body-reader s) (body-reader-of (conn-body s)))
+
+  ;; conn-body-buffered : ConnState -> Nat
+  ;; The bytes the core holds for a whole reader's body: its buffer's length,
+  ;; or its copies' lengths when the body is chunked; 0 with none.
+  (define (conn-body-buffered s)
+    (let ((buffer (body-buffer (conn-body s))))
+      (cond ((bytevector? buffer) (bytevector-length buffer))
+            ((pair? buffer) (fold-left (lambda (n c) (+ n (bytevector-length c))) 0 buffer))
+            (else 0))))
 
   ;; The request head being read: the target and the header fields so far,
   ;; and the running sizes the header limits are checked against.  One per
@@ -367,6 +424,132 @@
                        (bytevector-copy! (span-bytevector sp) (span-start sp)
                                          out at (span-length sp))
                        (loop (cdr spans) (fx+ at (span-length sp)))))))))))
+
+  ;; The request body being read (M6.1; decision 0013): how its framing
+  ;; announced it, the bytes of it met, the handler's answer, and what is kept
+  ;; for that answer.  One per connection, rolled with the head.
+  ;;   framed?   whether the framing announced a body: chunked, or a
+  ;;             Content-Length above 0
+  ;;   declared  the Content-Length, or #f when chunked
+  ;;   count     the body bytes the parser has met
+  ;;   answer    #f, the handler not yet asked; call, to be asked once the
+  ;;             feed has returned; asked, its answer to come; stream or
+  ;;             whole, a reader reading; ending, the reader's response to
+  ;;             come
+  ;;   held      the pieces met before the answer, as `deliver-body`
+  ;;             actions, newest first
+  ;;   error     #f, or what the feed that completed the head met in the
+  ;;             body before the handler was asked, kept for its answer:
+  ;;             (refused reason), or (parser code), the parser's error
+  ;;   complete? whether the message has ended
+  ;;   reader    the reader answered, until its response comes
+  ;;   buffer    a whole reader's body so far: a bytevector of the declared
+  ;;             length, or the copies of a chunked body's pieces, newest first
+  ;;   filled    the bytes of the body buffered
+  (define-record-type (body-state make-body-state body-state?)
+    (fields (mutable framed?   body-framed?   body-framed?-set!)
+            (mutable declared  body-declared  body-declared-set!)
+            (mutable count     body-count     body-count-set!)
+            (mutable answer    body-answer    body-answer-set!)
+            (mutable held      body-held      body-held-set!)
+            (mutable error     body-error     body-error-set!)
+            (mutable complete? body-complete? body-complete?-set!)
+            (mutable reader    body-reader-of body-reader-set!)
+            (mutable buffer    body-buffer    body-buffer-set!)
+            (mutable filled    body-filled    body-filled-set!))
+    (protocol (lambda (new) (lambda () (new #f #f 0 #f '() #f #f #f #f 0)))))
+
+  ;; body-roll! : Body -> Void — nothing read, and nothing kept.
+  (define (body-roll! bd)
+    (body-framed?-set! bd #f)
+    (body-declared-set! bd #f)
+    (body-count-set! bd 0)
+    (body-answer-set! bd #f)
+    (body-held-set! bd '())
+    (body-error-set! bd #f)
+    (body-complete?-set! bd #f)
+    (body-reader-set! bd #f)
+    (body-buffer-set! bd #f)
+    (body-filled-set! bd 0))
+
+  ;; over? : (U Nat #f) (U Nat #f) -> Boolean — whether `n` is past `cap`.
+  (define (over? cap n) (and cap n (> n cap)))
+
+  ;; least-cap : (U Nat #f) (U Nat #f) -> (U Nat #f) — the lower of two caps,
+  ;; either of which may be none.
+  (define (least-cap a b) (cond ((not a) b) ((not b) a) (else (min a b))))
+
+  ;; The bytes of no body: what a declared length's buffer starts from, so
+  ;; nothing is allocated for it before its bytes arrive.
+  (define no-bytes (make-bytevector 0))
+
+  ;; buffer-start! : BodyState -> Void
+  ;; A whole reader's buffer, empty: a bytevector that grows as a declared
+  ;; length's body arrives, or a list of copies when the body is chunked.
+  ;; Nothing is allocated before the body's bytes arrive: a declared length
+  ;; is the client's word, and a buffer of that length made at once would
+  ;; let a head alone take up to the reader's cap (M6.1's review).
+  (define (buffer-start! bd)
+    (body-buffer-set! bd (if (body-declared bd) no-bytes '()))
+    (body-filled-set! bd 0))
+
+  ;; buffer-add! : BodyState Bytevector Nat Nat -> Void
+  ;; One more piece, copied.  A declared length's buffer grows to hold it: to
+  ;; the declared length once that is at most twice what has arrived, and
+  ;; doubling before, so it is never more than twice what has arrived, the
+  ;; buffers it grows through come to less than twice the body, and it ends
+  ;; exactly full.  A chunked body's piece is copied on its own, and the
+  ;; copies are joined once, at the end: for a length not known, that
+  ;; allocates less than a doubling buffer trimmed at the end, and holds no
+  ;; more at its peak (the ledger, M6.1's review).
+  (define (buffer-add! bd bv from to)
+    (let ((buffer (body-buffer bd)) (n (fx- to from)) (filled (body-filled bd)))
+      (if (bytevector? buffer)
+          (let* ((need (fx+ filled n))
+                 (room (cond ((fx<=? need (bytevector-length buffer)) buffer)
+                             ((<= (body-declared bd) (* 2 need))
+                              (grown buffer filled (body-declared bd)))
+                             (else
+                              (grown buffer filled (max (* 2 (bytevector-length buffer)) need))))))
+            (bytevector-copy! bv from room filled n)
+            (body-buffer-set! bd room))
+          (let ((copy (make-bytevector n)))
+            (bytevector-copy! bv from copy 0 n)
+            (body-buffer-set! bd (cons copy buffer))))
+      (body-filled-set! bd (fx+ filled n))))
+
+  ;; grown : Bytevector Nat Nat -> Bytevector
+  ;; A bytevector of `size` bytes holding `buffer`'s first `filled`.
+  (define (grown buffer filled size)
+    (let ((out (make-bytevector size)))
+      (bytevector-copy! buffer 0 out 0 filled)
+      out))
+
+  ;; body-release! : BodyState -> Void
+  ;; Let go of what the body keeps for the handler's answer, a whole reader's
+  ;; buffer and the pieces kept, and keep the reader: a status the core
+  ;; writes answers the request, and the pieces already asked for still go
+  ;; to the reader.
+  (define (body-release! bd)
+    (body-buffer-set! bd #f)
+    (body-filled-set! bd 0)
+    (body-held-set! bd '()))
+
+  ;; buffer-take! : BodyState -> Bytevector
+  ;; The whole body, which the buffer lets go of: the declared length's
+  ;; bytevector, full, or a chunked body's copies joined into one.
+  (define (buffer-take! bd)
+    (let ((buffer (body-buffer bd)) (n (body-filled bd)))
+      (body-buffer-set! bd #f)
+      (if (bytevector? buffer)
+          buffer
+          (let ((out (make-bytevector n)))
+            (let loop ((copies buffer) (end n))
+              (if (null? copies)
+                  out
+                  (let* ((copy (car copies)) (start (fx- end (bytevector-length copy))))
+                    (bytevector-copy! copy 0 out start (bytevector-length copy))
+                    (loop (cdr copies) start))))))))
 
   ;; method-symbols : (Vectorof (U Symbol #f))
   ;; llhttp's method numbers, as the symbols (httparse methods) names them,
@@ -485,15 +668,16 @@
 
   ;; forget-input! : ConnState -> Void
   ;; Drop all the connection holds of the input it has read: the pause's
-  ;; pending input, the last delivery, the request, and the head, whose spans
-  ;; point into the deliveries.  A lingering connection reads only to drop
+  ;; pending input, the last delivery, the request, and the head and the
+  ;; body, whose spans point into the deliveries.  A lingering connection reads only to drop
   ;; what arrives, for up to its linger deadline (decision 0011), so it keeps
   ;; none of them (tests/test-connection-retention.sps).
   (define (forget-input! s)
     (conn-pending-set! s #f)
     (conn-delivery-set! s #f)
     (conn-request-set! s #f)
-    (head-roll! (conn-head s)))
+    (head-roll! (conn-head s))
+    (body-roll! (conn-body s)))
 
   ;; complete-write! : ConnState (Listof Any) -> Void
   ;; `(nbytes)`, a write-completed's fields: one write and its bytes are no
@@ -613,6 +797,7 @@
        (case (conn-phase s)
          ((idle)
           (head-roll! (conn-head s))
+          (body-roll! (conn-body s))
           (conn-request-set! s #f)
           (conn-phase-set! s 'head)
           (conn-deadline-set! s 'header)
@@ -663,21 +848,94 @@
          (else (continue s))))
       ((on-body-data)
        (case (conn-phase s)
-         ((body)
-          (conn-deadline-set! s 'body)
-          (values s (list '(reply-parser continue)
-                          (list 'deliver-body bv from to)
-                          '(arm-deadline body))))
+         ((body) (body-piece s bv from to))
          (else (continue s))))
       ((on-message-complete)
        (case (conn-phase s)
          ((body)
-          (conn-phase-set! s 'handling)
-          (conn-deadline-set! s #f)
-          (values s (list '(reply-parser pause) '(read-stop) '(disarm-deadline)
-                          (list 'call-handler (conn-request s)))))
+          (let ((bd (conn-body s)))
+            (conn-phase-set! s 'handling)
+            (conn-deadline-set! s #f)
+            (body-complete?-set! bd #t)
+            (case (body-answer bd)
+              ((#f)
+               (body-answer-set! bd 'asked)
+               (values s (list '(reply-parser pause) '(read-stop) '(disarm-deadline)
+                               (list 'call-handler (conn-request s)))))
+              ((stream)
+               (body-answer-set! bd 'ending)
+               (values s '((reply-parser pause) (read-stop) (disarm-deadline) (deliver-body-end))))
+              ((whole)
+               (let-values (((s handed) (hand-over-whole s)))
+                 (values s (cons* '(reply-parser pause) '(read-stop) '(disarm-deadline) handed))))
+              (else (values s '((reply-parser pause) (read-stop) (disarm-deadline)))))))
          (else (continue s))))
       (else (continue s))))
+
+  ;; body-piece : ConnState Bytevector Nat Nat -> (values ConnState (Listof Action))
+  ;; body, on-body-data -> body: count the piece, and refuse the message as
+  ;; 'body-too-large once the body passes the limits' max-body-bytes or the
+  ;; reader's own cap.  The piece up to the cap is handed to a streaming
+  ;; reader first, or kept for the handler's answer, so a reader is handed
+  ;; exactly the cap's bytes, however they were split into reads.  Otherwise
+  ;; re-arm the body deadline, and hand the piece on by the answer: to a
+  ;; streaming reader as `deliver-body`; into a whole reader's buffer; kept
+  ;; for the answer while it has not come (decision 0013).  With no answer
+  ;; to come, it is dropped.
+  (define (body-piece s bv from to)
+    (let* ((bd (conn-body s))
+           (count (+ (body-count bd) (fx- to from)))
+           (reader (body-reader-of bd))
+           (cap (least-cap (limits-max-body-bytes (conn-limits s))
+                           (and reader (body-reader-max-bytes reader)))))
+      (body-count-set! bd count)
+      (cond
+       ((over? cap count)
+        (head-refusal-set! (conn-head s) 'body-too-large)
+        (let ((cut (- to (- count cap))))
+          (if (and (fx>? cut from) (memq (body-answer bd) '(stream call asked)))
+              (hand-on s bv from cut refused-too-large)
+              (values s refused-too-large))))
+       (else
+        (conn-deadline-set! s 'body)
+        (hand-on s bv from to continued)))))
+
+  ;; body-piece's two answers, without the piece: continue and re-arm the
+  ;; body deadline; or refuse, past a cap.
+  (define continued '((reply-parser continue) (arm-deadline body)))
+  (define refused-too-large '((reply-parser (fail body-too-large))))
+
+  ;; hand-on : ConnState Bytevector Nat Nat (Listof Action)
+  ;;           -> (values ConnState (Listof Action))
+  ;; `answer`, the parser's reply and what follows it, once the piece
+  ;; bv[from, to) is handed on by the handler's answer: to a streaming
+  ;; reader, as `deliver-body` after the reply; into a whole reader's buffer;
+  ;; kept for the answer while it has not come.  With no reader, the piece is
+  ;; dropped.
+  (define (hand-on s bv from to answer)
+    (let ((bd (conn-body s)))
+      (case (body-answer bd)
+        ((stream)
+         (values s (cons (car answer) (cons (list 'deliver-body bv from to) (cdr answer)))))
+        ((whole)
+         (buffer-add! bd bv from to)
+         (values s answer))
+        ((call asked)
+         (body-held-set! bd (cons (list 'deliver-body bv from to) (body-held bd)))
+         (values s answer))
+        (else (values s answer)))))
+
+  ;; hand-over-whole : ConnState -> (values ConnState (Listof Action))
+  ;; A whole reader's body, once the message has ended: its buffer handed
+  ;; over as the reader's only piece, then its end, and the reader's response
+  ;; to come.  An empty body is no piece, only the end.
+  (define (hand-over-whole s)
+    (let ((bd (conn-body s)))
+      (body-answer-set! bd 'ending)
+      (if (fxzero? (body-filled bd))
+          (begin (body-buffer-set! bd #f) (values s '((deliver-body-end))))
+          (let* ((n (body-filled bd)) (whole (buffer-take! bd)))
+            (values s (list (list 'deliver-body whole 0 n) '(deliver-body-end)))))))
 
   ;; header-bytes : ConnState Bytevector Nat Nat (Limits -> Nat) Symbol
   ;;                -> (values ConnState (Listof Action))
@@ -712,7 +970,8 @@
   ;; length, since it counts down as the body arrives, and the parser's reset
   ;; after each message zeroes it and the flags; `upgrade` is not reset, and is
   ;; this message's only from on-headers-complete on.  Nothing downstream
-  ;; re-reads the parser.  The content-length is the body's, M6's.
+  ;; re-reads the parser.  The flags and the content-length say whether a
+  ;; body follows (M6.1): one chunked, or with a Content-Length above 0.
   ;; The Host lines are judged here first (RFC 9112 §3.2; see (http-server
   ;; host)): a request whose Host is missing on HTTP/1.1 (when the limits
   ;; require one), doubled or invalid is refused as 'invalid-host, answered
@@ -733,7 +992,10 @@
   ;; from the head, and the header deadline gives way to the body's.  The
   ;; connection is marked to close after the response unless the message
   ;; keeps it alive (decision 0006 item 1), or, when it does, if the parser
-  ;; says it upgrades (M2.5).
+  ;; says it upgrades (M2.5).  A body it announces is noted, for the handler
+  ;; to be asked once the feed has returned, and a declared length past the
+  ;; limits' max-body-bytes is refused as 'body-too-large, answered 413,
+  ;; before any of the body is met (decision 0013 items 1 and 5).
   (define (conn-headers-complete-step s method http-major http-minor flags content-length upgrade)
     (case (conn-phase s)
       ((head)
@@ -761,9 +1023,21 @@
                   (conn-close-after-set! s 'not-keep-alive))
                  ((eqv? upgrade 1)
                   (conn-close-after-set! s 'upgrade)))
-           (conn-phase-set! s 'body)
-           (conn-deadline-set! s 'body)
-           (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body)))))))
+           (let* ((chunked? (not (fxzero? (fxand flags F-CHUNKED))))
+                  (declared (and (not chunked?) content-length))
+                  (framed? (or chunked? (> content-length 0)))
+                  (bd (conn-body s)))
+             (body-roll! bd)
+             (body-framed?-set! bd framed?)
+             (body-declared-set! bd declared)
+             (cond
+              ((and framed? (over? (limits-max-body-bytes (conn-limits s)) declared))
+               (refuse s 'body-too-large))
+              (else
+               (when framed? (body-answer-set! bd 'call))
+               (conn-phase-set! s 'body)
+               (conn-deadline-set! s 'body)
+               (values s '((reply-parser continue) (disarm-deadline) (arm-deadline body))))))))))
       (else (continue s))))
 
   ;; redirect-location : ConnState Symbol Span -> (U #f Bytevector)
@@ -781,6 +1055,14 @@
   ;; this allocates nothing.
   (define (continue s) (values s '((reply-parser continue))))
 
+  ;; head/body: a feed that completed a head announcing a body, and was
+  ;; not refused before the head completed, has returned, so the handler is
+  ;; asked now (decision 0013 item 1): `ask-handler`.  If that feed went on
+  ;; into the body and met an error there, or passed a cap, the error waits
+  ;; for the handler's answer, in handling, reading stopped: it is answered
+  ;; after the pieces met before it if the handler answers with a reader,
+  ;; and not at all if it answers with a response, as it would had the body
+  ;; come in a later read.
   ;; head/body: a hand-off, on either of the parser's channels
   ;; (`result-hands-off-stream?`), is the door (M2.5).  The HTTP/2 preface, on
   ;; the error channel, is answered 505, then close (decision 0006 item 2).
@@ -804,7 +1086,7 @@
         ((handling)
          (when (and (eq? status 'paused) (not pause) (conn-delivery s))
            (conn-pending-set! s (rest-of (conn-delivery s) next)))
-         (values s '()))
+         (ask-handler s))
         ((head body)
          (let ((err (list-ref ev 4)))
            (cond
@@ -816,7 +1098,15 @@
                    (conn-deadline-set! s #f)
                    (values s (list '(read-stop) '(disarm-deadline)
                                    (list 'hand-off (conn-request s)))))))
-            ((not (eq? status 'error)) (values s '()))
+            ((not (eq? status 'error)) (ask-handler s))
+            ((eq? (body-answer (conn-body s)) 'call)
+             (body-error-set! (conn-body s)
+                              (let ((reason (head-refusal (conn-head s))))
+                                (if reason (list 'refused reason) (list 'parser err))))
+             (conn-phase-set! s 'handling)
+             (conn-deadline-set! s #f)
+             (let-values (((s asked) (ask-handler s)))
+               (values s (cons* '(read-stop) '(disarm-deadline) asked))))
             ((head-refusal (conn-head s))
              => (lambda (reason)
                   (respond-and-close s reason (refusal-headers (conn-head s)))))
@@ -824,33 +1114,111 @@
              (respond s (parser-error-status err) 'parser-error '())))))
         (else (values s '())))))
 
+  ;; ask-handler : ConnState -> (values ConnState (Listof Action))
+  ;; `(call-handler request)`, once, for a request whose head announced a
+  ;; body; nothing otherwise.
+  (define (ask-handler s)
+    (let ((bd (conn-body s)))
+      (if (eq? (body-answer bd) 'call)
+          (begin
+            (body-answer-set! bd 'asked)
+            (values s (list (list 'call-handler (conn-request s)))))
+          (values s '()))))
+
+  ;; answer-error : ConnState (List Symbol Any) -> (values ConnState (Listof Action))
+  ;; The status for what the feed that completed the head met in the body:
+  ;; a refusal's, or the parser's error's, then close.
+  (define (answer-error s error)
+    (if (eq? (car error) 'refused)
+        (respond-and-close s (cadr error) '())
+        (respond s (parser-error-status (cadr error)) 'parser-error '())))
+
   ;; rest-of : (List Bytevector Nat Nat) Nat -> Pending
   ;; The delivery's bytes from `next` on, or #f when the parser took them all.
   (define (rest-of delivery next)
     (let ((end (caddr delivery)))
       (and (fx<? next end) (list (car delivery) next end))))
 
-  ;; handling, handler-responded -> responding: write it, arm the write
-  ;; deadline.  A response with a fault is answered 500 instead, then close,
-  ;; the log naming the fault (decision 0010 item 2).  A handler's
+;; body/handling, handler-responded: the handler's answer, or a reader's
+  ;; response (decision 0013).
+  ;;   - Asked, a reader: `accept-reader`.
+  ;;   - Asked about a request whose head announced a body, a response: sent
+  ;;     at once, and the connection closes after it, as 'unread-body, unless
+  ;;     it closes already for a reason of its own (item 4); the body is not
+  ;;     read, and an error kept for the answer is not answered.
+  ;;   - Asked about a request with no body, or the reader's response: the
+  ;;     response, `respond-with`.
+  ;; An answer the core did not ask for changes nothing.
+  (define (on-handler-responded s answer)
+    (case (conn-phase s)
+      ((body handling)
+       (let ((bd (conn-body s)))
+         (case (body-answer bd)
+           ((asked)
+            (cond ((body-reader? answer) (accept-reader s answer))
+                  ((body-framed? bd)
+                   (unless (conn-close-after s) (conn-close-after-set! s 'unread-body))
+                   (respond-with s answer))
+                  (else (respond-with s answer))))
+           ((ending) (respond-with s answer))
+           (else (values s '())))))
+      (else (values s '()))))
+
+  ;; accept-reader : ConnState BodyReader -> (values ConnState (Listof Action))
+  ;; A reader, answered for the request being read.  A declared length, or a
+  ;; body met so far, past the reader's cap is answered 413 at once, then
+  ;; close.  Otherwise the reader reads: the pieces kept for it are handed
+  ;; over now, as `deliver-body` to a streaming one and into its buffer for a
+  ;; whole one; then an error kept for the answer is answered, or once the
+  ;; message has ended, the reader is handed its end.
+  (define (accept-reader s r)
+    (let ((bd (conn-body s)) (cap (body-reader-max-bytes r)))
+      (if (or (over? cap (body-declared bd)) (over? cap (body-count bd)))
+          (respond-and-close s 'body-too-large '())
+          (let ((held (reverse (body-held bd))) (error (body-error bd)))
+            (body-held-set! bd '())
+            (body-reader-set! bd r)
+            (cond
+             ((and error (body-reader-whole? r)) (answer-error s error))
+             (error
+              (let-values (((s answered) (answer-error s error)))
+                (values s (append held answered))))
+             ((body-reader-whole? r)
+              (body-answer-set! bd 'whole)
+              (buffer-start! bd)
+              (for-each (lambda (a) (buffer-add! bd (cadr a) (caddr a) (cadddr a))) held)
+              (if (body-complete? bd) (hand-over-whole s) (values s '())))
+             ((body-complete? bd)
+              (body-answer-set! bd 'ending)
+              (values s (append held '((deliver-body-end)))))
+             (else
+              (body-answer-set! bd 'stream)
+              (values s held)))))))
+
+  ;; respond-with : ConnState Response -> (values ConnState (Listof Action))
+  ;; -> responding: write the response, arm the write deadline, and let the
+  ;; body go.  From body, reading stops with the write, since `responding`
+  ;; does not read.  A response with a fault is answered 500 instead, then
+  ;; close, the log naming the fault (decision 0010 item 2).  A handler's
   ;; `Connection: close` closes the connection after its response (item 3),
   ;; unless it closes already for a reason of its own.
-  (define (on-handler-responded s response)
-    (case (conn-phase s)
-      ((handling)
-       (cond
-        ((response-fault response)
-         => (lambda (fault)
-              (let-values (((s actions) (respond-and-close s 'invalid-response '())))
-                (values s (cons (list 'log 'invalid-response fault) actions)))))
-        (else
-         (when (and (not (conn-close-after s)) (response-closes? response))
-           (conn-close-after-set! s 'handler-close))
-         (conn-phase-set! s 'responding)
-         (conn-deadline-set! s 'write)
-         (values s (list (write-action s response serialize-checked-response)
-                         '(arm-deadline write))))))
-      (else (values s '()))))
+  (define (respond-with s response)
+    (cond
+     ((response-fault response)
+      => (lambda (fault)
+           (let-values (((s actions) (respond-and-close s 'invalid-response '())))
+             (values s (cons (list 'log 'invalid-response fault) actions)))))
+     (else
+      (when (and (not (conn-close-after s)) (response-closes? response))
+        (conn-close-after-set! s 'handler-close))
+      (let ((reading? (eq? (conn-phase s) 'body)))
+        (conn-phase-set! s 'responding)
+        (conn-deadline-set! s 'write)
+        (body-roll! (conn-body s))
+        (let ((w (write-action s response serialize-checked-response)))
+          (values s (if reading?
+                        (list w '(read-stop) '(arm-deadline write))
+                        (list w '(arm-deadline write)))))))))
 
   ;; write-action : ConnState Response Serializer -> Action
   ;;   Serializer = serialize-response, or serialize-checked-response for a
@@ -883,11 +1251,17 @@
         (conn-outstanding-bytes-set! s (+ (conn-outstanding-bytes s) bytes))
         (list 'write segments bytes))))
 
-  ;; handling, handler-failed -> responding 500, then close.  (The bare close
-  ;; for a failure after the head is on the wire needs a streamed body: M6.)
+  ;; handling or body, handler-failed -> responding 500, then close: the
+  ;; handler raised, or its reader did, whether the body was still being read
+  ;; or had ended (decision 0013 item 7).  The reader is let go at once, so a
+  ;; piece already asked for never reaches a reader that raised.  (The bare
+  ;; close for a failure after the head is on the wire needs a streamed body:
+  ;; M6.3.)
   (define (on-handler-failed s)
     (case (conn-phase s)
-      ((handling) (respond-and-close s 'handler-failed '()))
+      ((handling body)
+       (body-roll! (conn-body s))
+       (respond-and-close s 'handler-failed '()))
       (else (values s '()))))
 
   ;; idle, shutdown-requested -> draining: nothing is in flight, so shut down.
@@ -908,10 +1282,12 @@
   ;; close : ConnState Symbol (Listof Action) -> (values ConnState (Listof Action))
   ;; Enter `closing`, disarming the deadline, armed or not, before the close
   ;; (M5.2): the shell's wheel holds a connection until its deadline is
-  ;; disarmed or passes.  `before` precedes both.
+  ;; disarmed or passes.  `before` precedes both.  A body being read goes,
+  ;; its reader with it.
   (define (close s reason before)
     (conn-phase-set! s 'closing)
     (conn-deadline-set! s #f)
+    (body-roll! (conn-body s))
     (values s (append before (list '(disarm-deadline) (list 'close reason)))))
 
   ;; respond-and-close :
@@ -929,6 +1305,10 @@
   ;; §4.3; the deadline armed before, a header or body one, gives way to it).
   ;; From head or body, which read, reading stops with the write, since
   ;; `responding` does not read; from handling it stopped at the pause (M3.5).
+  ;; What the body keeps for the answer is let go, a whole reader's buffer
+  ;; among it, but not the reader: the pieces already asked for, a prefix up
+  ;; to a cap or those met before an error, still go to it, and it is let go
+  ;; once the connection lingers or closes.  Nothing asks for its end.
   ;; The response has no body and no headers but `headers`, a redirect's
   ;; Location; the serializer writes its phrase, and its framing and
   ;; `Connection: close` (decision 0010 item 6).  The core's own response is
@@ -938,6 +1318,7 @@
       (conn-phase-set! s 'responding)
       (conn-deadline-set! s 'write)
       (conn-close-after-set! s reason)
+      (body-release! (conn-body s))
       (let ((w (write-action s (make-response status #f headers #f) serialize-response)))
         (values s (if reading?
                       (list w '(read-stop) '(arm-deadline write))

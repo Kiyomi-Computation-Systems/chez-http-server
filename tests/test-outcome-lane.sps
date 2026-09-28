@@ -11,7 +11,9 @@
 ;;; Since M2.5 that holds for all 135, the four upgrades M2.4 listed
 ;;; included: the core serves an upgrade and closes the connection after the
 ;;; response, so the parser is never resumed onto its own hand-off (decision
-;;; 0006's amendment, on the owner's word, 2026-09-25).
+;;; 0006's amendment, on the owner's word, 2026-09-25).  Since M6.1 it holds
+;;; with two handlers, one that reads every body and one that reads none
+;;; (decision 0013; see (outcome-lane)).
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) getenv)
         (trace-lane) (outcome-lane))
@@ -34,6 +36,13 @@
      (write 200)
      (close not-keep-alive))
     closed not-keep-alive ()))
+;; With a handler that reads no body, the POST, whose head announces one, is
+;; answered at once and closes the connection (decision 0013 item 4).
+(define spike-answered
+  '(((call-handler (POST "/a" 1 1 (("Host" . "x") ("Content-Length" . "3"))))
+     (write 200)
+     (close unread-body))
+    closed unread-body ()))
 
 (define (diag line)
   (let ((p (current-error-port))) (put-string p line) (put-char p #\newline) (flush-output-port p)))
@@ -47,10 +56,17 @@
     (test-equal "the instrument: the spike's messages whole give two handlers, two responses, the close"
                 spike-outcome (outcome-at spike 117))
     (test-equal "and a byte at a time, the same" spike-outcome (outcome-at spike 1))
-    (let* ((results (map (lambda (p) (cons (car p) (outcome-mismatch (cdr p) selection)))
-                         strict-request-fixtures))
-           (varied (filter cdr results)))
-      (for-each (lambda (r) (diag (string-append "OUTCOME MISMATCH " (car r) ": " (cdr r))))
-                varied)
-      (test-equal "every fixture has one outcome at every chunk size"
-                  '() (map car varied)))))
+    (test-equal "a handler that reads no body: the POST answered, then the close, whole and a byte at a time"
+                (list spike-answered spike-answered)
+                (list (outcome-at spike 117 answers) (outcome-at spike 1 answers)))
+    (for-each
+     (lambda (handler name)
+       (let* ((results (map (lambda (p) (cons (car p) (outcome-mismatch (cdr p) selection handler)))
+                            strict-request-fixtures))
+              (varied (filter cdr results)))
+         (for-each (lambda (r) (diag (string-append "OUTCOME MISMATCH (" name ") " (car r) ": " (cdr r))))
+                   varied)
+         (test-equal (string-append "every fixture has one outcome at every chunk size, " name)
+                     '() (map car varied))))
+     (list reads answers)
+     (list "its bodies read" "its bodies left unread"))))

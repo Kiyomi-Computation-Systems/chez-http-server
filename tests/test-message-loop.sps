@@ -22,8 +22,10 @@
 ;;;     exactly that;
 ;;;   - after a close-marked message the next one is never fed, and the
 ;;;     parser's "Data after `Connection: close`" error never fires;
-;;;   - one message at a time: from a call-handler to the resume after its
-;;;     response, the parser is not fed and the socket is not read;
+;;;   - one message at a time: from a message's end to the resume after its
+;;;     response, the parser is not fed and the socket is not read, and one
+;;;     handler is asked from one resume to the next (the spike's POST is
+;;;     read by its handler, whose head announces a body: decision 0013);
 ;;;   - a handler that raises is answered 500, then close;
 ;;;   - an upgrade (a WebSocket handshake, a CONNECT, `Upgrade: h2c`) is
 ;;;     served, then the connection closes, and the bytes after it are never
@@ -40,7 +42,7 @@
 ;;; three messages are 51, 47 and 19 bytes, so the parser stops at 51 and
 ;;; 98 of 117, as research/spike/pipeline-pause.sps measured on 2026-09-19
 ;;; and again on 2026-09-25 at the pin); decision 0004 items 1 and 4;
-;;; decision 0006 as amended on the owner's word, 2026-09-25.
+;;; decision 0006 as amended on the owner's word, 2026-09-25; decision 0013.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server span) (http-server limits) (fake-shell))
@@ -48,6 +50,14 @@
 (define (b s) (string->utf8 s))
 
 (define resp (make-response 200 #f '() (b "ok")))
+
+;; reading : Request -> BodyReader
+;; A handler that reads every request's body, dropping it, and answers
+;; `resp`.  A request whose head announces a body is handed to its handler
+;; at the head (decision 0013), and a response given instead of a reader
+;; closes the connection, so the rows that pipeline past the spike's POST
+;; read its body.
+(define reading (drops-body (lambda (request) resp)))
 
 ;; render-request : Request -> Datum — the request as its bytes.
 (define (render-request r)
@@ -143,24 +153,27 @@
 (define (fed sh) (fold-left (lambda (n f) (+ n (- (cadr f) (car f)))) 0 (feeds sh)))
 
 ;; serial? : FakeShell -> Boolean
-;; From each call-handler to the resume after its response, no feed-parser
-;; and no read-start, and reading was stopped before the handler was called.
-;; A response that closes the connection has no resume: its staged close
-;; begins with the shutdown (M3.5), after which the socket is read again,
-;; to drop what arrives, but nothing is fed, handled or resumed.
+;; One message at a time: from each message's end, where reading stops, to
+;; the resume after its response, no feed-parser and no read-start; and one
+;; handler asked from one resume to the next.  A response that closes the
+;; connection has no resume: its staged close begins with the shutdown
+;; (M3.5), after which the socket is read again, to drop what arrives, but
+;; nothing is fed, handled or resumed.  (The handler of a request whose head
+;; announces a body is asked once the head is in, and its body read after:
+;; decision 0013.)
 (define (serial? sh)
-  (let loop ((as (fake-shell-actions sh)) (handling #f) (reading #t))
+  (let loop ((as (fake-shell-actions sh)) (stopped #f) (asked #f))
     (cond ((null? as) #t)
           (else
            (let ((kind (car (car as))))
              (case kind
-               ((call-handler) (and (not handling) (not reading) (loop (cdr as) #t reading)))
-               ((resume-parser) (and (not (eq? handling 'closed)) (loop (cdr as) #f reading)))
-               ((feed-parser) (and (not handling) (loop (cdr as) handling reading)))
-               ((read-stop) (loop (cdr as) handling #f))
-               ((read-start) (and (not (eq? handling #t)) (loop (cdr as) handling #t)))
-               ((shutdown) (loop (cdr as) 'closed reading))
-               (else (loop (cdr as) handling reading))))))))
+               ((read-stop) (loop (cdr as) (or stopped #t) asked))
+               ((call-handler) (and (not asked) (loop (cdr as) stopped #t)))
+               ((resume-parser) (and (not (eq? stopped 'closed)) (loop (cdr as) #f #f)))
+               ((feed-parser) (and (not stopped) (loop (cdr as) stopped asked)))
+               ((read-start) (and (not (eq? stopped #t)) (loop (cdr as) stopped asked)))
+               ((shutdown) (loop (cdr as) 'closed asked))
+               (else (loop (cdr as) stopped asked))))))))
 
 (run-suite "message-loop"
   (lambda ()
@@ -200,8 +213,10 @@
     ;; Delivered whole, the parser stops at 51, the first message's end; the
     ;; handler runs with [51, 117) kept; the resume feeds exactly that; the
     ;; parser stops at 98 and the second handler runs with [98, 117) kept.
+    ;; The POST's head announces a body, so its handler is asked with the
+    ;; feed's result, once the feed has returned (decision 0013).
     (let ((boundary (guard (e (#t (list 'raised e)))
-                      (let-values (((sh seen) (connection default-limits)))
+                      (let-values (((sh seen) (connection default-limits reading)))
                         (fake-shell-feed-input! sh spike (bytevector-length spike))
                         (list (seen) (feeds sh))))))
       (test-equal "the rest of the delivery is kept from where the parser stopped: 51, then 98"
@@ -217,27 +232,28 @@
                 (list (list (list (list 'call-handler post-a) '(write 200)
                                   (list 'call-handler get-b) '(write 200))
                             'lingering))
-                (every-size spike default-limits outcome))
+                (every-size spike default-limits outcome reading))
     ;; The close-marked GET's response has no resume: its staged close
     ;; begins with the shutdown, after which the socket is read again, and
     ;; nothing is fed, handled or resumed (M3.5).
-    (test-equal "from a call-handler to its resume, or to its staged close, the parser is not fed nor the socket read"
+    (test-equal "from a message's end to its resume, or to its staged close, the parser is not fed nor the socket read"
                 '(#t)
-                (every-size spike default-limits serial?))
+                (every-size spike default-limits serial? reading))
     (test-equal "the parser never reported an error"
                 '(#f)
                 (every-size spike default-limits
                             (lambda (sh)
                               (exists (lambda (ev) (and (eq? (car ev) 'parser-result)
                                                         (eq? (cadr ev) 'error)))
-                                      (fake-shell-events sh)))))
+                                      (fake-shell-events sh)))
+                            reading))
     ;; Delivered a byte at a time, the input after GET /b is read only once
     ;; its response is written: the connection stopped reading at its pause,
     ;; and reads again only to linger, dropping what arrives.  So all 117
     ;; bytes are delivered, and the parser is fed the first 98 alone.
     (test-equal "a byte at a time, the 19 bytes after the close-marked GET are read only while lingering, never fed"
                 '(117 98 lingering)
-                (let-values (((sh seen) (connection default-limits)))
+                (let-values (((sh seen) (connection default-limits reading)))
                   (let ((delivered (fake-shell-feed-input! sh spike 1)))
                     (list delivered (fed sh) (conn-phase (fake-shell-conn-state sh))))))
 
@@ -248,7 +264,7 @@
                                   (list 'call-handler (get "3")) '(write 200))
                             'idle))
                 (every-size three default-limits outcome))
-    (test-equal "from a call-handler to its resume, the parser is not fed nor the socket read"
+    (test-equal "from a message's end to its resume, the parser is not fed nor the socket read"
                 '(#t)
                 (every-size three default-limits serial?))
 
@@ -302,7 +318,7 @@
                 (every-size three default-limits fake-shell-violations))
     (test-equal "the spike's messages too"
                 '(())
-                (every-size spike default-limits fake-shell-violations))
+                (every-size spike default-limits fake-shell-violations reading))
     (test-equal "a WebSocket handshake too"
                 '(())
                 (every-size websocket default-limits fake-shell-violations))))

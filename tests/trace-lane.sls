@@ -49,7 +49,8 @@
           (generated httparse-message)     ; httparse-message-machine
           (byte-machine runtime)           ; make-parser, parser-result-status/-error/-pause
           (http-server connection) (http-server private adapter)
-          (http-server limits) (http-server response))
+          (http-server limits) (http-server response)
+          (only (http-server body) read-body))
 
   (define request-dir "vendor/chez-httparse/test/vendor/llhttp/request/")
 
@@ -163,9 +164,11 @@
       ;; feed : Nat Nat -> ParserResult
       ;; One chunk, through every pause nobody outside asked for.  The
       ;; harness's own pause is recorded as the plain driver records it; the
-      ;; core's is followed by the handler cycle (handler-responded, then the
-      ;; write's completion, with its byte count); either way the parse
-      ;; resumes where it stopped.
+      ;; core's is followed by the handler cycle: the feed's result, which
+      ;; asks the handler of a request whose head announced a body (decision
+      ;; 0013); the handler answering with a reader, which is handed the body
+      ;; and its end; the reader's response; and the write's completion, with
+      ;; its byte count.  Either way the parse resumes where it stopped.
       (define (feed from to)
         (let again ((at from))
           (set! harness-paused #f)
@@ -177,6 +180,9 @@
                   (when (or harness-paused (not core-paused))
                     (trace-recorder-note-requested-pause! r (parser-stream-offset p)))
                   (when core-paused
+                    (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed res)
+                                                  (parser-result-next res) #f #f))
+                    (conn-context-step! ctx (list 'handler-responded core-reader))
                     (let ((w (assq 'write (conn-context-step!
                                            ctx (list 'handler-responded core-response)))))
                       (conn-context-step! ctx (list 'write-completed (caddr w)))))
@@ -201,8 +207,10 @@
                 (loop (cdr bounds) res)
                 (loop '() res))))))))
 
-  ;; What the handler answers in core-trace-at's cycle; the trace never sees it.
+  ;; What the handler answers in core-trace-at's cycle, a reader that drops
+  ;; the body, and the reader's response; the trace never sees either.
   (define core-response (make-response 200 #f '() #f))
+  (define core-reader (read-body (lambda (bv from to) #t) (lambda () core-response)))
 
   ;; trace-mismatch : Fixture Symbol -> #f | String
   ;; #f when every scheduled chunk size matches the recorded log, else the first

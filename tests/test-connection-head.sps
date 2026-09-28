@@ -98,9 +98,11 @@
 ;;   phase     the state the connection ended in
 ;;   reason    its close-after reason
 ;; drive : Bytevector Nat Limits -> Outcome
-;; One connection reading `input` in `size`-byte deliveries.
+;; One connection reading `input` in `size`-byte deliveries, its handler
+;; reading every body and answering `resp`: a response given instead of a
+;; reader would close the connection (decision 0013).
 (define (drive input size limits)
-  (let ((sh (make-fake-connection limits (lambda (request) resp))))
+  (let ((sh (make-fake-connection limits (drops-body (lambda (request) resp)))))
     (fake-shell-feed-input! sh input size)
     (let ((s (fake-shell-conn-state sh))
           (actions (fake-shell-actions sh))

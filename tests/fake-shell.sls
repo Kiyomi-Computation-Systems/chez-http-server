@@ -56,8 +56,13 @@
 ;;;
 ;;;   feed-parser     parser-feed!, then the result as `parser-result`
 ;;;   resume-parser   parser-resume!
-;;;   call-handler    the handler's response as `handler-responded`, or
-;;;                   `handler-failed` if it raises
+;;;   call-handler    the handler's answer, a response or a reader, as
+;;;                   `handler-responded`, or `handler-failed` if it raises
+;;;   deliver-body    the piece to the reader the core is handing the body to
+;;;                   (conn-body-reader), or `handler-failed` if it raises;
+;;;                   with no reader, nothing (M6.1, decision 0013)
+;;;   deliver-body-end  the reader's end: its response as `handler-responded`,
+;;;                   or `handler-failed` if it raises
 ;;;   write           fills the Date slot from the fake clock, or from the
 ;;;                   instant given for the write (fake-shell-date-writes!),
 ;;;                   keeps the bytes as the client would read them, and
@@ -70,9 +75,9 @@
 ;;;   arm-deadline    arms the wheel at the clock's now plus the kind's limit
 ;;;   disarm-deadline disarms it
 ;;;
-;;; and records the rest (logs, body deliveries, a hand-off) without acting
-;;; on them: bodies are M6's, the hand-off M8's.  (Since M2.5 the core
-;;; serves an upgrade and closes after it, so its own loop never hands off.)
+;;; and records the rest (logs, a hand-off) without acting on them: the
+;;; hand-off is M8's.  (Since M2.5 the core serves an upgrade and closes after
+;;; it, so its own loop never hands off.)
 ;;; Input is delivered only while the connection reads, as libuv delivers
 ;;; it.  An event the core cannot finish within `dispatch-cap` dispatches is
 ;;; a harness error, never a hang (global-constraints: cap by iteration
@@ -82,12 +87,13 @@
           fake-shell-state fake-shell-now
           fake-shell-actions fake-shell-events fake-shell-violations
           fake-shell-advance! fake-shell-deliver! fake-shell-tick! fake-shell-fire! fake-shell-run!
-          make-fake-connection fake-shell-conn-state fake-shell-reading?
+          make-fake-connection fake-shell-conn-state fake-shell-reading? drops-body
           fake-shell-deliver-later! fake-shell-settle! fake-shell-feed-input!
           fake-shell-writes fake-shell-date-writes! written-status write-wire)
   (import (rnrs)
           (byte-machine runtime)
-          (only (http-server connection) make-conn-state)
+          (only (http-server connection) make-conn-state conn-body-reader)
+          (only (http-server body) body-reader-on-piece body-reader-on-end read-body)
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server serializer) date-line)
@@ -296,6 +302,16 @@
          (arm! s limits 'idle)
          s))))
 
+  ;; drops-body : (Request -> Response) -> (Request -> BodyReader)
+  ;; A handler for a fake connection: it reads every request's body,
+  ;; dropping it, then answers what `answer` gives for the request.  A
+  ;; request with no body gets its reader's end at once.  A response given in
+  ;; place of a reader to a request whose head announces a body closes the
+  ;; connection (decision 0013), so suites that keep the connection past a
+  ;; body read it with this.
+  (define (drops-body answer)
+    (lambda (request) (read-body (lambda (bv from to) #t) (lambda () (answer request)))))
+
   ;; fake-shell-conn-state : FakeShell -> ConnState
   (define (fake-shell-conn-state s) (conn-context-state (fake-shell-state s)))
 
@@ -314,6 +330,16 @@
        (let ((answer (guard (e (#t (list 'handler-failed e)))
                        (list 'handler-responded (handler (cadr a))))))
          (fake-shell-deliver! s answer)))
+      ((deliver-body)
+       (let ((r (conn-body-reader (fake-shell-conn-state s))))
+         (when r
+           (guard (e (#t (fake-shell-deliver! s (list 'handler-failed e))))
+             ((body-reader-on-piece r) (cadr a) (caddr a) (cadddr a))))))
+      ((deliver-body-end)
+       (let ((r (conn-body-reader (fake-shell-conn-state s))))
+         (when r
+           (fake-shell-deliver! s (guard (e (#t (list 'handler-failed e)))
+                                    (list 'handler-responded ((body-reader-on-end r))))))))
       ((write) (write! s (cadr a) (caddr a)))
       ((read-stop) (fake-shell-reading?-set! s #f))
       ((read-start) (fake-shell-reading?-set! s #t))

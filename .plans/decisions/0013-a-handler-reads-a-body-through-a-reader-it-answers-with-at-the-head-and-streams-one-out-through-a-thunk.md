@@ -58,9 +58,10 @@ where the read started, the parser takes the head's first bytes as body.
      chunk framing removed. `on-end` is called once, after the last piece, and gives
      the response;
    - `(read-whole-body proc)`, or `(read-whole-body proc max-bytes)`, buffers.
-     `proc` is called with the body as one bytevector, allocated once from the
-     Content-Length, or copied and joined when chunked. `max-bytes` is 1 MiB
-     (1,048,576 B) by default.
+     `proc` is called with the body as one bytevector, grown as the body
+     arrives to its Content-Length, or copied and joined when chunked (as
+     amended by the review, below). `max-bytes` is 1 MiB (1,048,576 B) by
+     default.
 3. **A read's pieces are handed over as the parser meets them**, once that read's
    feed has returned, in order. The parser is never paused at a piece (weighed: the
    plan's one-slot mailbox, which adds 816 B to the JSON POST, more than the gate
@@ -116,3 +117,61 @@ which changes every handler's arity.
   status and closes (item 4).
 - The facade exports `read-body` and `read-whole-body`, and `docs/handlers.org`
   gains bodies.
+
+## Found while building (2026-09-28, M6.1)
+
+Settled where this record's first build was wrong or the record is silent,
+and kept on the owner's word (2026-09-28), by form. Weighed: pausing the
+parser at the head (below); letting a body's error or cap be met before the
+handler is asked when it comes in the head's read, the outcome lane
+exempting eight fixtures.
+
+- **What the feed that completes a head meets of the body waits for the
+  handler's answer.** Built as item 1 first said, the handler was asked once
+  that feed had returned, and the feed could go on into the body first. A
+  chunked body with an error in it (a bad chunk size) was then answered 400
+  without the handler when it came in the head's read, and handed to the
+  handler first when it came later: eight of the 135 strict llhttp fixtures
+  (`transfer-encoding.md`) had an outcome that depended on how the bytes were
+  split, which the outcome lane holds to one (design §8.1's second
+  property). So the pieces that feed meets are kept, and an error it meets,
+  or a cap the body passes, is kept too, and both wait for the answer: a
+  reader is handed the pieces, then the error's status; a response is sent,
+  the body is not read, and the error is not answered. The outcome lane now
+  runs every fixture with a handler that reads every body and with one that
+  reads none, and each has one outcome at every chunk size.
+- **Pausing the parser at the head was built, measured and not taken.** It
+  also makes the outcome independent of the reads, by asking the handler
+  before any of the body is parsed. Measured through the real parser,
+  adapter and core by the allocation suite (Darwin arm64, two runs each): the
+  JSON POST cost 3,248 B read whole and 3,120 B streamed with the pause, over
+  the 3,072 B gate, and costs 2,624 B and 2,432 B without it. The table's
+  figures above are the spike's model; these are the core's. With the body
+  dropped, as before M6.1, the POST costs 2,320 B.
+- **The form's detail that kept the connection when the whole body came
+  with the head is not taken** (Consequences): whether it came depends on the
+  reads.
+- **A piece that passes a cap is handed over up to it**, then the request is
+  refused, so a streaming reader is handed exactly the cap's bytes, however
+  they were split into reads.
+- **A reader is let go when the connection lingers or closes, or when it
+  raises**, not when the core writes a status of its own, so the pieces
+  already asked for, a prefix up to a cap or those met before an error, reach
+  it. A reader that raised is handed nothing more.
+
+The review before the first commit (2026-09-28, on the owner's "fix all
+findings"):
+
+- **A whole reader's buffer grows as the body arrives.** Made at the declared
+  length when the reader answered, it let a head alone take up to the
+  reader's cap, 1 MiB by default, before any of the body came, and with no
+  cap a declared length past what memory holds raised in the core. Now the
+  buffer grows to the declared length once that is at most twice what has
+  arrived, and doubles before: it is never more than twice what has arrived,
+  the buffers it grows through come to less than twice the body (128,657 B
+  for 64 KiB in 1,000-byte pieces, the allocation suite), and it ends exactly
+  full. A chunked body is still copied piece by piece and joined: on a
+  chunked MiB that allocates 2,099,391 B, where a doubling buffer trimmed at
+  the end allocates 3,129,692 B, and both hold 2 MiB at their peak.
+- **A status the core writes lets a whole reader's buffer go**, while the
+  reader is kept for the pieces already asked for.

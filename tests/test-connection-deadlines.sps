@@ -46,8 +46,10 @@
 
 (define get "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
 
-;; The handler answers every request 200.
-(define (answers request) (make-response 200 #f '() (b "ok")))
+;; The handler answers every request 200, reading its body first: a
+;; response given instead of a reader would close the connection (decision
+;; 0013), and the body row's body must be read for its deadline to run.
+(define answers (drops-body (lambda (request) (make-response 200 #f '() (b "ok")))))
 
 ;; The bytes of that answer's one write: its status line, the Date line (37
 ;; bytes: `Date: `, RFC 9110 §5.6.7's 29-character IMF-fixdate, CRLF),

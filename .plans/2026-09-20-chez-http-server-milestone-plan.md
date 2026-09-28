@@ -530,6 +530,10 @@ end-to-end through the serializer, each closing the connection.
 `max-body-bytes` row), so 413 goes through the serializer alone here. Decision 0009 added
 a ninth originated status, 301, which closes too.
 
+*Noted 2026-09-28:* 413 has its way in since M6.1: a body past `max-body-bytes`, or past
+a reader's own cap (decision 0013), driven end to end in
+`tests/test-connection-originated.sps`.
+
 - **Mutation:** make one of them keep the connection alive. Expect the close assertion
   red for that status alone.
 
@@ -1078,6 +1082,21 @@ tests land here:
   message.
 - **Mutation:** the feed after the pause starts where the delivery started. Expect the
   pinned row red.
+
+*Noted 2026-09-28 (M6.1, decision 0013):* decided by form. A request whose head
+announces a body is handed to the handler once the feed that completed the head has
+returned, and the handler answers with a response or a reader: `read-body` streams,
+`read-whole-body` buffers up to 1 MiB, and `max-body-bytes` caps every body. A reader is
+handed each read's pieces as the parser meets them, so the parser is never paused inside
+a body in v1 (the one-slot mailbox added 816 B to the JSON POST in the spike's model).
+So brief risk 3's two facts are pinned as the parser's, at the pin
+(`tests/test-pause-pins.sps`), and the mutation above runs on that suite's own feed loop.
+What the feed that completes a head meets of the body waits for the handler's answer, so
+the outcome stays independent of the reads; pausing at the head instead cost the JSON
+POST 3,248 B, over the gate (decision 0013's note). What M6.2 has left: a reader
+answered in v1 takes each read's pieces as they are handed over, so reading waits on a
+credit only for an awaiting reader (M7); M6.2's check is that wait, and the body deadline
+stopped through it, with a reader that withholds its credit.
 
 **M6.2 — backpressure on the read side.** `body-credit` gets its row: reading stops
 while the handler has not taken what was delivered, and starts on its credit, so a slow

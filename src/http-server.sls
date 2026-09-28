@@ -13,7 +13,11 @@
 ;;; logs a line for each thing that happens on standard output (see
 ;;; (http-server private serve)).  A handler reads the request through
 ;;; accessors that copy what it asks for, as strings, and the method as the
-;;; symbol llhttp names (decision 0012; see (http-server view)).  The
+;;; symbol llhttp names (decision 0012; see (http-server view)).  A request
+;;; whose head announces a body reaches the handler once its head is in, and
+;;; the handler reads the body by answering with a reader, `read-body` or
+;;; `read-whole-body`; a response given instead is sent at once, and the
+;;; connection closes after it (decision 0013; see (http-server body)).  The
 ;;; response is (http-server response)'s record, which the server frames
 ;;; (decision 0010).  A malformed setting raises
 ;;; &http-server-config-error at startup (design §6.4).
@@ -26,6 +30,7 @@
     serve
     ;; what a handler reads
     request? request-method request-path request-query request-header request-host
+    read-body read-whole-body
     ;; what it answers
     make-response response?
     ;; what a start raises
@@ -33,6 +38,7 @@
     &http-server-config-error http-server-config-error?)
   (import (only (http-server request) request? request-method)
           (only (http-server view) request-path request-query request-header request-host)
+          (only (http-server body) read-body read-whole-body)
           (only (http-server response) make-response response?)
           (only (http-server private serve)
                 serve

@@ -32,8 +32,11 @@
 ;;;     a segment of the write, never copied (design §7.3; the M3 exit);
 ;;;   - a field name costs the same however much of a parser keyword it
 ;;;     matches (byte-machine #139, fixed in v0.6.1);
-;;;   - and two requests a server meets are within the ratchet too: a JSON
-;;;     POST, and ab -k's HTTP/1.0 keep-alive GET (the M3 exit).  curl's GET
+;;;;   - and two requests a server meets are within the ratchet too: a JSON
+;;;     POST, and ab -k's HTTP/1.0 keep-alive GET (the M3 exit).  The POST's
+;;;     handler reads its body, whole and streamed: a response given instead
+;;;     of a reader to a request whose head announces a body closes the
+;;;     connection (decision 0013, M6.1).  curl's GET
 ;;;     is printed, not gated: its three fields are the CPS workload's shape,
 ;;;     which the ratchet already holds.  So is a browser's GET, with eleven
 ;;;     fields: each past the CPS workload's three costs 176 B, and reading
@@ -53,7 +56,7 @@
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) statistics sstats-bytes)
         (http-server connection) (http-server private adapter)
-        (http-server response) (http-server limits)
+        (http-server response) (http-server limits) (http-server body)
         (uri collect)
         (only (generated httparse-message) httparse-message-machine)
         (only (httparse modes) httparse-message-type-value)
@@ -94,6 +97,88 @@
           (assertion-violation 'connection "the connection did not return to idle"
                                (conn-phase (conn-context-state ctx))))
         (parser-resume! p)))))
+
+;; reading-connection : Bytevector (-> BodyReader) -> (-> Void)
+;; A keep-alive connection that serves `request`, whose head announces a
+;; body, once per call, as a shell does (decision 0013): the request fed
+;; whole, the core pauses the parser at the message's end, and asks the
+;; handler with the feed's result; the handler answers with a reader made by
+;; `make-reader`; the pieces the core hands it are handed over; and its
+;; response is written.  What the callbacks queue is kept as the gate's own
+;; connection keeps it, a pair a batch.
+(define (reading-connection request make-reader)
+  (let* ((queued '())
+         (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f default-limits)
+                                 (lambda (actions) (set! queued (cons actions queued)))))
+         (p (make-conn-parser ctx))
+         (len (bytevector-length request)))
+    (lambda ()
+      (set! queued '())
+      (conn-context-step! ctx (list 'bytes-arrived request 0 len))
+      (let ((r (parser-feed! p request 0 len)))
+        (unless (eq? (parser-result-status r) 'paused)
+          (assertion-violation 'reading-connection "the core did not pause the parser"
+                               (parser-result-status r)))
+        (unless (assq 'call-handler
+                      (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed r)
+                                                    (parser-result-next r) #f #f)))
+          (assertion-violation 'reading-connection "the core did not ask the handler"))
+        (let ((reader (make-reader)))
+          (for-each (lambda (a)
+                      (when (eq? (car a) 'deliver-body)
+                        ((body-reader-on-piece reader) (cadr a) (caddr a) (cadddr a))))
+                    (conn-context-step! ctx (list 'handler-responded reader)))
+          (let ((w (assq 'write (conn-context-step!
+                                 ctx (list 'handler-responded ((body-reader-on-end reader)))))))
+            (unless w
+              (assertion-violation 'reading-connection "the reader's response was not written"))
+            (conn-context-step! ctx (list 'write-completed (caddr w)))))
+        (unless (eq? (conn-phase (conn-context-state ctx)) 'idle)
+          (assertion-violation 'reading-connection "the connection did not return to idle"
+                               (conn-phase (conn-context-state ctx))))
+        (parser-resume! p)))))
+
+;; whole-buffers : Nat Nat -> Nat
+;; What the core allocates reading a body of `size` bytes whole, delivered
+;; in `piece`-byte pieces, averaged over ten connections: a POST's head, the
+;; handler asked and answered with a whole reader (no cap of its own), each
+;; stepped before the count, then each piece entered as the adapter enters
+;; it.  The pieces are the same bytes each time, so only the buffer the core
+;; grows is counted.
+(define (whole-buffers size piece)
+  (let* ((head (b (string-append "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: "
+                                 (number->string size) "\r\n\r\n")))
+         (bytes (make-bytevector piece 97))
+         (read-whole (lambda ()
+                       (let* ((ctx (make-conn-context
+                                    (make-conn-state 'idle 'idle #f 0 0 #f #f default-limits)
+                                    (lambda (actions) #f)))
+                              (p (make-conn-parser ctx))
+                              (len (bytevector-length head)))
+                         (conn-context-step! ctx (list 'bytes-arrived head 0 len))
+                         (parser-feed! p head 0 len)
+                         (conn-context-step! ctx '(parser-result need-input 0 0 #f #f))
+                         (conn-context-step! ctx (list 'handler-responded
+                                                       (read-whole-body (lambda (body) resp) #f)))
+                         (conn-context-state ctx))))
+         (states (let loop ((i 0) (acc '())) (if (= i 10) acc (loop (+ i 1) (cons (read-whole) acc))))))
+    (let ((before (sstats-bytes (statistics))))
+      (for-each (lambda (s)
+                  (let loop ((arrived 0))
+                    (when (< arrived size)
+                      (let ((n (min piece (- size arrived))))
+                        (conn-parser-step s 'on-body-data bytes 0 n)
+                        (loop (+ arrived n))))))
+                states)
+      (div (- (sstats-bytes (statistics)) before) 10))))
+
+;; The readers the POSTs are answered with: the body read whole, as the
+;; buffering helper reads it, and streamed and dropped.  Each is made for its
+;; request, as a handler makes it.
+(define (whole) (read-whole-body (lambda (body) resp)))
+(define (drop bv from to) #f)
+(define (answer) resp)
+(define (streamed) (read-body drop answer))
 
 ;; What a thunk last returned, so an allocation it makes is never dead code.
 (define hold #f)
@@ -259,20 +344,39 @@
     ;; ratchet; curl's GET, the CPS workload's shape, and a browser's are
     ;; printed.  On the owner's word, at the M3 exit (2026-09-26).
     (let ((curl (measure (lambda () (per-request curl-get))))
-          (json (measure (lambda () (per-request json-post))))
+          (json (measure (lambda () (warmed (reading-connection json-post whole)))))
+          (json-streamed (measure (lambda () (warmed (reading-connection json-post streamed)))))
           (ab (measure (lambda () (per-request ab-keep-alive))))
           (browser (measure (lambda () (per-request browser-get)))))
       (test-eq "every request a server meets is served" 'served
-               (if (for-all number? (list curl json ab browser)) 'served 'refused))
-      (when (for-all number? (list curl json ab browser))
+               (if (for-all number? (list curl json json-streamed ab browser)) 'served 'refused))
+      (when (for-all number? (list curl json json-streamed ab browser))
         (diag (string-append "connection-allocation: requests a server meets: curl's GET "
-                             (number->string curl) " B/request, a JSON POST "
-                             (number->string json) ", ab -k's GET " (number->string ab)
+                             (number->string curl) " B/request, a JSON POST read whole "
+                             (number->string json) " and streamed " (number->string json-streamed)
+                             ", ab -k's GET " (number->string ab)
                              "; a browser's GET, eleven fields, " (number->string browser)))
-        (test-eq "a JSON POST with Content-Type and Content-Length is within the ratchet" 'within
+        (test-eq "a JSON POST with Content-Type and Content-Length, its body read whole, is within the ratchet" 'within
                  (if (<= json gate) 'within 'over))
+        (test-eq "the same POST, its body streamed, is within the ratchet" 'within
+                 (if (<= json-streamed gate) 'within 'over))
         (test-eq "ab -k's HTTP/1.0 keep-alive GET is within the ratchet" 'within
                  (if (<= ab gate) 'within 'over))))
+
+    ;; A body read whole is buffered as it arrives, the buffer growing to the
+    ;; declared length once that is at most twice what has arrived and
+    ;; doubling before: the buffers it grows through come to less than twice
+    ;; the body (M6.1's review).  Grown by each piece alone, a 64 KiB body in
+    ;; 1,000-byte pieces would be copied at each of its 66.
+    (let ((grown (measure (lambda () (whole-buffers 65536 1000)))))
+      (when (number? grown)
+        (diag (string-append "connection-allocation: a 64 KiB body read whole, in 1,000-byte pieces, "
+                             (number->string grown) " B")))
+      (test-eq "a 64 KiB body read whole, in 1,000-byte pieces, allocates less than twice its length"
+               'within
+               (cond ((not (number? grown)) grown)
+                     ((< grown (* 2 65536)) 'within)
+                     (else (list 'over grown)))))
 
     ;; The same connection, twice as long: the requests after the first
     ;; 11,000 cost what those did.

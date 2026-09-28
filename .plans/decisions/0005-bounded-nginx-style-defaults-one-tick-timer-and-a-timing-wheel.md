@@ -167,3 +167,20 @@ Decided on the owner's word on 2026-09-27, by form, after M5.1's review.
 - **Each connection keeps its own entry in the wheel,** so arming and disarming a
   deadline allocate nothing: a disarm then an arm measured 96 B with the wheel keeping a
   table from connection to entry, which was weighed, and 0 B this way.
+
+## Amendment (2026-09-28) — max-body-bytes, as M6.1 built it
+
+Decided on the owner's word on 2026-09-28, by form
+([decision 0013](0013-a-handler-reads-a-body-through-a-reader-it-answers-with-at-the-head-and-streams-one-out-through-a-thunk.md)
+item 5). The table's row is read as its words say: bodies stream to the handler, and
+nothing caps them by default.
+
+- **`max-body-bytes`, when set, caps every body**, streamed or buffered, from
+  `CHEZ_HTTP_MAX_BODY_BYTES` in bytes (`unbounded`, or unset, for none). A declared
+  Content-Length past it is answered `413`, then close, before the handler is asked; a
+  chunked body at the piece that passes it, a streaming reader handed the piece up to
+  the cap first.
+- **The buffering helper, `read-whole-body`, takes a cap of its own**, 1 MiB
+  (1,048,576 B) unless the handler gives another, answered the same way. The lower of
+  the two caps is the one a body meets.
+- The default is unchanged.

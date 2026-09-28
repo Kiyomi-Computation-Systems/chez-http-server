@@ -93,6 +93,7 @@
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks)
         (http-server request) (http-server response) (http-server span) (http-server limits)
+        (only (http-server body) read-body read-whole-body)
         (response-reader) (shell-testing))
 
 (define (b s) (string->utf8 s))
@@ -189,7 +190,11 @@
 (define clock-reads 0)
 (define (clock) (set! clock-reads (+ clock-reads 1)) (* 1000 instant))
 
-;; The handler answers 200 with the request's target as the body, except:
+;; The handler answers 200 with the request's target as the body, reading a
+;; POST's body first (decision 0013: a response given instead of a reader
+;; would close the connection), except: `/echo` reads the body whole and
+;; answers with it; `/early` answers without reading it; `/small` reads it
+;; whole, capped at 4 bytes;
 ;; `/raise` raises; `/big`, four MiB, held weakly here so the retention
 ;; check can ask whether anything else still holds it, and closing the
 ;; connection after it, so the client knows it has the whole response when it
@@ -220,6 +225,13 @@
            (make-response 200 #f '() (make-bytevector wide-size 120)))
           ((bytevector=? target (b "/raise"))
            (raise (make-message-condition "the handler failed")))
+          ((bytevector=? target (b "/echo"))
+           (read-whole-body (lambda (body) (make-response 200 #f '() body))))
+          ((bytevector=? target (b "/early")) (make-response 200 #f '() target))
+          ((bytevector=? target (b "/small"))
+           (read-whole-body (lambda (body) (make-response 200 #f '() body)) 4))
+          ((eq? (request-method req) 'POST)
+           (read-body (lambda (bv start end) #t) (lambda () (make-response 200 #f '() target))))
           (else (make-response 200 #f '() target)))))
 
 ;; with : Symbol Any -> Limits — the defaults, but one field.
@@ -602,6 +614,33 @@
                         (begin (wait-for (lambda () (not (eq? (client-end cl) 'open))))
                                (list (map status (responses (client-bytes cl))) (client-end cl)))
                         (list 'not-connected connected))))
+      (client-close! cl))
+
+    ;; Bodies (M6.1, decision 0013), over loopback: read whole, chunked or
+    ;; not, and echoed, on a connection kept for the request behind; answered
+    ;; before the body is read, and closed after; past a reader's cap, 413.
+    (let ((cl (open-client! (b (string-append "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\n"
+                                              "hello world"
+                                              "POST /echo HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                              "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n")))))
+      (test-eq "a client reads two whole responses to two POSTs" 'satisfied
+               (wait-for (lambda () (= 2 (length (responses (client-bytes cl)))))))
+      (test-equal "each POST's body read whole and echoed, chunked or not, on the one connection"
+                  '((200 "hello world") (200 "hello world"))
+                  (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl))))
+      (client-close! cl))
+    (let ((cl (open-client! (b "POST /early HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world"))))
+      (test-eq "the client of a handler that answers before reading the body reads the stream's end" 'satisfied
+               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+      (test-equal "after a 200 that says Connection: close"
+                  '((200 "/early" "close"))
+                  (map (lambda (r) (list (status r) (body r) (field r "Connection")))
+                       (responses (client-bytes cl))))
+      (client-close! cl))
+    (let ((cl (open-client! (b "POST /small HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world"))))
+      (test-eq "the client of a reader capped below the body reads the stream's end" 'satisfied
+               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+      (test-equal "after a 413" '(413) (map status (responses (client-bytes cl))))
       (client-close! cl))
 
     ;; A handler that raises.

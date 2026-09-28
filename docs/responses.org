@@ -39,8 +39,8 @@ connection:
   response in two);
 - a ~Content-Length~ or ~Transfer-Encoding~ header: the server writes those;
 - a ~Connection~ header other than ~close~;
-- a body that is not a bytevector or ~#f~, or an answer that is not a
-  response.
+- a body that is not a bytevector or ~#f~, or an answer that is neither a
+  response nor a reader ([[file:handlers.org][handlers.org]]).
 
 Decision 0010 in ~.plans/decisions/~ records why.
 
@@ -55,6 +55,7 @@ request cannot be read safely.
 | ~301 Moved Permanently~                 | brackets or pipes in a GET or HEAD target ([[file:request-targets.org][request-targets.org]]) |
 | ~400 Bad Request~                       | a request, target or ~Host~ the server cannot accept          |
 | ~408 Request Timeout~                   | the headers took longer than ~CHEZ_HTTP_READ_HEADER_TIMEOUT~, or the body paused longer than ~CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT~ |
+| ~413 Content Too Large~                 | a body over ~CHEZ_HTTP_MAX_BODY_BYTES~, or over a ~read-whole-body~ cap |
 | ~414 URI Too Long~                      | a target over ~CHEZ_HTTP_MAX_TARGET_BYTES~                    |
 | ~431 Request Header Fields Too Large~   | headers over one of the four header limits                    |
 | ~500 Internal Server Error~             | your handler raised, or gave an answer listed above           |

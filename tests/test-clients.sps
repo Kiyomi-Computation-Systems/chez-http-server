@@ -47,10 +47,15 @@
 (define logged '())
 (define (log! what details) (set! logged (append logged (list (cons what details)))))
 
-;; The handler answers with the path and the query it read, "-" for none.
+;; The handler answers with the path and the query it read, "-" for none,
+;; reading a POST's body first: a response given instead of a reader to a
+;; request whose head announces a body closes the connection (decision 0013).
 (define (handler r)
-  (make-response 200 #f '()
-                 (b (string-append (request-path r) " " (or (request-query r) "-") "\n"))))
+  (let ((answer (make-response 200 #f '()
+                               (b (string-append (request-path r) " " (or (request-query r) "-") "\n")))))
+    (if (eq? (request-method r) 'POST)
+        (read-body (lambda (bv start end) #t) (lambda () answer))
+        answer)))
 
 ;; A client run as a child: its process, the pipe its standard output is
 ;; read through, what it wrote, its exit, as (status signal), and whether its
