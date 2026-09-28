@@ -2974,3 +2974,18 @@ Records: design §4.1 (the answer's `credit`), §4.3 (the state) and §4.4's M6.
 Size: 242 inserted lines of code and tests, 37 deleted; the slice, 674 and 83.
 
 NEXT: the two stacked PRs, merged bottom up on the owner's word. Then M6.3, a streamed response (plan §14).
+
+MERGED to main on 2026-09-28, on the owner's "do closing ritual": **M6.2, as two stacked PRs.**
+- **#71, the core waits for a reader's credit,** as 231a6ad. Its squash tree (24086c6) is the tested tip's, 06cbfb5's, and its parent is e9191ef. It merged first and kept its branch, since #72 was based on it.
+- **#72, the libuv shell's credit,** as b36cd7f. It was retargeted to main and rebased from #71's tip, 06cbfb5. The rebased tip, de3ef65, has the tested tree (89a5aa4, 0bb79ab's), and so does the squash, whose parent is 231a6ad.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36461834323 (#71), 36461867546 (#72 as opened) and 36466500413 (#72 rebased).
+- **Branches.** Both deleted local and remote, and refs pruned. No PR is open. `gh pr merge --delete-branch` merged #72 and deleted its remote branch, but left the checkout on it, so the switch to main, the fast-forward and the local deletions were done by hand.
+
+`make test` green on main: forty suites, 1,107 expected passes.
+
+DONE and merged (231a6ad, PR #71; b36cd7f, PR #72): **M6.2.**
+- Reading waits for a reader's credit when the shell hands it its pieces on credit, `(handler-responded reader credit)`: the connection waits in `awaiting-credit`, reading stopped and no deadline armed, until `(body-credit n)` covers what the reader was handed, so a slow reader holds at most one read. A refusal still wins over the wait.
+- v1's shells never answer on credit, so a v1 reader takes each piece as it is handed over, and v1's figures are unchanged. The checks stand in for M7's coroutine shell with a fake connection and a libuv shell made on credit.
+- The libuv shell's timer stops while a connection waits for credit and stays, the row M5.3's note asked for.
+
+NEXT: M6.3 (plan §14), a streamed response: `handler-body-chunk` and `handler-body-end` get their rows, chunked to HTTP/1.1 and close-delimited to 1.0 (M3.2's carried arm); `write-high-water` and `write-low-water` arrive, and with them `notify-producer`; and a handler that fails after its head is on the wire gets a bare close. Decision 0013 item 8 already settled the body of unknown length: a thunk, called only below the write's high water. On a fresh branch cut from main after this commit, when the owner asks.
