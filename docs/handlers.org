@@ -115,26 +115,32 @@ bytevector, and the eof object when there is no more.
                           (string->utf8 (string-append "line " (number->string n) "\n"))))))))
 #+end_src
 
-~(lambda () (get-bytevector-some port))~ streams a binary input port.
+~(lambda () (get-bytevector-some port))~ streams a file's binary input port.
 
 - An HTTP/1.1 client gets the body chunked, and the connection stays open. An
   HTTP/1.0 client gets it with no length, and the connection closes after it:
   the close is how the client knows the body has ended.
 - The server calls the producer only while the client keeps up. Once more than
-  256 KiB are written and not yet taken by the client
-  (~CHEZ_HTTP_WRITE_HIGH_WATER~), it waits until no more than 64 KiB are
-  (~CHEZ_HTTP_WRITE_LOW_WATER~). So a slow client never makes the server hold
-  more than 256 KiB and one piece.
-- The server waits for each answer, and serves no other connection meanwhile,
-  so return a piece only once you have one. Never return an empty bytevector:
-  it counts as a failure, like any answer that is not a piece.
+  256 KiB (~CHEZ_HTTP_WRITE_HIGH_WATER~), or 64 pieces, are written and not
+  yet taken by the client, it waits until no more than 64 KiB
+  (~CHEZ_HTTP_WRITE_LOW_WATER~) and 16 pieces are. So a slow client costs the
+  server little more than 256 KiB and one piece.
+- Each piece is a write of its own, and a write costs the server the same
+  however small it is. Return pieces of a few KiB: gather small rows into
+  one. 100-byte rows gathered into 16 KiB pieces streamed about 28 times
+  faster (measured on Linux).
+- A producer must answer at once: while it runs, the server serves no other
+  connection. Stream what is ready, such as a file. A pipe or a socket can
+  make it wait for data. Never return an empty bytevector: it counts as a
+  failure, like any answer that is not a piece.
 - You may return the same bytevector each time: a piece is copied as it is
   written.
 - The headers go out before the first piece. If the producer raises, or returns
   what is not a bytevector with bytes in it or the eof object, it is too late
   for a ~500~: the server closes the connection at once and logs
-  ~handler-failed~. An HTTP/1.1 client sees the body cut short. An HTTP/1.0
-  client cannot tell a cut-short body from a whole one.
+  ~handler-failed~, naming what came back by its kind and length, such as
+  ~(string 5)~, never its value. An HTTP/1.1 client sees the body cut short.
+  An HTTP/1.0 client cannot tell a cut-short body from a whole one.
 - A ~HEAD~ request, a ~204~ or a ~304~ has no body, so the producer is never
   called. And the server stops calling it early when the client leaves, a
   write times out, or it fails. So don't count on reaching the eof object to

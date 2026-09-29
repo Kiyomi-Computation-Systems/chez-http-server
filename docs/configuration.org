@@ -83,7 +83,9 @@ The two water marks bound a streamed response ([[file:handlers.org][handlers.org
 asks its producer for the next piece only while at most
 ~CHEZ_HTTP_WRITE_HIGH_WATER~ bytes are written and not yet taken by the
 client, and once past it, waits until no more than ~CHEZ_HTTP_WRITE_LOW_WATER~
-are. A low water above the high water is refused at startup.
+are. It also waits once 64 pieces are outstanding, until 16 are: each piece
+is a write of its own, which costs the same whatever its size. Those two
+counts are fixed. A low water above the high water is refused at startup.
 
 ~CHEZ_HTTP_BACKLOG~ is how many connections the kernel keeps waiting for the
 server to accept them, at most 2147483647; the kernel may cap it lower

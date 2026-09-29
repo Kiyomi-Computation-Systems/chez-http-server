@@ -228,13 +228,17 @@
 ;;; at most one piece passes it, and once past it, it waits until a
 ;;; completion brings them to the low water, and to the high water too,
 ;;; whatever limits the connection was given, then is asked again.  The
-;;; response is written once its end has come and every write has
-;;; completed, and a close-delimited one then closes, in stages, as every
-;;; close after a response does.  No body is written to a HEAD, a 204 or a
-;;; 304, so their producer is never called.  A producer that fails once the
-;;; head is on the wire gets a bare close: no status can be written after
-;;; the head, and the client reads the body cut short.  The shells find the
-;;; producer to call with `conn-producer`.
+;;; writes outstanding are bounded as well, at 64, and a waiting producer
+;;; is asked again at 16 or fewer (`stream-writes-high`, `-low`): a write
+;;; holds the loop and memory the same whatever its size, so small pieces
+;;; would otherwise make a turn ask thousands of times (M6.3's second
+;;; review).  The response is written once its end has come and every
+;;; write has completed, and a close-delimited one then closes, in stages,
+;;; as every close after a response does.  No body is written to a HEAD, a
+;;; 204 or a 304, so their producer is never called.  A producer that fails
+;;; once the head is on the wire gets a bare close: no status can be
+;;; written after the head, and the client reads the body cut short.  The
+;;; shells find the producer to call with `conn-producer`.
 ;;;
 ;;; WHAT HAPPENS NEVER DEPENDS ON HOW THE BYTES WERE SPLIT INTO READS (design
 ;;; §8.1's second property).  The feed that completes a head can go on into
@@ -414,13 +418,34 @@
   ;; bytevector among them: `get-bytevector-some` never answers one, and a
   ;; producer asked again at once for as long as it answered one would hold
   ;; the loop, every connection's, until it had something (M6.3's review).
+  ;; The violation names the answer by its kind and length (answer-kind),
+  ;; never holds it: the shells log it, and the answer is the response's
+  ;; data, a whole page when a string was answered for its bytes (M6.3's
+  ;; second review).
   (define (producer-event x)
     (cond ((and (bytevector? x) (fx>? (bytevector-length x) 0))
            (list 'handler-body-chunk x 0 (bytevector-length x)))
           ((eof-object? x) '(handler-body-end))
           (else (assertion-violation 'producer-event
                   "a producer answers a bytevector of a byte or more, or the eof object at the end"
-                  x))))
+                  (answer-kind x)))))
+
+  ;; answer-kind : Any -> (Listof (U Symbol Nat))
+  ;; What an answer that is no piece is, by its kind and, where it has one,
+  ;; its length: `(string 5)`, `(list 2)`, `(symbol)`, and `(other)` for a
+  ;; kind not named.
+  (define (answer-kind x)
+    (cond ((bytevector? x) (list 'bytevector (bytevector-length x)))
+          ((string? x) (list 'string (string-length x)))
+          ((vector? x) (list 'vector (vector-length x)))
+          ((list? x) (list 'list (length x)))
+          ((pair? x) '(pair))
+          ((symbol? x) '(symbol))
+          ((char? x) '(char))
+          ((number? x) '(number))
+          ((boolean? x) '(boolean))
+          ((procedure? x) '(procedure))
+          (else '(other))))
 
   ;; conn-body-buffered : ConnState -> Nat
   ;; The bytes the core holds for a whole reader's body: its buffer's length,
@@ -762,16 +787,19 @@
   ;; are at or below the low water, and at or below the high water too: a
   ;; producer is never asked past it, whatever limits the connection was
   ;; given, and limits-with, unlike the environment, accepts a low water
-  ;; above the high (M6.3's review).  The write deadline stays armed while a
-  ;; write is outstanding; with none, none is, since the producer is then
-  ;; the one waited on, and decision 0005 has no deadline for a handler.
+  ;; above the high (M6.3's review).  One that waits at 64 writes
+  ;; outstanding is asked again once they are 16 or fewer too (M6.3's
+  ;; second review).  The write deadline stays armed while a write is
+  ;; outstanding; with none, none is, since the producer is then the one
+  ;; waited on, and decision 0005 has no deadline for a handler.
   (define (stream-completed s)
     (let ((writing? (> (conn-outstanding s) 0)))
       (conn-deadline-set! s (and writing? 'write))
       (cond
        ((and (not (conn-asked? s))
              (below-high-water? s)
-             (<= (conn-outstanding-bytes s) (limits-write-low-water (conn-limits s))))
+             (<= (conn-outstanding-bytes s) (limits-write-low-water (conn-limits s)))
+             (<= (conn-outstanding s) stream-writes-low))
         (conn-asked?-set! s #t)
         (values s (if writing?
                       '((arm-deadline write) (notify-producer))
@@ -782,11 +810,11 @@
   ;; responding, handler-body-chunk bv start end: the piece the producer was
   ;; asked for (M6.3).  It is written, framed as the head framed the body,
   ;; and the write deadline armed; then the producer is asked for the next
-  ;; one while the bytes outstanding are at or below the high water, and
-  ;; waits otherwise.  A piece no one asked for, or one of no bytes, which
-  ;; `producer-event` never makes, is the shell's bug: an assertion
-  ;; violation.  In any other state the producer has been let go, and
-  ;; nothing changes.
+  ;; one while the bytes outstanding are at or below the high water and
+  ;; fewer than 64 writes are, and waits otherwise.  A piece no one asked
+  ;; for, or one of no bytes, which `producer-event` never makes, is the
+  ;; shell's bug: an assertion violation.  In any other state the producer
+  ;; has been let go, and nothing changes.
   (define (on-body-chunk s fields)
     (case (conn-phase s)
       ((responding)
@@ -836,10 +864,25 @@
     (list 'write segments bytes))
 
   ;; below-high-water? : ConnState -> Boolean — whether the bytes
-  ;; outstanding are at or below the limits' write high water, where a
-  ;; producer may be asked for a piece.
+  ;; outstanding are at or below the limits' write high water, and fewer
+  ;; than `stream-writes-high` writes are, where a producer may be asked for
+  ;; a piece.
   (define (below-high-water? s)
-    (<= (conn-outstanding-bytes s) (limits-write-high-water (conn-limits s))))
+    (and (<= (conn-outstanding-bytes s) (limits-write-high-water (conn-limits s)))
+         (< (conn-outstanding s) stream-writes-high)))
+
+  ;; stream-writes-high, stream-writes-low : Nat
+  ;; The most writes a stream has outstanding, 64, and how few it falls to
+  ;; before a producer waiting at 64 is asked again, 16: decided on the
+  ;; owner's word, fixed, not settings (decision 0005's amendment of
+  ;; 2026-09-29).  Each piece is a write of its own, and a write holds the
+  ;; loop and memory the same whatever its size, which the water marks,
+  ;; counting bytes, do not see: 100-byte pieces let a turn ask some 2,500
+  ;; times, and 1-byte ones some 43,700.  At 64 writes, pieces of 4 KiB or
+  ;; more meet the byte marks first (64 x 4 KiB is the high water, 256 KiB),
+  ;; and 16 keeps the marks' four to one.
+  (define stream-writes-high 64)
+  (define stream-writes-low 16)
 
   ;; end-stream! : ConnState -> Void — let a streamed body's producer go.
   (define (end-stream! s)
@@ -1414,7 +1457,8 @@
   ;; unless it closes already for a reason of its own.  A producer's body is
   ;; written a piece at a time after its head (M6.3): the producer is asked
   ;; for its first piece once the head is written, if the head leaves the
-  ;; bytes outstanding at or below the high water, and waits otherwise.
+  ;; bytes outstanding at or below the high water (below-high-water?), and
+  ;; waits otherwise.
   (define (respond-with s response)
     (cond
      ((response-fault response)

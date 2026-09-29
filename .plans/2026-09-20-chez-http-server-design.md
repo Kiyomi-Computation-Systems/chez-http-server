@@ -622,17 +622,19 @@ Termination and error rows:
 > producer is asked only while the bytes outstanding are at or below `write-high-water`,
 > so at most one piece passes it, and once past it, it waits until a completion brings
 > them to `write-low-water`, and to the high water too, whatever limits the connection
-> was given. The rows:
+> was given. Since the second review (below), the writes outstanding are bounded too:
+> the producer is asked only while fewer than 64 are, and once at 64, again at 16 or
+> fewer. The rows:
 >
 > | State | Event | State' | Actions |
 > |---|---|---|---|
 > | `handling`/`body` | `handler-responded`, a producer, a body written | `responding` | the head's `write`, `read-stop` from `body`, `arm-deadline write`, and `notify-producer` when the head leaves the bytes outstanding at or below the high water |
 > | `handling` | `handler-responded`, a producer, HTTP/1.0 | `responding` | the same, close-after `close-delimited`, the head saying `Connection: close` |
 > | `handling` | `handler-responded`, a producer, no body written (a HEAD, a 204, a 304) | `responding` | the head's `write`, `arm-deadline write`; the producer never called |
-> | `responding` | `handler-body-chunk`, asked for | `responding` | the piece's `write`, `arm-deadline write`, and `notify-producer` at or below the high water; past it, the producer waits |
+> | `responding` | `handler-body-chunk`, asked for | `responding` | the piece's `write`, `arm-deadline write`, and `notify-producer` at or below the high water with fewer than 64 writes outstanding; past either, the producer waits |
 > | `responding` | `handler-body-chunk` of no bytes | — | an assertion violation: `producer-event` never makes one, an empty answer being the producer failing |
-> | `responding` | `write-completed`, the producer waiting, at or below the low water and the high water | `responding` | `arm-deadline write`, or `disarm-deadline` with none outstanding; `notify-producer` |
-> | `responding` | `write-completed`, the producer waiting, above the low water or the high water | `responding` | `arm-deadline write` |
+> | `responding` | `write-completed`, the producer waiting, at or below the low water and the high water, 16 writes or fewer outstanding | `responding` | `arm-deadline write`, or `disarm-deadline` with none outstanding; `notify-producer` |
+> | `responding` | `write-completed`, the producer waiting, above the low water or the high water, or more than 16 writes outstanding | `responding` | `arm-deadline write` |
 > | `responding` | `write-completed`, a piece asked for | `responding` | `arm-deadline write`, or `disarm-deadline` with none outstanding |
 > | `responding` | `handler-body-end`, chunked | `responding` | the last chunk's `write`, `arm-deadline write`; the producer let go |
 > | `responding` | `handler-body-end`, close-delimited | `responding`, or `lingering` with nothing outstanding | nothing, or the staged close; the producer let go |
@@ -659,10 +661,31 @@ Termination and error rows:
 > its dispatch cap. An empty answer is now the producer failing, the bare close. And a
 > waiting producer was asked again at the low water alone, which `limits-with`, unlike the
 > environment, may set above the high water; it is asked now at or below both.
-> `tests/test-connection-table.sps` holds each row (S1 to S17); `tests/test-connection-stream.sps` the flows through the fake shell,
-> read back by chez-httparse's response parser, with the bytes outstanding watched at
-> every ask and write; `tests/test-shell.sps` a MiB to a client that reads nothing yet,
-> on a socket, and curl, in `tests/test-clients.sps`, both framings.
+> `tests/test-connection-table.sps` holds each row (S1 to S19); `tests/test-connection-stream.sps` the flows through the fake shell,
+> read back by chez-httparse's response parser, with the bytes and writes outstanding
+> watched at every ask and write; `tests/test-shell.sps` a MiB, and 4,000 rows of 100
+> bytes, to a client that reads nothing yet, on a socket, and curl, in
+> `tests/test-clients.sps`, both framings.
+>
+> *Reviewed again 2026-09-29 (M6.3's second review; decided on the owner's word, by
+> form):* the empty piece was the limit of a slope the water marks did not see. They
+> count bytes, but each piece is a write of its own, and a write holds the loop and
+> memory the same whatever its size: its request, a `uv_write_t` of 192 bytes at libuv
+> 1.52.1 on Darwin arm64, 16 bytes a segment, and chez-libuv's records. So a turn asked
+> some 2,500 times for 100-byte pieces, and some 43,700 for 1-byte ones chunked. Measured
+> on Linux (Debian 12's libuv 1.44.2, in Docker, aarch64), one run each, a client reading
+> as fast as it could: another client's request waited 50.6 ms at the median behind
+> 100-byte pieces and 1,019 ms behind 1-byte ones, 0.11 ms behind 16 KiB ones; and a
+> client that never read held 0.71 MB of 100-byte pieces, 21.6 MB of 1-byte ones
+> chunked, and 129.5 MB of them to HTTP/1.0, where the docs promised 256 KiB and a piece.
+> The writes outstanding are now bounded at 64 as well, and a producer waiting at 64 is
+> asked again at 16 or fewer (decision 0005's amendment of this day): on the final code
+> the same run measured 0.91 and 0.90 ms, 0.07 MB of 100-byte pieces, no growth
+> measurable of 1-byte ones, and 16 KiB pieces unchanged, 0.11 ms and 0.26 MB. And the
+> violation `producer-event` raises names an answer that is no piece by its kind and
+> length, `(string 100000)`, and never holds it: the shells log it, and a string answered
+> for its bytes had put a 100,000-character page in a 100,141-character log line, 154
+> characters now. The table holds the cap and its resume (S18, S19).
 
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with
@@ -1178,6 +1201,14 @@ Three consequences for M3:
 > for one connection is at most the high water and one piece's write: under 0005's
 > defaults, 262,144 bytes and 16,392 for a 16 KiB piece, where a MiB streamed at once
 > would all be held (`tests/test-shell.sps`).
+
+> *Noted 2026-09-29 (M6.3's second review):* the bytes are not all a write holds. Each
+> write outstanding holds its request too, a `uv_write_t` (192 bytes at libuv 1.52.1 on
+> Darwin arm64), 16 bytes a segment, and chez-libuv's records of it, so under the water
+> marks alone a client that never read held 0.71 MB of 100-byte pieces, and 129.5 MB of
+> 1-byte ones to HTTP/1.0 (Linux, one run each). The writes outstanding are now bounded
+> at 64 as well (§4.4's M6.3 amendment), so one connection holds at most the high water,
+> one piece's write and 64 requests: 0.07 MB of 100-byte pieces, measured the same way.
 
 ### 7.4 The collect-safe rendezvous
 

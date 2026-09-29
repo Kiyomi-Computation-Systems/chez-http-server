@@ -3032,7 +3032,7 @@ DONE and merged (cfbf8cc, PR #73): **chez-libuv is pinned at v0.7.3.** A send th
 NEXT: M6.3 (plan §14), a streamed response, as M6.2's NEXT sets it out, on a fresh branch cut from main after this commit, when the owner asks.
 
 
-M6.3: A STREAMED RESPONSE. Four stacked steps, cut from main at cbedab8: feat/m6.3-framing, then feat/m6.3-core-stream, feat/m6.3-stream-flows and feat/m6.3-socket, each on the one before; 2026-09-28, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+M6.3: A STREAMED RESPONSE. Four stacked steps, cut from main at cbedab8: feat/m6.3-framing, then feat/m6.3-core-stream, feat/m6.3-stream-flows and feat/m6.3-socket, each on the one before; 2026-09-28, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. A fifth, fix/m6.3-small-pieces, on the fourth after the second review (2026-09-29, below).
 
 SETTLED BY THE RECORDS, NO FORM: decision 0013 item 8 settled the API, a producer (a thunk answering a bytevector, or the eof object at the end), called only below the write's high water, chunked to HTTP/1.1 and close-delimited to 1.0; plan §14's M6.3 settled the rest: the rows, the two water marks with `notify-producer`, a bare close once the head is on the wire, and the plan's mutation.
 
@@ -3129,4 +3129,46 @@ Watched to fail (m6-mutations.md, the fourth step): fifty-three mutants on the f
 
 Size: 189 inserted lines of code and tests, 31 deleted; the slice, 1,501 and 146.
 
-NEXT: the four stacked PRs, merged bottom up on the owner's word. Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
+M6.3 SECOND REVIEW (2026-09-29), on the owner's ask, before the PRs: the empty piece's fix checked again for safety and performance.
+
+HELD: an empty piece closes its own connection alone. On a socket (a scratch server whose producer answers a piece, then an empty bytevector): curl read the head and the piece, then the body cut short (its error 18); the log named the empty bytevector, in 145 characters; the next request was answered in 0.9 ms. The shells' guard holds only the producer's call and its answer's check, so the core's refusal is never blamed on the handler, and the fix costs a piece one length check.
+
+FOUND (a scratch server whose producers never end, and a probe in Python: a client reading as fast as it can, another sending a GET every 2 ms, and clients that never read, the server's RSS read; one run each):
+- **The empty piece was the limit of a slope.** The water marks count bytes, but each piece is a write of its own, which holds the loop and memory the same whatever its size: so a turn asked some 2,500 times for 100-byte pieces and some 43,700 for 1-byte ones chunked. On Linux (Debian 12, libuv 1.44.2, in Docker, aarch64), another client's request waited 50.6 ms at the median (62.9 at most) behind 100-byte pieces, 1,019 ms (1,697) behind 1-byte ones, and 0.11 ms behind 16 KiB ones. On Darwin arm64 (libuv 1.52.1): 250 ms (359), over 5 s, and 1.83 ms. A high water of 16 KiB cut the Darwin 100-byte wait to 12.8 ms: the wait follows the pieces a turn asks for.
+- **The slow reader's bound held for large pieces only.** Each write outstanding holds a `uv_write_t` (192 bytes at libuv 1.52.1, measured with `sizeof`), 16 bytes a segment and chez-libuv's records, on top of its bytes. Per client that never read, Linux: 0.26 MB of 16 KiB pieces, 0.71 MB of 100-byte ones, 21.6 MB of 1-byte ones chunked, 129.5 MB of them to HTTP/1.0 (Darwin: 0.18, 0.69, 12.4, 102.7 MB), where handlers.org promised 256 KiB and a piece.
+- **A wrong answer was logged whole**: `producer-event` named the answer itself, and a 100,000-character string answered for its bytes made a 100,141-character log line.
+- **The docs pointed at ports that make a producer wait**: `get-bytevector-some` on "a binary input port", a pipe's or a socket's among them, and "return a piece only once you have one", which reads as waiting for one.
+
+DECIDED on the owner's word (2026-09-29), by form, after a second form that set the options out: (1) the writes outstanding bounded at 64, a waiting producer asked again at 16 or fewer, fixed values. Weighed: the cap and the server gathering small pieces into writes of about 16 KiB, about 28 times the throughput by a handler that gathers, but a change to the core's pacing and the serializer's framing, not prototyped; docs only. (2) An answer that is no piece named by its kind and length. Weighed: as it was. (3) A fifth stacked PR on the four, which stay as proved. Weighed: folding the fixes into the four. The doc wording goes with them.
+
+M6.3 FIFTH STEP: small pieces capped, a wrong answer named by its kind (fix/m6.3-small-pieces), on feat/m6.3-socket.
+- `(http-server connection)`: `below-high-water?` asks too for fewer than `stream-writes-high`, 64, writes outstanding, and `stream-completed` asks a waiting producer again at `stream-writes-low`, 16, or fewer. `producer-event`'s violation names the answer by `answer-kind`: `(string 5)`, `(list 2)`, `(symbol)`, `(other)`.
+- `tests/test-connection-table.sps`, 210 (the fourth step's 205): S18 and S19, the cap and its resume; the answer's kind and length, never held; nineteen stream rows.
+- `tests/test-connection-stream.sps`, 16 (15): a thousand 100-byte pieces, never more than 64 writes outstanding, every ask after a completion at 16 or fewer; the watch reads the writes with the bytes.
+- `tests/test-shell.sps`, 110 (106): 4,000 rows of 100 bytes to a client that reads nothing yet, never more than 64 writes outstanding, then read whole and in order.
+- `tests/test-connection-allocation.sps`, 26 (26): the harness performs a completion that asks for a piece; the per-piece shape compares 16, 32 and 48 pieces.
+- Docs: handlers.org (the cap, gathering small rows, answering at once, a file's port, the log's naming); configuration.org (the two fixed counts).
+- Records: design §4.4's M6.3 amendment and §7.3's note; decision 0005's amendment of 2026-09-29; decision 0013's second review; plan §14's note.
+
+FOUND WHILE BUILDING:
+- The allocation harness completed a stream's writes but dropped what the completions asked for, so its 64-piece stream stopped at the cap, not written whole. It performs a completion that asks for a piece now, only that one, so a stream that never waits costs what it did: a piece 304 B, the harness's own 32 B more a stream.
+- The per-piece shape compared the 17th to 32nd pieces with the 33rd to 64th, and at 64 a wait at the cap put a completion's cost among the pieces': 353 B against 352. It compares the 33rd to 48th now, and CX, the growing log, still reddens it.
+- The S19 helper first completed its writes by literal counts, so a mutant that miscounts a chunk made the stream rows raise while built; it reads each write's count from the state now.
+- Three mutants were orphaned by the rewrite, CA, CB and CP, and re-cut on the new text.
+
+Measured on the finished tree (2026-09-29, Darwin arm64):
+- `make test` green: forty-one suites, 1,237 expected passes, exit 0.
+- The allocation suite: curl's GET streamed in 16, 32 and 48 pieces of 100 bytes 7,120, 11,984 and 16,849 B, a piece 304 B; eight pieces of 16 KiB and of 128 bytes 4,560 B each, of 100 bytes 4,688 B.
+- A wrong answer's log line: 154 characters for a 100,000-character string, 153 for an empty bytevector.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1, libuv 1.44.2), from a copy of the finished tree made with `COPYFILE_DISABLE=1`, curl 7.88.1 and ab 2.3 installed:
+- `make test`, less its submodule and pin checks: forty-one suites, 1,237 expected passes;
+- the shell, stream, table and allocation suites, three runs each: 110, 16, 210 and 26 each time; the clients suite three runs, 13 each;
+- the probe on the finished tree: another client's request waited 0.91 ms at the median (10.5 at most) behind 100-byte pieces, 0.90 ms (12.2) behind 1-byte ones and 0.11 ms (4.9) behind 16 KiB ones, 0.28 ms (16.4) with no stream; the streams read 31.2, 1.7 and 2,097.9 MB/s, and 100-byte pieces a handler gathered into 16 KiB 873.0 MB/s; per client that never read, 0.07 MB of 100-byte pieces and 0.26 MB of 16 KiB ones, and of 1-byte ones no growth measurable, the RSS falling as the heap was collected.
+CI's runs are still the billing block.
+
+Watched to fail (m6-mutations.md, the fifth step): sixty-two mutants on the finished tree, the fourth step's fifty-three again, three of them re-cut, and nine more, and every check the step added or changed reddened by at least one. The plan's mutation, M6.3-CA, still reddens the slow reader's bound with the cap in place: 16 KiB pieces meet the byte marks first.
+
+Size: 243 inserted lines of code and tests, 61 deleted; the slice, 1,744 and 207.
+
+NEXT: the five stacked PRs, merged bottom up on the owner's word. Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
