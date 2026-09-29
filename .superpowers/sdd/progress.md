@@ -3259,3 +3259,13 @@ Watched to fail (m6-mutations.md, "After the PR's review"): twenty-five mutants 
 Size, the second commit: 122 inserted lines of code and tests, 28 deleted; the PR against main, 361 and 81, under plan §1 rule 1's ~400.
 
 NEXT: the PR, updated, merged on the owner's "do closing ritual". Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
+
+MERGED to main on 2026-09-29, on the owner's "do ritual": **write batching, PR #79**, its two commits (c7014af, d1bdb41) squashed as 83cebc9. Its squash tree (6c1846c) is the tested tip's, d1bdb41's, and its parent is 73cfeb5.
+- **CI.** Both runs were the billing block, the `linux` job with 0 steps: 36593668069 for c7014af and 36635425131 for d1bdb41.
+- **Branches.** `--delete-branch` merged it, switched this checkout to main, fast-forwarded it, and deleted the branch local and remote; `git fetch --prune` cleared the remote ref. No PR is open.
+
+`make test` green on main: forty-one suites, 1,252 expected passes.
+
+DONE and merged (83cebc9; PR #79): **write batching.** The libuv shell holds a turn's small writes and sends them as one libuv write, a stream's head first. On Linux, 100-byte pieces stream 182.9 MB/s where they streamed 32.8, and another client waits 0.19 ms at the median behind them where it waited 0.85; the core, its events and the contract are unchanged.
+
+NEXT: M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
