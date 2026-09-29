@@ -1210,6 +1210,60 @@ Three consequences for M3:
 > at 64 as well (§4.4's M6.3 amendment), so one connection holds at most the high water,
 > one piece's write and 64 requests: 0.07 MB of 100-byte pieces, measured the same way.
 
+> *Noted 2026-09-29 (write batching, after M6.3; its own PR, on the owner's word, by
+> form):* the cap bounded small pieces, and each was still a write of its own, with its
+> request and its completion. The libuv shell now holds a write under 4,096 bytes and sends
+> a turn's held writes as one. A held write's bytes are copied as it is held, into the
+> connection's chunks, each new one twice the last's length or the write's, so no byte is
+> copied twice before chez-libuv's copy. What is held goes out once the drain empties the
+> queue, and first before a shutdown, a close, or a write of 4,096 bytes or more, which
+> goes out alone as before. The write's completion reports each write it carried, in the
+> order written, so the core and its accounting are unchanged; the contract's traces hold
+> the order. A raise drops what is held with what is queued, so a bug once the head is
+> held sends nothing, where the head went out before.
+>
+> - **The copy is made as a write is held**, not as the turn's write is issued: a
+>   producer may hand out one bytevector again, refilled (handlers.org), and a prototype
+>   that held pieces by reference sent every piece of a turn as its last. The shell suite
+>   streams 4,000 rows from one refilled bytevector and reads them back whole.
+> - **Measured on Linux** (Debian 12, libuv 1.44.2, in Docker, aarch64), a scratch server
+>   whose producers never end, a client reading as fast as it can, another sending a GET
+>   every 2 ms; three runs each, the median:
+>
+>   | Pieces | Streamed, main | Batched | Another client's median wait |
+>   |---|---|---|---|
+>   | 1 byte | 1.9 MB/s | 11.4 MB/s | 0.80 ms, then 0.19 |
+>   | 100 bytes | 32.4 | 180.8 | 0.81, then 0.20 |
+>   | 1,000 bytes | 274.4 | 965.0 | 0.82, then 0.29 |
+>   | 4,000 bytes | 899.6 | 1,578.4 | 0.93, then 0.62 |
+>   | 8 KiB, not held | 1,399.7 | 1,444.0 | 0.59, then 0.79 |
+>   | 16 KiB, not held | 2,100.6 | 2,107.6 | 0.48, then 0.46 |
+>   | 100 bytes, a handler gathering 16 KiB | 852.1 | 852.6 | 1.10, then 0.94 |
+>   | no stream | | | 0.29, then 0.25 |
+>
+>   The rows above 4,000 bytes differ by the runs' spread alone. A client that never
+>   reads holds what it did: 0.05 MB of 100-byte rows and 0.26 MB of 16 KiB pieces (ten
+>   clients, one run each). On Darwin arm64 (libuv 1.52.1), the same way: 1-byte pieces
+>   7.8 MB/s where they streamed 0.4, 100-byte ones 131.9 where 7.3, 1,000-byte ones
+>   898.8 where 68.1, and 4,000-byte ones 1,370.5 where 264.5; another client's median
+>   wait behind the 100-byte pieces 0.37 ms where it was 3.24; 8 and 16 KiB pieces as
+>   before.
+> - **Three shapes were tried** as scratch prototypes, on the same Linux, three runs each,
+>   the median, for 1, 100, 1,000 and 4,000-byte pieces. Each held write copied into a
+>   bytevector of its own, a turn's 64 sent as 64 segments of one `uv-write*!`: 9.7, 166,
+>   917 and 1,534 MB/s. The held bytes in one bytevector, grown by copying: 11.8, 172, 762
+>   and 1,088. Chunks never copied again, as built: 11.8, 186, 990 and 1,580.
+> - **The cutoff stays at 4 KiB.** A prototype that held 8 KiB and 16 KiB pieces too
+>   streamed the 8 KiB ones at 1,708 MB/s against 1,465 written alone, but the 16 KiB ones
+>   at 1,814 against 2,080 (Linux, three runs each).
+> - **chez-libuv needs no change.** Its `uv-write*!` packs a write's spans end to end in
+>   one block, but gives libuv one `uv_buf_t` a span, and libuv 1.52.1 mallocs the array
+>   of a write with more than four (`src/unix/stream.c:1370-1372`). A scratch chez-libuv
+>   giving libuv one buffer over the packed spans measured 1 to 5 % faster for 64-span
+>   writes; the shell sends a few chunks a turn.
+> - **The 64-write cap stays**: each piece still costs a producer's call, the core's step
+>   and its framing, and the cap bounds how many a turn asks for.
+
 ### 7.4 The collect-safe rendezvous
 
 At chez-libuv v0.6.0 `uv_run` is `(foreign-procedure __collect_safe "uv_run" …)`

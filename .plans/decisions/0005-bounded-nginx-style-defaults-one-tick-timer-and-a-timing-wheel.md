@@ -291,3 +291,30 @@ well, by fixed values, not settings.
   write requests in one pass of `uv__write` before it yields, to "prevent loop
   starvation" (`src/unix/stream.c`). The 64 here sits among those counts. The copying
   the others do is the gathering weighed above, left for work of its own.
+
+## Amendment (2026-09-29) — the shell gathers a turn's small writes
+
+The gathering the amendment above left for work of its own. Decided on the owner's word,
+by form (2026-09-29), while M6.3's five PRs were open: its own PR, after them. Weighed: a
+sixth stacked PR; a note for later.
+
+- **The libuv shell holds a write under 4,096 bytes** and sends a turn's held writes as
+  one libuv write, where each was one, with its request and its completion. What is held
+  goes out once the drain has run the queue empty, and first before a shutdown, a close,
+  or a larger write, which goes out alone as before. The core, its events, the water
+  marks and the 64-write cap are unchanged: the write's completion reports each write it
+  carried, in order.
+- **A held write is copied as it is held**, since a producer may hand out one bytevector
+  again, refilled; a prototype that held pieces by reference sent every piece of a turn
+  as its last.
+- **Measured on Linux**, as the amendment above measured (Debian 12, libuv 1.44.2, in
+  Docker, aarch64), three runs each, the median: 100-byte pieces stream 180.8 MB/s where
+  they streamed 32.4, and 1-byte pieces 11.4 where they streamed 1.9; another client's
+  request waits 0.20 ms at the median behind the 100-byte pieces, where it waited 0.81;
+  16 KiB pieces are unchanged, 2,107.6 MB/s. A handler that gathers 100-byte rows into
+  16 KiB pieces still streams them faster, 852.6 MB/s, about 4.7 times, where it was
+  about 26: each piece still costs a producer's call, the core's step and its framing.
+- **The cap stays.** It bounds how many pieces a turn asks the producer for, and libuv's
+  own guard, 33 requests a pass, counts writes, now one a turn.
+- Design §7.3's note of this day has the three shapes tried and the cutoff's
+  measurement.

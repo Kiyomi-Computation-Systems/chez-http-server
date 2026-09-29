@@ -57,18 +57,6 @@
 ;; how many times it was called.
 (define (texts-producer texts) (counted (producer-of texts)))
 
-;; reusing : -> Producer
-;; A producer that hands out one 4-byte bytevector again and again, filled
-;; with `a`, then `b`, then `c`, then the eof object.
-(define (reusing)
-  (let ((piece (make-bytevector 4)) (letters '(97 98 99)))
-    (lambda ()
-      (if (null? letters)
-          (eof-object)
-          (begin (bytevector-fill! piece (car letters))
-                 (set! letters (cdr letters))
-                 piece)))))
-
 ;; answering : Producer -> (Request -> Response)
 ;; A handler answering every request with a 200 streamed from `producer`.
 (define (answering producer) (lambda (request) (make-response 200 #f '() producer)))
@@ -284,7 +272,7 @@
     ;; for the next, so a producer may hand out one bytevector again.
     (test-equal "a producer that hands out one bytevector again: each piece written as it was when handed over"
                 `(200 "OK" (,epoch-date ("Transfer-Encoding" . "chunked")) "aaaabbbbcccc" complete)
-                (read-back (serve default-limits (answering (reusing)) get11) #f #f))
+                (read-back (serve default-limits (answering (refilled-producer 3 4)) get11) #f #f))
 
     ;; --- a stream among a connection's other answers ---
     ;; Decision 0013 item 4: a response given instead of a reader is sent at

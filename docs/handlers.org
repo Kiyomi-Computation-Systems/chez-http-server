@@ -125,16 +125,16 @@ bytevector, and the eof object when there is no more.
   yet taken by the client, it waits until no more than 64 KiB
   (~CHEZ_HTTP_WRITE_LOW_WATER~) and 16 pieces are. So a slow client costs the
   server little more than 256 KiB and one piece.
-- Each piece is a write of its own, and a write costs the server the same
-  however small it is. Return pieces of a few KiB: gather small rows into
-  one. 100-byte rows gathered into 16 KiB pieces streamed about 28 times
-  faster (measured on Linux).
+- The server gathers pieces under 4 KiB into one write, so small rows cost it
+  little. Each piece still costs a call and its framing, so return pieces of a
+  few KiB where you can: 100-byte rows gathered into 16 KiB pieces streamed
+  about 4.7 times faster than the rows one at a time (measured on Linux).
 - A producer must answer at once: while it runs, the server serves no other
   connection. Stream what is ready, such as a file. A pipe or a socket can
   make it wait for data. Never return an empty bytevector: it counts as a
   failure, like any answer that is not a piece.
-- You may return the same bytevector each time: a piece is copied as it is
-  written.
+- You may return the same bytevector each time: the server copies a piece as
+  soon as it takes it.
 - The headers go out before the first piece. If the producer raises, or returns
   what is not a bytevector with bytes in it or the eof object, it is too late
   for a ~500~: the server closes the connection at once and logs

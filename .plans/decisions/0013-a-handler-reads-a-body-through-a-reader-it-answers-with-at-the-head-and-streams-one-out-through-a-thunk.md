@@ -257,3 +257,13 @@ safety and performance; decided on the owner's word, by form):
   shell does, and its per-piece shape compares 16, 32 and 48 pieces: at 64, the stream
   waits at the cap, and the wait's cost would be read as the pieces'. A piece still
   reads 304 B.
+
+Write batching (2026-09-29, after M6.3; its own PR, decided on the owner's word, by form;
+decision 0005's amendment of that day): the libuv shell holds a piece's write under
+4,096 bytes and sends a turn's held writes as one. A held piece is copied as the shell
+takes it, so a producer may still hand out one bytevector again: the shell suite streams
+4,000 rows from one bytevector refilled at each call and reads them back whole, and a
+mutant that holds the pieces by reference turns it red. handlers.org's advice to gather
+small rows stands, on a smaller gain: 100-byte rows gathered into 16 KiB pieces streamed
+about 4.7 times faster than the rows one at a time, where they had streamed about 26
+times faster (Linux).

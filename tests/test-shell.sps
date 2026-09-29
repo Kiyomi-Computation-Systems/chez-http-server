@@ -27,9 +27,15 @@
 ;;;   - a streamed response (M6.3, decision 0013 item 8): a MiB, chunked, to
 ;;;     a client that reads nothing yet, its writes left waiting, the bytes
 ;;;     outstanding never past decision 0005's high water by more than a
-;;;     piece's write, then read whole and in order; rows of 100 bytes to a
+;;;     piece's write, each piece's write a write request of chez-libuv's,
+;;;     never held, then read whole and in order; rows of 100 bytes to a
 ;;;     client that reads nothing yet, never more than 64 writes outstanding
-;;;     (M6.3's second review), then read whole; pieces close-delimited to
+;;;     (M6.3's second review), and those a turn writes one write request of
+;;;     chez-libuv's, the shell holding a turn's small writes for one libuv
+;;;     write, then read whole; the rows handed out in one bytevector,
+;;;     refilled at each call, read whole and in order, each as it was
+;;;     handed over; rows whose client goes while they are outstanding, a
+;;;     read error, then each row's write settled; pieces close-delimited to
 ;;;     HTTP/1.0, read at the close; and a producer that raises after a piece,
 ;;;     a bare close, the body cut short, what it raised logged;
 ;;;   - a write outstanding keeps nothing of its response: chez-libuv copied
@@ -41,7 +47,8 @@
 ;;;     callback raised, even when the log raises, and runs on after any other
 ;;;     (design §6.4, the first hazard; decision 0003 item 4);
 ;;;   - a connection whose callback raises is closed, and so is one whose
-;;;     adoption fails, leaving no deadline armed;
+;;;     adoption fails, leaving no deadline armed; one whose callback raises
+;;;     once a write is held sends nothing, and its close is its last event;
 ;;;   - the run loop drops a connection whose handle closed behind the shell,
 ;;;     taking it out of the wheel, and runs on;
 ;;;   - the server's own listener (design §4.6; M4.3) serves a client; refuses
@@ -236,8 +243,9 @@
 ;; tests/producers.sls): `/stream` streams a MiB in 64 pieces of 16 KiB, the
 ;; k-th filled with the k-th letter from `a`, and `stream-calls` says how many
 ;; times the last one was called; `/rows` streams 4,000 rows of 100 bytes the
-;; same way, `rows-calls` counting; `/pieces` streams three texts; and
-;; `/stream-raise` a piece, then raises.
+;; same way, `rows-calls` counting; `/refilled` the same rows, each handed
+;; out in one bytevector, refilled at each call; `/pieces` streams three
+;; texts; and `/stream-raise` a piece, then raises.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -289,6 +297,8 @@
            (let-values (((p calls) (counted (sized-producer rows row-size))))
              (set! rows-calls calls)
              (make-response 200 #f '() p)))
+          ((bytevector=? target (b "/refilled"))
+           (make-response 200 #f '() (refilled-producer rows row-size)))
           ((bytevector=? target (b "/pieces"))
            (make-response 200 #f '() (producer-of '("one " "two " "three"))))
           ((bytevector=? target (b "/stream-raise"))
@@ -745,6 +755,7 @@
     (set! stream-most 0)
     (set! watching-stream #t)
     (let* ((before (newest))
+           (requests (live-count 'write-req))
            (cl (open-client! (b "GET /stream HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n") #f)))
       (test-eq "a client that reads nothing yet asks for a MiB streamed" 'satisfied
                (wait-for (lambda () (>= (stream-calls) 16))))
@@ -755,7 +766,18 @@
         (test-equal "while it reads nothing, its writes wait, the bytes outstanding never past the high water by more than a piece's write"
                     '(outstanding #t)
                     (list (if (and c (> (uv-stream-write-queue-size (connection-tcp c)) 0)) 'outstanding 'completed)
-                          (<= stream-most (+ 262144 16392)))))
+                          (<= stream-most (+ 262144 16392))))
+        ;; A write of 4,096 bytes or more is never held (write batching):
+        ;; each piece's write is a write request of chez-libuv's, which copies
+        ;; its bytes at the call, the only copy made of them.  Its dev build
+        ;; counts them, and a prod shim answers zero.
+        (if (= (live-count 'loop) 1)
+            (test-equal "and each of the core's writes outstanding is a write request of chez-libuv's: a piece of 16 KiB is not held"
+                        '(many #t)
+                        (let ((n (and c (conn-outstanding (connection-state c)))))
+                          (list (if (and n (> n 1)) 'many n)
+                                (and n (= n (- (live-count 'write-req) requests))))))
+            (display "shell: chez-libuv's counters are off in this build; the write requests not read\n")))
       (client-read! cl)
       (test-eq "the client then reads the whole response, and the stream's end" 'satisfied
                (wait-for (lambda () (eq? (client-end cl) 'eof))))
@@ -766,16 +788,20 @@
                     (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4)
                           (stream-calls) (<= stream-most (+ 262144 16392)))))
       (client-close! cl))
-    ;; Rows of 100 bytes, each a write of its own (M6.3's second review): a
-    ;; write holds the loop and memory the same whatever its size, so the
-    ;; producer is also asked only while fewer than 64 writes are
+    ;; Rows of 100 bytes, each a write of the core's (M6.3's second review):
+    ;; the producer is also asked only while fewer than 64 writes are
     ;; outstanding, where the bytes alone would let the first turn ask for
     ;; some 2,500 rows, 262,144 bytes at 106 a row.  The first turn asks 63
-    ;; times; the client reads nothing yet, its send buffer small.
+    ;; times; the client reads nothing yet, its send buffer small.  The shell
+    ;; holds the small writes a turn makes and sends them as one libuv write
+    ;; (write batching), so the core's writes outstanding, 48 or 64 of them
+    ;; while the client reads nothing, are one write request of chez-libuv's:
+    ;; its dev build counts them, and a prod shim answers zero.
     (set! small-send-buffer 4096)
     (set! stream-most-writes 0)
     (set! watching-stream #t)
     (let* ((before (newest))
+           (requests (live-count 'write-req))
            (cl (open-client! (b "GET /rows HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n") #f)))
       (test-eq "a client that reads nothing yet asks for 4,000 rows of 100 bytes streamed" 'satisfied
                (wait-for (lambda () (>= (rows-calls) 63))))
@@ -786,7 +812,15 @@
         (test-equal "while it reads nothing, its writes wait, never more than 64 of them outstanding"
                     '(outstanding #t)
                     (list (if (and c (> (uv-stream-write-queue-size (connection-tcp c)) 0)) 'outstanding 'completed)
-                          (<= stream-most-writes 64))))
+                          (<= stream-most-writes 64)))
+        (if (= (live-count 'loop) 1)
+            (test-equal "and the core's writes outstanding are one write request of chez-libuv's: a turn's small writes go out as one"
+                        '(many 1)
+                        (list (if (and c (> (conn-outstanding (connection-state c)) 1))
+                                  'many
+                                  (and c (conn-outstanding (connection-state c))))
+                              (- (live-count 'write-req) requests)))
+            (display "shell: chez-libuv's counters are off in this build; the write requests not read\n")))
       (client-read! cl)
       (test-eq "the client then reads the rows, and the stream's end" 'satisfied
                (wait-for (lambda () (eq? (client-end cl) 'eof))))
@@ -797,6 +831,41 @@
                     (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4)
                           (rows-calls) (<= stream-most-writes 64))))
       (client-close! cl))
+    ;; The rows handed out in one bytevector, refilled at each call, as
+    ;; handlers.org lets a producer do.  A write the shell holds for the
+    ;; turn's one libuv write is copied as it is handed over, so each row goes
+    ;; out as it was then, not as the bytevector is once the turn's write is
+    ;; issued.  The client reads as the rows come, so turns run whole.
+    (let ((cl (open-client! (b "GET /refilled HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))))
+      (test-eq "a client reads rows streamed from one bytevector refilled at each call, and the stream's end" 'satisfied
+               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+      (test-equal "a 200, chunked, each row as it was when handed over, in order"
+                  (list 200 "chunked" (sized-body rows row-size) 'complete)
+                  (let ((r (read-response (client-bytes cl) #f #t)))
+                    (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4))))
+      (client-close! cl))
+    ;; Rows whose client goes while they are outstanding: the turn's one
+    ;; libuv write fails, at its completion or as the close cancels it, and
+    ;; the connection closes as a read error (design §6.3).  Each row's write
+    ;; is settled after, so the core counts none outstanding.
+    (set! small-send-buffer 4096)
+    (let* ((before (newest))
+           (cl (open-client! (b "GET /rows HTTP/1.1\r\nHost: x\r\n\r\n") #f)))
+      (test-eq "a client that will not read asks for rows streamed" 'satisfied
+               (wait-for (lambda () (let ((c (adopted-since before)))
+                                      (and c (> (uv-stream-write-queue-size (connection-tcp c)) 0))))))
+      (set! small-send-buffer #f)
+      (let ((c (adopted-since before)))
+        (client-close! cl)
+        (test-eq "rows whose client goes while they are outstanding close the connection" 'satisfied
+                 (wait-for (lambda () (closed-and-gone? shell c))))
+        (test-equal "as a read error, then each row's write settled, none left outstanding"
+                    '(read-error-then-settled 0 0)
+                    (list (if (and c (in-order? '(read-error write-completed) (events c)))
+                              'read-error-then-settled
+                              (and c (events c)))
+                          (and c (conn-outstanding (connection-state c)))
+                          (and c (conn-outstanding-bytes (connection-state c)))))))
     ;; To HTTP/1.0 the pieces are close-delimited, and the connection closes
     ;; after them (RFC 9112 §6.3 rule 8), though this client asked to keep it
     ;; (M3.2's carried arm): the client has the body at the stream's end.
@@ -949,6 +1018,23 @@
                     '(0 #t callback-error)
                     (list (collector-count (client-collector cl)) (closed-and-gone? shell c)
                           (first-logged))))
+      (client-close! cl))
+    ;; A bug once a write is held: what is held is dropped with the rest of
+    ;; the dispatch (write batching), so the head the core wrote is never
+    ;; sent, and the close is the connection's last event, none of the held
+    ;; write's after it.
+    (set! logged '())
+    (let* ((before (newest))
+           (cl (open-client! (b "GET /pieces HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (trap! 'action 'notify-producer)
+      (test-eq "when a connection's callback raises once a write is held, its client reads the stream's end" 'satisfied
+               (run-shell shell (lambda () (eq? (client-end cl) 'eof))))
+      (let ((c (adopted-since before)))
+        (test-equal "with nothing written, the connection closed and gone, the error logged, the close its last event"
+                    '(0 #t callback-error closed)
+                    (list (collector-count (client-collector cl)) (closed-and-gone? shell c)
+                          (first-logged)
+                          (and c (pair? (events c)) (car (reverse (events c)))))))
       (client-close! cl))
 
     ;; An adoption that fails closes the connection.

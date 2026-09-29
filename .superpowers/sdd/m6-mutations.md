@@ -658,3 +658,57 @@ suite (exit 2), after the MiB's two checks failed.
 | M6.3-WD | `connection.sls` | a waiting producer asked again only below 16 writes | connection-table 1 |
 | M6.3-WE | `connection.sls` | the writes cap 65 | connection-stream 1; connection-table 2; shell 2 |
 | M6.3-WF | `connection.sls` | a waiting producer asked again at 17 writes | connection-stream 1; connection-table 2 |
+
+## Write batching, after M6.3 (feat/write-batching, 2026-09-29)
+
+The libuv shell holds a write under 4,096 bytes, its bytes copied as it is held, and
+sends a turn's held writes as one write (decided on the owner's word, by form: its own PR
+after M6.3's five). Only `(http-server private shell)` changed, with the checks.
+
+Red before green: the finished tests ran against main's shell, its `shell.sls` first on
+the library path. Two checks failed, and the rest passed:
+- "and the core's writes outstanding are one write request of chez-libuv's: a turn's
+  small writes go out as one": 52 writes outstanding while the client read nothing, and
+  52 write requests. On the finished tree, 48 writes, and 1 write request;
+- "with nothing written, the connection closed and gone, the error logged, the close its
+  last event": main issues the head's write at once, so the client read it.
+The rows read back from one refilled bytevector, the unread rows' settling, and the
+16 KiB pieces' write requests passed on main: they hold what the batching must keep, and
+the mutants below watch them fail.
+
+Every mutant ran against all forty-one suites of the finished tree, four at a time. None
+failed to load. Where a row names no other suite, the others were green. The runner
+prints eight FAIL lines a suite at most, so batch-B's and M4.2-X's shell lists were also
+run by hand.
+
+| # | mutated | mutation | observed |
+|---|---|---|---|
+| batch-A | `shell.sls` | the copy dropped: a held write kept by reference, its segments sent as they are at the flush | shell 1 — "a 200, chunked, each row as it was when handed over, in order". A first cut kept the chunks, so each write it sent ended with an empty span, which libuv 1.52.1 finishes a turn later (`uv__write_req_update` stops on a trailing empty buffer), so a close cancelled it; that cut also reddened the rows' wait and the contract's bare close. Re-cut with no chunks. The finished code never sends an empty span: the core writes only segments with bytes |
+| batch-A2 | `shell.sls`, `tests/producers.sls` | calibration: batch-A, and the refilled producer hands out a fresh bytevector each call | SURVIVES, as meant. The refilled rows tell a copy from a reference only because their producer refills one bytevector |
+| batch-B | `shell.sls` | nothing sent once the queue is empty: the drain never flushes | clients 11; contract 58; serve 4; shell 55, among them the one-write check, the refilled rows' two, and the unread rows' wait, close and settling |
+| batch-C | `shell.sls` | the writes held not sent before a close | contract 2 — the bare close's read and its bytes, `(wrong-length 0)`; shell 1 — "after the head and the piece: the body cut short, no status written" |
+| batch-D | `shell.sls` | the writes held not sent before a shutdown | SURVIVES: a scope statement. The core asks for a shutdown only once every write has completed (decision 0011's staged close, `response-written`), and a held write is outstanding, so none is held then. The flush keeps a held write from following the half-close, should that change |
+| batch-E | `shell.sls` | the writes held not sent before a larger write | shell 1 — the MiB's "every piece in order": its head, held, went out after the first 16 KiB piece |
+| batch-F | `shell.sls` | every write held, however large | shell 1 — "and each of the core's writes outstanding is a write request of chez-libuv's: a piece of 16 KiB is not held" |
+| batch-G | `shell.sls` | no write held | shell 2 — the one-write check, and "with nothing written, ...", the head sent at once, as on main |
+| batch-H | `shell.sls` | a failed write reports its read error alone, settling none of the writes it carried | shell 3 — the unread rows' settling, and M4.2's two "as a read error, then settled" |
+| batch-I | `shell.sls` | a failed write settles only the first write it carried | shell 1 — the unread rows' settling |
+| batch-J | `shell.sls` | the writes a write carried reported completed last first | contract 3 — the three streamed scripts' traces, `(differs-at 29 libuv (event (write-completed 5)) fake (event (write-completed 84)))`: the fake reports each completion in the order written |
+| batch-K | `shell.sls` | what is held not dropped when a dispatch raises | shell 1 — "with nothing written, ... the close its last event": the held head, sent at the next dispatch to the closed handle, failed, and its read error and completion came after `closed` |
+| batch-L | `shell.sls` | a new chunk the write's own length, never twice the last's | SURVIVES: a scope statement. The chunks' growth changes how many chunks, allocations and spans a turn's write takes, never its bytes or their order |
+| batch-M | `shell.sls` | a write that fits the last chunk copied over its start | clients 2; contract 2; shell 6 |
+| batch-N | `shell.sls` | a chunk closed at its length, not where its bytes end | shell 2 — the rows' and the refilled rows' bodies |
+| batch-O | `tests/fake-shell.sls` | the fake shell makes a write's wire when its writes are read, not as it performs the write | connection-stream 1 — "a producer that hands out one bytevector again: each piece written as it was when handed over", whose producer is now `(producers)`'s refilled one |
+| M4.2-W1 | `shell.sls` | re-cut: a failed write settled before its read error | shell 2 — the two "as a read error, then settled" |
+| M4.2-W2 | `shell.sls` | re-cut: a write's completion reads its error as success | shell 4 — the unread rows' settling, the two "as a read error, then settled", and "a write refused when it is issued closes the connection" |
+| M4.2-W3 | `shell.sls` | re-cut: a write refused at the call is not caught | shell 2 — "a write refused when it is issued closes the connection" and its order check. That write is held now, and sent once the drain empties; a held write and a larger one are sent through one guarded call, `send!`, so the check holds both |
+| M4.2-R | `shell.sls` | re-cut: the write's completion keeps its segments | shell 1 — "and nothing holds the response's body" |
+| M4.2-X | `shell.sls` | re-run: a raise from the outermost dispatch goes on without closing the connection | shell 10, both of the held write's bug checks among them |
+
+Every check this change added or changed is reddened by one mutant at least:
+- the rows' one write request by B, G and M; the 16 KiB pieces' write requests by F;
+- the refilled rows read whole by B, and each row as it was handed over by A, B, M and N;
+- the unread rows' wait and close by B, and their settling by B, H, I and M4.2-W2;
+- the bug once a write is held: the stream's end by M4.2-X, and nothing written, the
+  close the last event, by G, K and M4.2-X;
+- the stream suite's bytevector handed out again, its producer shared now, by O.
