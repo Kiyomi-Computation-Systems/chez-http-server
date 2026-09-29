@@ -257,3 +257,37 @@ well, by fixed values, not settings.
   serializer's framing, and a copy of every small piece, since a producer may hand out
   one bytevector again; left for work of its own. Docs alone, which would have left the
   stall for every handler that missed them. And the two counts as settings; kept fixed.
+- **Prior art** (checked on 2026-09-29 against each project's source and documentation,
+  on the owner's ask). Of the servers this decision compares, none counts the writes a
+  response has queued against a limit, as this amendment does. Most copy small pieces
+  together into fewer writes, h2o keeps one send in flight, and those that run a handler
+  on a thread or goroutine of its own block it while the client is behind:
+  - h2o pulls, as this core does: it calls a generator's `proceed` for more once the
+    last send's write has completed, and the generator waits for it before sending again,
+    so a response has one send in flight. One send may carry many pieces, and HTTP/1
+    frames them as one chunk in one write (`include/h2o.h`, `lib/http1.c`).
+  - nginx copies a proxied response into a fixed number of fixed-size buffers
+    (`proxy_buffers 8 4k|8k`), holds output back until 1,460 bytes are ready
+    (`postpone_output`), and limits one send to `sendfile_max_chunk` (2 MiB since
+    1.21.4), leaving the rest to the next loop iteration so one fast connection does not
+    seize the worker. One `writev` gathers at most 64 buffers (`NGX_IOVS_PREALLOCATE`).
+  - Node counts bytes only: a writable's `highWaterMark` (64 KiB since v22, 16 KiB
+    before and on Windows) is reported by `write()`, not enforced. A socket keeps one
+    native write in flight, and what is written meanwhile goes out as one `writev`.
+  - Go's `net/http` copies a handler's writes into a 2,048-byte buffer
+    (`bufferBeforeChunkingSize`), so small writes leave as chunks of about 2 KiB, and a
+    write blocks the handler's goroutine while the socket is backed up.
+  - warp writes into a 16 KiB buffer and blocks its thread; each write is still framed
+    as a chunk of its own.
+  - Apache httpd 2.4 holds a brigade back under 4,096 bytes (`THRESHOLD_MIN_WRITE`),
+    copies small writes into 8,000-byte buckets, and blocks past `FlushMaxThreshold`
+    (65,535 bytes by its docs).
+
+  Outside that set, hyper does what this amendment does: for vectored IO, its write
+  queue takes a buffer only while it holds fewer than 16 (`MAX_BUF_LIST_BUFFERS`) and
+  fewer than 417,792 bytes (`DEFAULT_MAX_BUFFER_SIZE`), and it flushes before polling
+  the body again; for other IO it copies the pieces into one buffer
+  (`src/proto/h1/io.rs`). libuv itself, under the shell, finishes at most 33 queued
+  write requests in one pass of `uv__write` before it yields, to "prevent loop
+  starvation" (`src/unix/stream.c`). The 64 here sits among those counts. The copying
+  the others do is the gathering weighed above, left for work of its own.

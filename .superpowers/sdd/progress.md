@@ -3148,7 +3148,7 @@ M6.3 FIFTH STEP: small pieces capped, a wrong answer named by its kind (fix/m6.3
 - `tests/test-shell.sps`, 110 (106): 4,000 rows of 100 bytes to a client that reads nothing yet, never more than 64 writes outstanding, then read whole and in order.
 - `tests/test-connection-allocation.sps`, 26 (26): the harness performs a completion that asks for a piece; the per-piece shape compares 16, 32 and 48 pieces.
 - Docs: handlers.org (the cap, gathering small rows, answering at once, a file's port, the log's naming); configuration.org (the two fixed counts).
-- Records: design §4.4's M6.3 amendment and §7.3's note; decision 0005's amendment of 2026-09-29; decision 0013's second review; plan §14's note.
+- Records: design §4.4's M6.3 amendment and §7.3's note; decision 0005's amendment of 2026-09-29, with its prior art (h2o, nginx, Node, Go, warp and Apache, and hyper and libuv beside them, checked against their sources on the owner's ask after the PRs opened); decision 0013's second review; plan §14's note.
 
 FOUND WHILE BUILDING:
 - The allocation harness completed a stream's writes but dropped what the completions asked for, so its 64-piece stream stopped at the cap, not written whole. It performs a completion that asks for a piece now, only that one, so a stream that never waits costs what it did: a piece 304 B, the harness's own 32 B more a stream.
