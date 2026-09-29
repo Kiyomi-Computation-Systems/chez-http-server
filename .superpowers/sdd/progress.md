@@ -3030,3 +3030,50 @@ MERGED to main on 2026-09-28, on the owner's "do closing ritual": **the chez-lib
 DONE and merged (cfbf8cc, PR #73): **chez-libuv is pinned at v0.7.3.** A send that races an async handle's close is refused, where it could reach freed memory; `uv-close!` is one step; and a Chez without threads is refused by name. The server's code and counts are unchanged.
 
 NEXT: M6.3 (plan §14), a streamed response, as M6.2's NEXT sets it out, on a fresh branch cut from main after this commit, when the owner asks.
+
+
+M6.3: A STREAMED RESPONSE. Four stacked steps, cut from main at cbedab8: feat/m6.3-framing, then feat/m6.3-core-stream, feat/m6.3-stream-flows and feat/m6.3-socket, each on the one before; 2026-09-28, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+
+SETTLED BY THE RECORDS, NO FORM: decision 0013 item 8 settled the API, a producer (a thunk answering a bytevector, or the eof object at the end), called only below the write's high water, chunked to HTTP/1.1 and close-delimited to 1.0; plan §14's M6.3 settled the rest: the rows, the two water marks with `notify-producer`, a bare close once the head is on the wire, and the plan's mutation.
+
+CHOSEN WHILE BUILDING, flagged for review (decision 0013's section "Built"):
+- The head goes out first, as every response's head does, and the producer is asked for its first piece once the head is written, so a producer that fails at its first call gets the bare close. Weighed: the head held for the first piece, one write fewer a response and a 500 for a first-call failure, which would leave the client of an M7 producer that awaits before its first piece with no head until then.
+- An answer that is neither a bytevector of a byte or more nor the eof object is the producer failing: the shell reports `handler-failed`, the bare close, as it does a raise. The core's `producer-event` makes the answer an event, so both shells report it alike. Weighed: the core refusing the event as a caller bug. An empty bytevector was first written as nothing, the producer asked again; the review changed that (below).
+- The water marks' edges: the producer is asked at or below the high water, and after waiting, at or below the low water and the high water both; a low water above the high water is refused at startup, whichever was set; equal marks and marks of 0 are accepted.
+- While a piece is asked for with no write outstanding, no deadline is armed: the producer is the one waited on, and decision 0005 has no deadline for a handler. In v1 the shells call the producer in place, so its answer comes in the same drain.
+- No body is written to a HEAD, a 204 or a 304, so their producer is never called.
+
+FOUND WHILE BUILDING:
+- The M5.2 note for M6.3, a body that stalls once a handler's head is on the wire, describes a case v1 does not reach: a handler's head goes on the wire only from `handling`, the body ended, or from `body` with a response given instead of a reader, which stops reading the body (decision 0013 item 4). No body deadline runs then, and the body's 408 stands (plan §14's note; the table's S4).
+- Whether a failure after the head must reach the embedder, which plan §14 left to M6.3: it need not, since it is logged as `handler-failed` as every handler's failure is, so `&http-server-handler-error` stays undefined (design §6.4's note).
+- The contract's first run of the bare-close script failed its first check: the server's bare close comes before it reads the client's half-close, the first close with no linger. Such a script is marked `(bare-close)`, and the check expects no end for it. And the contract rendered a response's body by identity, which would part the shells on any producer; a producer renders as one.
+- M3.2's carried arm is reached only by an HTTP/1.0 client that asked to keep the connection; one that did not closes for that. The socket's and curl's HTTP/1.0 streams ask, so dropping the arm reddens a real client (the mutants, below).
+- The allocation shape "a piece costs the same however many came before it" first compared the second 32 pieces' cost with twice the first 16's, and missed by 1 B, 9,729 B against 9,728: a collection's byte in an average. It compares per-piece quotients now.
+- Splitting the slice into steps found `producer-event`, which the core exports in the second step, checked first in the stream suite of the third, so its mutants could not redden their own step. The check moved to the table's vocabulary checks.
+
+DECIDED on the owner's word (2026-09-28), by form, after the plan-vs-landed walkthrough: a /code-review high first, its findings fixed on the owner's word, then four stacked PRs, each layer proven green on its own tree: about 230 inserted lines (the limits and the piece framing), 550 (the core's stream rows, both shells' `notify-producer` and the table), 440 (the fake shell's flows and the allocation shapes) and 220 (the socket, contract and curl checks), re-measured once the review's fixes are in. Weighed: the PRs without a review; three stacked PRs (about 230, 990 and 220); two (about 1,220 and 220).
+
+REVIEWED before the first commit, at high effort (/code-review), on the owner's "fix all findings" (2026-09-28): six findings. Each fix's checks were written first and watched red, and each has its mutant.
+- **An empty piece held the loop.** Written as nothing, the producer asked again, it let a producer that answered one while it had nothing ready be called again in the same drain for as long as it did, holding every connection. On the fake shell before the fix, a scratch program: 99,998 calls in one delivery, until its dispatch cap. An empty answer is now the producer failing, the bare close: `producer-event` refuses it, and the core refuses an empty `handler-body-chunk` as the shell's bug (S13). In v1 a producer cannot wait, so an answer that is no piece is its failure.
+- **A low water above the high asked the producer past the high water.** `limits-with` checks no value; with a low water of 200 and a high of 90, a completion that left 92 bytes outstanding asked the producer again. A waiting producer is now asked at or below both marks (S17, red before the fix).
+- **The docs said the server waits once 256 KiB are outstanding**; it waits once more than that is, and holds at most that and a piece. handlers.org says so.
+- **The docs did not say a producer may never be called, or be let go early.** They do now, and that a port left open is closed when Chez collects it. The finding said Chez never closes one: its premise was half wrong. Measured by a scratch program, 20,000 opens of `/dev/null` under a 1,024-descriptor limit all succeed with a collection every 100, and fail at the limit with none. What stands: the close waits for a collection, which descriptors do not bring on.
+- **Five suites wrote their producers each.** `tests/producers.sls`, `(producers)`, holds them: `producer-of`, `sized-producer`, `sized-body` and `counted`, for the stream, shell, contract and clients suites.
+- **A size line was made for every piece.** A power of two's, 2^0 to 2^24, is now made once and shared, as the status lines are; a piece of any other length still makes its own. The core's cost a piece falls from 128 B to 112 B at 16 KiB.
+
+Re-measured once the review's fixes were in: the four steps are 260, 596, 456 and 189 inserted lines of code and tests, where the form said about 230, 550, 440 and 220. None moved by fifty lines, so the shape stands, and was not asked again.
+
+
+M6.3 FIRST STEP: the write water marks, and the piece framing (feat/m6.3-framing).
+- `(http-server limits)`: the eighteenth and nineteenth fields, `write-high-water` and `write-low-water`, 262,144 and 65,536 bytes outstanding, from `CHEZ_HTTP_WRITE_HIGH_WATER` and `CHEZ_HTTP_WRITE_LOW_WATER` in bytes, with plan §3's four things; a low water above the high water refused at startup, whichever was set.
+- `(http-server serializer)`: `serialize-piece`, a piece of a producer's body as the segments of one write, chunked (RFC 9112 §7.1) or close-delimited, never copied (a span is uv-write*!'s `(bv start end)`), a power of two's size line made once, an empty piece refused; `serialize-end`, the last chunk and an empty trailer section, or nothing when the close ends the body.
+- The checks: `tests/test-limits.sps`, 51 (main's 46), the water marks; `tests/test-serializer.sps`, 171 (main's 147), the pieces, the end, their refusals, the size lines shared.
+- Nothing calls the framing yet: the core does, in the second step. `response-fault` still refuses a producer, so a handler that answers one is answered 500 until then.
+
+`make test` green on this step's own tree, a scratch tree of main with the step's files laid in: forty suites, 1,136 expected passes, exit 0.
+
+Watched to fail (m6-mutations.md, the first step): twenty mutants on that tree, each reddening its own suite, and every check the step added or changed reddened by at least one.
+
+Size: 260 inserted lines of code and tests, 20 deleted.
+
+NEXT: the second step, the core streams a producer's body, stacked on this one.

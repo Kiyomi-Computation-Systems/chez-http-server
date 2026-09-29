@@ -18,6 +18,9 @@
 ;;; And, since M3.2: the reader's own calibration, what it sees after a
 ;;; message and past an interim one; and the entry for a response already
 ;;; checked for faults, which writes every wire row as serialize-response does.
+;;; And, since M6.3: the pieces and the end of a body of unknown length
+;;; (decision 0013 item 8), each the segments of one write of their own,
+;;; chunked (RFC 9112 §7.1) or close-delimited (§6.3 rule 8).
 ;;; Every slot is filled with RFC 9110 §5.6.7's example line, written out here,
 ;;; so the wire does not depend on the Date line under test.
 (import (rnrs) (srfi :64) (testing)
@@ -34,10 +37,19 @@
 ;; The line every Date slot is filled with.
 (define date-text "Date: Sun, 06 Nov 1994 08:49:37 GMT\r\n")
 
-;; wire : (Listof Segment) -> String — the write as it reaches the socket.
+;; wire : (Listof Segment) -> String — the write as it reaches the socket: a
+;; segment is a bytevector, the Date slot, or a span of a bytevector, `(bv
+;; start end)`, as uv-write*! takes one (M6.3).
 (define (wire segments)
   (apply string-append
-         (map (lambda (seg) (if (eq? seg 'date) date-text (bytes->text seg))) segments)))
+         (map (lambda (seg)
+                (cond ((eq? seg 'date) date-text)
+                      ((pair? seg)
+                       (let* ((n (- (caddr seg) (cadr seg))) (o (make-bytevector n)))
+                         (bytevector-copy! (car seg) (cadr seg) o 0 n)
+                         (bytes->text o)))
+                      (else (bytes->text seg))))
+              segments)))
 
 ;; The slot's place in a row's expected wire.
 (define D date-text)
@@ -256,6 +268,37 @@
 (define (assertion-raised? thunk)
   (guard (e ((assertion-violation? e) 'refused)) (thunk) 'accepted))
 
+;; --- a producer's pieces, and its end (M6.3) -----------------------------------
+
+(define alphabet (b "abcdefghijklmnopqrstuvwxyz"))
+(define delivery (b "xxhelloyy"))
+(define four-k (make-bytevector 4096 97))
+
+;; (name mode bv start end wire segments): RFC 9112 §7.1's chunk, chunk-size
+;; CRLF chunk-data CRLF with the size in hex, and §6.3 rule 8's close-
+;; delimited body, the bytes alone.
+(define pieces
+  (list
+   (list "a chunk: its size in hex, the piece, CRLF" 'chunked (b "hello") 0 5 "5\r\nhello\r\n" 3)
+   (list "a chunk's size is written in lowercase hex" 'chunked alphabet 0 26
+         "1a\r\nabcdefghijklmnopqrstuvwxyz\r\n" 3)
+   (list "a chunk of 4 KiB is 1000 in hex" 'chunked four-k 0 4096
+         (string-append "1000\r\n" (make-string 4096 #\a) "\r\n") 3)
+   (list "a chunk of a span of its bytevector" 'chunked delivery 2 7 "5\r\nhello\r\n" 3)
+   (list "close-delimited: the piece alone" 'close-delimited (b "hello") 0 5 "hello" 1)
+   (list "close-delimited, a span" 'close-delimited delivery 2 7 "hello" 1)))
+
+;; piece-write : Symbol Bytevector Nat Nat -> (U (List (Listof Segment) Nat) 'refused)
+(define (piece-write mode bv start end)
+  (guard (e ((assertion-violation? e) 'refused))
+    (call-with-values (lambda () (serialize-piece mode bv start end)) list)))
+
+;; end-write : Symbol -> (U (List (Listof Segment) Nat) 'refused)
+(define (end-write mode)
+  (guard (e ((assertion-violation? e) 'refused))
+    (call-with-values (lambda () (serialize-end mode)) list)))
+
+
 (run-suite "serializer"
   (lambda ()
     (for-each
@@ -326,6 +369,67 @@
              (assertion-raised?
               (lambda () (serialize-response (with-header (b "Connection") (b "close"))
                                              'content-length 'keep-alive))))
+
+    ;; --- a producer's pieces and its end (M6.3) ---
+    (for-each
+     (lambda (p)
+       (let* ((name (list-ref p 0)) (w (piece-write (list-ref p 1) (list-ref p 2) (list-ref p 3) (list-ref p 4))))
+         (test-equal (string-append name ": the wire") (list-ref p 5)
+                     (if (pair? w) (wire (car w)) w))
+         (test-eqv (string-append name ": its segments") (list-ref p 6)
+                   (if (pair? w) (length (car w)) -1))
+         (test-eqv (string-append name ": its byte count") (string-length (list-ref p 5))
+                   (if (pair? w) (cadr w) -1))))
+     pieces)
+    ;; chez-libuv copies every segment as the write is issued (design §7.3),
+    ;; so the serializer copies none: a whole bytevector is its own segment,
+    ;; and a span of one is uv-write*!'s `(bv start end)` over it.
+    (test-equal "a piece is written from its own bytes, never copied"
+                '(#t #t #t)
+                (let ((hello (b "hello")))
+                  (list (let ((w (piece-write 'chunked hello 0 5)))
+                          (and (pair? w) (eq? hello (cadr (car w)))))
+                        (let ((w (piece-write 'close-delimited hello 0 5)))
+                          (and (pair? w) (eq? hello (car (car w)))))
+                        (let ((w (piece-write 'chunked delivery 2 7)))
+                          (and (pair? w) (let ((seg (cadr (car w))))
+                                           (and (pair? seg) (eq? delivery (car seg))
+                                                (equal? (cdr seg) '(2 7)))))))))
+    ;; A size line is made once for a piece whose length is a power of two,
+    ;; as the pieces a buffer hands out are, and shared by every such piece
+    ;; (M6.3's review), as a status line is shared by every response; any
+    ;; other length's is made for its piece.
+    (test-equal "a size line is shared by every piece of the same power-of-two length, and made afresh otherwise"
+                '(shared shared own)
+                (let ((line (lambda (bv) (let ((w (piece-write 'chunked bv 0 (bytevector-length bv))))
+                                           (if (pair? w) (car (car w)) (list 'refused))))))
+                  (list (if (eq? (line four-k) (line (make-bytevector 4096 98))) 'shared 'own)
+                        (if (eq? (line (make-bytevector 1 97)) (line (make-bytevector 1 98))) 'shared 'own)
+                        (if (eq? (line (b "hello")) (line (b "world"))) 'shared 'own))))
+
+    ;; RFC 9112 §7.1: last-chunk = 1*"0" CRLF, then the trailer section, here
+    ;; empty, and CRLF.  A close-delimited body is ended by the close.
+    (test-equal "the end of a chunked body is the last chunk and an empty trailer section"
+                '("0\r\n\r\n" 1 5)
+                (let ((w (end-write 'chunked)))
+                  (if (pair? w) (list (wire (car w)) (length (car w)) (cadr w)) w)))
+    (test-equal "a close-delimited body's end writes nothing: the close ends it"
+                '(() 0) (end-write 'close-delimited))
+    ;; A chunk of no bytes is the last chunk, so an empty piece would end the
+    ;; body early: the core never asks for one.  A mode that writes no
+    ;; pieces and a span outside its bytevector are refused.
+    (test-equal "an empty piece, a piece where no body is written, or one outside its bytevector is refused"
+                '(refused refused refused refused refused refused refused)
+                (list (piece-write 'chunked (b "hello") 2 2)
+                      (piece-write 'close-delimited (b "hello") 5 5)
+                      (piece-write 'content-length (b "hello") 0 5)
+                      (piece-write 'no-body (b "hello") 0 5)
+                      (piece-write 'chunked (b "hello") 3 2)
+                      (piece-write 'chunked (b "hello") 0 6)
+                      (piece-write 'chunked "hello" 0 5)))
+    (test-equal "the end of a mode that writes no pieces is refused"
+                '(refused refused refused)
+                (map end-write '(content-length content-length-only no-body)))
 
     ;; The reader, the oracle of these rows and of the core's (M3.2).  One
     ;; that never saw bytes after a message would pass every row whose body

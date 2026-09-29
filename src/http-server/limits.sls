@@ -17,8 +17,13 @@
 ;;; header field and header value 8 KiB each (-> 431; M2, milestone plan §3),
 ;;; target 8 KiB (-> 414), bodies stream unbounded (#f), pipeline cap 1, read buffer
 ;;; 16 KiB (standing risk 2), 10 000 connections at once (a connection over
-;;; them is refused as it arrives), and a listen backlog of 511, the kernel's
-;;; queue of connections not yet accepted (M4.3, milestone plan §3).  The
+;;; them is refused as it arrives), a listen backlog of 511, the kernel's
+;;; queue of connections not yet accepted (M4.3, milestone plan §3), and the
+;;; write water marks, 256 KiB and 64 KiB outstanding: a streamed response's
+;;; producer is asked for a piece only while the bytes written and not yet
+;;; completed are at or below the high water, and once past it, is asked
+;;; again when they fall to the low water (M6.3; 0005's amendment of
+;;; 2026-09-25).  A low water above the high water is refused.  The
 ;;; backlog reaches libuv's uv_listen as a C int, so it is at most 2147483647,
 ;;; the largest a C int holds on every platform the project targets.  The pipeline cap accepts only 1: the server
 ;;; answers one request at a time by design (decision 0004's amendment of
@@ -60,18 +65,21 @@
     limits-max-connections
     limits-backlog
     limits-require-host?
+    limits-write-high-water
+    limits-write-low-water
     limits-deadline-ms
     address-from-environment)
   (import (rnrs))
 
   ;; make-limits :
-  ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Nat Nat Boolean -> Limits
-  ;; The seventeen fields, in declaration order:
+  ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Nat Nat Boolean
+  ;;   Nat Nat -> Limits
+  ;; The nineteen fields, in declaration order:
   ;;   read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
   ;;   linger-timeout-ms write-timeout-ms tick-ms max-header-bytes max-header-count
   ;;   max-header-field-bytes max-header-value-bytes max-target-bytes
   ;;   max-body-bytes pipeline-cap read-buffer-size max-connections backlog
-  ;;   require-host?
+  ;;   require-host? write-high-water write-low-water
   ;; (make-limits, limits? and the accessors are generated below.)
   (define-record-type limits
     (fields
@@ -91,7 +99,9 @@
       (immutable read-buffer-size           limits-read-buffer-size)
       (immutable max-connections            limits-max-connections)
       (immutable backlog                    limits-backlog)
-      (immutable require-host?              limits-require-host?)))
+      (immutable require-host?              limits-require-host?)
+      (immutable write-high-water           limits-write-high-water)
+      (immutable write-low-water            limits-write-low-water)))
 
   ;; limits-with : Limits (Listof (Pair Symbol Any)) -> Limits
   ;; `base` with the fields named in `overrides` replaced, each as (name .
@@ -117,7 +127,8 @@
   ;; default-limits : Limits — decision 0005's nginx-style defaults, and
   ;; decision 0011's linger.
   (define default-limits
-    (make-limits 60000 75000 60000 30000 60000 250 16384 100 8192 8192 8192 #f 1 16384 10000 511 #t))
+    (make-limits 60000 75000 60000 30000 60000 250 16384 100 8192 8192 8192 #f 1 16384 10000 511 #t
+                 262144 65536))
 
   ;; limits-environment-variables : (Listof String)
   ;; The environment variables consulted by `limits-from-environment`,
@@ -139,7 +150,9 @@
       "CHEZ_HTTP_READ_BUFFER_SIZE"
       "CHEZ_HTTP_MAX_CONNECTIONS"
       "CHEZ_HTTP_BACKLOG"
-      "CHEZ_HTTP_REQUIRE_HOST"))
+      "CHEZ_HTTP_REQUIRE_HOST"
+      "CHEZ_HTTP_WRITE_HIGH_WATER"
+      "CHEZ_HTTP_WRITE_LOW_WATER"))
 
   ;; blank? : (U String #f) -> Boolean — an absent or empty value.
   (define (blank? s)
@@ -204,8 +217,22 @@
 
   ;; limits-from-environment : (String -> (U String #f)) -> Limits
   ;; default-limits with any variable present in `lookup` applied over it.
-  ;; Pure: all I/O lives in the injected lookup.
+  ;; A write low water above the high water, as the two end up, whichever
+  ;; was set, faults as a malformed value does.  Pure: all I/O lives in the
+  ;; injected lookup.
   (define (limits-from-environment lookup)
+    (let ((high (env-integer lookup "CHEZ_HTTP_WRITE_HIGH_WATER" 262144 0))
+          (low (env-integer lookup "CHEZ_HTTP_WRITE_LOW_WATER" 65536 0)))
+      (unless (<= low high)
+        (assertion-violation 'limits-from-environment
+          "the write low water must not be above the high water"
+          "CHEZ_HTTP_WRITE_LOW_WATER" low "CHEZ_HTTP_WRITE_HIGH_WATER" high))
+      (environment-limits lookup high low)))
+
+  ;; environment-limits : Lookup Nat Nat -> Limits
+  ;; The rest of limits-from-environment: every field read from `lookup`, the
+  ;; write water marks already read.
+  (define (environment-limits lookup high low)
     (make-limits
       (env-seconds->ms lookup "CHEZ_HTTP_READ_HEADER_TIMEOUT"     60000)
       (env-seconds->ms lookup "CHEZ_HTTP_IDLE_TIMEOUT"            75000)
@@ -223,7 +250,9 @@
       (env-integer     lookup "CHEZ_HTTP_READ_BUFFER_SIZE"        16384 1)
       (env-integer     lookup "CHEZ_HTTP_MAX_CONNECTIONS"         10000 1)
       (env-integer     lookup "CHEZ_HTTP_BACKLOG"                 511   1 c-int-max)
-      (env-boolean     lookup "CHEZ_HTTP_REQUIRE_HOST"            #t)))
+      (env-boolean     lookup "CHEZ_HTTP_REQUIRE_HOST"            #t)
+      high
+      low))
 
   ;; limits-deadline-ms : Limits Symbol -> Nat
   ;; How long a deadline of `kind` lasts: each kind the connection core arms

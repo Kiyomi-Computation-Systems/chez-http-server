@@ -20,7 +20,9 @@
 ;;; wheel's buckets are a tick wide, and a tick over a second would make a
 ;;; timeout, given in whole seconds, late by more than its own unit.  Each
 ;;; kind of deadline the core arms lasts its own timeout (design §4.3;
-;;; decision 0011's linger).
+;;; decision 0011's linger).  0005's write water marks, 262 144 and 65 536
+;;; bytes outstanding, arrive in M6.3 (its amendment of 2026-09-25; plan §14):
+;;; sizes, given in bytes, a low water above the high water refused.
 (import (rnrs) (srfi :64) (testing) (http-server limits))
 
 ;; env : (Pair String String) ... -> (String -> (U String #f))
@@ -52,7 +54,9 @@
         (cons 'read-buffer-size limits-read-buffer-size)
         (cons 'max-connections limits-max-connections)
         (cons 'backlog limits-backlog)
-        (cons 'require-host? limits-require-host?)))
+        (cons 'require-host? limits-require-host?)
+        (cons 'write-high-water limits-write-high-water)
+        (cons 'write-low-water limits-write-low-water)))
 
 (define all-fields (map cdr named-fields))
 
@@ -87,6 +91,8 @@
     (test-eqv "max connections 10 000"    10000 (limits-max-connections default-limits))
     (test-eqv "listen backlog 511"        511   (limits-backlog default-limits))
     (test-eq  "an HTTP/1.1 Host is required" #t   (limits-require-host? default-limits))
+    (test-eqv "write high water 256 KiB outstanding" 262144 (limits-write-high-water default-limits))
+    (test-eqv "write low water 64 KiB outstanding" 65536 (limits-write-low-water default-limits))
 
     ;; --- default-limits is exactly the empty environment (one code path) ---
     ;; Every field, so a default that moves in one place and not the other is
@@ -106,7 +112,8 @@
                   "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES" "CHEZ_HTTP_MAX_TARGET_BYTES"
                   "CHEZ_HTTP_MAX_BODY_BYTES" "CHEZ_HTTP_PIPELINE_CAP"
                   "CHEZ_HTTP_READ_BUFFER_SIZE" "CHEZ_HTTP_MAX_CONNECTIONS"
-                  "CHEZ_HTTP_BACKLOG" "CHEZ_HTTP_REQUIRE_HOST")
+                  "CHEZ_HTTP_BACKLOG" "CHEZ_HTTP_REQUIRE_HOST"
+                  "CHEZ_HTTP_WRITE_HIGH_WATER" "CHEZ_HTTP_WRITE_LOW_WATER")
                 limits-environment-variables)
 
     ;; --- overrides: timeouts are seconds -> ms; sizes/counts as given ---
@@ -140,6 +147,34 @@
                 (let ((L (limits-from-environment
                           (env '("CHEZ_HTTP_WRITE_TIMEOUT" . "90") '("CHEZ_HTTP_TICK_MS" . "100")))))
                   (list (limits-write-timeout-ms L) (limits-tick-ms L))))
+
+    ;; --- the write water marks, in bytes (M6.3) ---
+    ;; Made inside the checks, so a reader that refuses them fails the check.
+    (let ((waters (lambda pairs
+                    (guard (e (#t 'faulted))
+                      (let ((L (limits-from-environment (apply env pairs))))
+                        (list (limits-write-high-water L) (limits-write-low-water L)))))))
+      (test-equal "the write water marks are given in bytes, each alone or both"
+                  '((131072 65536) (262144 4096) (131072 32768))
+                  (list (waters '("CHEZ_HTTP_WRITE_HIGH_WATER" . "131072"))
+                        (waters '("CHEZ_HTTP_WRITE_LOW_WATER" . "4096"))
+                        (waters '("CHEZ_HTTP_WRITE_HIGH_WATER" . "131072")
+                                '("CHEZ_HTTP_WRITE_LOW_WATER" . "32768"))))
+      ;; A low water above the high water would let the producer go on
+      ;; before it had waited, so it is refused, as a malformed value is,
+      ;; whichever of the two was set.  Equal marks, and none, are water marks.
+      (test-equal "a low water at or below the high water is accepted, 0 among them"
+                  '((65536 65536) (0 0) (1 0))
+                  (list (waters '("CHEZ_HTTP_WRITE_HIGH_WATER" . "65536"))
+                        (waters '("CHEZ_HTTP_WRITE_HIGH_WATER" . "0") '("CHEZ_HTTP_WRITE_LOW_WATER" . "0"))
+                        (waters '("CHEZ_HTTP_WRITE_HIGH_WATER" . "1") '("CHEZ_HTTP_WRITE_LOW_WATER" . "0"))))
+      (test-equal "a low water above the high water, a negative mark, or not a number is refused"
+                  '(faulted faulted faulted faulted faulted)
+                  (list (waters '("CHEZ_HTTP_WRITE_HIGH_WATER" . "65535"))
+                        (waters '("CHEZ_HTTP_WRITE_LOW_WATER" . "262145"))
+                        (waters '("CHEZ_HTTP_WRITE_HIGH_WATER" . "10") '("CHEZ_HTTP_WRITE_LOW_WATER" . "11"))
+                        (waters '("CHEZ_HTTP_WRITE_LOW_WATER" . "-1"))
+                        (waters '("CHEZ_HTTP_WRITE_HIGH_WATER" . "lots")))))
 
     ;; --- the literal "unbounded" clears the body cap ---
     (let ((L (limits-from-environment
@@ -242,7 +277,8 @@
                   linger-timeout-ms write-timeout-ms tick-ms
                   max-header-bytes max-header-count max-header-field-bytes
                   max-header-value-bytes max-target-bytes max-body-bytes pipeline-cap
-                  read-buffer-size max-connections backlog require-host?)
+                  read-buffer-size max-connections backlog require-host?
+                  write-high-water write-low-water)
                 (map car (filter alone? named-fields)))
     (test-equal "and several at once"
                 '(1 128 #f)
