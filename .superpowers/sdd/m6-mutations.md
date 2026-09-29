@@ -267,3 +267,86 @@ Found by the mutants, and settled before they were recorded:
 | M6.2-S | `test-contract.sps` | the contract's replay never gives the fake the credit | contract 2 |
 | M6.2-T | `connection.sls` | every credit refused | connection-body 5; connection-table 1; contract 2; shell 1 |
 | M6.2-U | `connection.sls` | a state outside the eleven accepted | connection-table 1 |
+
+## M6.3 — a streamed response (2026-09-28)
+
+Four stacked steps, each proven on its own tree: a scratch tree of main with
+the step's files, and those of the steps below it, laid in. Each step's
+mutants ran against all of that tree's suites, four at a time; the fourth
+step's tree is the finished one. A step's mutants are those whose code it
+brings and whose checks it holds. Every mutant loaded (no `Exception` in any
+report), and every one reddened a suite. The runner prints eight failures a
+suite, so where a report cut the list (SA and SC on the serializer, CAA on
+the table), the suite was run by hand under the mutant, and the checks it
+cut are red there too.
+
+Red before green: `tests/test-limits.sps` stopped at load, exit 255, with
+`limits-write-low-water` unbound, before the fields were written;
+`tests/test-serializer.sps` with `serialize-piece` unbound; and
+`tests/test-connection-table.sps` with `conn-producer` unbound, its stream
+rows written before the core's. `tests/test-connection-stream.sps` was
+written before the core too, and first run once the core was. The contract's
+bare-close script failed its first check when first run: the server's bare
+close comes before it reads the client's end, a first, and the script is
+marked so. The review's checks (S13 refused, S17, the empty answer's flow,
+the shared size lines, the 100-byte piece's size line) were each run red
+before their fixes.
+
+Found by the mutants, and settled before they were recorded:
+- M6.3-CC, the carried arm dropped, first reddened only the fake-shell flow
+  and the table: the socket's and curl's HTTP/1.0 requests did not ask to
+  keep the connection, so it closed for that, not for its close-delimited
+  body. They now ask, as ab -k asks, and CC reddens both.
+- M6.3-CW, M6.3-SB and M6.3-SG ended the contract as exit 2: the core raised
+  in both shells, and the fake's raise escaped the replay. The replay now
+  records any raise while the fake takes an event, `(raised event
+  condition)`, in the fake's trace, as it recorded a refused credit (M6.2),
+  and the three fail it by name.
+- `producer-event`, in the core (the second step), was checked first in the
+  stream suite (the third), so its mutants could not redden its own step.
+  The check moved to the table's vocabulary checks, and CR, CS and CS2
+  redden it on the second step's tree.
+- M6.3-CX, the allocation shape's witness, keeps its growing list in the
+  field the pause reads, so it also reddens the entry suite and ends the
+  trace lane as exit 2. It is recorded as it ran; the shape is its target.
+- The review rewrote the empty piece's row, so M6.3-CG (an empty piece
+  written, not skipped) is withdrawn, its code gone, and M6.3-CG2 and
+  M6.3-CS2 witness the new rule; CR was cut again on `producer-event`'s new
+  text.
+
+### The first step: the write water marks, and the piece framing
+
+Twenty mutants on that tree, each reddening its own suite, and every check
+the step added or changed reddened by at least one:
+- the limits suite: the two defaults by LA and LB; the drift guard by LA, LB
+  and LC; the variables' list by LD; the marks given in bytes by LC and LE;
+  marks at or below the high water accepted by LE and LF; above it refused
+  by LC, LE and LG; limits-with by name, over the two new fields, by LH;
+- the serializer suite: the pieces' eighteen checks by SC (the chunks'), SD
+  (the close-delimited ones') and SG (the counts); a piece never copied by SD
+  and SE; the size lines shared by SO; the 4 KiB chunk's line by SP; the
+  last chunk by SH; the close-delimited end by SI; the refusals by SJ, SK,
+  SL and SM.
+
+| # | mutated | mutation | observed |
+|---|---|---|---|
+| M6.3-LA | `limits.sls` | the high water's default is 262,143 | limits 2 |
+| M6.3-LB | `limits.sls` | the low water's default is 65,535 | limits 2 |
+| M6.3-LC | `limits.sls` | the environment's high water defaults to 262,145, apart from default-limits | limits 3 |
+| M6.3-LD | `limits.sls` | the low water's variable left out of the list | limits 1 |
+| M6.3-LE | `limits.sls` | the high water read from the low water's variable | limits 3 |
+| M6.3-LF | `limits.sls` | equal water marks refused | limits 1 |
+| M6.3-LG | `limits.sls` | a low water above the high water accepted | limits 1 |
+| M6.3-LH | `limits.sls` | the low water's field named otherwise, so limits-with cannot replace it by name | limits 1 |
+| M6.3-SC | `serializer.sls` | a chunk without its closing CRLF | serializer 12 |
+| M6.3-SD | `serializer.sls` | a close-delimited piece framed as a chunk | serializer 7 |
+| M6.3-SE | `serializer.sls` | a piece always copied | serializer 1 |
+| M6.3-SG | `serializer.sls` | a chunk's byte count leaves out its size line | serializer 4 |
+| M6.3-SH | `serializer.sls` | the last chunk without the empty trailer section's CRLF | serializer 1 |
+| M6.3-SI | `serializer.sls` | a close-delimited body's end writes the last chunk | serializer 1 |
+| M6.3-SJ | `serializer.sls` | an empty piece accepted | serializer 1 |
+| M6.3-SK | `serializer.sls` | a piece in any mode accepted | serializer 1 |
+| M6.3-SL | `serializer.sls` | a piece past its bytevector's end accepted | serializer 1 |
+| M6.3-SM | `serializer.sls` | the end of any mode writes nothing | serializer 1 |
+| M6.3-SO | `serializer.sls` | a size line made for every piece, none shared | serializer 1 |
+| M6.3-SP | `serializer.sls` | a power of two's size line taken from the next place | serializer 1 |

@@ -24,6 +24,14 @@
 ;;; line.  A handler's own Connection field is never copied: it may only be
 ;;; `close`, and the connection argument carries that.
 ;;;
+;;; A BODY OF UNKNOWN LENGTH IS WRITTEN A PIECE AT A TIME (M6.3; decision
+;;; 0013 item 8): each piece a write of its own, `serialize-piece`, then the
+;;; end, `serialize-end`: chunked to HTTP/1.1, close-delimited to any other
+;;; version (the framing decision's).  A piece is never copied: chez-libuv
+;;; copies every segment as the write is issued (design §7.3), so a segment
+;;; may also be a span of a bytevector, `(bv start end)`, as uv-write*!
+;;; takes one.
+;;;
 ;;; WHAT CANNOT BE WRITTEN SAFELY is a fault (decision 0010 item 2).
 ;;; `response-fault` names it, and the core answers 500 instead; serializing
 ;;; a response with a fault is a caller bug, an assertion violation.  A
@@ -34,8 +42,8 @@
 ;;;
 ;;; PURE: imports only (rnrs) and this project's pure libraries.
 (library (http-server serializer)
-  (export serialize-response serialize-checked-response response-fault response-closes?
-          framing-modes date-line date-line-length)
+  (export serialize-response serialize-checked-response serialize-piece serialize-end
+          response-fault response-closes? framing-modes date-line date-line-length)
   (import (rnrs) (http-server response) (http-server span)
           (only (http-server headers) header-name=? trim-ows range-ci=?))
 
@@ -47,7 +55,8 @@
   ;;   no-body              neither, and no body: a 204, a 304, a 2xx to
   ;;                        CONNECT, a HEAD answered with no body
   ;;   chunked              Transfer-Encoding: chunked, and the body, if any,
-  ;;                        as the first chunk; the rest of the stream is M6's
+  ;;                        as the first chunk; a producer's pieces follow,
+  ;;                        each a write of its own (M6.3)
   ;;   close-delimited      neither, then the body, which the close ends
   (define framing-modes
     '(content-length content-length-only no-body chunked close-delimited))
@@ -56,7 +65,8 @@
   ;;   Response Mode Connection -> (values (Listof Segment) Nat)
   ;;   Mode       = one of framing-modes
   ;;   Connection = (U 'close 'keep-alive #f) — the Connection field to write
-  ;;   Segment    = (U Bytevector 'date) — 'date is the Date slot
+  ;;   Segment    = (U Bytevector 'date (List Bytevector Nat Nat)) — 'date is
+  ;;                the Date slot, and a list a span of a bytevector
   ;; The segments of one write, in order, and the bytes they come to, the
   ;; slot counted at date-line-length.  A response with a fault, a mode or a
   ;; connection outside those sets, and a close-delimited body or a handler's
@@ -237,6 +247,45 @@
           ((eq? mode 'chunked) (list (chunk-size-line length) body crlf))
           (else '())))
 
+  ;; --- a producer's pieces (M6.3) -------------------------------------------------
+
+  ;; serialize-piece : Mode Bytevector Nat Nat -> (values (Listof Segment) Nat)
+  ;; One piece of a producer's body, bv[start, end), as the segments of one
+  ;; write, and the bytes they come to (decision 0013 item 8): chunked, its
+  ;; size line, the piece and CRLF (RFC 9112 §7.1); close-delimited, the piece
+  ;; alone.  The piece is never copied: a whole bytevector is its own
+  ;; segment, and a span of one is uv-write*!'s `(bv start end)`.  The size
+  ;; line of a piece whose length is a power of two, as the pieces a buffer
+  ;; hands out are, is made once and shared (size-line).  An empty piece is
+  ;; an assertion violation, since a chunk of no bytes is the last chunk, and
+  ;; so the caller writes none; so are a mode no piece is written in and a
+  ;; span outside its bytevector.
+  (define (serialize-piece mode bv start end)
+    (unless (memq mode '(chunked close-delimited))
+      (assertion-violation 'serialize-piece "not a mode a producer's pieces are written in" mode))
+    (unless (and (bytevector? bv) (fixnum? start) (fixnum? end)
+                 (fx<=? 0 start) (fx<? start end) (fx<=? end (bytevector-length bv)))
+      (assertion-violation 'serialize-piece "not a piece: a span of a byte or more" bv start end))
+    (let* ((n (fx- end start))
+           (piece (if (and (fxzero? start) (fx=? end (bytevector-length bv))) bv (list bv start end))))
+      (if (eq? mode 'chunked)
+          (let ((line (size-line n)))
+            (values (list line piece crlf) (fx+ (fx+ (bytevector-length line) n) 2)))
+          (values (list piece) n))))
+
+  ;; serialize-end : Mode -> (values (Listof Segment) Nat)
+  ;; The end of a producer's body: chunked, the last chunk and an empty
+  ;; trailer section, `0` CRLF CRLF (RFC 9112 §7.1), one shared segment;
+  ;; close-delimited, nothing, since the close ends the body.  Any other mode
+  ;; is an assertion violation.
+  (define (serialize-end mode)
+    (case mode
+      ((chunked) (values last-chunk (bytevector-length (car last-chunk))))
+      ((close-delimited) (values '() 0))
+      (else (assertion-violation 'serialize-end "not a mode a producer's body is written in" mode))))
+
+  (define last-chunk (list (string->utf8 "0\r\n\r\n")))
+
   ;; chunk-size-line : Nat -> Bytevector — `length` in lowercase hex, CRLF.
   (define (chunk-size-line length)
     (let* ((digits (let loop ((n length) (d 1)) (if (fx<? n 16) d (loop (fxdiv n 16) (fx+ d 1)))))
@@ -249,6 +298,28 @@
       out))
 
   (define hex-digits (string->utf8 "0123456789abcdef"))
+
+  ;; size-line : Nat -> Bytevector
+  ;; A chunk's size line: one of power-of-two-lines when `n` is a power of
+  ;; two, 1 to 2^24, and made for it otherwise (M6.3's review: 16 B a piece).
+  (define (size-line n)
+    (if (and (fx=? (fxand n (fx- n 1)) 0) (fx<=? n max-shared-size))
+        (vector-ref power-of-two-lines (fx- (fxlength n) 1))
+        (chunk-size-line n)))
+
+  ;; max-shared-size : Nat — the largest piece whose size line is shared,
+  ;; 16 MiB, past which a piece's line costs little beside its bytes.
+  (define max-shared-size (expt 2 24))
+
+  ;; power-of-two-lines : (Vectorof Bytevector) — the size lines of 2^0 to
+  ;; 2^24, made once, as the status lines are.
+  (define power-of-two-lines
+    (let ((v (make-vector 25)))
+      (let loop ((k 0))
+        (when (fx<? k 25)
+          (vector-set! v k (chunk-size-line (expt 2 k)))
+          (loop (fx+ k 1))))
+      v))
 
   ;; --- the faults ------------------------------------------------------------------
 
