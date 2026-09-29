@@ -1157,6 +1157,33 @@ decision 0013's consequences already say v1's readers take their pieces as hande
   v1 defines none (M4.5).
 - **Mutation:** high water ignored. Expect the slow reader's memory bound red.
 
+*Noted 2026-09-28 (M6.3):* built as the bullets say, with no new decision (decision
+0013's section "Built", decision 0005's amendment of this day).
+- A producer's head is written, then the producer is asked for a piece at a time,
+  `notify-producer`, and each piece written as it comes: chunked to HTTP/1.1,
+  close-delimited to 1.0. The water marks pace the producer, not reading: it is asked
+  only at or below the high water, and once past it, again at the low water (and at
+  or below the high, whatever the limits). Design §4.4's M6.3 amendment has the
+  seventeen rows (S1 to S17 in the table suite).
+- The plan's mutation turns the slow reader's bound red: in the table (S6 and S7), in
+  the fake shell's flows (a MiB in 16 KiB pieces, never more than the high water and one
+  piece's write outstanding), and on a socket, where a client that reads nothing is
+  streamed a MiB and the first turn, with the high water ignored, asks for all of it.
+- M3.2's carried arm is reached by a stream to HTTP/1.0, and its mutation, dropping the
+  arm, turns that stream's rows and flows red: the serializer refuses a close-delimited
+  body on a connection that stays open.
+- A producer that fails once the head is on the wire gets a bare close, logged as
+  `handler-failed`, so the failure need not reach the embedder, and
+  `&http-server-handler-error` stays undefined (design §6.4's note).
+- The M5.2 note above, that in M6.3 a body that stalls once a handler's head is on the
+  wire gets a bare close, describes a case v1 does not reach. A handler's head goes on
+  the wire only from `handling`, the body ended, or from `body` with a response given
+  instead of a reader, which stops reading the body (decision 0013 item 4). So no body
+  deadline runs once a handler's head is on the wire, and the body's 408 stands. The
+  table's S4 holds it: `read-stop`, and the write deadline in the body's place.
+- What a piece costs: the core 112 B for a power-of-two length, 128 B otherwise, and
+  the producer's event 64 B (decision 0013's section "Built").
+
 **M6.4 — Expect, trailers, and the exit's files.**
 - `100 Continue` goes out when the handler pulls the body, not before (the brief).
   libhtp's `05-expect.t` and `99-expect-100.t` join its lane with our expectations, and

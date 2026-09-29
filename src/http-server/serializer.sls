@@ -24,13 +24,14 @@
 ;;; line.  A handler's own Connection field is never copied: it may only be
 ;;; `close`, and the connection argument carries that.
 ;;;
-;;; A BODY OF UNKNOWN LENGTH IS WRITTEN A PIECE AT A TIME (M6.3; decision
-;;; 0013 item 8): each piece a write of its own, `serialize-piece`, then the
-;;; end, `serialize-end`: chunked to HTTP/1.1, close-delimited to any other
-;;; version (the framing decision's).  A piece is never copied: chez-libuv
-;;; copies every segment as the write is issued (design §7.3), so a segment
-;;; may also be a span of a bytevector, `(bv start end)`, as uv-write*!
-;;; takes one.
+;;; A BODY OF UNKNOWN LENGTH IS A PRODUCER (M6.3; decision 0013 item 8): a
+;;; procedure the server calls for each piece, which answers a bytevector,
+;;; or the eof object at the end.  Its head writes no body, and each piece
+;;; is a write of its own, `serialize-piece`, then the end, `serialize-end`:
+;;; chunked to HTTP/1.1, close-delimited to any other version (the framing
+;;; decision's).  A piece is never copied: chez-libuv copies every segment
+;;; as the write is issued (design §7.3), so a segment may also be a span of
+;;; a bytevector, `(bv start end)`, as uv-write*! takes one.
 ;;;
 ;;; WHAT CANNOT BE WRITTEN SAFELY is a fault (decision 0010 item 2).
 ;;; `response-fault` names it, and the core answers 500 instead; serializing
@@ -68,10 +69,11 @@
   ;;   Segment    = (U Bytevector 'date (List Bytevector Nat Nat)) — 'date is
   ;;                the Date slot, and a list a span of a bytevector
   ;; The segments of one write, in order, and the bytes they come to, the
-  ;; slot counted at date-line-length.  A response with a fault, a mode or a
-  ;; connection outside those sets, and a close-delimited body or a handler's
-  ;; `Connection: close` on a connection that stays open, are assertion
-  ;; violations.
+  ;; slot counted at date-line-length.  A producer's head writes no body: its
+  ;; pieces follow (serialize-piece).  A response with a fault, a mode or a
+  ;; connection outside those sets, a close-delimited body or a handler's
+  ;; `Connection: close` on a connection that stays open, and a producer
+  ;; given a Content-Length, are assertion violations.
   (define (serialize-response r mode connection)
     (cond ((response-fault r)
            => (lambda (fault)
@@ -92,10 +94,13 @@
           ((and (not (eq? connection 'close))
                 (or (eq? mode 'close-delimited) (response-closes? r)))
            (assertion-violation 'serialize-response
-             "a response that closes the connection, on one that stays open" mode)))
+             "a response that closes the connection, on one that stays open" mode))
+          ((and (procedure? (response-body r)) (memq mode '(content-length content-length-only)))
+           (assertion-violation 'serialize-response
+             "a body of unknown length has no Content-Length" mode)))
     (let* ((headers (response-headers r))
            (body (response-body r))
-           (length (if body (bytevector-length body) 0))
+           (length (if (bytevector? body) (bytevector-length body) 0))
            (status (status-line (response-status r) (response-reason r)))
            (block (header-block headers mode length connection))
            (tail (body-segments mode body length))
@@ -349,7 +354,8 @@
   ;;   framing-field         a Content-Length or Transfer-Encoding: the
   ;;                         server's to write (item 1)
   ;;   connection-field      a Connection that is not `close` (item 3)
-  ;;   invalid-body          neither a bytevector nor #f
+  ;;   invalid-body          neither a bytevector, a producer (a procedure;
+  ;;                         decision 0013 item 8) nor #f
   (define (response-fault r)
     (cond ((not (response? r)) 'not-a-response)
           ((not (let ((s (response-status r)))
@@ -359,7 +365,7 @@
                   (or (not reason) (and (bytevector? reason) (field-text? reason)))))
            'invalid-reason)
           ((headers-fault (response-headers r)))
-          ((not (let ((body (response-body r))) (or (not body) (bytevector? body))))
+          ((not (let ((body (response-body r))) (or (not body) (bytevector? body) (procedure? body))))
            'invalid-body)
           (else #f)))
 

@@ -1,10 +1,13 @@
 #+TITLE: Responses: what the server writes for you
 
 Your handler returns a response: a status, a reason phrase, headers, and a
-body, which is a bytevector or ~#f~ for none. The server adds the rest:
+body, which is a bytevector, ~#f~ for none, or a producer that streams it
+([[file:handlers.org][handlers.org]]). The server adds the rest:
 
 - the reason phrase (~OK~, ~Not Found~, ...) when you give ~#f~;
-- ~Content-Length~, counted from your body;
+- ~Content-Length~, counted from your body; for a producer's body,
+  ~Transfer-Encoding: chunked~ to HTTP/1.1, and no length to HTTP/1.0, whose
+  connection then closes after it;
 - ~Connection: close~ when the connection closes after this response, and
   ~Connection: keep-alive~ to an HTTP/1.0 client that asked to keep it open;
 - ~Date~, unless you set your own.
@@ -24,7 +27,8 @@ you gave one:
 | a ~2xx~ to a ~CONNECT~   | no ~Content-Length~, no body          |
 
 Give a ~HEAD~ the body a ~GET~ would get, and the client learns its length.
-Give it ~#f~, and no length is sent.
+Give it ~#f~, or a producer, and no length is sent; a producer is never
+called.
 
 * What gets 500
 
@@ -39,8 +43,8 @@ connection:
   response in two);
 - a ~Content-Length~ or ~Transfer-Encoding~ header: the server writes those;
 - a ~Connection~ header other than ~close~;
-- a body that is not a bytevector or ~#f~, or an answer that is neither a
-  response nor a reader ([[file:handlers.org][handlers.org]]).
+- a body that is not a bytevector, a producer or ~#f~, or an answer that is
+  neither a response nor a reader ([[file:handlers.org][handlers.org]]).
 
 Decision 0010 in ~.plans/decisions/~ records why.
 

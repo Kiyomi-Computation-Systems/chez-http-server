@@ -3077,3 +3077,19 @@ Watched to fail (m6-mutations.md, the first step): twenty mutants on that tree, 
 Size: 260 inserted lines of code and tests, 20 deleted.
 
 NEXT: the second step, the core streams a producer's body, stacked on this one.
+
+
+M6.3 SECOND STEP: the core streams a producer's body (feat/m6.3-core-stream).
+- `(http-server serializer)`: a producer's head writes no body, and a producer given a Content-Length is refused; `response-fault` takes a producer as a body. `(http-server response)` documents it.
+- `(http-server connection)`: the stream, design §4.4's M6.3 rows. `respond-with` writes a producer's head and asks for its first piece when the head leaves the bytes outstanding at or below the high water; `handler-body-chunk` writes each piece and asks again at or below the high water, waiting past it; a completion asks a waiting producer again at or below both water marks; `handler-body-end` writes the last chunk, or, close-delimited, lets the close end the body, the response written once every write has completed; `handler-failed` with a piece asked for is a bare close; a piece or an end not asked for, or a piece of no bytes, is refused. Three fields hold the stream: the producer, the framing, and whether a piece is asked for. `conn-producer` and `producer-event` are exported for the shells: `producer-event` makes a producer's answer an event, refusing what is no piece, an empty bytevector among it. Every close lets the producer go. M3.2's carried arm is reached.
+- Both shells perform `notify-producer`: `(fake-shell)`, and `(http-server private shell)`, which logs a producer's failure as a handler's. The fake's `write-wire` copies a span segment. Their checks are the steps' above.
+- The checks: `tests/test-connection-table.sps`, 205 (main's 175), seventeen stream rows, S1 to S17, the vocabulary now wholly used, and a producer's answer as an event; `tests/test-serializer.sps`, 190, the producer's head in both framings and to a HEAD, read back by chez-httparse's response parser, and the refusals.
+- Records: design §4.4's M6.3 amendment, §6.4's and §7.3's notes; decision 0005's amendment (the water marks), decision 0013's section "Built"; plan §14's M6.3 note; docs: handlers.org gains "Streaming a response", and responses.org and configuration.org the producer's framing and the two variables.
+
+`make test` green on this step's own tree: forty suites, 1,185 expected passes, exit 0.
+
+Watched to fail (m6-mutations.md, the second step): forty-seven mutants on that tree, the first step's twenty again and twenty-seven for the core and the producer's head, and every check the step added or changed reddened by at least one. The plan's mutation, M6.3-CA, high water ignored, reddens S6 and S7. The shells' `notify-producer`, and a waiting producer's asked flag, are watched in the third and fourth steps, where their checks are.
+
+Size: 596 inserted lines of code and tests, 95 deleted, past plan §1 rule 1's ~400, as the form weighed.
+
+NEXT: the third step, the fake shell's flows, stacked on this one.

@@ -184,3 +184,33 @@ nothing caps them by default.
   (1,048,576 B) unless the handler gives another, answered the same way. The lower of
   the two caps is the one a body meets.
 - The default is unchanged.
+
+## Amendment (2026-09-28) — the write water marks, as M6.3 built them
+
+The amendment of 2026-09-25 left the on-breach column of the `write-high-water` /
+`write-low-water` row out of force until M6 settled what crossing them does. M6.3
+settles it as plan §14 and
+[decision 0013](0013-a-handler-reads-a-body-through-a-reader-it-answers-with-at-the-head-and-streams-one-out-through-a-thunk.md)
+item 8 set it out, with no new decision:
+
+| Limit | Default | On breach |
+|---|---|---|
+| `write-high-water` | 262 144 bytes outstanding | a streamed response's producer waits |
+| `write-low-water` | 65 536 bytes outstanding | the producer is asked again |
+
+- **They pace the producer, not reading.** A producer is asked for a piece only while
+  the bytes written and not yet completed are at or below the high water, so at most one
+  piece passes it; past it, it waits until a completion brings them to the low water.
+  Reading is not touched: a connection reads nothing while it writes a response
+  (decision 0004 item 1), so the row's read-stop and read-start had nothing to act on.
+- **The four things.** They are the eighteenth and nineteenth fields of
+  `(http-server limits)`, read in bytes from `CHEZ_HTTP_WRITE_HIGH_WATER` and
+  `CHEZ_HTTP_WRITE_LOW_WATER`; each has a value test against this table's default, its
+  variable in `limits-environment-variables`, and the drift guard over it.
+- **A low water above the high water is refused** at startup, as a malformed value
+  is, whichever of the two was set: the producer would go on before it had waited.
+  Equal marks, and marks of 0, are accepted. At a high water of 0 the producer is asked
+  again only once every write has completed. `limits-with`, which checks no value,
+  can still make one; the core then asks a waiting producer at or below both marks, so
+  never past the high water (M6.3's review).
+- The defaults are unchanged.

@@ -183,3 +183,54 @@ findings"):
   the end allocates 3,129,692 B, and both hold 2 MiB at their peak.
 - **A status the core writes lets a whole reader's buffer go**, while the
   reader is kept for the pieces already asked for.
+
+## Built (2026-09-28, M6.3): item 8
+
+Item 8 as built, with no new decision: the core writes a producer's head, then asks the
+shell to call the producer, `notify-producer`, and writes each piece as its answer comes
+back, `handler-body-chunk` or `handler-body-end`, which the core's `producer-event` makes
+of the answer (design §4.4's M6.3 amendment). It is asked only at or below the write's
+high water, and once past it, again at the low water (decision 0005's amendment of this
+day). No body is written to a HEAD, a 204 or a 304, so their producer is never called.
+
+Chosen while building, and flagged for review:
+
+- **The head goes out first**, as every response's head does, and the producer is asked
+  for its first piece once the head is written. So a producer that fails at its first
+  call gets the bare close, not a 500. Weighed: holding the head for the first piece,
+  one write fewer per response and a 500 for a first-call failure, which would leave the
+  client of an M7 producer that awaits before its first piece with no head until then.
+- **An answer that is neither a bytevector of a byte or more nor the eof object is the
+  producer failing**, reported by the shell as `handler-failed`, the bare close, as a
+  raise is. Weighed: the core refusing the event as a caller bug, which would make a
+  handler's mistake a shell's. An empty bytevector among them, since the review (below):
+  `get-bytevector-some` never answers one, and a chunk of no bytes is the last chunk.
+- **While a piece is asked for with no write outstanding, no deadline is armed**: the
+  producer is then the one waited on, and decision 0005 has no deadline for a handler.
+  In v1 the shells call the producer in place, so its answer comes in the same drain.
+
+The review before the first commit (2026-09-28, on the owner's "fix all findings"):
+
+- **An empty piece is the producer failing.** Built first as writing nothing and asking
+  again, it let a producer that answered one while it had nothing ready be called again
+  in the same drain for as long as it did, holding the loop, every connection's: on the
+  fake shell, 99,998 calls in one delivery, until its dispatch cap. In v1 a producer
+  cannot wait, so an answer that is not a piece is its failure.
+- **A waiting producer is asked again at or below both water marks.** `limits-with`
+  checks no value, and with a low water above the high, the core asked a producer past
+  the high water.
+- **A power of two's size line is made once**, as the status lines are: a 16 KiB piece's
+  line cost 16 B of the core's 128.
+- The docs say a producer may never be called, or be let go early, and that Chez
+  closes a port it collects only when a collection runs. The review's finding said Chez
+  never closed one: measured, 20,000 opens of `/dev/null` under a 1,024-descriptor
+  limit all succeed with a collection every 100, and fail at the limit with none.
+
+Measured (2026-09-28, Darwin arm64; a scratchpad probe, two runs, the same): a piece
+costs the core 112 B, its write and its framing, when its length is a power of two, and
+128 B otherwise, its size line made for it; the producer's event 64 B, the spike's
+figure for a thunk. The allocation suite's harness, which also completes each write as
+a shell reports it, reads 304 B a 100-byte piece, the same at the 64th piece as at the
+16th, and eight pieces cost the same at 16 KiB as at 128 bytes, and 16 B a piece more
+at 100 bytes (`tests/test-connection-allocation.sps`). curl's GET, 1,840 B, and the
+JSON POST, 2,624 B read whole and 2,432 B streamed, are unchanged.

@@ -8,8 +8,8 @@
 ;;; state in the adapter's context, a parser on the adapter's one binding
 ;;; list, and the closures chez-libuv calls, each of which turns what
 ;;; happened into one of the core's events and dispatches it (decision 0003
-;;; item 1).  None runs application code but the handler's call, and none
-;;; captures a continuation.
+;;; item 1).  None runs application code but the handler's call, its
+;;; reader's and its producer's, and none captures a continuation.
 ;;;
 ;;; THE MESSAGE LOOP is the fake shell's (design §4.5).  Actions run after the
 ;;; outermost dispatch, in order, from one queue; a dispatch made while the
@@ -32,10 +32,17 @@
 ;;;                   `handler-failed`, logged; with no reader, nothing
 ;;;   deliver-body-end  the reader's end: its response as `handler-responded`,
 ;;;                   or, if it raises, `handler-failed`, logged
+;;;   notify-producer the producer a streamed response is written from
+;;;                   (conn-producer; decision 0013 item 8), called for its
+;;;                   next piece: its answer as `handler-body-chunk` or
+;;;                   `handler-body-end` (producer-event), or, if it raises
+;;;                   or answers neither, `handler-failed`, logged; with no
+;;;                   producer, nothing
 ;;;   write           uv-write*!, the Date slot filled from the clock (decision
 ;;;                   0010); its completion reports `write-completed` with the
 ;;;                   action's byte count, which is all the completion keeps:
-;;;                   chez-libuv copied the segments at the call (design §7.3)
+;;;                   chez-libuv copied the segments at the call (design §7.3),
+;;;                   a span of a bytevector, `(bv start end)`, among them
 ;;;   read-stop/-start  uv-read-stop! and uv-read-start!, when reading
 ;;;                   changes; the first start, at adoption, fixes the read
 ;;;                   buffer at the limits' read-buffer-size (design §7.2)
@@ -48,12 +55,12 @@
 ;;;   arm-deadline    the connection's entry in the wheel, at the loop's now
 ;;;                   plus the kind's limit (below)
 ;;;   disarm-deadline its entry taken out of the wheel
-;;; A streamed response's `notify-producer` (M6.3) and the hand-off (M8) are
-;;; never asked for in v1's flow.  A shell made on credit (M6.2) answers
-;;; with each handler's answer and `credit`, and a streaming reader's credit
-;;; reaches the core through connection-body-credit!, which no action asks
-;;; for.  v1's server never makes one: the checks do, standing in for M7's
-;;; coroutine shell, which hands a reader its pieces on credit.
+;;; The hand-off (M8) is never asked for in v1's flow.  A shell made on
+;;; credit (M6.2) answers with each handler's answer and `credit`, and a
+;;; streaming reader's credit reaches the core through
+;;; connection-body-credit!, which no action asks for.  v1's server never
+;;; makes one: the checks do, standing in for M7's coroutine shell, which
+;;; hands a reader its pieces on credit.
 ;;;
 ;;; DEADLINES (decision 0005 and its amendments of 2026-09-27; M5.3).  The
 ;;; shell keeps the deadlines of its connections in one wheel, (http-server
@@ -139,7 +146,7 @@
           (libuv)
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
-          (only (http-server connection) make-conn-state conn-body-reader)
+          (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
           (only (http-server body) body-reader-on-piece body-reader-on-end)
           (only (http-server limits)
                 limits-read-buffer-size limits-backlog limits-tick-ms limits-deadline-ms)
@@ -449,6 +456,7 @@
       ((call-handler) (call-handler! c (cadr a)))
       ((deliver-body) (deliver-body! c (cadr a) (caddr a) (cadddr a)))
       ((deliver-body-end) (deliver-body-end! c))
+      ((notify-producer) (notify-producer! c))
       ((write) (write! c (cadr a) (caddr a)))
       ((read-stop) (read-stop! c))
       ((read-start) (read-start! c))
@@ -515,6 +523,18 @@
         (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
                                    (list 'handler-failed e)))
                        (list 'handler-responded ((body-reader-on-end r))))))))
+
+  ;; notify-producer! : Connection -> Void
+  ;; The producer the core writes a response's body from, called for its
+  ;; next piece: its answer as `handler-body-chunk` or `handler-body-end`,
+  ;; or, if it raises or answers neither, `handler-failed`, logged.  With no
+  ;; producer, nothing: the core let it go after the piece was asked for.
+  (define (notify-producer! c)
+    (let ((p (conn-producer (connection-state c))))
+      (when p
+        (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
+                                   (list 'handler-failed e)))
+                       (producer-event (p)))))))
 
   ;; write! : Connection (Listof Segment) Nat -> Void
   ;; One uv-write*! of the segments, the Date slot filled.

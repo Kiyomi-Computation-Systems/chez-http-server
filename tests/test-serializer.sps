@@ -18,9 +18,10 @@
 ;;; And, since M3.2: the reader's own calibration, what it sees after a
 ;;; message and past an interim one; and the entry for a response already
 ;;; checked for faults, which writes every wire row as serialize-response does.
-;;; And, since M6.3: the pieces and the end of a body of unknown length
-;;; (decision 0013 item 8), each the segments of one write of their own,
-;;; chunked (RFC 9112 §7.1) or close-delimited (§6.3 rule 8).
+;;; And, since M6.3: a body of unknown length, a producer (decision 0013 item
+;;; 8), whose head writes no body, and whose pieces and end are each the
+;;; segments of one write of their own, chunked (RFC 9112 §7.1) or
+;;; close-delimited (§6.3 rule 8), read back whole by the same parser.
 ;;; Every slot is filled with RFC 9110 §5.6.7's example line, written out here,
 ;;; so the wire does not depend on the Date line under test.
 (import (rnrs) (srfi :64) (testing)
@@ -50,6 +51,12 @@
                          (bytes->text o)))
                       (else (bytes->text seg))))
               segments)))
+
+;; text->bytes : String -> Bytevector — one byte per character (Latin-1).
+(define (text->bytes t) (u8-list->bytevector (map char->integer (string->list t))))
+
+;; A body of unknown length: a producer, which the serializer never calls.
+(define (producer) (eof-object))
 
 ;; The slot's place in a row's expected wire.
 (define D date-text)
@@ -111,6 +118,25 @@
              (string-append "HTTP/1.1 200 OK\r\n" D "Transfer-Encoding: chunked\r\n\r\n")
              3 #f #f
              `(200 "OK" (,read-date ("Transfer-Encoding" . "chunked")) "" need-input))
+   ;; Decision 0013 item 8: a producer's pieces follow its head, each a write
+   ;; of its own (serialize-piece, below), so the head writes no body.
+   (make-row "a producer's head is chunked, and writes no body"
+             (response 200 '() producer) 'chunked #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "Transfer-Encoding: chunked\r\n\r\n")
+             3 #f #f
+             `(200 "OK" (,read-date ("Transfer-Encoding" . "chunked")) "" need-input))
+   (make-row "a producer's head to HTTP/1.0 is close-delimited, and closes"
+             (response 200 '() producer) 'close-delimited 'close
+             (string-append "HTTP/1.1 200 OK\r\n" D "Connection: close\r\n\r\n")
+             3 #f #t
+             `(200 "OK" (,read-date ("Connection" . "close")) "" complete))
+   ;; RFC 9110 §8.6: a HEAD's Content-Length must be the GET's, and a
+   ;; producer's length is not known.
+   (make-row "a HEAD's answer with a producer announces no length"
+             (response 200 '() producer) 'no-body #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "\r\n")
+             3 #t #f
+             `(200 "OK" (,read-date) "" complete))
    ;; RFC 9112 §6.3 rule 8: a response with neither is delimited by the close.
    (make-row "close-delimited: no length, then the body, ended by the close"
              (response 200 '() (b "hello")) 'close-delimited 'close
@@ -255,6 +281,8 @@
    (list "a handler's Connection: keep-alive" (with-header (b "Connection") (b "keep-alive")) 'connection-field)
    (list "a handler's Connection: close, upgrade" (with-header (b "Connection") (b "close, upgrade")) 'connection-field)
    (list "a body that is a string" (response 200 '() "hi") 'invalid-body)
+   ;; Decision 0013 item 8: a body of unknown length is a producer.
+   (list "a body that is a procedure is a producer" (response 200 '() producer) #f)
    ;; And what is not a fault.
    (list "a handler's Connection: Close" (with-header (b "Connection") (b "Close")) #f)
    (list "a handler's Connection: close, with spaces" (with-header (b "connection") (b " close ")) #f)
@@ -298,6 +326,20 @@
   (guard (e ((assertion-violation? e) 'refused))
     (call-with-values (lambda () (serialize-end mode)) list)))
 
+;; streamed : Symbol Connection (Listof String) -> String
+;; A producer's whole response on the wire: its head, each piece's write,
+;; then the end's.
+(define (streamed mode connection texts)
+  (apply string-append
+         (call-with-values (lambda () (serialize-response (response 200 '() producer) mode connection))
+                           (lambda (segments bytes) (wire segments)))
+         (append (map (lambda (t)
+                        (let ((bv (b t)))
+                          (call-with-values (lambda () (serialize-piece mode bv 0 (bytevector-length bv)))
+                                            (lambda (segments bytes) (wire segments)))))
+                      texts)
+                 (list (call-with-values (lambda () (serialize-end mode))
+                                         (lambda (segments bytes) (wire segments)))))))
 
 (run-suite "serializer"
   (lambda ()
@@ -415,9 +457,17 @@
                   (if (pair? w) (list (wire (car w)) (length (car w)) (cadr w)) w)))
     (test-equal "a close-delimited body's end writes nothing: the close ends it"
                 '(() 0) (end-write 'close-delimited))
+    (test-equal "a producer's response reads back whole: chunked, to its last chunk"
+                `(200 "OK" (,read-date ("Transfer-Encoding" . "chunked")) "hello, world" complete)
+                (read-response (text->bytes (streamed 'chunked #f '("hello" ", " "world"))) #f #f))
+    (test-equal "and close-delimited, to the close"
+                `(200 "OK" (,read-date ("Connection" . "close")) "hello, world" complete)
+                (read-response (text->bytes (streamed 'close-delimited 'close '("hello" ", " "world")))
+                               #f #t))
     ;; A chunk of no bytes is the last chunk, so an empty piece would end the
     ;; body early: the core never asks for one.  A mode that writes no
-    ;; pieces and a span outside its bytevector are refused.
+    ;; pieces, a span outside its bytevector, and a body of unknown length
+    ;; given a Content-Length are refused.
     (test-equal "an empty piece, a piece where no body is written, or one outside its bytevector is refused"
                 '(refused refused refused refused refused refused refused)
                 (list (piece-write 'chunked (b "hello") 2 2)
@@ -430,6 +480,12 @@
     (test-equal "the end of a mode that writes no pieces is refused"
                 '(refused refused refused)
                 (map end-write '(content-length content-length-only no-body)))
+    (test-equal "a producer given a Content-Length is refused"
+                '(refused refused)
+                (map (lambda (mode)
+                       (assertion-raised?
+                        (lambda () (serialize-response (response 200 '() producer) mode #f))))
+                     '(content-length content-length-only)))
 
     ;; The reader, the oracle of these rows and of the core's (M3.2).  One
     ;; that never saw bytes after a message would pass every row whose body
