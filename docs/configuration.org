@@ -43,6 +43,8 @@ with the port it got: ~listening 127.0.0.1 8080~.
 | ~CHEZ_HTTP_MAX_CONNECTIONS~         | 10000     | connections open at once                 |
 | ~CHEZ_HTTP_BACKLOG~                 | 511       | connections waiting to be accepted       |
 | ~CHEZ_HTTP_REQUIRE_HOST~            | true      | HTTP/1.1 requests must send ~Host~       |
+| ~CHEZ_HTTP_WRITE_HIGH_WATER~        | 262144    | bytes unsent before a stream waits       |
+| ~CHEZ_HTTP_WRITE_LOW_WATER~         | 65536     | bytes unsent when it goes on again       |
 
 The server acts on the five timeouts: what happens to a client that runs past
 one is in [[file:connections.org][connections.org]].
@@ -76,6 +78,12 @@ so whatever supervises it can start it again.
 Each open connection also holds about 18 KB of memory: its read buffer
 (~CHEZ_HTTP_READ_BUFFER_SIZE~, 16 KB), about 1.5 KB of the server's own
 state, and libuv's socket. So 10,000 open connections hold about 180 MB.
+
+The two water marks bound a streamed response ([[file:handlers.org][handlers.org]]): the server
+asks its producer for the next piece only while at most
+~CHEZ_HTTP_WRITE_HIGH_WATER~ bytes are written and not yet taken by the
+client, and once past it, waits until no more than ~CHEZ_HTTP_WRITE_LOW_WATER~
+are. A low water above the high water is refused at startup.
 
 ~CHEZ_HTTP_BACKLOG~ is how many connections the kernel keeps waiting for the
 server to accept them, at most 2147483647; the kernel may cap it lower

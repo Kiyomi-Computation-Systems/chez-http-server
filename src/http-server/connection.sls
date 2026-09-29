@@ -149,8 +149,8 @@
 ;;; Each write is outstanding, with the bytes it comes to, until the shell
 ;;; reports `(write-completed nbytes)`, in `responding` or, for a write a
 ;;; close cut short, in `closing`.  A completion the core did not ask for is
-;;; an assertion violation.  M6's write watermarks will read
-;;; the bytes outstanding.  The core keeps nothing of the response itself:
+;;; an assertion violation.  The write water marks read the bytes
+;;; outstanding (M6.3, below).  The core keeps nothing of the response itself:
 ;;; chez-libuv copies the segments when the write is issued, so nothing
 ;;; needs them after that (tests/test-connection-retention.sps checks it).
 ;;;
@@ -213,6 +213,29 @@
 ;;; consequences).  A whole reader's pieces are the core's to copy, so it
 ;;; never owes credit.
 ;;;
+;;; A BODY OF UNKNOWN LENGTH IS WRITTEN A PIECE AT A TIME (M6.3; decision
+;;; 0013 item 8).  A response whose body is a producer, a procedure the
+;;; server calls for each piece, is written as its head, framed chunked to
+;;; HTTP/1.1 and close-delimited to 1.0 (http-server decisions), and then, a
+;;; piece at a time, as the producer answers: `(notify-producer)` asks the
+;;; shell to call it, and its answer comes back as `(handler-body-chunk bv
+;;; start end)`, or `(handler-body-end)` at the end (`producer-event` says
+;;; which), or as `handler-failed` if it raised or answered neither a piece
+;;; of a byte or more nor the eof object.  Each piece is a write of its own,
+;;; and the end of a chunked body is its last chunk.  The limits' write water
+;;; marks bound what is outstanding: the producer is asked only while the
+;;; bytes written and not yet completed are at or below the high water, so
+;;; at most one piece passes it, and once past it, it waits until a
+;;; completion brings them to the low water, and to the high water too,
+;;; whatever limits the connection was given, then is asked again.  The
+;;; response is written once its end has come and every write has
+;;; completed, and a close-delimited one then closes, in stages, as every
+;;; close after a response does.  No body is written to a HEAD, a 204 or a
+;;; 304, so their producer is never called.  A producer that fails once the
+;;; head is on the wire gets a bare close: no status can be written after
+;;; the head, and the client reads the body cut short.  The shells find the
+;;; producer to call with `conn-producer`.
+;;;
 ;;; WHAT HAPPENS NEVER DEPENDS ON HOW THE BYTES WERE SPLIT INTO READS (design
 ;;; §8.1's second property).  The feed that completes a head can go on into
 ;;; its body before the handler is asked.  What it meets there waits for the
@@ -241,7 +264,7 @@
           make-conn-state conn-state?
           conn-phase conn-deadline conn-close-after conn-outstanding
           conn-outstanding-bytes conn-pending conn-request conn-limits conn-body-reader
-          conn-body-buffered
+          conn-body-buffered conn-producer producer-event
           conn-step conn-parser-step conn-headers-complete-step)
   (import (rnrs)
           (http-server response) (http-server request) (http-server span)
@@ -250,7 +273,8 @@
           (only (http-server host) host-fault)
           (only (http-server transfer-coding) unsupported-transfer-coding? faulty-framing?)
           (only (http-server serializer)
-                serialize-response serialize-checked-response response-fault response-closes?)
+                serialize-response serialize-checked-response serialize-piece serialize-end
+                response-fault response-closes?)
           (only (httparse decisions) should-keep-alive? F-CHUNKED)
           (only (httparse methods) httparse-method-numbers))
 
@@ -327,9 +351,11 @@
   ;; conn-phase / -deadline / -close-after / -outstanding / -outstanding-bytes
   ;;   / -pending / -request / -limits : ConnState -> the corresponding field
   ;; The request head being read is kept in the state too, and so are the
-  ;; request body being read (M6.1), the connection's target judge (M2.3)
-  ;; and the last delivery it fed the parser, `(bv start end)` or #f (M2.4);
-  ;; none of them is exported.  A state made in `handling` has a message that
+  ;; request body being read (M6.1), the connection's target judge (M2.3),
+  ;; the last delivery it fed the parser, `(bv start end)` or #f (M2.4), and
+  ;; a streamed response's producer, how its pieces are framed, and whether
+  ;; a piece has been asked for and its answer is to come (M6.3); only the
+  ;; producer is exported, for the shells.  A state made in `handling` has a message that
   ;; has ended, and is waiting for its handler's answer, as a request with no
   ;; body is.
   (define-record-type (conn-state make-conn-state conn-state?)
@@ -344,7 +370,10 @@
             (immutable head      conn-head)
             (immutable body      conn-body)
             (immutable judge     conn-judge)
-            (mutable delivery    conn-delivery    conn-delivery-set!))
+            (mutable delivery    conn-delivery    conn-delivery-set!)
+            (mutable producer    conn-producer    conn-producer-set!)
+            (mutable pieces      conn-pieces      conn-pieces-set!)
+            (mutable asked?      conn-asked?      conn-asked?-set!))
     (protocol
      (lambda (new)
        (lambda (phase deadline close-after outstanding outstanding-bytes pending request limits)
@@ -363,13 +392,35 @@
              (body-answer-set! body 'asked)
              (body-complete?-set! body #t))
            (new phase deadline close-after outstanding outstanding-bytes pending request limits
-                (make-head) body (make-target-judge) #f))))))
+                (make-head) body (make-target-judge) #f #f #f #f))))))
 
   ;; conn-body-reader : ConnState -> (U #f BodyReader)
   ;; The reader the handler answered with, while the core hands it the body:
   ;; the one each `deliver-body` and `deliver-body-end` goes to, until its
   ;; response comes back, and #f otherwise (decision 0013).
   (define (conn-body-reader s) (body-reader-of (conn-body s)))
+
+  ;; conn-producer : ConnState -> (U #f (-> Any))
+  ;; The producer a streamed response's body is written from, while it is:
+  ;; the one each `notify-producer` asks the shell to call, and #f otherwise
+  ;; (decision 0013 item 8).
+
+  ;; producer-event : Any -> Event
+  ;; The event a producer's answer is to the core: a bytevector of a byte or
+  ;; more, one more piece, `(handler-body-chunk bv 0 n)`; the eof object, the
+  ;; end, `(handler-body-end)`.  Anything else is an assertion violation,
+  ;; which a shell that calls the producer inside its guard reports as
+  ;; `handler-failed`, as it reports the producer's own raise.  An empty
+  ;; bytevector among them: `get-bytevector-some` never answers one, and a
+  ;; producer asked again at once for as long as it answered one would hold
+  ;; the loop, every connection's, until it had something (M6.3's review).
+  (define (producer-event x)
+    (cond ((and (bytevector? x) (fx>? (bytevector-length x) 0))
+           (list 'handler-body-chunk x 0 (bytevector-length x)))
+          ((eof-object? x) '(handler-body-end))
+          (else (assertion-violation 'producer-event
+                  "a producer answers a bytevector of a byte or more, or the eof object at the end"
+                  x))))
 
   ;; conn-body-buffered : ConnState -> Nat
   ;; The bytes the core holds for a whole reader's body: its buffer's length,
@@ -614,15 +665,15 @@
       ((parser-event)       (on-parser-event s (cadr ev) (cddr ev)))
       ((parser-result)      (on-parser-result s ev))
       ((handler-responded)  (on-handler-responded s (cadr ev) (cddr ev)))
+      ((handler-body-chunk) (on-body-chunk s (cdr ev)))
+      ((handler-body-end)   (on-body-end s))
       ((handler-failed)     (on-handler-failed s))
       ((body-credit)        (on-body-credit s (cdr ev)))
       ((shutdown-requested) (on-shutdown-requested s))
       ((closed)             (on-closed s))
-      ;; No row reads these: a streamed response (M6.3) and the drain
-      ;; lifecycle (M8) give them transitions.  The half-close's completion
-      ;; changes nothing: the client's close, not it, ends a linger (M3.5).
-      ((shutdown-completed handler-body-chunk handler-body-end)
-       (values s '()))
+      ;; The half-close's completion changes nothing: the client's close, not
+      ;; it, ends a linger (M3.5).
+      ((shutdown-completed) (values s '()))
       (else (assertion-violation 'conn-step "not a connection event" ev))))
 
   ;; The transitions, one procedure per event kind.  Each names the design
@@ -665,6 +716,8 @@
   ;; Otherwise resume parsing what was retained and read again.  After a
   ;; close-marked message the retained input is dropped, never fed (decision
   ;; 0004 item 4).
+  ;; While a streamed response's body is written, its end still to come, a
+  ;; completion is the stream's: `stream-completed`.
   ;; closing, write-completed: a write the close cut short, after a read
   ;; error in responding, is settled the same way, and nothing more is asked.
   ;; In the other states no write is outstanding, and nothing changes.
@@ -672,29 +725,127 @@
     (case (conn-phase s)
       ((responding)
        (complete-write! s fields)
-       (let ((left (conn-outstanding s)))
-         (cond
-          ((> left 0)
-           (conn-deadline-set! s 'write)
-           (values s '((arm-deadline write))))
-          ((conn-close-after s)
-           (forget-input! s)
-           (conn-phase-set! s 'lingering)
-           (conn-deadline-set! s 'linger)
-           (values s '((shutdown) (read-start) (arm-deadline linger))))
-          (else
-           (let ((pending (conn-pending s)))
-             (conn-phase-set! s 'idle)
-             (conn-deadline-set! s 'idle)
-             (conn-pending-set! s #f)
-             (values s `((resume-parser)
-                         ,@(if pending (list (cons 'feed-parser pending)) '())
-                         (read-start)
-                         (arm-deadline idle))))))))
+       (cond
+        ((conn-producer s) (stream-completed s))
+        ((> (conn-outstanding s) 0)
+         (conn-deadline-set! s 'write)
+         (values s '((arm-deadline write))))
+        (else (response-written s))))
       ((closing)
        (complete-write! s fields)
        (values s '()))
       (else (values s '()))))
+
+  ;; response-written : ConnState -> (values ConnState (Listof Action))
+  ;; responding -> the response is written, every write completed: the
+  ;; staged close, or idle, as on-write-completed says.
+  (define (response-written s)
+    (cond
+     ((conn-close-after s)
+      (forget-input! s)
+      (conn-phase-set! s 'lingering)
+      (conn-deadline-set! s 'linger)
+      (values s '((shutdown) (read-start) (arm-deadline linger))))
+     (else
+      (let ((pending (conn-pending s)))
+        (conn-phase-set! s 'idle)
+        (conn-deadline-set! s 'idle)
+        (conn-pending-set! s #f)
+        (values s `((resume-parser)
+                    ,@(if pending (list (cons 'feed-parser pending)) '())
+                    (read-start)
+                    (arm-deadline idle)))))))
+
+  ;; stream-completed : ConnState -> (values ConnState (Listof Action))
+  ;; A completion while a streamed body is written (M6.3).  A producer that
+  ;; waits, past the high water, is asked again once the bytes outstanding
+  ;; are at or below the low water, and at or below the high water too: a
+  ;; producer is never asked past it, whatever limits the connection was
+  ;; given, and limits-with, unlike the environment, accepts a low water
+  ;; above the high (M6.3's review).  The write deadline stays armed while a
+  ;; write is outstanding; with none, none is, since the producer is then
+  ;; the one waited on, and decision 0005 has no deadline for a handler.
+  (define (stream-completed s)
+    (let ((writing? (> (conn-outstanding s) 0)))
+      (conn-deadline-set! s (and writing? 'write))
+      (cond
+       ((and (not (conn-asked? s))
+             (below-high-water? s)
+             (<= (conn-outstanding-bytes s) (limits-write-low-water (conn-limits s))))
+        (conn-asked?-set! s #t)
+        (values s (if writing?
+                      '((arm-deadline write) (notify-producer))
+                      '((disarm-deadline) (notify-producer)))))
+       (writing? (values s '((arm-deadline write))))
+       (else (values s '((disarm-deadline)))))))
+
+  ;; responding, handler-body-chunk bv start end: the piece the producer was
+  ;; asked for (M6.3).  It is written, framed as the head framed the body,
+  ;; and the write deadline armed; then the producer is asked for the next
+  ;; one while the bytes outstanding are at or below the high water, and
+  ;; waits otherwise.  A piece no one asked for, or one of no bytes, which
+  ;; `producer-event` never makes, is the shell's bug: an assertion
+  ;; violation.  In any other state the producer has been let go, and
+  ;; nothing changes.
+  (define (on-body-chunk s fields)
+    (case (conn-phase s)
+      ((responding)
+       (unless (conn-asked? s)
+         (assertion-violation 'conn-step "a piece the core did not ask for" fields))
+       (let ((bv (car fields)) (start (cadr fields)) (end (caddr fields)))
+         (unless (and (fixnum? start) (fixnum? end) (fx<? start end))
+           (assertion-violation 'conn-step "a piece of no bytes" fields))
+         (let-values (((segments bytes) (serialize-piece (conn-pieces s) bv start end)))
+           (let ((w (count-write! s segments bytes)))
+             (conn-deadline-set! s 'write)
+             (if (below-high-water? s)
+                 (values s (cons w '((arm-deadline write) (notify-producer))))
+                 (begin (conn-asked?-set! s #f)
+                        (values s (cons w '((arm-deadline write))))))))))
+      (else (values s '()))))
+
+  ;; responding, handler-body-end: the producer's body has ended (M6.3), and
+  ;; the producer is let go.  A chunked body's last chunk is written, and the
+  ;; write deadline armed.  A close-delimited body has nothing more to write,
+  ;; since the close ends it: with a write outstanding, its completion writes
+  ;; the response; with none, it is written now.  An end no one asked for is
+  ;; the shell's bug, an assertion violation; in any other state, nothing.
+  (define (on-body-end s)
+    (case (conn-phase s)
+      ((responding)
+       (unless (conn-asked? s)
+         (assertion-violation 'conn-step "an end the core did not ask for" (conn-producer s)))
+       (let ((framing (conn-pieces s)))
+         (end-stream! s)
+         (let-values (((segments bytes) (serialize-end framing)))
+           (cond
+            ((pair? segments)
+             (let ((w (count-write! s segments bytes)))
+               (conn-deadline-set! s 'write)
+               (values s (cons w '((arm-deadline write))))))
+            ((> (conn-outstanding s) 0) (values s '()))
+            (else (response-written s))))))
+      (else (values s '()))))
+
+  ;; count-write! : ConnState (Listof Segment) Nat -> Action
+  ;; `(write segments bytes)`, outstanding, with its bytes, until the shell
+  ;; reports it completed (M3.3).
+  (define (count-write! s segments bytes)
+    (conn-outstanding-set! s (+ (conn-outstanding s) 1))
+    (conn-outstanding-bytes-set! s (+ (conn-outstanding-bytes s) bytes))
+    (list 'write segments bytes))
+
+  ;; below-high-water? : ConnState -> Boolean — whether the bytes
+  ;; outstanding are at or below the limits' write high water, where a
+  ;; producer may be asked for a piece.
+  (define (below-high-water? s)
+    (<= (conn-outstanding-bytes s) (limits-write-high-water (conn-limits s))))
+
+  ;; end-stream! : ConnState -> Void — let a streamed body's producer go.
+  (define (end-stream! s)
+    (conn-producer-set! s #f)
+    (conn-pieces-set! s #f)
+    (conn-asked?-set! s #f))
 
   ;; forget-input! : ConnState -> Void
   ;; Drop all the connection holds of the input it has read: the pause's
@@ -1260,7 +1411,10 @@
   ;; does not read.  A response with a fault is answered 500 instead, then
   ;; close, the log naming the fault (decision 0010 item 2).  A handler's
   ;; `Connection: close` closes the connection after its response (item 3),
-  ;; unless it closes already for a reason of its own.
+  ;; unless it closes already for a reason of its own.  A producer's body is
+  ;; written a piece at a time after its head (M6.3): the producer is asked
+  ;; for its first piece once the head is written, if the head leaves the
+  ;; bytes outstanding at or below the high water, and waits otherwise.
   (define (respond-with s response)
     (cond
      ((response-fault response)
@@ -1274,10 +1428,15 @@
         (conn-phase-set! s 'responding)
         (conn-deadline-set! s 'write)
         (body-roll! (conn-body s))
-        (let ((w (write-action s response serialize-checked-response)))
-          (values s (if reading?
-                        (list w '(read-stop) '(arm-deadline write))
-                        (list w '(arm-deadline write)))))))))
+        (let* ((w (write-action s response serialize-checked-response))
+               (head (if reading?
+                         (list w '(read-stop) '(arm-deadline write))
+                         (list w '(arm-deadline write)))))
+          (cond ((not (conn-producer s)) (values s head))
+                ((below-high-water? s)
+                 (conn-asked?-set! s #t)
+                 (values s (append head '((notify-producer)))))
+                (else (values s head))))))))
 
   ;; write-action : ConnState Response Serializer -> Action
   ;;   Serializer = serialize-response, or serialize-checked-response for a
@@ -1293,34 +1452,48 @@
   ;; built answers none: it has no body and always closes, so the version,
   ;; which only a body of unknown length or a connection that stays would
   ;; read, is taken as 1.1.  The write is outstanding, with its bytes, until
-  ;; the shell reports it completed (M3.3).
+  ;; the shell reports it completed (M3.3).  A producer's body is of unknown
+  ;; length: where its framing writes a body, chunked or close-delimited, the
+  ;; state keeps the producer and the framing for its pieces (M6.3); where
+  ;; none is written, the producer is never called.
   (define (write-action s r serialize)
     (let* ((req (conn-request s))
            (major (if req (request-http-major req) 1))
            (minor (if req (request-http-minor req) 1))
            (body (response-body r))
            (mode (response-framing (and req (request-method req)) major minor
-                                   (response-status r) (and body (bytevector-length body)))))
+                                   (response-status r)
+                                   (cond ((bytevector? body) (bytevector-length body))
+                                         ((procedure? body) 'unknown)
+                                         (else #f)))))
       (when (and (eq? mode 'close-delimited) (not (conn-close-after s)))
         (conn-close-after-set! s 'close-delimited))
+      (when (and (procedure? body) (memq mode '(chunked close-delimited)))
+        (conn-producer-set! s body)
+        (conn-pieces-set! s mode))
       (let-values (((segments bytes)
                     (serialize r mode (response-connection (and (conn-close-after s) #t)
                                                            major minor))))
-        (conn-outstanding-set! s (+ (conn-outstanding s) 1))
-        (conn-outstanding-bytes-set! s (+ (conn-outstanding-bytes s) bytes))
-        (list 'write segments bytes))))
+        (count-write! s segments bytes))))
 
   ;; handling or body, handler-failed -> responding 500, then close: the
   ;; handler raised, or its reader did, whether the body was still being read
   ;; or had ended (decision 0013 item 7).  The reader is let go at once, so a
-  ;; piece already asked for never reaches a reader that raised.  (The bare
-  ;; close for a failure after the head is on the wire needs a streamed body:
-  ;; M6.3.)
+  ;; piece already asked for never reaches a reader that raised.
+  ;; responding, handler-failed with a piece asked for -> closing: the
+  ;; producer raised, or answered what is not a piece, once the head was on
+  ;; the wire, so no status can be written: a bare close, at once (design
+  ;; §4.4's row; M6.3).  A failure in responding with no piece asked for, a
+  ;; reader's raise after the core refused its request, changes nothing.
   (define (on-handler-failed s)
     (case (conn-phase s)
       ((handling body awaiting-credit)
        (body-roll! (conn-body s))
        (respond-and-close s 'handler-failed '()))
+      ((responding)
+       (if (conn-asked? s)
+           (close s 'handler-failed '())
+           (values s '())))
       (else (values s '()))))
 
   ;; body-credit n: the reader on credit has taken `n` more bytes of what it
@@ -1380,11 +1553,13 @@
   ;; Enter `closing`, disarming the deadline, armed or not, before the close
   ;; (M5.2): the shell's wheel holds a connection until its deadline is
   ;; disarmed or passes.  `before` precedes both.  A body being read goes,
-  ;; its reader with it.
+  ;; its reader with it, and so does a body being written, its producer
+  ;; with it (M6.3).
   (define (close s reason before)
     (conn-phase-set! s 'closing)
     (conn-deadline-set! s #f)
     (body-roll! (conn-body s))
+    (end-stream! s)
     (values s (append before (list '(disarm-deadline) (list 'close reason)))))
 
   ;; respond-and-close :

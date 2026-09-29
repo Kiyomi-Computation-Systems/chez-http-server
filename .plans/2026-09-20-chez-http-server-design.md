@@ -609,6 +609,61 @@ Termination and error rows:
 > and stays (plan §14's note of 2026-09-27, M5.3's), and a credit the core refuses,
 > which closes the connection and raises to the caller.
 
+> *Amended 2026-09-28 (M6.3; decision 0013 item 8; plan §14):* a streamed response. A
+> response whose body is a producer, a procedure of no arguments the server calls for each
+> piece, is written as its head, then a piece at a time. `notify-producer` asks the shell
+> to call the producer; its answer comes back as `(handler-body-chunk bv start end)` or,
+> at the end, `(handler-body-end)`, which the core's `producer-event` makes of it, and as
+> `handler-failed` when the producer raises or answers what is neither a bytevector of a
+> byte or more nor the eof object. Each piece is a write of its own, framed as the head
+> framed the body:
+> chunked to HTTP/1.1, close-delimited to 1.0 (M3.2's carried arm, below). The write
+> water marks (decision 0005's amendment of this day) bound what is outstanding: the
+> producer is asked only while the bytes outstanding are at or below `write-high-water`,
+> so at most one piece passes it, and once past it, it waits until a completion brings
+> them to `write-low-water`, and to the high water too, whatever limits the connection
+> was given. The rows:
+>
+> | State | Event | State' | Actions |
+> |---|---|---|---|
+> | `handling`/`body` | `handler-responded`, a producer, a body written | `responding` | the head's `write`, `read-stop` from `body`, `arm-deadline write`, and `notify-producer` when the head leaves the bytes outstanding at or below the high water |
+> | `handling` | `handler-responded`, a producer, HTTP/1.0 | `responding` | the same, close-after `close-delimited`, the head saying `Connection: close` |
+> | `handling` | `handler-responded`, a producer, no body written (a HEAD, a 204, a 304) | `responding` | the head's `write`, `arm-deadline write`; the producer never called |
+> | `responding` | `handler-body-chunk`, asked for | `responding` | the piece's `write`, `arm-deadline write`, and `notify-producer` at or below the high water; past it, the producer waits |
+> | `responding` | `handler-body-chunk` of no bytes | — | an assertion violation: `producer-event` never makes one, an empty answer being the producer failing |
+> | `responding` | `write-completed`, the producer waiting, at or below the low water and the high water | `responding` | `arm-deadline write`, or `disarm-deadline` with none outstanding; `notify-producer` |
+> | `responding` | `write-completed`, the producer waiting, above the low water or the high water | `responding` | `arm-deadline write` |
+> | `responding` | `write-completed`, a piece asked for | `responding` | `arm-deadline write`, or `disarm-deadline` with none outstanding |
+> | `responding` | `handler-body-end`, chunked | `responding` | the last chunk's `write`, `arm-deadline write`; the producer let go |
+> | `responding` | `handler-body-end`, close-delimited | `responding`, or `lingering` with nothing outstanding | nothing, or the staged close; the producer let go |
+> | `responding` | `handler-failed`, a piece asked for | `closing` | `disarm-deadline`, `close handler-failed`: no response, at once |
+> | `responding` | `handler-body-chunk`/`handler-body-end` not asked for | — | an assertion violation: the shell's bug |
+> | `closing` | `handler-body-chunk`/`handler-body-end` | `closing` | — the producer was let go |
+>
+> The response is written once its end has come and every write has completed, and then
+> goes on as any response does: to `idle`, or to the staged close (decision 0011), which
+> a close-delimited body always takes, the half-close being its end. With no write
+> outstanding while a piece is asked for, no deadline is armed: the producer is the one
+> waited on, and decision 0005 has no deadline for a handler. In v1 the shells call the
+> producer in place, so its answer comes in the same drain. A failure once the head is on
+> the wire gets a bare close, the handler-failed row's "bare `close` if the head is
+> already on the wire": no status can be written after a head. The client of a chunked
+> body sees it cut short, with no last chunk (RFC 9112 §8); a client of a close-delimited
+> one cannot tell it from a whole one, and v1 does not reset the connection to say so
+> (chez-libuv binds no `uv_tcp_close_reset`).
+>
+> *Reviewed 2026-09-28 (M6.3's /code-review):* an empty piece was first written as
+> nothing, the producer asked again at once. A producer that answered one while it had
+> nothing ready was then called again in the same drain for as long as it did, and held
+> the loop, every connection's: on the fake shell, 99,998 calls in one delivery, until
+> its dispatch cap. An empty answer is now the producer failing, the bare close. And a
+> waiting producer was asked again at the low water alone, which `limits-with`, unlike the
+> environment, may set above the high water; it is asked now at or below both.
+> `tests/test-connection-table.sps` holds each row (S1 to S17); `tests/test-connection-stream.sps` the flows through the fake shell,
+> read back by chez-httparse's response parser, with the bytes outstanding watched at
+> every ask and write; `tests/test-shell.sps` a MiB to a client that reads nothing yet,
+> on a socket, and curl, in `tests/test-clients.sps`, both framings.
+
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with
 `parser-result-pause` code `paused-upgrade`; the h2c preface `PRI * HTTP/2.0` arrives
@@ -928,6 +983,12 @@ shell wraps it.
 > `&http-server-handler-error` is not defined. In v1 a handler's raise is answered 500
 > and logged as `handler-failed`, and never reaches the embedder, so the wrapper has
 > nothing to carry until a path hands one to an embedder.
+>
+> *Noted 2026-09-28 (M6.3):* plan §14 left it to M6.3 to settle whether a failure after a
+> response's head is on the wire must reach the embedder. It need not: a producer that
+> raises, or answers what is not a piece, gets a bare close and is logged as
+> `handler-failed`, as every handler's failure is (§4.4's M6.3 amendment). So the type is
+> still not defined.
 
 Two composition hazards, both found by reading the dependencies, both turned into
 checks:
@@ -1109,6 +1170,14 @@ Three consequences for M3:
 > copy, since the block the bytes were copied into had been zeroed a byte at a time too.
 > At v0.7.1 it holds the loop under the loop clock's millisecond, and a check holds it
 > under a tick.
+
+> *Noted 2026-09-28 (M6.3):* the write water marks read the bytes outstanding. A streamed
+> response's producer is asked for a piece only while they are at or below
+> `write-high-water`, and once past it, again when a completion brings them to
+> `write-low-water` (§4.4's M6.3 amendment). So what chez-libuv holds in write blocks
+> for one connection is at most the high water and one piece's write: under 0005's
+> defaults, 262,144 bytes and 16,392 for a 16 KiB piece, where a MiB streamed at once
+> would all be held (`tests/test-shell.sps`).
 
 ### 7.4 The collect-safe rendezvous
 

@@ -63,6 +63,12 @@
 ;;;                   with no reader, nothing (M6.1, decision 0013)
 ;;;   deliver-body-end  the reader's end: its response as `handler-responded`,
 ;;;                   or `handler-failed` if it raises
+;;;   notify-producer the producer a streamed response is written from
+;;;                   (conn-producer), called for its next piece, its answer
+;;;                   as `handler-body-chunk` or `handler-body-end`
+;;;                   (producer-event), or `handler-failed` if it raises or
+;;;                   answers neither; with no producer, nothing (M6.3,
+;;;                   decision 0013 item 8)
 ;;;   write           fills the Date slot from the fake clock, or from the
 ;;;                   instant given for the write (fake-shell-date-writes!),
 ;;;                   keeps the bytes as the client would read them, and
@@ -95,7 +101,7 @@
           fake-shell-writes fake-shell-date-writes! written-status write-wire)
   (import (rnrs)
           (byte-machine runtime)
-          (only (http-server connection) make-conn-state conn-body-reader)
+          (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
           (only (http-server body) body-reader-on-piece body-reader-on-end read-body)
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
           (http-server wheel)
@@ -350,6 +356,11 @@
          (when r
            (fake-shell-deliver! s (guard (e (#t (list 'handler-failed e)))
                                     (list 'handler-responded ((body-reader-on-end r))))))))
+      ((notify-producer)
+       (let ((p (conn-producer (fake-shell-conn-state s))))
+         (when p
+           (fake-shell-deliver! s (guard (e (#t (list 'handler-failed e)))
+                                    (producer-event (p)))))))
       ((write) (write! s (cadr a) (caddr a)))
       ((read-stop) (fake-shell-reading?-set! s #f))
       ((read-start) (fake-shell-reading?-set! s #t))
@@ -388,13 +399,21 @@
 
   ;; write-wire : (Listof Segment) Nat Nat -> Bytevector
   ;; The bytes `(write segments nbytes)` puts on the wire, copied out of the
-  ;; segments as uv-write*! copies them, with the Date slot filled with the
-  ;; line for `second` (decision 0010 item 4).  The count must be the bytes'
-  ;; own, which the serializer promises: one that is not is an assertion
-  ;; violation, never a quiet pass.
+  ;; segments as uv-write*! copies them, a span `(bv start end)` as the bytes
+  ;; it spans (M6.3), with the Date slot filled with the line for `second`
+  ;; (decision 0010 item 4).  The count must be the bytes' own, which the
+  ;; serializer promises: one that is not is an assertion violation, never a
+  ;; quiet pass.
   (define (write-wire segments nbytes second)
     (let* ((line (date-line second))
-           (parts (map (lambda (seg) (if (eq? seg 'date) line seg)) segments))
+           (parts (map (lambda (seg)
+                         (cond ((eq? seg 'date) line)
+                               ((pair? seg)
+                                (let ((o (make-bytevector (- (caddr seg) (cadr seg)))))
+                                  (bytevector-copy! (car seg) (cadr seg) o 0 (bytevector-length o))
+                                  o))
+                               (else seg)))
+                       segments))
            (wire (make-bytevector (fold-left (lambda (n bv) (+ n (bytevector-length bv))) 0 parts))))
       (fold-left (lambda (at bv)
                    (bytevector-copy! bv 0 wire at (bytevector-length bv))

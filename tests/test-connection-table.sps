@@ -25,7 +25,13 @@
 ;;; closes with no response.  And M6.1's nineteen rows for reading a body,
 ;;; from decision 0013.  With them, every way the core lets a connection
 ;;; go, a close or the hand-off, disarms its deadline first (plan §14's note of
-;;; 2026-09-27).
+;;; 2026-09-27).  And M6.2's eleven credit rows, and M6.3's sixteen for a
+;;; streamed response, from decision 0013 item 8 and plan §14: a producer's
+;;; head, then each piece it is asked for, chunked to HTTP/1.1 and
+;;; close-delimited to 1.0 (M3.2's carried arm), asked for only at or below
+;;; decision 0005's high water, and past it, again once the bytes outstanding
+;;; fall to its low water; and a failure after the head is on the wire closes
+;;; with no response.
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -80,12 +86,20 @@
     s))
 
 ;; render-action : Action -> Datum
-;; A write's segments are bytes, so it is rendered with each as text; the
-;; Date slot stays the symbol `date` (M3.2).
+;; A write's segments are bytes, so it is rendered with each as text, a span
+;; of a bytevector, `(bv start end)`, as its bytes' (M6.3); the Date slot
+;; stays the symbol `date` (M3.2).
 (define (render-action a)
   (if (eq? (car a) 'write)
       (list 'write
-            (map (lambda (seg) (if (bytevector? seg) (utf8->string seg) seg)) (cadr a))
+            (map (lambda (seg)
+                   (cond ((bytevector? seg) (utf8->string seg))
+                         ((pair? seg)
+                          (let ((o (make-bytevector (- (caddr seg) (cadr seg)))))
+                            (bytevector-copy! (car seg) (cadr seg) o 0 (bytevector-length o))
+                            (utf8->string o)))
+                         (else seg)))
+                 (cadr a))
             (caddr a))
       a))
 
@@ -915,6 +929,204 @@
         (i (asked 10) `(handler-responded ,streamer later) 'refused)
         (i (asked 10) `(handler-responded ,streamer credit credit) 'refused))))
 
+;; ---------------------------------------------------------------------------
+;; M6.3: a streamed response, seventeen rows (decision 0013 item 8; plan §14).
+;; A response whose body is a producer is written as its head, then a piece
+;; at a time: `notify-producer` asks the shell to call the producer, whose
+;; answer comes back as `handler-body-chunk` or `handler-body-end`, or as
+;; `handler-failed` if it raised.  Each piece is a write of its own, chunked
+;; to HTTP/1.1 and close-delimited to 1.0 (the serializer's).  The producer
+;; is asked only while the bytes outstanding are at or below the high water,
+;; so at most one piece passes it; past it, the producer waits until a
+;; completion brings them to the low water.  The head alone may pass the
+;; high water.  A failure once the head is on the wire gets a bare close,
+;; since a status can no longer be written.  The states are reached by
+;; steps, from a GET in handling.  The heads are 84 bytes chunked and 75
+;; close-delimited, as H7's is 60 with its Content-Length: the status line
+;; 17, the Date slot 37, then the header block.
+
+(define (producer) (eof-object))
+(define streamed-resp (make-response 200 #f '() producer))
+(define req10 (make-request 'GET (b "/") 1 0 '() #f))
+(define hello (b "hello"))
+
+;; waters : Nat Nat -> Limits — decision 0005's, with these water marks.
+(define (waters high low)
+  (limits-with default-limits (list (cons 'write-high-water high) (cons 'write-low-water low))))
+
+;; streaming : (U 'chunked 'close-delimited) [Limits] -> ConnState
+;; A GET, HTTP/1.1 for chunked and 1.0 for close-delimited, answered with a
+;; producer: its head written, and the producer asked for a piece.
+(define (streaming framing . limits)
+  (let ((s (apply state 'handling 'request (if (eq? framing 'chunked) req req10)
+                  (if (null? limits) '() (list 'limits (car limits))))))
+    (conn-step s `(handler-responded ,streamed-resp))
+    s))
+
+;; waiting : Limits -> ConnState
+;; The same, chunked, under `limits`, whose high water is 84, the head's
+;; bytes: a 5-byte piece, 10 bytes framed, took the bytes outstanding past
+;; it, 94 in two writes, so the producer waits.
+(define (waiting limits)
+  (let ((s (streaming 'chunked limits)))
+    (conn-step s `(handler-body-chunk ,hello 0 5))
+    s))
+
+;; produced : ConnState Event -> (U (List Phase CloseAfter (Listof Datum) Boolean) 'refused 'crashed)
+;; One step's outcome, and whether a producer is left to write from after
+;; it; or 'refused when the core refuses the event, an assertion violation
+;; of its own, and 'crashed for one raised by anything else.
+(define (produced s ev)
+  (guard (e ((assertion-violation? e)
+             (if (and (who-condition? e) (eq? (condition-who e) 'conn-step)) 'refused 'crashed)))
+    (let* ((o (outcome s ev)) (left (and (conn-producer s) #t)))
+      (append o (list left)))))
+
+(define chunked-head (written "HTTP/1.1 200 OK\r\n" 'date "Transfer-Encoding: chunked\r\n\r\n"))
+(define closing-head (written "HTTP/1.1 200 OK\r\n" 'date "Connection: close\r\n\r\n"))
+
+(define (stream-rows)
+  (list
+   (row 'S1 "handling, handler-responded with a producer, HTTP/1.1 -> responding: the head chunked, arm write, notify-producer"
+        (i (state 'handling 'request req) `(handler-responded ,streamed-resp)
+           `(responding #f (,chunked-head (arm-deadline write) (notify-producer)) #t)))
+
+   ;; M3.2's carried arm: a close-delimited body ends only with the
+   ;; connection (RFC 9112 §6.3 rule 8), so the connection closes after it,
+   ;; and its head says so, though the request would have kept it.
+   (row 'S2 "handling, handler-responded with a producer, HTTP/1.0 -> responding, close-after close-delimited: the head with Connection: close, arm write, notify-producer"
+        (i (state 'handling 'request req10) `(handler-responded ,streamed-resp)
+           `(responding close-delimited (,closing-head (arm-deadline write) (notify-producer)) #t)))
+
+   ;; No body is written to a HEAD, a 204 or a 304, so the producer is never
+   ;; called, and a HEAD's answer announces no length, which is unknown.
+   (row 'S3 "handling, handler-responded with a producer where no body is written -> responding: the head alone, arm write; the producer never asked"
+        (i (state 'handling 'request head-req) `(handler-responded ,streamed-resp)
+           `(responding #f (,(written "HTTP/1.1 200 OK\r\n" 'date "\r\n") (arm-deadline write)) #f))
+        (i (state 'handling 'request req) `(handler-responded ,(make-response 204 #f '() producer))
+           `(responding #f (,(written "HTTP/1.1 204 No Content\r\n" 'date "\r\n") (arm-deadline write)) #f)))
+
+   ;; Decision 0013 item 4: a response given instead of a reader closes the
+   ;; connection after it, the body unread, a streamed one too.
+   (row 'S4 "body, handler-responded with a producer instead of a reader -> responding, close-after unread-body: the head, read-stop, arm write, notify-producer"
+        (i (asked 10) `(handler-responded ,streamed-resp)
+           `(responding unread-body
+                        (,(written "HTTP/1.1 200 OK\r\n" 'date
+                                   "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
+                         (read-stop) (arm-deadline write) (notify-producer))
+                        #t)))
+
+   (row 'S5 "responding, handler-body-chunk asked for, at or below high water -> responding: write the piece, arm write, notify-producer"
+        (i (streaming 'chunked) `(handler-body-chunk ,hello 0 5)
+           `(responding #f (,(written "5\r\n" "hello" "\r\n") (arm-deadline write) (notify-producer)) #t))
+        (i (streaming 'chunked) `(handler-body-chunk ,bv 3 8)
+           `(responding #f (,(written "5\r\n" " / HT" "\r\n") (arm-deadline write) (notify-producer)) #t))
+        (i (streaming 'close-delimited) `(handler-body-chunk ,hello 0 5)
+           `(responding close-delimited (,(written "hello") (arm-deadline write) (notify-producer)) #t)))
+
+   ;; Under a high water of 84 the head is at it, 84 outstanding, so the
+   ;; producer is asked, and its first piece passes it.  Under 83 the head
+   ;; alone passes it, and the producer waits before its first piece.
+   (row 'S6 "responding, a write past high water -> responding: write, arm write; the producer waits"
+        (i (streaming 'chunked (waters 84 20)) `(handler-body-chunk ,hello 0 5)
+           `(responding #f (,(written "5\r\n" "hello" "\r\n") (arm-deadline write)) #t))
+        (i (state 'handling 'request req 'limits (waters 83 20)) `(handler-responded ,streamed-resp)
+           `(responding #f (,chunked-head (arm-deadline write)) #t)))
+
+   ;; Waiting with 94 outstanding in two writes: the head's completion
+   ;; leaves 10, at or below a low water of 20, or of 10, and the producer
+   ;; goes on, the piece's write still outstanding; at a low water of 0 the
+   ;; last completion leaves none, so no deadline stays armed while the
+   ;; producer is asked (S16).
+   (row 'S7 "responding, waiting, a completion to low water or below -> responding: arm write (or disarm, none outstanding), notify-producer"
+        (i (waiting (waters 84 20)) '(write-completed 84)
+           '(responding #f ((arm-deadline write) (notify-producer)) #t))
+        (i (waiting (waters 84 10)) '(write-completed 84)
+           '(responding #f ((arm-deadline write) (notify-producer)) #t))
+        (let ((s (waiting (waters 84 0))))
+          (conn-step s '(write-completed 84))
+          (i s '(write-completed 10)
+             '(responding #f ((disarm-deadline) (notify-producer)) #t))))
+
+   (row 'S8 "responding, waiting, a completion above low water -> responding: arm write; the producer still waits"
+        (i (waiting (waters 84 9)) '(write-completed 84)
+           '(responding #f ((arm-deadline write)) #t)))
+
+   ;; RFC 9112 §7.1's last chunk ends a chunked body; the response is written
+   ;; once it completes, as any response is (H9, H10).
+   (row 'S9 "responding, handler-body-end, chunked -> responding: write the last chunk, arm write; the producer let go"
+        (i (streaming 'chunked) '(handler-body-end)
+           `(responding #f (,(written "0\r\n\r\n") (arm-deadline write)) #f)))
+
+   (row 'S10 "responding, handler-body-end, close-delimited, writes outstanding -> responding: nothing; the producer let go"
+        (i (streaming 'close-delimited) '(handler-body-end)
+           '(responding close-delimited () #f)))
+
+   ;; The close ends a close-delimited body, so with every write completed
+   ;; the response is written at its end, and closes in stages (decision
+   ;; 0011): the half-close is the end the client reads.
+   (row 'S11 "responding, handler-body-end, close-delimited, nothing outstanding -> lingering: shutdown, read-start, arm linger"
+        (let ((s (streaming 'close-delimited)))
+          (conn-step s '(write-completed 75))
+          (i s '(handler-body-end)
+             '(lingering close-delimited ((shutdown) (read-start) (arm-deadline linger)) #f))))
+
+   ;; Design §4.4's handler-failed row: a bare close once the head is on the
+   ;; wire.  The shell logs the failure as it logs a handler's.  A failure
+   ;; while no piece is asked for, a reader's raised late (B19), changes
+   ;; nothing.
+   (row 'S12 "responding, handler-failed with a piece asked for -> closing: disarm, close, no response"
+        (i (streaming 'chunked) '(handler-failed boom)
+           '(closing #f ((disarm-deadline) (close handler-failed)) #f))
+        (i (waiting (waters 84 20)) '(handler-failed boom)
+           '(responding #f () #t)))
+
+   ;; A producer's answer is a piece of a byte or more (producer-event): an
+   ;; empty one is the producer failing, since asking again at once would
+   ;; hold the loop for as long as it had nothing (M6.3's review).  So a
+   ;; piece of no bytes is the shell's bug, as a piece not asked for is.
+   (row 'S13 "responding, handler-body-chunk of no bytes: refused"
+        (i (streaming 'chunked) `(handler-body-chunk ,hello 2 2) 'refused))
+
+   ;; A piece or an end the core did not ask for is the shell's bug, as a
+   ;; completion the core did not ask for is (M3.3).
+   (row 'S14 "responding, handler-body-chunk or handler-body-end not asked for: refused"
+        (i (waiting (waters 84 20)) `(handler-body-chunk ,hello 0 5) 'refused)
+        (i (waiting (waters 84 20)) '(handler-body-end) 'refused)
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 60)
+           '(handler-body-end) 'refused))
+
+   ;; Once the connection has let the producer go, a piece asked for before
+   ;; changes nothing.
+   (row 'S15 "closing, handler-body-chunk or handler-body-end -> closing: nothing"
+        (let ((s (streaming 'chunked)))
+          (conn-step s '(read-error EPIPE))
+          (i s `(handler-body-chunk ,hello 0 5) '(closing #f () #f)))
+        (let ((s (streaming 'chunked)))
+          (conn-step s '(read-error EPIPE))
+          (i s '(handler-body-end) '(closing #f () #f))))
+
+   ;; A completion while the producer's answer is to come: the write
+   ;; deadline stays armed while a write is outstanding, and with none, none
+   ;; is: the producer is the one waited on, and decision 0005 has no
+   ;; deadline for a handler.
+   (row 'S16 "responding, a completion while a piece is asked for -> responding: arm write, or disarm with none outstanding"
+        (let ((s (streaming 'chunked)))
+          (conn-step s `(handler-body-chunk ,hello 0 5))
+          (i s '(write-completed 84)
+             '(responding #f ((arm-deadline write)) #t)))
+        (i (streaming 'chunked) '(write-completed 84)
+           '(responding #f ((disarm-deadline)) #t)))
+
+   ;; The producer is asked only at or below the high water, whatever the
+   ;; low water: limits-with, unlike the environment, accepts one above it
+   ;; (M6.3's review).  Under a high water of 90 and a low of 200, a piece
+   ;; takes the bytes outstanding to 94, past the high water; a completion
+   ;; of 2 leaves 92, at or below the low water, still past the high.
+   (row 'S17 "responding, waiting, a completion at or below the low water, still past the high -> responding: arm write; the producer still waits"
+        (i (waiting (waters 90 200)) '(write-completed 2)
+           '(responding #f ((arm-deadline write)) #t)))))
+
 ;; index : Any (Listof Any) -> Nat — where `x` stands in `xs`.
 (define (index x xs)
   (let loop ((xs xs) (n 0))
@@ -1034,6 +1246,16 @@
                          'accepted
                          (verdict (lambda () (conn-step (state 'idle 'deadline 'idle) ev)))))
               samples)
+    ;; A producer's answer as the event the shells dispatch for it (M6.3;
+    ;; decision 0013 item 8): the core makes it, so both shells report a
+    ;; producer alike.  What is no piece, an empty bytevector among it, a
+    ;; shell reports as the producer failing (the stream suite's flows).
+    (test-equal "a producer's answer as an event: a bytevector of a byte or more is a piece, the eof object the end, an empty bytevector or anything else refused"
+                (list (list 'handler-body-chunk (b "abc") 0 3) '(handler-body-end) 'refused 'refused 'refused)
+                (list (producer-event (b "abc")) (producer-event (eof-object))
+                      (verdict (lambda () (producer-event (make-bytevector 0))))
+                      (verdict (lambda () (producer-event 'done)))
+                      (verdict (lambda () (producer-event "abc")))))
     (test-eq "an unknown event is an assertion violation" 'refused
              (verdict (lambda () (conn-step (state 'idle) '(no-such-event)))))
     (test-eq "an event that is not a tagged list is an assertion violation" 'refused
@@ -1066,7 +1288,8 @@
            (linger (count-rows "linger" linger-rows outcome))
            (ticks (count-rows "tick" deadline-rows ticked))
            (bodies (count-rows "body" body-rows asked-by))
-           (credits (count-rows "credit" credit-rows credited)))
+           (credits (count-rows "credit" credit-rows credited))
+           (streams (count-rows "stream" stream-rows produced)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
       (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
@@ -1076,16 +1299,14 @@
       (test-eqv "M3.5: all 4 linger rows have a test" 4 linger)
       (test-eqv "M5.2: all 4 tick rows have a test" 4 ticks)
       (test-eqv "M6.1: all 19 body rows have a test" 19 bodies)
-      (test-eqv "M6.2: all 11 credit rows have a test" 11 credits))
+      (test-eqv "M6.2: all 11 credit rows have a test" 11 credits)
+      (test-eqv "M6.3: all 17 stream rows have a test" 17 streams))
 
     ;; Every action the table produced is in the vocabulary, and the table
-    ;; uses all of it but `notify-producer`, a streamed response's (M6.3).
+    ;; uses all of it: `notify-producer` since M6.3.
     (test-equal "no row emits an action outside the vocabulary" '()
                 (filter (lambda (k) (not (memq k conn-actions))) emitted))
-    (test-equal "the rows use fifteen of the sixteen actions"
-                '(reply-parser feed-parser resume-parser write read-stop read-start
-                  call-handler deliver-body deliver-body-end arm-deadline disarm-deadline
-                  shutdown close log hand-off)
+    (test-equal "the rows use all sixteen actions" conn-actions
                 (filter (lambda (k) (memq k emitted)) conn-actions))
     (test-equal "the rows arm all five deadline kinds, and no other"
                 (list conn-deadline-kinds '())
