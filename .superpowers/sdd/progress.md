@@ -3172,3 +3172,26 @@ Watched to fail (m6-mutations.md, the fifth step): sixty-two mutants on the fini
 Size: 243 inserted lines of code and tests, 61 deleted; the slice, 1,744 and 207.
 
 NEXT: the five stacked PRs, merged bottom up on the owner's word. Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
+
+MERGED to main on 2026-09-29, on the owner's "do closing ritual": **M6.3, as five stacked PRs**, bottom up.
+- **#74, the water marks and the piece framing,** as 6fe5651. Its squash tree (48cc431) is the tested tip's, 0c52f12's, and its parent is cbedab8.
+- **#75, the core's stream,** as aad6b3d, once retargeted to main and rebased from #74's old tip: the rebased tip dcc0fe5's tree (5eac99b) is ed485c1's.
+- **#76, the fake shell's flows and the allocation shapes,** as bc273ab: 7129804, tree ff82f8d, 97629f5's.
+- **#77, the socket, contract and curl checks,** as 6a34361: 03545b5, tree 44c474d, 4c301cc's.
+- **#78, the second review's fixes,** its two commits squashed as ea2563a: 3eef27d, tree 3370d89, 4ce8a71's.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36555535033 for #74, and 36571384652, 36571471283, 36571542231 and 36571643014 for the rebased tips.
+- **Branches.** All five deleted local and remote, and refs pruned. No PR is open. The four lower PRs merged without `--delete-branch`. #78's merged it and deleted its remote branch, but left the checkout on it, so the switch to main, the fast-forward and the local deletions were done by hand. After each force-push the first read showed the old head (CONFLICTING/DIRTY for #76 to #78), and the second the rebased head, MERGEABLE/UNSTABLE.
+
+`make test` green on main: forty-one suites, 1,237 expected passes.
+
+DONE and merged (6fe5651, aad6b3d, bc273ab, 6a34361 and ea2563a; PRs #74 to #78): **a streamed response.** A handler's body of unknown length is a producer, chunked to HTTP/1.1 and close-delimited to 1.0. The write water marks, and 64 writes outstanding, pace it. A producer's failure after the head is a bare close, logged by its answer's kind and length.
+
+DECIDED on the owner's word (2026-09-29), by form, while the PRs were open: **write batching goes up as its own PR, after these five.**
+- **What it does.** A turn's writes under 4 KiB are copied as each is handed over, and sent as one `uv-write*!` at the drain's end, and before a shutdown or a close. A larger write sends the batch first, then goes as today. It changes the libuv shell alone: the core, its events and the contract are unchanged.
+- **A scratch prototype, one run each.** On Linux, 100-byte rows 31.6 to 160.0 MB/s, and another client's median wait 0.88 to 0.22 ms; 16 KiB pieces unchanged. On Darwin, 100-byte rows 6.9 to 113.5 MB/s.
+- **The copy is required.** Without it, a producer that refills one bytevector, which handlers.org allows, sent every piece of a turn as its last.
+- **Where the cost was.** The core alone costs 0.08 µs a piece, so nearly all of a small piece's cost is the write path.
+- **No chez-libuv issue.** `uv-write*!` and the dev-build write-request counts are all the PR uses. `uv_try_write`, and idle or check handles, would help little once batching is in, and are unmeasured.
+- **Weighed:** a sixth stacked PR; a note for later.
+
+NEXT: write batching (above), its own PR on a fresh branch cut from main after this commit, as the owner chose. Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
