@@ -12,7 +12,10 @@
 ;;; where it waits for the server to have read what it sent, and its end,
 ;;; which is the half-close, or a stall: the client sends nothing more and
 ;;; never ends its stream, and waits for the server's deadlines to close the
-;;; connection (M5.3).  The client plays it on the libuv shell's own loop,
+;;; connection (M5.3).  A script marked `(bare-close)` is one whose
+;;; connection the server closes at once, with no linger, before it reads
+;;; the client's half-close: a producer's failure once the head is on the
+;;; wire (M6.3).  The client plays it on the libuv shell's own loop,
 ;;; to the shell's own listener, and the shell's trace records every event
 ;;; and action, and the loop's time each event came at and each write was
 ;;; made at.  How the kernel divides the bytes into reads is its policy
@@ -63,7 +66,7 @@
         (only (http-server connection) conn-phase)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (http-server body)
-        (fake-shell) (shell-testing))
+        (fake-shell) (shell-testing) (producers))
 
 (define (b s) (string->utf8 s))
 
@@ -76,7 +79,11 @@
 ;; streams it, dropping it, `/whole` reads it whole and answers with it,
 ;; `/small` reads it whole, capped at 4 bytes, and `/piece-raises` and
 ;; `/end-raises` have readers that raise, at the first piece and at the
-;; end.  Both shells call it, so it keeps nothing between calls.
+;; end.  `/stream` answers with a producer of three pieces (decision 0013
+;; item 8; M6.3; tests/producers.sls), and `/stream-raises` with one whose
+;; second call raises.
+;; Both shells call it, so it keeps nothing between calls: each answer
+;; makes a producer of its own.
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
     (cond ((bytevector=? target (b "/close"))
@@ -97,6 +104,12 @@
           ((bytevector=? target (b "/end-raises"))
            (read-body (lambda (bv start end) #t)
                       (lambda () (raise (make-message-condition "the reader failed")))))
+          ((bytevector=? target (b "/stream"))
+           (make-response 200 #f '() (producer-of '("one " "two " "three"))))
+          ((bytevector=? target (b "/stream-raises"))
+           (make-response 200 #f '()
+                          (producer-of '("one ")
+                                       (lambda () (raise (make-message-condition "the producer failed"))))))
           (else (make-response 200 #f '() target)))))
 
 ;; The libuv shells call the handler through `held-handler`, which first
@@ -154,6 +167,12 @@
     ("a handler that raises a condition with no message"
      (send "GET /raise-who HTTP/1.1\r\nHost: x\r\n\r\n"))
     ("a request the core refuses, with no Host" (send "GET /x HTTP/1.1\r\n\r\n"))
+    ("a streamed response, chunked, the connection kept"
+     (send "GET /stream HTTP/1.1\r\nHost: x\r\n\r\n"))
+    ("a streamed response to HTTP/1.0, close-delimited, then the linger"
+     (send "GET /stream HTTP/1.0\r\n\r\n"))
+    ("a producer that raises after a piece: the bare close"
+     (send "GET /stream-raises HTTP/1.1\r\nHost: x\r\n\r\n") (bare-close))
     ("two requests in one write, the second answered in the next second"
      (send "GET /now HTTP/1.1\r\nHost: x\r\n\r\nGET /next-second HTTP/1.1\r\nHost: x\r\n\r\n"))))
 
@@ -180,10 +199,17 @@
     ("a client that sends nothing: closed once the idle deadline armed as it was adopted passes"
      (stall))))
 
-;; stalls? : Script -> Boolean — whether its client stalls at the end.
-(define (stalls? script)
+;; ends-with? : Script Datum -> Boolean — whether its last step is `step`.
+(define (ends-with? script step)
   (let ((steps (cdr script)))
-    (and (pair? steps) (equal? (list-ref steps (- (length steps) 1)) '(stall)))))
+    (and (pair? steps) (equal? (list-ref steps (- (length steps) 1)) step))))
+
+;; stalls? : Script -> Boolean — whether its client stalls at the end.
+(define (stalls? script) (ends-with? script '(stall)))
+
+;; closes-bare? : Script -> Boolean — whether the server closes its
+;; connection at once, before it reads the client's end.
+(define (closes-bare? script) (ends-with? script '(bare-close)))
 
 ;; latin-1 : Bytevector -> String — one character per byte, so two byte
 ;; strings render alike only if they are alike.
@@ -193,9 +219,9 @@
 ;; An event or action as data `equal?` compares by content, made when it is
 ;; traced so nothing done with it later changes the trace: a bytevector as its
 ;; bytes, a span by its bytes, a request and a response by their fields, a
-;; reader by its cap and kind (each shell calls the handler, which makes its
-;; own), a condition by each of its simple conditions, and any other record by
-;; its type and fields.  `equal?` compares a record with fields by identity,
+;; reader by its cap and kind and a producer as one (each shell calls the
+;; handler, which makes its own), a condition by each of its simple
+;; conditions, and any other record by its type and fields.  `equal?` compares a record with fields by identity,
 ;; so two shells' conditions would otherwise never match.
 (define (render x)
   (cond ((bytevector? x) (list 'bytes (latin-1 x)))
@@ -208,6 +234,7 @@
          (list 'response (response-status x) (render (response-reason x))
                (render (response-headers x)) (render (response-body x))))
         ((body-reader? x) (list 'reader (body-reader-max-bytes x) (body-reader-whole? x)))
+        ((procedure? x) 'producer)
         ((condition? x) (cons 'condition (map render-record (simple-conditions x))))
         ((record? x) (render-record x))
         ((pair? x) (cons (render (car x)) (render (cdr x))))
@@ -371,7 +398,8 @@
                                    (cons (wait-crediting (lambda () (= (collector-count delivered)
                                                                        (collector-count sent))))
                                          waits)))
-                            ((stall) (step '() waits)))
+                            ((stall) (step '() waits))
+                            ((bare-close) (step (cdr steps) waits)))
                           (begin
                             (unless (stalls? script) (client-shut! cl))
                             (reverse (cons (wait-crediting
@@ -397,7 +425,10 @@
 ;; fake still has waiting.  Its writes are dated at `writes`, the instants
 ;; the libuv shell's were, in order (ONE CLOCK).  Answers the fake and its
 ;; trace, in order.  A client the libuv shell never adopted has no events,
-;; and its fake is made at 0.
+;; and its fake is made at 0.  Whatever raises while the fake takes an
+;; event, a bug in the core or in the fake, is recorded in its trace as
+;; `(raised event condition)`, so the traces part there and the checks
+;; name it, where a raise out of the suite would end it (M6.3's mutants).
 (define (replay limits on-credit? events writes)
   (let* ((seen '())
          (fake (make-fake-connection limits handler
@@ -409,20 +440,22 @@
     (for-each (lambda (e)
                 (fake-shell-advance! fake (- (car e) (fake-shell-now fake)))
                 (let ((event (cdr e)))
-                  (case (car event)
-                    ((bytes-arrived eof read-error) (fake-shell-deliver! fake event))
-                    ;; A credit the fake's core refuses, where the libuv shell
-                    ;; took it, is a difference the traces show, not a raise
-                    ;; out of the suite.
-                    ((body-credit)
-                     (guard (e ((assertion-violation? e)
-                                (set! seen (cons (list 'refused (render event)) seen))))
-                       (fake-shell-deliver! fake event)))
-                    ((write-completed shutdown-completed closed) (fake-shell-deliver-later! fake))
-                    ((tick) (fake-shell-fire! fake))
-                    (else (values)))))
+                  (guard (x (#t (set! seen (cons (list 'raised (render event) (render x)) seen))))
+                    (case (car event)
+                      ((bytes-arrived eof read-error) (fake-shell-deliver! fake event))
+                      ;; A credit the fake's core refuses, where the libuv
+                      ;; shell took it, is a difference the traces show, not
+                      ;; a raise out of the suite.
+                      ((body-credit)
+                       (guard (e ((assertion-violation? e)
+                                  (set! seen (cons (list 'refused (render event)) seen))))
+                         (fake-shell-deliver! fake event)))
+                      ((write-completed shutdown-completed closed) (fake-shell-deliver-later! fake))
+                      ((tick) (fake-shell-fire! fake))
+                      (else (values))))))
               events)
-    (fake-shell-settle! fake)
+    (guard (x (#t (set! seen (cons (list 'raised 'settling (render x)) seen))))
+      (fake-shell-settle! fake))
     (values fake (reverse seen))))
 
 ;; check-script! : Shell Nat Limits Boolean Script -> Void
@@ -439,9 +472,10 @@
       ;; No script resets its connection, so the client's end is the one
       ;; input besides the bytes: a read error there would be the libuv
       ;; shell's own, which the replay would hand the fake too.  A client
-      ;; that stalls never ends its stream.
+      ;; that stalls never ends its stream, and a bare close comes before
+      ;; the client's end.
       (check name "the libuv shell read what the client sent, then its end alone, and closed"
-             (list 'identical (if (stalls? script) '() '(eof)) 'satisfied)
+             (list 'identical (if (or (stalls? script) (closes-bare? script)) '() '(eof)) 'satisfied)
              (list (compare-bytes sent (collector-bytes delivered))
                    (map car (filter (lambda (e) (memq (car e) '(eof read-error))) (map cdr evs)))
                    finished))

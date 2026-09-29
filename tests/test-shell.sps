@@ -24,6 +24,12 @@
 ;;;     then reads the status and the stream's end: the connection lingers,
 ;;;     reading and dropping the upload (decision 0011's measurement, M4.4);
 ;;;   - a handler that raises is answered 500, and what it raised is logged;
+;;;   - a streamed response (M6.3, decision 0013 item 8): a MiB, chunked, to
+;;;     a client that reads nothing yet, its writes left waiting, the bytes
+;;;     outstanding never past decision 0005's high water by more than a
+;;;     piece's write, then read whole and in order; pieces close-delimited to
+;;;     HTTP/1.0, read at the close; and a producer that raises after a piece,
+;;;     a bare close, the body cut short, what it raised logged;
 ;;;   - a write outstanding keeps nothing of its response: chez-libuv copied
 ;;;     the segments at the call, and the completion keeps their byte count
 ;;;     alone (design §7.3; M3.3's check, against the real write executor);
@@ -99,10 +105,11 @@
         (only (httparse modes) httparse-message-type-value)
         (http-server private shell)
         (only (http-server server) server-phase)
-        (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks)
+        (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
+              conn-outstanding-bytes)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (only (http-server body) read-body read-whole-body)
-        (response-reader) (shell-testing))
+        (response-reader) (shell-testing) (producers))
 
 (define (b s) (string->utf8 s))
 
@@ -139,12 +146,20 @@
 ;; connection to run it holds the loop `slow-ms` in the trace first, as the
 ;; shell's own work might, a collection or a large copy; while it is
 ;; `adoption`, the listener holds the loop so before its next adoption.
+;; While `watching-stream`, `stream-most` keeps the most bytes a connection
+;; had outstanding as it issued a write: the core counts a write as it asks
+;; for it, so the trace, which sees the action before it is performed, reads
+;; them with it.
 (define traced '())
 (define traps '())
 (define closing-at #f)
 (define holding-at #f)
+(define watching-stream #f)
+(define stream-most 0)
 (define (trace! c kind datum)
   (set! traced (cons (list c kind (car datum)) traced))
+  (when (and watching-stream (connection? c) (eq? kind 'action) (eq? (car datum) 'write))
+    (set! stream-most (max stream-most (conn-outstanding-bytes (connection-state c)))))
   (case (car datum)
     ((arm-deadline) (time! (list 'arm c (cadr datum) (uv-now loop))))
     ((write) (time! (list 'write c (uv-now loop))))
@@ -213,7 +228,11 @@
 ;; `/credit`, read by a streaming reader that keeps what it is handed in
 ;; `credit-pieces`, newest first, counts in `credit-held` the bytes it has
 ;; not credited, and in `credit-most` the most it held at once: on a shell
-;; made on credit (M6.2), it owes credit for them.
+;; made on credit (M6.2), it owes credit for them.  And a producer (M6.3;
+;; tests/producers.sls): `/stream` streams a MiB in 64 pieces of 16 KiB, the
+;; k-th filled with the k-th letter from `a`, and `stream-calls` says how many
+;; times the last one was called; `/pieces` streams three texts; and
+;; `/stream-raise` a piece, then raises.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -228,6 +247,9 @@
 (define credit-pieces '())
 (define credit-held 0)
 (define credit-most 0)
+(define stream-pieces 64)
+(define stream-piece-size 16384)
+(define stream-calls (lambda () 0))
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
     (when (bytevector=? target (b "/slow"))
@@ -251,6 +273,16 @@
                         (set! credit-held (+ credit-held (- end start)))
                         (set! credit-most (max credit-most credit-held)))
                       (lambda () (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/stream"))
+           (let-values (((p calls) (counted (sized-producer stream-pieces stream-piece-size))))
+             (set! stream-calls calls)
+             (make-response 200 #f '() p)))
+          ((bytevector=? target (b "/pieces"))
+           (make-response 200 #f '() (producer-of '("one " "two " "three"))))
+          ((bytevector=? target (b "/stream-raise"))
+           (make-response 200 #f '()
+                          (producer-of '("one piece")
+                                       (lambda () (raise (make-message-condition "the producer failed"))))))
           ((eq? (request-method req) 'POST)
            (read-body (lambda (bv start end) #t) (lambda () (make-response 200 #f '() target))))
           (else (make-response 200 #f '() target)))))
@@ -680,6 +712,81 @@
                (wait-for (lambda () (eq? (client-end cl) 'eof))))
       (test-equal "after a 500" '(500) (map status (responses (client-bytes cl))))
       (test-equal "and the shell logged what the handler raised" '(handler-failed "the handler failed")
+                  (let ((entry (assq 'handler-failed logged)))
+                    (if (and entry (pair? (cdr entry)) (message-condition? (cadr entry)))
+                        (list 'handler-failed (condition-message (cadr entry)))
+                        (list 'not-logged logged))))
+      (client-close! cl))
+
+    ;; A streamed response (M6.3, decision 0013 item 8): a MiB in 64 pieces
+    ;; of 16 KiB to a client that reads nothing yet, the connection's send
+    ;; buffer small, as the slow reader's is, so the kernel holds far less
+    ;; than the MiB.  The producer is asked only at or below decision 0005's
+    ;; high water, 262,144 bytes outstanding, so the bytes outstanding never
+    ;; pass it by more than one piece's write, 16,392 bytes: the size line
+    ;; `4000` CRLF, the piece, CRLF.  That is the slow reader's memory bound
+    ;; (plan §14: with the high water ignored, the first turn asks for the
+    ;; whole MiB).  The first turn asks sixteen times, 262,356 bytes with the
+    ;; head.  The request says Connection: close, so the client knows it has
+    ;; the whole response at the stream's end.
+    (set! small-send-buffer 4096)
+    (set! stream-most 0)
+    (set! watching-stream #t)
+    (let* ((before (newest))
+           (cl (open-client! (b "GET /stream HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n") #f)))
+      (test-eq "a client that reads nothing yet asks for a MiB streamed" 'satisfied
+               (wait-for (lambda () (>= (stream-calls) 16))))
+      (set! small-send-buffer #f)
+      ;; Some turns of the loop, for the kernel to take what it will.
+      (run-until/ticking loop (lambda () #f) 200)
+      (let ((c (adopted-since before)))
+        (test-equal "while it reads nothing, its writes wait, the bytes outstanding never past the high water by more than a piece's write"
+                    '(outstanding #t)
+                    (list (if (and c (> (uv-stream-write-queue-size (connection-tcp c)) 0)) 'outstanding 'completed)
+                          (<= stream-most (+ 262144 16392)))))
+      (client-read! cl)
+      (test-eq "the client then reads the whole response, and the stream's end" 'satisfied
+               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+      (set! watching-stream #f)
+      (test-equal "a 200, chunked, whose body is the MiB, every piece in order, the bound kept as it read"
+                  (list 200 "chunked" (sized-body stream-pieces stream-piece-size) 'complete 65 #t)
+                  (let ((r (read-response (client-bytes cl) #f #t)))
+                    (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4)
+                          (stream-calls) (<= stream-most (+ 262144 16392)))))
+      (client-close! cl))
+    ;; To HTTP/1.0 the pieces are close-delimited, and the connection closes
+    ;; after them (RFC 9112 §6.3 rule 8), though this client asked to keep it
+    ;; (M3.2's carried arm): the client has the body at the stream's end.
+    (let ((cl (open-client! (b "GET /pieces HTTP/1.0\r\nConnection: keep-alive\r\n\r\n"))))
+      (test-eq "an HTTP/1.0 client of a streamed response reads the stream's end" 'satisfied
+               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+      (test-equal "a 200 with Connection: close and no framing field, the body read whole at the close"
+                  '(200 "close" absent absent "one two three" complete)
+                  (let ((r (read-response (client-bytes cl) #f #t)))
+                    (list (status r) (field r "Connection") (field r "Transfer-Encoding")
+                          (field r "Content-Length") (body r) (list-ref r 4))))
+      (client-close! cl))
+    ;; A chunked stream keeps the connection: the GET behind it is answered.
+    (let ((cl (open-client! (b "GET /pieces HTTP/1.1\r\nHost: x\r\n\r\nGET /after HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "a client reads a streamed response and the one behind it" 'satisfied
+               (wait-for (lambda () (= 2 (length (responses (client-bytes cl)))))))
+      (test-equal "on one connection: the stream's body, then the GET's"
+                  '((200 "chunked" "one two three") (200 absent "/after"))
+                  (map (lambda (r) (list (status r) (field r "Transfer-Encoding") (body r)))
+                       (responses (client-bytes cl))))
+      (client-close! cl))
+    ;; A producer that raises once the head is on the wire: no status can be
+    ;; written, so the connection closes at once, with no half-close, and
+    ;; the client reads a chunked body cut short, with no last chunk.
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /stream-raise HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of a producer that raises after a piece reads the stream's end" 'satisfied
+               (wait-for (lambda () (not (eq? (client-end cl) 'open)))))
+      (test-equal "after the head and the piece: the body cut short, no status written"
+                  '(200 "chunked" "one piece" need-input eof)
+                  (let ((r (read-response (client-bytes cl) #f #f)))
+                    (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4) (client-end cl))))
+      (test-equal "and the shell logged what the producer raised" '(handler-failed "the producer failed")
                   (let ((entry (assq 'handler-failed logged)))
                     (if (and entry (pair? (cdr entry)) (message-condition? (cadr entry)))
                         (list 'handler-failed (condition-message (cadr entry)))
