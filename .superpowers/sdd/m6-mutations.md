@@ -420,3 +420,77 @@ in the fourth.
 | M6.3-SN | `serializer.sls` | a producer given a Content-Length accepted | serializer 1 |
 | M6.3-SO | `serializer.sls` | a size line made for every piece, none shared | serializer 1 |
 | M6.3-SP | `serializer.sls` | a power of two's size line taken from the next place | serializer 2 |
+
+### The third step: the fake shell's flows, and the allocation shapes
+
+Fifty mutants on that tree: the second step's forty-seven again, and
+M6.3-CP, M6.3-CX and M6.3-FA. Every check the step added is reddened by at
+least one:
+- the stream suite: HTTP/1.1 by CI, CR, SC and SH among others; HTTP/1.0 by
+  CC, SD and SI among others; HEAD and 204 by CD; the 0005 bound by CA, CP
+  and CAB; the water marks acting by CA, CB, CP and CAB; the three bare
+  closes by CK and CK2, and the answer that is no piece by CS; the empty
+  answer by CS2 and CK; the bytevector handed out again by CY; a producer
+  in place of a reader, a reader's response streamed, and the GET behind a
+  stream by CI and SH; the transport failure and the write deadline by CN,
+  and by CA and CE; and every flow by FA, the fake shell's producer never
+  called;
+- the allocation suite: a stream written whole by CE, CI, CW, CAA, SA and
+  SB; a piece's cost however many came before it by CX; a 16 KiB piece by
+  SE; a 100-byte piece's own size line by SO and SE. "A streamed piece costs
+  something" is the instrument's calibration, as its sibling for a request
+  is: it guards the shape against reading 0 = 0, and no mutant is claimed
+  for it.
+
+| # | mutated | mutation | observed |
+|---|---|---|---|
+| M6.3-CA | `connection.sls` | the plan's: high water ignored, the producer always asked | connection-stream 4; connection-table 8 |
+| M6.3-CB | `connection.sls` | low water ignored: a waiting producer asked again at the high water | connection-stream 1; connection-table 2 |
+| M6.3-CC | `connection.sls` | M3.2's carried arm dropped: a close-delimited body does not close the connection | connection-stream 1; connection-table 2 |
+| M6.3-CD | `connection.sls` | a producer kept where no body is written | connection-stream 1; connection-table 2 |
+| M6.3-CE | `connection.sls` | the producer not asked for its first piece with the head | connection-allocation 1; connection-stream 2; connection-table 2 |
+| M6.3-CF | `connection.sls` | a piece written with no write deadline armed | connection-table 3 |
+| M6.3-CH | `connection.sls` | a piece no one asked for accepted | connection-table 1 |
+| M6.3-CI | `connection.sls` | the end does not let the producer go | connection-allocation 1; connection-stream 6; connection-table 3 |
+| M6.3-CJ | `connection.sls` | a close-delimited end with nothing outstanding writes no response | connection-table 1 |
+| M6.3-CK | `connection.sls` | a producer's failure after the head answered 500, not a bare close | connection-stream 4; connection-table 1 |
+| M6.3-CL | `connection.sls` | a failure in responding closes with no piece asked for | connection-table 1 |
+| M6.3-CM | `connection.sls` | the write deadline armed with no write outstanding while the producer is asked | connection-table 1 |
+| M6.3-CN | `connection.sls` | a close does not let the producer go | connection-stream 2; connection-table 3 |
+| M6.3-CP | `connection.sls` | a waiting producer asked again, but not marked asked | connection-stream 2 |
+| M6.3-CQ | `connection.sls` | a piece after the producer was let go refused | connection-table 2 |
+| M6.3-CR | `connection.sls` | a producer's piece handed over from its second byte | connection-allocation 1; connection-stream 12; connection-table 1 |
+| M6.3-CS | `connection.sls` | a producer's answer that is neither a bytevector nor the eof object taken as the end | connection-stream 2; connection-table 1 |
+| M6.3-CW | `connection.sls` | a producer's body taken as no body | connection-allocation 1; connection-stream 14; connection-table 2 |
+| M6.3-CX | `connection.sls` | each write's bytes kept on the connection, appended, as a log would be | connection-allocation 1; connection-entry 1; trace-lane exit 2 |
+| M6.3-CY | `connection.sls` | the next piece asked for before the last is written | connection-stream 1; connection-table 3 |
+| M6.3-CAA | `connection.sls` | the action named ask-producer, outside the vocabulary | connection-allocation 1; connection-stream 14; connection-table 11 |
+| M6.3-CAB | `connection.sls` | the stream's rows in no state but responding: a completion ignores the producer | connection-stream 2; connection-table 5 |
+| M6.3-CB2 | `connection.sls` | a waiting producer asked again at the low water alone, past the high water | connection-table 1 |
+| M6.3-CG2 | `connection.sls` | the core takes a piece of no bytes, refusing none itself | connection-table 1 |
+| M6.3-CK2 | `connection.sls` | a producer's failure after the head changes nothing | connection-stream 4; connection-table 1 |
+| M6.3-CS2 | `connection.sls` | a producer's empty bytevector taken as a piece | connection-stream 1; connection-table 1 |
+| M6.3-FA | `fake-shell.sls` | the fake shell's producer not called | connection-stream 14 |
+| M6.3-LA | `limits.sls` | the high water's default is 262,143 | limits 2 |
+| M6.3-LB | `limits.sls` | the low water's default is 65,535 | limits 2 |
+| M6.3-LC | `limits.sls` | the environment's high water defaults to 262,145, apart from default-limits | limits 3 |
+| M6.3-LD | `limits.sls` | the low water's variable left out of the list | limits 1 |
+| M6.3-LE | `limits.sls` | the high water read from the low water's variable | limits 3 |
+| M6.3-LF | `limits.sls` | equal water marks refused | limits 1 |
+| M6.3-LG | `limits.sls` | a low water above the high water accepted | limits 1 |
+| M6.3-LH | `limits.sls` | the low water's field named otherwise, so limits-with cannot replace it by name | connection-stream 3; connection-table 2; limits 1 |
+| M6.3-SA | `serializer.sls` | a producer is a fault, invalid-body | connection-allocation 1; connection-stream 15; connection-table 2; serializer 19 |
+| M6.3-SB | `serializer.sls` | a producer's head counts its body's length as a bytevector's | connection-allocation 1; connection-stream 15; connection-table 2; serializer 15 |
+| M6.3-SC | `serializer.sls` | a chunk without its closing CRLF | connection-stream 7; connection-table 6; serializer 13 |
+| M6.3-SD | `serializer.sls` | a close-delimited piece framed as a chunk | connection-stream 1; connection-table 1; serializer 8 |
+| M6.3-SE | `serializer.sls` | a piece always copied | connection-allocation 2; serializer 1 |
+| M6.3-SG | `serializer.sls` | a chunk's byte count leaves out its size line | connection-stream 12; connection-table 6; serializer 4 |
+| M6.3-SH | `serializer.sls` | the last chunk without the empty trailer section's CRLF | connection-stream 7; connection-table 1; serializer 2 |
+| M6.3-SI | `serializer.sls` | a close-delimited body's end writes the last chunk | connection-stream 1; connection-table 2; serializer 2 |
+| M6.3-SJ | `serializer.sls` | an empty piece accepted | serializer 1 |
+| M6.3-SK | `serializer.sls` | a piece in any mode accepted | serializer 1 |
+| M6.3-SL | `serializer.sls` | a piece past its bytevector's end accepted | serializer 1 |
+| M6.3-SM | `serializer.sls` | the end of any mode writes nothing | serializer 1 |
+| M6.3-SN | `serializer.sls` | a producer given a Content-Length accepted | serializer 1 |
+| M6.3-SO | `serializer.sls` | a size line made for every piece, none shared | connection-allocation 1; serializer 1 |
+| M6.3-SP | `serializer.sls` | a power of two's size line taken from the next place | connection-stream 6; serializer 2 |
