@@ -3093,3 +3093,17 @@ Watched to fail (m6-mutations.md, the second step): forty-seven mutants on that 
 Size: 596 inserted lines of code and tests, 95 deleted, past plan §1 rule 1's ~400, as the form weighed.
 
 NEXT: the third step, the fake shell's flows, stacked on this one.
+
+
+M6.3 THIRD STEP: the fake shell's flows, and the allocation shapes (feat/m6.3-stream-flows).
+- `tests/test-connection-stream.sps`, new, 15 checks: every stream read back by chez-httparse's response parser, with a trace reading the bytes outstanding at every ask and write: HTTP/1.1 chunked, HTTP/1.0 close-delimited, HEAD and 204; a MiB under 0005's marks never more than a piece's write past the high water; small marks, every ask at or below the high water and every one after a completion at or below the low; four bare closes, an empty answer among them; one bytevector handed out again; a producer in place of a reader, a reader's response streamed, a GET behind a stream; a transport failure and the write deadline mid-stream letting the producer go.
+- `tests/test-connection-allocation.sps`, 26 (main's 21): a piece costs the same however many came before it, at 16 KiB what it does at 128 bytes, and more at 100 bytes, its size line.
+- `tests/producers.sls`, new, `(producers)`: the producers the suites stream from.
+
+`make test` green on this step's own tree: forty-one suites, 1,205 expected passes, exit 0.
+
+Watched to fail (m6-mutations.md, the third step): fifty mutants on that tree, the second step's forty-seven again and three more, the fake shell's `notify-producer` (FA) among them, and every check the step added reddened by at least one, but the allocation shape's calibration, the instrument's guard. The plan's mutation, M6.3-CA, reddens the slow reader's bound in the fake shell's flows.
+
+Size: 456 inserted lines of code and tests.
+
+NEXT: the fourth step, a streamed response on a socket, stacked on this one.
