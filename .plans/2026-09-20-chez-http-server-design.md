@@ -1210,6 +1210,85 @@ Three consequences for M3:
 > at 64 as well (§4.4's M6.3 amendment), so one connection holds at most the high water,
 > one piece's write and 64 requests: 0.07 MB of 100-byte pieces, measured the same way.
 
+> *Noted 2026-09-29 (write batching, after M6.3; its own PR, on the owner's word, by
+> form):* the cap bounded small pieces, and each was still a write of its own, with its
+> request and its completion. The libuv shell now holds a write under 4,096 bytes and sends
+> a turn's held writes as one. A held write's bytes are copied as it is held, into the
+> connection's chunks, each new one twice the last's length or the write's, so no byte is
+> copied twice before chez-libuv's copy. What is held goes out once the drain empties the
+> queue, and first before a shutdown, a close, or a write of 4,096 bytes or more, which
+> goes out alone as before, and before the drain first calls a producer, so a stream's
+> head never waits for its pieces. The write's completion reports each write it carried, in the
+> order written, so the core and its accounting are unchanged; the contract's traces hold
+> the order. A raise drops what is held with what is queued, so a bug once the head is
+> held sends nothing, where the head went out before.
+>
+> - **The copy is made as a write is held**, not as the turn's write is issued: a
+>   producer may hand out one bytevector again, refilled (handlers.org), and a prototype
+>   that held pieces by reference sent every piece of a turn as its last. The shell suite
+>   streams 4,000 rows from one refilled bytevector and reads them back whole.
+> - **Measured on Linux** (Debian 12, libuv 1.44.2, in Docker, aarch64), a scratch server
+>   whose producers never end, a client reading as fast as it can, another sending a GET
+>   every 2 ms; three runs each, the median, on the tree after the PR's review:
+>
+>   | Pieces | Streamed, main | Batched | Another client's median wait |
+>   |---|---|---|---|
+>   | 1 byte | 1.9 MB/s | 11.4 MB/s | 0.85 ms, then 0.19 |
+>   | 100 bytes | 32.8 | 182.9 | 0.85, then 0.19 |
+>   | 1,000 bytes | 284.2 | 989.1 | 0.81, then 0.28 |
+>   | 4,000 bytes | 864.8 | 1,569.7 | 0.98, then 0.68 |
+>   | 8 KiB, not held | 1,472.4 | 1,444.9 | 0.78, then 0.75 |
+>   | 16 KiB, not held | 2,029.9 | 2,066.0 | 0.50, then 0.50 |
+>   | 100 bytes, a handler gathering 16 KiB | 854.4 | 851.1 | 1.06, then 1.01 |
+>   | no stream | | | 0.26, then 0.25 |
+>
+>   The rows above 4,000 bytes differ by the runs' spread alone. A client that never
+>   reads holds 0.03 MB of 100-byte rows, where main's held 0.05, and 0.26 MB of 16 KiB
+>   pieces, as main's did (ten clients, one run each). On Darwin arm64 (libuv 1.52.1),
+>   the same way: 1-byte pieces 7.9 MB/s where they streamed 0.4, 100-byte ones 132.4
+>   where 7.3, 1,000-byte ones 905.2 where 68.2, and 4,000-byte ones 1,385.1 where
+>   265.5; another client's median wait behind the 100-byte pieces 0.37 ms where it was
+>   3.24; 8 and 16 KiB pieces as before.
+> - **Three shapes were tried** as scratch prototypes, on the same Linux, three runs each,
+>   the median, for 1, 100, 1,000 and 4,000-byte pieces. Each held write copied into a
+>   bytevector of its own, a turn's 64 sent as 64 segments of one `uv-write*!`: 9.7, 166,
+>   917 and 1,534 MB/s. The held bytes in one bytevector, grown by copying: 11.8, 172, 762
+>   and 1,088. Chunks never copied again, as built: 11.8, 186, 990 and 1,580.
+> - **The cutoff stays at 4 KiB.** A prototype that held 8 KiB and 16 KiB pieces too
+>   streamed the 8 KiB ones at 1,708 MB/s against 1,465 written alone, but the 16 KiB ones
+>   at 1,814 against 2,080 (Linux, three runs each).
+> - **chez-libuv needs no change.** Its `uv-write*!` packs a write's spans end to end in
+>   one block, but gives libuv one `uv_buf_t` a span, and libuv 1.52.1 mallocs the array
+>   of a write with more than four (`src/unix/stream.c:1370-1372`). A scratch chez-libuv
+>   giving libuv one buffer over the packed spans measured 1 to 5 % faster for 64-span
+>   writes; the shell sends a few chunks a turn.
+> - **The 64-write cap stays**: each piece still costs a producer's call, the core's step
+>   and its framing, and the cap bounds how many a turn asks for.
+> - **After the PR's review** (a /code-review high, then, on the owner's ask, a deeper
+>   review of three findings, each measured; decided by form): what is held went out only
+>   as the drain emptied, so a stream's head waited for the turn's producer calls, up to
+>   64. On Linux, from the request, a producer that took 200 µs a piece delayed its head
+>   from 0.12 ms to 12.74, and one that took 2 ms from 0.14 to 126.3. What is held now
+>   goes out before the drain first calls a producer: on the tree after the review, the
+>   head arrives at 0.10, 0.10, 0.13 and 0.19 ms for producers taking 0, 20, 200 and
+>   2,000 µs a piece, where main sent it at 0.09, 0.09, 0.12 and 0.20 (five runs each,
+>   the median). The pieces still go out a turn at a time: the first at 1.37, 12.76 and
+>   126.37 ms for the three slower ones, where main sent it at 0.09, 0.33 and 2.22, and
+>   the stream ends as soon or sooner: 0.26, 5.32, 51.52 and 513.03 ms, where main's
+>   ended at 0.95, 6.32, 53.11 and 515.16. handlers.org says so. Weighed: the docs alone;
+>   sending what has been held a millisecond before each producer call, which sent a slow
+>   producer's pieces as made but slowed fast small ones 5 to 17 % (1-byte pieces 11.5
+>   MB/s to 9.6) and made a turn's batch hang on time.
+> - `hold!` copied with `fold-left`, whose procedure is a closure over the chunk and the
+>   Date line: 32 bytes and some 6 ns a write held, in a scratch library (22.8 ns
+>   against 28.5); it is a named let.
+> - **The copy of a lone small response**, weighed in the review as waste, costs less
+>   than it saves: a process serving itself small keep-alive GETs, a 77-byte answer each,
+>   allocated 11,577 bytes a request where main's allocated 11,920, one span costing
+>   chez-libuv less than four segments, and a prototype that sent a lone write's segments
+>   by reference, copying only before application code ran, 384 bytes more than the
+>   batched shell (Darwin, 20,000 requests, three runs each). It stays.
+
 ### 7.4 The collect-safe rendezvous
 
 At chez-libuv v0.6.0 `uv_run` is `(foreign-procedure __collect_safe "uv_run" …)`

@@ -3195,3 +3195,67 @@ DECIDED on the owner's word (2026-09-29), by form, while the PRs were open: **wr
 - **Weighed:** a sixth stacked PR; a note for later.
 
 NEXT: write batching (above), its own PR on a fresh branch cut from main after this commit, as the owner chose. Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
+
+
+WRITE BATCHING, after M6.3 (feat/write-batching, cut from main at 73cfeb5): the libuv shell holds a turn's small writes and sends them as one libuv write, as the owner chose by form, its own PR after M6.3's five.
+- `(http-server private shell)` alone. `write!` holds a write under 4,096 bytes (`held-below`): `hold!` copies its bytes as it holds it, behind those held, into the connection's chunks, each new one twice the last's length or the write's, so no byte is copied again before chez-libuv's copy. The drain sends what is held, `flush!`, once it has run the queue empty, and runs on while that queues more; `run!` sends it first before a `shutdown` and a `close`, and `write!` before a write of 4,096 bytes or more, which goes out alone, as before. `send!` makes every write, one guarded `uv-write*!`, and its completion, `write-done`, reports each write it carried as `write-completed`, in the order written, after one `read-error` if it failed. A raise drops what is held with what is queued. The core, its events, the water marks, the 64-write cap and the contract are unchanged.
+- The checks: `tests/test-shell.sps`, 119 (main's 110): the rows a turn writes are one write request of chez-libuv's, where the core counted 48 of its writes (Darwin); each 16 KiB piece's write is one of its own; 4,000 rows handed out in one bytevector, refilled at each call, read back whole, each as it was handed over; rows whose client goes while they are outstanding, a read error, then each row's write settled, none left outstanding; a bug once a write is held sends nothing, and the close is the connection's last event. `tests/producers.sls` gains `refilled-producer`, which the stream suite's bytevector handed out again now uses (16 checks, as on main).
+- Records: design §7.3's note; decision 0005's amendment of this day, and decision 0013's note; plan §14's note; docs: handlers.org (the server gathers small pieces; gathering them in the handler is still about 4.7 times faster; a piece copied as the server takes it) and configuration.org (what the 64-piece count bounds).
+
+FOUND WHILE BUILDING:
+- **chez-libuv needs no change, and no issue was filed.** Its `uv-write*!` packs a write's spans end to end in one block, but gives libuv one `uv_buf_t` a span, and libuv 1.52.1 mallocs the array of a write with more than four (`src/unix/stream.c:1370-1372`). A scratch chez-libuv giving libuv one buffer over the packed spans measured 1 to 5 % faster for 64-span writes (Linux, three runs each); the chunks make a few spans a turn.
+- **Three shapes, as scratch prototypes** (Linux, three runs each, the median, for 1, 100, 1,000 and 4,000-byte pieces): each held write a bytevector of its own, 64 segments a turn, 9.7, 166, 917 and 1,534 MB/s; one bytevector grown by copying, 11.8, 172, 762 and 1,088, slower than the first at 1,000 and 4,000 bytes; chunks never copied again, 11.8, 186, 990 and 1,580, as built.
+- **The cutoff stays at 4 KiB.** Held too, 8 KiB pieces streamed faster on Linux, 1,708 MB/s against 1,465, and 16 KiB ones slower, 1,814 against 2,080; on Darwin both were faster held (one run).
+- **A raise now sends nothing held.** On main, a bug once the head was written still sent the head, and an HTTP/1.0 client can take a close-delimited body cut short for a whole one. A held write is dropped with the queued actions a raise drops.
+- **One guarded write.** The refused write M4.2's check sends is a held one now, sent as the drain empties, so `write!`'s own guard would have been checked by nothing; every write goes through `send!`.
+- The first cut of the mutant that drops the copy kept the chunks, so each write it sent ended with an empty span, which libuv finishes a turn later (`uv__write_req_update` stops on a trailing empty buffer), so a close cancelled it. Re-cut with no chunks. The finished code sends no empty span: the core writes only segments with bytes.
+
+Measured on the finished tree (2026-09-29, Darwin arm64):
+- `make test` green: forty-one suites, 1,246 expected passes, exit 0.
+- The red before green: against main's shell, the finished tests failed twice. The rows' one-write check read the core's 52 writes outstanding and 52 write requests, and the held write's bug check read the head main sent.
+- A scratch server whose producers never end, a client reading as fast as it can, another sending a GET every 2 ms, main against the finished tree, three runs each, the median: 1-byte pieces 0.4 to 7.8 MB/s, 100-byte 7.3 to 131.9, 1,000-byte 68.1 to 898.8, 4,000-byte 264.5 to 1,370.5; another client's median wait behind the 100-byte pieces 3.24 ms to 0.37; 8 and 16 KiB pieces as before, 522.5 and 799.0 MB/s.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1 `tarm64le`, threaded, libuv 1.44.2), from a copy of the finished tree made with `COPYFILE_DISABLE=1`, curl 7.88.1 and ab 2.3 installed:
+- `make test`, less its submodule and pin checks: forty-one suites, 1,246 expected passes;
+- the shell, contract, stream and clients suites, three runs each: 119, 65, 16 and 13 each time;
+- the probe, the same way: 1-byte pieces 1.9 to 11.4 MB/s, 100-byte 32.4 to 180.8, 1,000-byte 274.4 to 965.0, 4,000-byte 899.6 to 1,578.4; another client's median wait behind them 0.80, 0.81, 0.82 and 0.93 ms to 0.19, 0.20, 0.29 and 0.62; 8 and 16 KiB pieces as before, 1,444.0 and 2,107.6 MB/s; 100-byte rows a handler gathers into 16 KiB pieces 852.6 MB/s, about 4.7 times the rows one at a time, where it was about 26;
+- ten clients that never read, one run each: 0.05 MB each of 100-byte pieces and 0.26 MB of 16 KiB ones, as on main, and 0.04 MB of 1-byte ones.
+
+Watched to fail (m6-mutations.md, "Write batching"): twenty-one mutants on the finished tree against all forty-one suites, sixteen of them new (batch-A to batch-O, and batch-A2, a calibration), M4.2's four on the write path re-cut on the new code, and M4.2-X re-run; every check this change added or changed is reddened by at least one. Three survive: batch-D, the writes held not sent before a shutdown, a scope statement, since the core asks for a shutdown only once every write has completed; batch-L, the chunks' growth, a scope statement, a cost and never the bytes; batch-A2, the calibration, as meant.
+
+Size: 259 inserted lines of code and tests, 73 deleted: one PR, under plan §1 rule 1's ~400.
+
+DECIDED on the owner's word (2026-09-29), by form, after the walkthrough: committed and opened as one PR. Weighed: holding it for changes.
+
+NEXT: the PR, merged on the owner's "do closing ritual". Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
+
+
+WRITE BATCHING, ITS REVIEW (2026-09-29, PR #79 open): a /code-review high, on the owner's ask, found seven, none a correctness bug; then, on the owner's ask, a deeper review of three of them, each measured with scratch prototypes.
+- (1) **A stream's head waited for the turn.** What was held went out only as the drain emptied, so a stream's head and first pieces waited for the turn's producer calls, up to 64. On Linux (Docker, five runs each, the median), a producer taking 200 µs a piece delayed its head from 0.12 ms to 12.74, one taking 2 ms from 0.14 to 126.3, one answering at once from 0.08 to 0.12; every stream still ended as soon or sooner. Two fixes were prototyped: what is held sent before the drain's first producer call, the head back at 0.10 to 0.19 ms, throughput unchanged (100-byte pieces 180.3 MB/s against 183.7); and what has been held a millisecond sent before each producer call, a slow producer's pieces as made, but fast small pieces 5 to 17 % slower (1-byte 11.5 MB/s to 9.6) and a turn's batch hanging on time, one check failing.
+- (5) **`hold!`'s `fold-left` made a closure for every write held:** 32 bytes and some 6 ns in a scratch library (28.5 ns against 22.8 for a named let); through a whole process, some 15 of a piece's 1,430 bytes, its time within noise.
+- (6) **The copy of a lone small response is not waste:** a process serving itself small keep-alive GETs allocated 367 bytes a request less than main's (11,561 against 11,928), one span costing chez-libuv less than four segments, and a prototype sending a lone write by reference 384 more (Darwin, 20,000 requests, three runs each).
+- The other four: (2) a turn's one write refused at the call was tested with one write only; (3) handlers.org's "under 4 KiB" left out the chunk framing; (4) a completion's writes are dispatched one by one, so the producer refills at 16 and a batch carries 48; (7) the dev-build counters' guard is repeated in the shell suite.
+
+DECIDED on the owner's word (2026-09-29), by form, after the deeper review: (1) what is held goes out before the drain's first producer call, and handlers.org says the pieces go out a turn at a time; weighed: the docs alone; a flush after a millisecond. (5) a named let. (2) and (3) fixed. (4) and (7) left. (6) no change, the premise measured wrong.
+
+The fixes, a second commit on feat/write-batching:
+- `(http-server private shell)`: the connection's `producer-called?`, cleared as each drain starts; `run!` sends what is held before the drain's first `notify-producer`. `hold!` copies with a named let.
+- The checks: `tests/test-shell.sps`, 125 (the first commit's 119): a stream's head sent before its producer is first called, one write request, on a stream behind another on one connection; rows whose handle is closed behind the core mid-turn, the turn's one write refused at the call, a read error, then each row's write settled, none outstanding; pieces of 100 bytes and 5,000 in turn, read back in order.
+- Docs: handlers.org, gathered pieces of up to 4,088 bytes, the headers before the producer's first call, the pieces up to 64 at a time.
+- Records: design §7.3's note, re-measured; decision 0005's amendment and 0013's note; plan §14's note; m6-mutations.md, "After the PR's review".
+
+FOUND WHILE FIXING: sending the head first let batch-E, the writes held not sent before a larger write, survive: the MiB's check had killed it, its head held when its first 16 KiB piece was written, and now nothing is held then. The mixed pieces' check was added for it.
+
+Measured on the fixed tree (2026-09-29):
+- `make test` green on Darwin arm64: forty-one suites, 1,252 expected passes, exit 0. On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, libuv 1.44.2), from a copy made with `COPYFILE_DISABLE=1`, curl and ab installed, less the submodule and pin checks: forty-one suites, 1,252; the shell, contract, stream and clients suites three runs each: 125, 65, 16 and 13 each time.
+- Red before green: on the first commit's shell, the head-first check failed, its producer's first call finding no write request more than the handler had.
+- The head, Linux, five runs each, the median, for producers taking 0, 20, 200 and 2,000 µs a piece: 0.10, 0.10, 0.13 and 0.19 ms, where main sent it at 0.09, 0.09, 0.12 and 0.20; the first piece at 0.10, 1.37, 12.76 and 126.37, where main's at 0.09, 0.09, 0.33 and 2.22; the stream's end at 0.26, 5.32, 51.52 and 513.03, where main's at 0.95, 6.32, 53.11 and 515.16. On Darwin the head at 0.21 to 0.32 ms, where main's at 0.13 to 0.27.
+- The probe, main against the fixed tree, three runs each, the median. Linux: 1-byte pieces 1.9 to 11.4 MB/s, 100-byte 32.8 to 182.9, 1,000-byte 284.2 to 989.1, 4,000-byte 864.8 to 1,569.7; 8 and 16 KiB as before, 1,444.9 and 2,066.0; another client's median wait behind the 100-byte pieces 0.85 ms to 0.19; 100-byte rows a handler gathers 851.1 MB/s, about 4.7 times the rows one at a time. Darwin: 1-byte 0.4 to 7.9, 100-byte 7.3 to 132.4, 1,000-byte 68.2 to 905.2, 4,000-byte 265.5 to 1,385.1; the wait 3.24 ms to 0.37.
+- Ten clients that never read, Linux, one run each: 0.03 MB each of 100-byte pieces, where main's 0.05, and 0.26 MB of 16 KiB ones, as main's.
+- One process serving itself (Darwin, three runs each): a small keep-alive GET 11,577 bytes and 53.4 µs, where main's 11,920 and 54.3; a streamed 100-byte piece 1,661 bytes and 0.73 µs, where main's 3,913 and 12.2 µs.
+
+Watched to fail (m6-mutations.md, "After the PR's review"): twenty-five mutants on the fixed tree against all forty-one suites, the twenty-one before, three of them re-cut for the named let, and four new, batch-P to batch-S; every check the fixes added is reddened by at least one. Three survive, as before: batch-D and batch-L, scope statements, and batch-A2, the calibration.
+
+Size, the second commit: 122 inserted lines of code and tests, 28 deleted; the PR against main, 361 and 81, under plan §1 rule 1's ~400.
+
+NEXT: the PR, updated, merged on the owner's "do closing ritual". Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.

@@ -13,9 +13,11 @@
 ;;;
 ;;; THE MESSAGE LOOP is the fake shell's (design §4.5).  Actions run after the
 ;;; outermost dispatch, in order, from one queue; a dispatch made while the
-;;; queue drains, or while the parser feeds, only queues.  `depth` counts the
-;;; drain and a feed inside it.  An action run anywhere but the outermost
-;;; drain is a VIOLATION, recorded (design §6.4, the second hazard):
+;;; queue drains, or while the parser feeds, only queues.  Once the queue is
+;;; empty, the drain sends the writes held (WRITE BATCHING, below), and runs
+;;; on while that queues more.  `depth` counts the drain and a feed inside
+;;; it.  An action run anywhere but the outermost drain is a VIOLATION,
+;;; recorded (design §6.4, the second hazard):
 ;;; byte-machine poisons a parser whose callback escapes, and chez-libuv
 ;;; defers the raise, so the one action answered inside a parser callback is
 ;;; `reply-parser`, which the adapter answers without reaching the queue.
@@ -34,23 +36,28 @@
 ;;;                   or, if it raises, `handler-failed`, logged
 ;;;   notify-producer the producer a streamed response is written from
 ;;;                   (conn-producer; decision 0013 item 8), called for its
-;;;                   next piece: its answer as `handler-body-chunk` or
-;;;                   `handler-body-end` (producer-event), or, if it raises
-;;;                   or answers neither, `handler-failed`, logged; with no
-;;;                   producer, nothing
-;;;   write           uv-write*!, the Date slot filled from the clock (decision
-;;;                   0010); its completion reports `write-completed` with the
-;;;                   action's byte count, which is all the completion keeps:
-;;;                   chez-libuv copied the segments at the call (design §7.3),
-;;;                   a span of a bytevector, `(bv start end)`, among them
+;;;                   next piece, the drain's first call once the writes held
+;;;                   have gone out (WRITE BATCHING): its answer as
+;;;                   `handler-body-chunk` or `handler-body-end`
+;;;                   (producer-event), or, if it raises or answers neither,
+;;;                   `handler-failed`, logged; with no producer, nothing
+;;;   write           the segments, the Date slot filled from the clock
+;;;                   (decision 0010): held for the turn's one write if under
+;;;                   4,096 bytes (WRITE BATCHING, below), or else one
+;;;                   uv-write*! of their own; the completion reports
+;;;                   `write-completed` with the action's byte count, which
+;;;                   is all it keeps: a held write's bytes were copied as it
+;;;                   was held, and chez-libuv copies the segments at the call
+;;;                   (design §7.3), a span of a bytevector, `(bv start end)`,
+;;;                   among them
 ;;;   read-stop/-start  uv-read-stop! and uv-read-start!, when reading
 ;;;                   changes; the first start, at adoption, fixes the read
 ;;;                   buffer at the limits' read-buffer-size (design §7.2)
-;;;   shutdown        uv-shutdown!, the write side (decision 0011); its
-;;;                   completion reports `shutdown-completed`
-;;;   close           connection-close!, through handle-close! (below); the
-;;;                   close's callback takes the connection out of the table
-;;;                   and reports `closed`
+;;;   shutdown        uv-shutdown!, the write side (decision 0011), after the
+;;;                   writes held; its completion reports `shutdown-completed`
+;;;   close           connection-close!, through handle-close! (below), after
+;;;                   the writes held; the close's callback takes the
+;;;                   connection out of the table and reports `closed`
 ;;;   log             the shell's log
 ;;;   arm-deadline    the connection's entry in the wheel, at the loop's now
 ;;;                   plus the kind's limit (below)
@@ -105,18 +112,38 @@
 ;;; one, so a connection's close takes it out of the table and reports
 ;;; `closed` whoever asked for it.
 ;;;
+;;; WRITE BATCHING (decided on the owner's word, by form, 2026-09-29; design
+;;; §7.3).  A write under 4,096 bytes is held: its bytes are copied at once,
+;;; behind those held before it, into the connection's chunks, each new one
+;;; twice the last's length or the write's, so none is copied again.  What
+;;; is held goes out as one write once the drain has emptied the queue, and
+;;; first when the core asks for a shutdown or a close, or writes 4,096
+;;; bytes or more, so the bytes keep the order the core wrote them in.  So a
+;;; turn's small pieces of a streamed response, up to 64 (M6.3's second
+;;; review), are one write request of libuv's, where each was one, with its
+;;; `uv_write_t` and its completion.  What is held goes out too before the
+;;; drain first calls a producer, so a stream's head never waits for its
+;;; pieces: a producer slow to make them delays them, a turn at a time, but
+;;; not the head.  The copy is made as a write is held, not as the turn's
+;;; write is issued: a producer may hand out one bytevector again, refilled
+;;; (handlers.org).  A larger write is copied by chez-libuv at the call, as
+;;; every write was before.  The completion reports `write-completed` for
+;;; each write it carried, with its byte count, in the order written.
+;;;
 ;;; A TRANSPORT FAILURE IS A `read-error` (design §6.3): a read's error, and a
 ;;; write's or a shutdown's, whether chez-libuv raises it at the call or
 ;;; reports it at the completion.  A failed write is settled too, as
-;;; `write-completed` with its byte count, once the `read-error` has closed
-;;; the connection; the core settles a write a close cut short in `closing`
-;;; (M3.3).  A write the close itself cancels is reported the same way.
+;;; `write-completed` with each byte count it carried, once the one
+;;; `read-error` has closed the connection; the core settles a write a close
+;;; cut short in `closing` (M3.3).  A write the close itself cancels is
+;;; reported the same way.
 ;;;
 ;;; A BUG CLOSES ITS CONNECTION.  Whatever raises out of a connection's
-;;; outermost dispatch drops the actions still queued, and one of them may
-;;; have been the close, or the read that would have seen the client go: the
-;;; connection is closed before the raise goes on to chez-libuv and the run
-;;; loop.  An adoption that fails is closed the same way.
+;;; outermost dispatch drops the actions still queued, and the writes held,
+;;; and one of them may have been the close, or the read that would have seen
+;;; the client go: the connection is closed before the raise goes on to
+;;; chez-libuv and the run loop.  An adoption that fails is closed the same
+;;; way.
 ;;;
 ;;; THE DATE is made once a second (decision 0010).  The shell's clock is read
 ;;; when a second of the loop's own time has passed, libuv's milliseconds,
@@ -225,7 +252,11 @@
             (mutable reading?)
             (mutable closing?)
             (mutable on-data) (mutable on-eof) (mutable on-error)
-            (mutable entry)))                 ; its deadline's, in the shell's wheel
+            (mutable entry)                   ; its deadline's, in the shell's wheel
+            (mutable held)                    ; the writes held: their byte counts, newest first
+            (mutable chunk) (mutable chunk-end) ; the last chunk they fill, or #f, and where they end in it
+            (mutable chunks)                  ; the chunks before it, as spans, newest first
+            (mutable producer-called?)))      ; whether the drain has called a producer yet
 
   ;; connection-state : Connection -> ConnState — the core's state.
   (define (connection-state c) (conn-context-state (connection-ctx c)))
@@ -368,7 +399,7 @@
   ;; option has already failed, which reading will report.  A start that
   ;; raises goes on to shell-adopt!, which closes the handle.
   (define (serve! sh tcp)
-    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f)))
+    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f)))
       (connection-entry-set! c (make-wheel-entry c))
       (connection-ctx-set! c (make-conn-context
                               (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
@@ -423,21 +454,29 @@
       (and (pair? front)
            (begin (connection-front-set! c (cdr front)) (car front)))))
 
-  ;; drain! : Connection -> Void — run the queue, in order, until it is empty.
-  ;; A raise abandons the dispatch it came from: the depth is restored and
-  ;; what is still queued is dropped.
+  ;; drain! : Connection -> Void
+  ;; Run the queue, in order, and once it is empty send the writes held
+  ;; (flush!), until nothing is queued or held: a write that fails at the
+  ;; call queues what its failure dispatches.  A drain starts having called
+  ;; no producer (run!'s `notify-producer`).  A raise abandons the dispatch
+  ;; it came from: the depth is restored, and what is still queued or held
+  ;; is dropped.
   (define (drain! c)
     (let ((before (connection-depth c)))
       (dynamic-wind
-       (lambda () (connection-depth-set! c (fx+ before 1)))
+       (lambda ()
+         (connection-depth-set! c (fx+ before 1))
+         (connection-producer-called?-set! c #f))
        (lambda ()
          (let loop ()
            (let ((a (dequeue! c)))
-             (when a (run! c a) (loop)))))
+             (cond (a (run! c a) (loop))
+                   ((pair? (connection-held c)) (flush! c) (loop))))))
        (lambda ()
          (connection-depth-set! c before)
          (connection-front-set! c '())
-         (connection-back-set! c '())))))
+         (connection-back-set! c '())
+         (drop-held! c)))))
 
   ;; run! : Connection Action -> Void
   ;; Record a violation if the action runs anywhere but the outermost drain,
@@ -456,12 +495,16 @@
       ((call-handler) (call-handler! c (cadr a)))
       ((deliver-body) (deliver-body! c (cadr a) (caddr a) (cadddr a)))
       ((deliver-body-end) (deliver-body-end! c))
-      ((notify-producer) (notify-producer! c))
+      ((notify-producer)
+       (unless (connection-producer-called? c)
+         (connection-producer-called?-set! c #t)
+         (flush! c))
+       (notify-producer! c))
       ((write) (write! c (cadr a) (caddr a)))
       ((read-stop) (read-stop! c))
       ((read-start) (read-start! c))
-      ((shutdown) (shutdown! c))
-      ((close) (connection-close! c))
+      ((shutdown) (flush! c) (shutdown! c))
+      ((close) (flush! c) (connection-close! c))
       ((log) (log! (connection-shell c) (cadr a) (cddr a)))
       ((arm-deadline) (arm! c (cadr a)))
       ((disarm-deadline) (disarm! c))
@@ -537,27 +580,96 @@
                        (producer-event (p)))))))
 
   ;; write! : Connection (Listof Segment) Nat -> Void
-  ;; One uv-write*! of the segments, the Date slot filled.
+  ;; A write of `nbytes`, the Date slot filled: held for the turn's one
+  ;; write if under held-below bytes (hold!), or else one uv-write*! of its
+  ;; own, after the writes held (flush!), which copies its segments at the
+  ;; call.
   (define (write! c segments nbytes)
     (let ((line (current-date-line (connection-shell c))))
-      (guard (e ((transport-condition? e) (write-failed! c e nbytes)))
-        (uv-write*! (connection-tcp c)
-                    (map (lambda (seg) (if (eq? seg 'date) line seg)) segments)
-                    (write-done c nbytes)))))
+      (cond ((fx<? nbytes held-below) (hold! c segments line nbytes))
+            (else
+             (flush! c)
+             (send! c (map (lambda (seg) (if (eq? seg 'date) line seg)) segments)
+                    (list nbytes))))))
 
-  ;; write-done : Connection Nat -> ((U #f Condition) -> Void)
-  ;; A write's completion, which keeps the write's byte count and nothing of
-  ;; its segments.
-  (define (write-done c nbytes)
+  ;; A write under this many bytes is held (WRITE BATCHING, the header):
+  ;; gathered, pieces below it streamed faster on Linux and on Darwin, and
+  ;; pieces of 16 KiB slower on Linux (design §7.3's note).
+  (define held-below 4096)
+
+  ;; hold! : Connection (Listof Segment) Bytevector Nat -> Void
+  ;; Hold a write of `nbytes`: copy its segments' bytes, the Date slot's as
+  ;; `line`, behind those held, into the last chunk if they fit, or else
+  ;; into a new one, twice the last's length or the write's, whichever is
+  ;; more.  A chunk's bytes are never copied again, and the first chunk is
+  ;; the first write's own length, so a turn that holds one write holds its
+  ;; bytes and no more.  The copy is a loop of its own, not fold-left's,
+  ;; whose procedure would be a closure made for every write held.
+  (define (hold! c segments line nbytes)
+    (let* ((last (connection-chunk c))
+           (end (connection-chunk-end c))
+           (chunk (if (and last (fx<=? (fx+ end nbytes) (bytevector-length last)))
+                      last
+                      (begin
+                        (when last
+                          (connection-chunks-set! c (cons (list last 0 end) (connection-chunks c))))
+                        (let ((new (make-bytevector
+                                    (if last (fxmax nbytes (fx* 2 (bytevector-length last))) nbytes))))
+                          (connection-chunk-set! c new)
+                          new)))))
+      (connection-chunk-end-set! c
+        (let copy ((segments segments) (at (if (eq? chunk last) end 0)))
+          (if (null? segments)
+              at
+              (let ((seg (car segments)))
+                (copy (cdr segments)
+                      (cond ((eq? seg 'date) (copy-span! line 0 (bytevector-length line) chunk at))
+                            ((bytevector? seg) (copy-span! seg 0 (bytevector-length seg) chunk at))
+                            (else (copy-span! (car seg) (cadr seg) (caddr seg) chunk at))))))))
+      (connection-held-set! c (cons nbytes (connection-held c)))))
+
+  ;; copy-span! : Bytevector Nat Nat Bytevector Nat -> Nat
+  ;; Copy bv[start, end) into `out` at `at`, answering where the copy ends.
+  (define (copy-span! bv start end out at)
+    (bytevector-copy! bv start out at (fx- end start))
+    (fx+ at (fx- end start)))
+
+  ;; flush! : Connection -> Void
+  ;; Send the writes held as one write of their chunks' spans, and hold
+  ;; none.
+  (define (flush! c)
+    (let ((held (connection-held c)))
+      (unless (null? held)
+        (let ((spans (reverse (cons (list (connection-chunk c) 0 (connection-chunk-end c))
+                                    (connection-chunks c)))))
+          (drop-held! c)
+          (send! c spans (reverse held))))))
+
+  ;; drop-held! : Connection -> Void — hold no write.
+  (define (drop-held! c)
+    (connection-held-set! c '())
+    (connection-chunk-set! c #f)
+    (connection-chunk-end-set! c 0)
+    (connection-chunks-set! c '()))
+
+  ;; send! : Connection (Listof Segment) (Listof Nat) -> Void
+  ;; One uv-write*! of `segments`, which carries writes of `counts` bytes, in
+  ;; the order written.  A raise at the call is a failure, as one at the
+  ;; completion is (write-done).
+  (define (send! c segments counts)
+    (let ((done (write-done c counts)))
+      (guard (e ((transport-condition? e) (done e)))
+        (uv-write*! (connection-tcp c) segments done))))
+
+  ;; write-done : Connection (Listof Nat) -> ((U #f Condition) -> Void)
+  ;; The completion of a write that carried writes of `counts` bytes, in the
+  ;; order written, which keeps their byte counts and nothing of their
+  ;; bytes: `write-completed` for each, after one `read-error` if the write
+  ;; failed.
+  (define (write-done c counts)
     (lambda (err)
-      (if err
-          (write-failed! c err nbytes)
-          (dispatch! c (list 'write-completed nbytes)))))
-
-  ;; write-failed! : Connection Condition Nat -> Void
-  (define (write-failed! c err nbytes)
-    (dispatch! c (list 'read-error (errno err)))
-    (dispatch! c (list 'write-completed nbytes)))
+      (when err (dispatch! c (list 'read-error (errno err))))
+      (for-each (lambda (n) (dispatch! c (list 'write-completed n))) counts)))
 
   ;; read-stop! / read-start! : Connection -> Void
   ;; Reading changes only when it is not already what the action asks.  A
