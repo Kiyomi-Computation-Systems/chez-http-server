@@ -3107,3 +3107,26 @@ Watched to fail (m6-mutations.md, the third step): fifty mutants on that tree, t
 Size: 456 inserted lines of code and tests.
 
 NEXT: the fourth step, a streamed response on a socket, stacked on this one.
+
+
+M6.3 FOURTH STEP: a streamed response on a socket, in the contract, and to curl (feat/m6.3-socket).
+- `tests/test-shell.sps`, 106 (main's 95): a MiB to a client that reads nothing yet, its writes waiting, the bound kept, then read whole; HTTP/1.0 asking to keep the connection, read at the close; a GET behind a stream; a bare close, logged.
+- `tests/test-contract.sps`, 65 (main's 56): three scripts, chunked, HTTP/1.0 and the bare close, which is marked; the replay records a raise in the fake's trace, where it ended the suite; a producer renders as one.
+- `tests/test-clients.sps`, 13 (main's 11): curl reads a chunked stream and a GET on its connection, and an HTTP/1.0 stream kept alive, read to the close.
+
+Measured on the finished tree (2026-09-28, Darwin arm64):
+- `make test` green: forty-one suites, 1,227 expected passes, exit 0. On main, measured in a scratch worktree the same day: forty suites, 1,107.
+- The allocation suite: curl's GET 1,840 B and the JSON POST 2,624 B read whole and 2,432 B streamed, as on main; curl's GET streamed in 16, 32 and 64 pieces of 100 bytes 7,088, 11,952 and 21,681 B, a piece 304 B through the suite's harness; eight pieces of 16 KiB and of 128 bytes 4,528 B each, of 100 bytes 4,656 B.
+- A scratchpad probe, two runs, the same: a piece costs the core 112 B when its length is a power of two and 128 B otherwise, and the producer's event 64 B.
+- The shell suite five runs of five green.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1 `tarm64le`, threaded), from a copy of the finished tree made with `COPYFILE_DISABLE=1`, curl 7.88.1 and ab 2.3 installed:
+- `make test`, less its submodule and pin checks: forty-one suites, 1,227 expected passes, the allocation figures the same;
+- the shell, contract, stream and clients suites, three runs each: 106, 65, 15 and 13 passes each time.
+CI's runs are still the billing block.
+
+Watched to fail (m6-mutations.md, the fourth step): fifty-three mutants on the finished tree, the third step's fifty again and the libuv shell's three, and every check the step added or changed reddened by at least one. The plan's mutation, M6.3-CA, reddens the slow reader's bound on a socket as well; M6.3-CC, the carried arm dropped, the HTTP/1.0 stream in the fake shell, on a socket and in curl.
+
+Size: 189 inserted lines of code and tests, 31 deleted; the slice, 1,501 and 146.
+
+NEXT: the four stacked PRs, merged bottom up on the owner's word. Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.

@@ -22,6 +22,9 @@
 ;;;     as ab -k asks;
 ;;;   - RFC 9110 §9.3.2: the answer to a HEAD has the fields a GET's would,
 ;;;     and no content;
+;;;   - RFC 9112 §7.1 and §6.3 rule 8: a streamed body (decision 0013 item 8;
+;;;     M6.3) is chunked to HTTP/1.1, so the connection persists after it,
+;;;     and close-delimited to 1.0, so it does not;
 ;;;   - chez-libuv's live handles, and the counters of its dev build: with
 ;;;     every client gone, the listener is the one handle left but the timer
 ;;;     the shell keeps for its next deadline (M5.3), and after the shutdown
@@ -31,7 +34,8 @@
         (http-server)
         (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-timer)
         (only (http-server private serve) start-server)
-        (rename (only (libuv private native) live-counts) (live-counts debug-live-counts)))
+        (rename (only (libuv private native) live-counts) (live-counts debug-live-counts))
+        (producers))
 
 (define (b s) (string->utf8 s))
 
@@ -50,9 +54,13 @@
 ;; The handler answers with the path and the query it read, "-" for none,
 ;; reading a POST's body first: a response given instead of a reader to a
 ;; request whose head announces a body closes the connection (decision 0013).
+;; `/stream` is answered with a producer of three pieces (M6.3;
+;; tests/producers.sls).
 (define (handler r)
   (let ((answer (make-response 200 #f '()
-                               (b (string-append (request-path r) " " (or (request-query r) "-") "\n")))))
+                               (if (string=? (request-path r) "/stream")
+                                   (producer-of '("one " "two " "three"))
+                                   (b (string-append (request-path r) " " (or (request-query r) "-") "\n"))))))
     (if (eq? (request-method r) 'POST)
         (read-body (lambda (bv start end) #t) (lambda () answer))
         answer)))
@@ -183,6 +191,15 @@
       (test-equal "curl: two HTTP/1.0 GETs, each on a connection of its own"
                   (list 'satisfied '(0 #f) "/y -\n200 1 5\n/z -\n200 1 5\n")
                   (run loop sh "curl" (list "-sS" "--http1.0" "-w" curl-out (url "/y") (url "/z"))))
+      (test-equal "curl: a streamed body, chunked, then a GET on its connection"
+                  (list 'satisfied '(0 #f) "one two three200 1 13\n/b -\n200 0 5\n")
+                  (run loop sh "curl" (list "-sS" "-w" curl-out (url "/stream") (url "/b"))))
+      ;; Asked to keep the connection, as ab -k asks: the close still ends the
+      ;; body (M3.2's carried arm).
+      (test-equal "curl: a streamed body to HTTP/1.0, read to the close though kept alive was asked, then a GET on a connection of its own"
+                  (list 'satisfied '(0 #f) "one two three200 1 13\n/b -\n200 1 5\n")
+                  (run loop sh "curl" (list "-sS" "--http1.0" "-H" "Connection: keep-alive" "-w" curl-out
+                                            (url "/stream") (url "/b"))))
 
       ;; --- ab ---
       (test-equal "ab: 200 requests, 8 at a time, each on a connection of its own, every one answered"
