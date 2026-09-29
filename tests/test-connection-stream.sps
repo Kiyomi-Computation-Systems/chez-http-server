@@ -11,8 +11,10 @@
 ;;; outstanding: the producer is asked only while the bytes written and not
 ;;; yet completed are at or below the high water, so at most one piece passes
 ;;; it, and once past it, it is asked again only when they fall to the low
-;;; water.  A producer that fails once the head is on the wire gets a bare
-;;; close: a status can no longer be written.
+;;; water.  The writes outstanding are bounded too, at 64, and a waiting
+;;; producer is asked again at 16 or fewer (M6.3's second review).  A
+;;; producer that fails once the head is on the wire gets a bare close: a
+;;; status can no longer be written.
 ;;;
 ;;; What a connection wrote is read back as a client reads it, by
 ;;; chez-httparse's strict response parser (response-reader), which is not
@@ -22,7 +24,8 @@
 ;;;
 ;;; Oracles: decision 0013 item 8; decision 0005's water marks, 262,144 and
 ;;; 65,536 bytes outstanding, and smaller ones for the flows that watch them
-;;; act; RFC 9112 §7.1 (chunked) and §6.3 rule 8 (close-delimited), through
+;;; act, and its 64 and 16 writes outstanding (the amendment of 2026-09-29);
+;;; RFC 9112 §7.1 (chunked) and §6.3 rule 8 (close-delimited), through
 ;;; the response parser; and the requests' and the pieces' own bytes.  A
 ;;; chunked piece of 16 KiB is written in 16,392 bytes: its size line, `4000`
 ;;; CRLF, the piece, and CRLF; one of 100 bytes in 106.  The head of a
@@ -73,12 +76,14 @@
 ;; --- a connection --------------------------------------------------------------
 
 ;; What a stream did, read as each action runs, once the step that emitted it
-;; has run: each ask, as the event it followed and the bytes outstanding
-;; then, newest first; and the most bytes outstanding after any write.
+;; has run: each ask, as the event it followed and the bytes and the writes
+;; outstanding then, newest first; and the most bytes, and the most writes,
+;; outstanding after any write.
 (define-record-type watch
-  (fields (mutable shell) (mutable asks) (mutable most) (mutable last-event)))
+  (fields (mutable shell) (mutable asks) (mutable most) (mutable most-writes)
+          (mutable last-event)))
 
-(define (watching) (make-watch #f '() 0 #f))
+(define (watching) (make-watch #f '() 0 0 #f))
 
 ;; tracer : Watch -> (Symbol Any -> Any) — a fake connection's trace.
 (define (tracer w)
@@ -89,9 +94,12 @@
         ((action)
          (case (car datum)
            ((notify-producer)
-            (watch-asks-set! w (cons (cons (watch-last-event w) (conn-outstanding-bytes s))
+            (watch-asks-set! w (cons (list (watch-last-event w) (conn-outstanding-bytes s)
+                                           (conn-outstanding s))
                                      (watch-asks w))))
-           ((write) (watch-most-set! w (max (watch-most w) (conn-outstanding-bytes s))))
+           ((write)
+            (watch-most-set! w (max (watch-most w) (conn-outstanding-bytes s)))
+            (watch-most-writes-set! w (max (watch-most-writes w) (conn-outstanding s))))
            (else #t)))
         (else #t)))))
 
@@ -214,9 +222,25 @@
                 (let-values (((p calls) (counted (sized-producer 30 100))))
                   (let* ((w (watching)) (sh (serve (waters 1000 300) (answering p) get11 w))
                          (asks (reverse (watch-asks w))))
-                    (list (filter (lambda (a) (> (cdr a) 1000)) asks)
-                          (filter (lambda (a) (and (eq? (car a) 'write-completed) (> (cdr a) 300))) asks)
+                    (list (filter (lambda (a) (> (cadr a) 1000)) asks)
+                          (filter (lambda (a) (and (eq? (car a) 'write-completed) (> (cadr a) 300))) asks)
                           (if (exists (lambda (a) (eq? (car a) 'write-completed)) asks) 'waited 'never-waited)
+                          (status+body (read-back sh #f #f))
+                          (calls)))))
+    ;; Each piece is a write of its own, and a write holds the loop and
+    ;; memory the same whatever its size (M6.3's second review), so the
+    ;; producer is asked only while fewer than 64 writes are outstanding
+    ;; too, and once at 64, again only when 16 or fewer are.  1,000 pieces
+    ;; of 100 bytes, 106 each written, under decision 0005's marks: the bytes
+    ;; alone would let the first turn ask for all 1,000, 106,000 bytes; the
+    ;; writes let it ask for 63 after the head, and each later turn for 48.
+    (test-equal "small pieces: at most 64 writes outstanding, every ask after a completion at 16 writes or fewer, read back whole"
+                (list 64 '() (list 200 (sized-body 1000 100) 'complete) 1001)
+                (let-values (((p calls) (counted (sized-producer 1000 100))))
+                  (let* ((w (watching)) (sh (serve default-limits (answering p) get11 w))
+                         (asks (reverse (watch-asks w))))
+                    (list (watch-most-writes w)
+                          (filter (lambda (a) (and (eq? (car a) 'write-completed) (> (caddr a) 16))) asks)
                           (status+body (read-back sh #f #f))
                           (calls)))))
 

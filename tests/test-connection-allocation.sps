@@ -184,9 +184,10 @@
 ;; with a 200 streamed from a producer of `pieces` pieces, each the same
 ;; `size`-byte bytevector handed out again, as a shell performs it (M6.3):
 ;; each `notify-producer` answered at once with the producer's next answer,
-;; as producer-event makes it, and every write completed after, oldest first.
-;; The pieces stay under decision 0005's high water, so the producer is asked
-;; for each as the last is written, and never waits.
+;; as producer-event makes it, and the writes completed after, oldest first,
+;; a turn at a time, a completion that asks for a piece performed too.  The
+;; pieces stay under decision 0005's high water, so the producer waits only
+;; at 64 writes outstanding, and goes on at 16 (M6.3's second review).
 (define (streaming-connection request pieces size)
   (let* ((ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f default-limits)
                                  (lambda (actions) #f)))
@@ -212,7 +213,16 @@
           (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed r)
                                         (parser-result-next r) #f #f))
           (take (conn-context-step! ctx (list 'handler-responded (make-response 200 #f '() producer))))
-          (for-each (lambda (n) (conn-context-step! ctx (list 'write-completed n))) (reverse writes))
+          (let settle ()
+            (let ((turn (reverse writes)))
+              (set! writes '())
+              (unless (null? turn)
+                (for-each (lambda (n)
+                            (let ((as (conn-context-step! ctx (list 'write-completed n))))
+                              (when (exists (lambda (a) (eq? (car a) 'notify-producer)) as)
+                                (take as))))
+                          turn)
+                (settle))))
           (unless (and (= left 0) (eq? (conn-phase (conn-context-state ctx)) 'idle))
             (assertion-violation 'streaming-connection "the stream was not written whole"
                                  left (conn-phase (conn-context-state ctx))))
@@ -425,25 +435,28 @@
                      (else (list 'over grown)))))
 
     ;; A streamed response (M6.3): curl's GET answered with a producer of 16,
-    ;; 32 and 64 pieces of 100 bytes, and of 8 pieces of 128 bytes, of
+    ;; 32 and 48 pieces of 100 bytes, and of 8 pieces of 128 bytes, of
     ;; 16 KiB and of 100 bytes.  The sixteen pieces from the 17th to the 32nd
-    ;; cost what the first sixteen did, and the 32 from the 33rd what the
-    ;; first 32 did: the core keeps nothing that grows with the pieces
-    ;; written.  And a piece's bytes are a segment of its write, never
+    ;; cost what the first sixteen did, and the sixteen from the 33rd what
+    ;; those did: the core keeps nothing that grows with the pieces written.
+    ;; Forty-eight pieces and the head stay under the 64 writes a stream may
+    ;; have outstanding, so none of these streams waits for a completion
+    ;; (M6.3's second review), whose own cost would be read as the pieces'.
+    ;; And a piece's bytes are a segment of its write, never
     ;; copied, so its length changes nothing but its size line, made once for
     ;; a power of two, `80` or `4000`, and for its piece otherwise, `64`.
     (let ((c16 (measure (lambda () (warmed (streaming-connection curl-get 16 100)))))
           (c32 (measure (lambda () (warmed (streaming-connection curl-get 32 100)))))
-          (c64 (measure (lambda () (warmed (streaming-connection curl-get 64 100)))))
+          (c48 (measure (lambda () (warmed (streaming-connection curl-get 48 100)))))
           (small (measure (lambda () (warmed (streaming-connection curl-get 8 128)))))
           (large (measure (lambda () (warmed (streaming-connection curl-get 8 16384)))))
           (other (measure (lambda () (warmed (streaming-connection curl-get 8 100))))))
       (test-eq "every streamed response is written whole" 'served
-               (if (for-all number? (list c16 c32 c64 small large other)) 'served 'refused))
-      (when (for-all number? (list c16 c32 c64 small large other))
+               (if (for-all number? (list c16 c32 c48 small large other)) 'served 'refused))
+      (when (for-all number? (list c16 c32 c48 small large other))
         (diag (string-append "connection-allocation: curl's GET streamed, 16 pieces "
                              (number->string c16) " B, 32 " (number->string c32)
-                             ", 64 " (number->string c64) "; a piece "
+                             ", 48 " (number->string c48) "; a piece "
                              (number->string (div (- c32 c16) 16)) " B; 8 pieces of 16 KiB "
                              (number->string large) ", of 128 bytes " (number->string small)
                              ", of 100 bytes " (number->string other)))
@@ -451,7 +464,7 @@
         ;; then (9,729 B for the second 32 pieces, where the first 16 took
         ;; 4,864) is not read as a piece's.
         (test-eqv "a piece costs the same however many came before it"
-                  (div (- c32 c16) 16) (div (- c64 c32) 32))
+                  (div (- c32 c16) 16) (div (- c48 c32) 16))
         (test-eq "and a streamed piece costs something" 'allocates
                  (if (> (- c32 c16) 0) 'allocates 'free))
         (test-eqv "a 16 KiB piece costs what a 128-byte one does" small large)

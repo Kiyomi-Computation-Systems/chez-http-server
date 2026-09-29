@@ -1184,6 +1184,15 @@ decision 0013's consequences already say v1's readers take their pieces as hande
 - What a piece costs: the core 112 B for a power-of-two length, 128 B otherwise, and
   the producer's event 64 B (decision 0013's section "Built").
 
+*Noted 2026-09-29 (M6.3's second review):* the water marks count bytes, and small pieces
+slipped past them: each piece is a write of its own, and a turn asked some 2,500 times
+for 100-byte pieces, holding every other connection 50.6 ms at the median on Linux. The
+writes outstanding are bounded too, at 64 and again at 16, fixed (decision 0005's
+amendment of that day), and an answer that is no piece is logged by its kind and length
+(decision 0013). The plan's mutation, high water ignored, still reddens the slow reader's
+bound with the cap in place, since 16 KiB pieces meet the byte marks first; the table
+has nineteen rows (S1 to S19).
+
 **M6.4 — Expect, trailers, and the exit's files.**
 - `100 Continue` goes out when the handler pulls the body, not before (the brief).
   libhtp's `05-expect.t` and `99-expect-100.t` join its lane with our expectations, and

@@ -27,7 +27,9 @@
 ;;;   - a streamed response (M6.3, decision 0013 item 8): a MiB, chunked, to
 ;;;     a client that reads nothing yet, its writes left waiting, the bytes
 ;;;     outstanding never past decision 0005's high water by more than a
-;;;     piece's write, then read whole and in order; pieces close-delimited to
+;;;     piece's write, then read whole and in order; rows of 100 bytes to a
+;;;     client that reads nothing yet, never more than 64 writes outstanding
+;;;     (M6.3's second review), then read whole; pieces close-delimited to
 ;;;     HTTP/1.0, read at the close; and a producer that raises after a piece,
 ;;;     a bare close, the body cut short, what it raised logged;
 ;;;   - a write outstanding keeps nothing of its response: chez-libuv copied
@@ -106,7 +108,7 @@
         (http-server private shell)
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
-              conn-outstanding-bytes)
+              conn-outstanding conn-outstanding-bytes)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (only (http-server body) read-body read-whole-body)
         (response-reader) (shell-testing) (producers))
@@ -147,19 +149,21 @@
 ;; shell's own work might, a collection or a large copy; while it is
 ;; `adoption`, the listener holds the loop so before its next adoption.
 ;; While `watching-stream`, `stream-most` keeps the most bytes a connection
-;; had outstanding as it issued a write: the core counts a write as it asks
-;; for it, so the trace, which sees the action before it is performed, reads
-;; them with it.
+;; had outstanding as it issued a write, and `stream-most-writes` the most
+;; writes: the core counts a write as it asks for it, so the trace, which
+;; sees the action before it is performed, reads them with it.
 (define traced '())
 (define traps '())
 (define closing-at #f)
 (define holding-at #f)
 (define watching-stream #f)
 (define stream-most 0)
+(define stream-most-writes 0)
 (define (trace! c kind datum)
   (set! traced (cons (list c kind (car datum)) traced))
   (when (and watching-stream (connection? c) (eq? kind 'action) (eq? (car datum) 'write))
-    (set! stream-most (max stream-most (conn-outstanding-bytes (connection-state c)))))
+    (set! stream-most (max stream-most (conn-outstanding-bytes (connection-state c))))
+    (set! stream-most-writes (max stream-most-writes (conn-outstanding (connection-state c)))))
   (case (car datum)
     ((arm-deadline) (time! (list 'arm c (cadr datum) (uv-now loop))))
     ((write) (time! (list 'write c (uv-now loop))))
@@ -231,7 +235,8 @@
 ;; made on credit (M6.2), it owes credit for them.  And a producer (M6.3;
 ;; tests/producers.sls): `/stream` streams a MiB in 64 pieces of 16 KiB, the
 ;; k-th filled with the k-th letter from `a`, and `stream-calls` says how many
-;; times the last one was called; `/pieces` streams three texts; and
+;; times the last one was called; `/rows` streams 4,000 rows of 100 bytes the
+;; same way, `rows-calls` counting; `/pieces` streams three texts; and
 ;; `/stream-raise` a piece, then raises.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
@@ -250,6 +255,9 @@
 (define stream-pieces 64)
 (define stream-piece-size 16384)
 (define stream-calls (lambda () 0))
+(define rows 4000)
+(define row-size 100)
+(define rows-calls (lambda () 0))
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
     (when (bytevector=? target (b "/slow"))
@@ -276,6 +284,10 @@
           ((bytevector=? target (b "/stream"))
            (let-values (((p calls) (counted (sized-producer stream-pieces stream-piece-size))))
              (set! stream-calls calls)
+             (make-response 200 #f '() p)))
+          ((bytevector=? target (b "/rows"))
+           (let-values (((p calls) (counted (sized-producer rows row-size))))
+             (set! rows-calls calls)
              (make-response 200 #f '() p)))
           ((bytevector=? target (b "/pieces"))
            (make-response 200 #f '() (producer-of '("one " "two " "three"))))
@@ -753,6 +765,37 @@
                   (let ((r (read-response (client-bytes cl) #f #t)))
                     (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4)
                           (stream-calls) (<= stream-most (+ 262144 16392)))))
+      (client-close! cl))
+    ;; Rows of 100 bytes, each a write of its own (M6.3's second review): a
+    ;; write holds the loop and memory the same whatever its size, so the
+    ;; producer is also asked only while fewer than 64 writes are
+    ;; outstanding, where the bytes alone would let the first turn ask for
+    ;; some 2,500 rows, 262,144 bytes at 106 a row.  The first turn asks 63
+    ;; times; the client reads nothing yet, its send buffer small.
+    (set! small-send-buffer 4096)
+    (set! stream-most-writes 0)
+    (set! watching-stream #t)
+    (let* ((before (newest))
+           (cl (open-client! (b "GET /rows HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n") #f)))
+      (test-eq "a client that reads nothing yet asks for 4,000 rows of 100 bytes streamed" 'satisfied
+               (wait-for (lambda () (>= (rows-calls) 63))))
+      (set! small-send-buffer #f)
+      ;; Some turns of the loop, for the kernel to take what it will.
+      (run-until/ticking loop (lambda () #f) 200)
+      (let ((c (adopted-since before)))
+        (test-equal "while it reads nothing, its writes wait, never more than 64 of them outstanding"
+                    '(outstanding #t)
+                    (list (if (and c (> (uv-stream-write-queue-size (connection-tcp c)) 0)) 'outstanding 'completed)
+                          (<= stream-most-writes 64))))
+      (client-read! cl)
+      (test-eq "the client then reads the rows, and the stream's end" 'satisfied
+               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+      (set! watching-stream #f)
+      (test-equal "a 200, chunked, every row in order, never more than 64 writes outstanding as it read"
+                  (list 200 "chunked" (sized-body rows row-size) 'complete (+ rows 1) #t)
+                  (let ((r (read-response (client-bytes cl) #f #t)))
+                    (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4)
+                          (rows-calls) (<= stream-most-writes 64))))
       (client-close! cl))
     ;; To HTTP/1.0 the pieces are close-delimited, and the connection closes
     ;; after them (RFC 9112 §6.3 rule 8), though this client asked to keep it

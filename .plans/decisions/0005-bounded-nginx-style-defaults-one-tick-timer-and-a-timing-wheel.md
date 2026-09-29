@@ -214,3 +214,80 @@ item 8 set it out, with no new decision:
   can still make one; the core then asks a waiting producer at or below both marks, so
   never past the high water (M6.3's review).
 - The defaults are unchanged.
+
+## Amendment (2026-09-29) — the writes outstanding are bounded too
+
+M6.3's second review, on the owner's ask to check the empty piece's fix for safety and
+performance, found the water marks blind to small pieces. They count bytes, and each
+piece a producer answers is a write of its own, which holds the loop and memory the same
+whatever its size: its request, a `uv_write_t` (192 bytes at libuv 1.52.1 on Darwin
+arm64), 16 bytes a segment, and chez-libuv's records. So a turn asked for pieces until
+256 KiB was outstanding: some 2,500 times for 100-byte pieces, and some 43,700 for 1-byte
+ones chunked. Measured on Linux (Debian 12, libuv 1.44.2, in Docker, aarch64), one run
+each, a client reading as fast as it could: another client's request waited 50.6 ms at
+the median behind 100-byte pieces and 1,019 ms behind 1-byte ones, where 16 KiB pieces
+kept it at 0.11 ms; and a client that never read held 0.71 MB of 100-byte pieces,
+21.6 MB of 1-byte ones chunked, and 129.5 MB of them to HTTP/1.0. On Darwin arm64
+(libuv 1.52.1): 250 ms and over 5 s, and 0.69, 12.4 and 102.7 MB.
+
+Decided on the owner's word, by form (2026-09-29): the writes outstanding are bounded as
+well, by fixed values, not settings.
+
+| Bound | Value | On breach |
+|---|---|---|
+| writes outstanding, high | 64 | a streamed response's producer waits |
+| writes outstanding, low | 16 | a waiting producer is asked again |
+
+- A producer is asked only while the bytes are at or below `write-high-water` and fewer
+  than 64 writes are outstanding; once past either, it waits until the bytes are at or
+  below `write-low-water` (and the high water) and 16 or fewer writes are. The core's
+  `stream-writes-high` and `stream-writes-low` hold them; `(http-server limits)` is
+  unchanged.
+- 64 writes of 4 KiB are the high water, 256 KiB, so pieces of 4 KiB or more meet the
+  byte marks first, as before; 16 keeps the marks' four to one.
+- Measured on the final code, the same Linux run: another client's request waited
+  0.91 ms behind 100-byte pieces and 0.90 ms behind 1-byte ones; a client that never
+  read held 0.07 MB of 100-byte pieces and no growth measurable of 1-byte ones; 16 KiB
+  pieces are unchanged, 0.11 ms, 2,097.9 MB/s and 0.26 MB.
+- It bounds, and does not speed: 100-byte pieces stream about 31 MB/s either way, each a
+  write of its own. A handler that gathered them into 16 KiB pieces streamed 873.0 MB/s,
+  and handlers.org says to gather them.
+- Weighed: the cap and the server gathering small pieces into writes of about 16 KiB
+  itself, about 28 times the throughput, but a change to the core's pacing and to the
+  serializer's framing, and a copy of every small piece, since a producer may hand out
+  one bytevector again; left for work of its own. Docs alone, which would have left the
+  stall for every handler that missed them. And the two counts as settings; kept fixed.
+- **Prior art** (checked on 2026-09-29 against each project's source and documentation,
+  on the owner's ask). Of the servers this decision compares, none counts the writes a
+  response has queued against a limit, as this amendment does. Most copy small pieces
+  together into fewer writes, h2o keeps one send in flight, and those that run a handler
+  on a thread or goroutine of its own block it while the client is behind:
+  - h2o pulls, as this core does: it calls a generator's `proceed` for more once the
+    last send's write has completed, and the generator waits for it before sending again,
+    so a response has one send in flight. One send may carry many pieces, and HTTP/1
+    frames them as one chunk in one write (`include/h2o.h`, `lib/http1.c`).
+  - nginx copies a proxied response into a fixed number of fixed-size buffers
+    (`proxy_buffers 8 4k|8k`), holds output back until 1,460 bytes are ready
+    (`postpone_output`), and limits one send to `sendfile_max_chunk` (2 MiB since
+    1.21.4), leaving the rest to the next loop iteration so one fast connection does not
+    seize the worker. One `writev` gathers at most 64 buffers (`NGX_IOVS_PREALLOCATE`).
+  - Node counts bytes only: a writable's `highWaterMark` (64 KiB since v22, 16 KiB
+    before and on Windows) is reported by `write()`, not enforced. A socket keeps one
+    native write in flight, and what is written meanwhile goes out as one `writev`.
+  - Go's `net/http` copies a handler's writes into a 2,048-byte buffer
+    (`bufferBeforeChunkingSize`), so small writes leave as chunks of about 2 KiB, and a
+    write blocks the handler's goroutine while the socket is backed up.
+  - warp writes into a 16 KiB buffer and blocks its thread; each write is still framed
+    as a chunk of its own.
+  - Apache httpd 2.4 holds a brigade back under 4,096 bytes (`THRESHOLD_MIN_WRITE`),
+    copies small writes into 8,000-byte buckets, and blocks past `FlushMaxThreshold`
+    (65,535 bytes by its docs).
+
+  Outside that set, hyper does what this amendment does: for vectored IO, its write
+  queue takes a buffer only while it holds fewer than 16 (`MAX_BUF_LIST_BUFFERS`) and
+  fewer than 417,792 bytes (`DEFAULT_MAX_BUFFER_SIZE`), and it flushes before polling
+  the body again; for other IO it copies the pieces into one buffer
+  (`src/proto/h1/io.rs`). libuv itself, under the shell, finishes at most 33 queued
+  write requests in one pass of `uv__write` before it yields, to "prevent loop
+  starvation" (`src/unix/stream.c`). The 64 here sits among those counts. The copying
+  the others do is the gathering weighed above, left for work of its own.

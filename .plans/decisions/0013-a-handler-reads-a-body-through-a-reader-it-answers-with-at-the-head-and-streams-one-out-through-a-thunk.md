@@ -234,3 +234,26 @@ a shell reports it, reads 304 B a 100-byte piece, the same at the 64th piece as 
 16th, and eight pieces cost the same at 16 KiB as at 128 bytes, and 16 B a piece more
 at 100 bytes (`tests/test-connection-allocation.sps`). curl's GET, 1,840 B, and the
 JSON POST, 2,624 B read whole and 2,432 B streamed, are unchanged.
+
+The second review (2026-09-29, on the owner's ask to check the empty piece's fix for
+safety and performance; decided on the owner's word, by form):
+
+- **The fix holds.** On a socket, a scratch server's producer answered one piece, then
+  an empty bytevector: curl read the head and the piece, then the body cut short (its
+  error 18), the log named the empty bytevector, and the next request was answered in
+  0.9 ms. The shells' guard holds only the producer's call and its answer's check, so
+  the core's own refusal is never blamed on the handler.
+- **The writes outstanding are bounded too, at 64**, and a waiting producer is asked
+  again at 16 or fewer: a piece is a write of its own, and small pieces let a turn ask
+  thousands of times, holding the loop and memory the water marks did not count
+  (decision 0005's amendment of this day has the measurements).
+- **An answer that is no piece is named by its kind and length**, `(string 100000)`,
+  never held by the violation: the shells log it, and the answer is the response's data.
+  A string answered for its bytes had made a 100,141-character log line; it makes 154.
+- **The docs say a producer must answer at once**, and that `get-bytevector-some`
+  streams a file's port: a pipe's or a socket's can make it wait, and every connection
+  with it. And they say to gather small rows into pieces of a few KiB.
+- The allocation suite's harness now performs a completion that asks for a piece, as a
+  shell does, and its per-piece shape compares 16, 32 and 48 pieces: at 64, the stream
+  waits at the cap, and the wait's cost would be read as the pieces'. A piece still
+  reads 304 B.

@@ -930,20 +930,22 @@
         (i (asked 10) `(handler-responded ,streamer credit credit) 'refused))))
 
 ;; ---------------------------------------------------------------------------
-;; M6.3: a streamed response, seventeen rows (decision 0013 item 8; plan §14).
+;; M6.3: a streamed response, nineteen rows (decision 0013 item 8; plan §14).
 ;; A response whose body is a producer is written as its head, then a piece
 ;; at a time: `notify-producer` asks the shell to call the producer, whose
 ;; answer comes back as `handler-body-chunk` or `handler-body-end`, or as
 ;; `handler-failed` if it raised.  Each piece is a write of its own, chunked
 ;; to HTTP/1.1 and close-delimited to 1.0 (the serializer's).  The producer
 ;; is asked only while the bytes outstanding are at or below the high water,
-;; so at most one piece passes it; past it, the producer waits until a
-;; completion brings them to the low water.  The head alone may pass the
-;; high water.  A failure once the head is on the wire gets a bare close,
-;; since a status can no longer be written.  The states are reached by
-;; steps, from a GET in handling.  The heads are 84 bytes chunked and 75
-;; close-delimited, as H7's is 60 with its Content-Length: the status line
-;; 17, the Date slot 37, then the header block.
+;; so at most one piece passes it, and while fewer than 64 writes are, since
+;; a write costs the same whatever its size (M6.3's second review); past
+;; either, the producer waits until completions bring the bytes to the low
+;; water and the writes to 16.  The head alone may pass the high water.  A
+;; failure once the head is on the wire gets a bare close, since a status
+;; can no longer be written.  The states are reached by steps, from a GET in
+;; handling.  The heads are 84 bytes chunked and 75 close-delimited, as H7's
+;; is 60 with its Content-Length: the status line 17, the Date slot 37, then
+;; the header block.
 
 (define (producer) (eof-object))
 (define streamed-resp (make-response 200 #f '() producer))
@@ -971,6 +973,28 @@
   (let ((s (streaming 'chunked limits)))
     (conn-step s `(handler-body-chunk ,hello 0 5))
     s))
+
+;; asked-after : Nat -> ConnState
+;; The stream of `streaming`, chunked, under decision 0005's marks, after
+;; `n` pieces of 5 bytes, each written in 10: 1 + n writes outstanding and
+;; 84 + 10n bytes, far below the high water, the producer asked again.
+(define (asked-after n)
+  (let ((s (streaming 'chunked)))
+    (do ((k 0 (+ k 1))) ((= k n) s)
+      (conn-step s `(handler-body-chunk ,hello 0 5)))))
+
+;; stalled : Nat -> ConnState
+;; The same after 63 pieces, 64 writes outstanding, so the producer waits;
+;; then the head's completion, and the pieces' until `n` writes are left,
+;; each of the bytes its write counted, 84 and 10, read from the state, so
+;; that building this state never raises where a row is to fail.
+(define (stalled n)
+  (let* ((head (conn-outstanding-bytes (streaming 'chunked)))
+         (s (asked-after 63))
+         (piece (div (- (conn-outstanding-bytes s) head) 63)))
+    (conn-step s `(write-completed ,head))
+    (do ((left 63 (- left 1))) ((= left n) s)
+      (conn-step s `(write-completed ,piece)))))
 
 ;; produced : ConnState Event -> (U (List Phase CloseAfter (Listof Datum) Boolean) 'refused 'crashed)
 ;; One step's outcome, and whether a producer is left to write from after
@@ -1125,6 +1149,25 @@
    ;; of 2 leaves 92, at or below the low water, still past the high.
    (row 'S17 "responding, waiting, a completion at or below the low water, still past the high -> responding: arm write; the producer still waits"
         (i (waiting (waters 90 200)) '(write-completed 2)
+           '(responding #f ((arm-deadline write)) #t)))
+
+   ;; Each piece is a write of its own, and a write holds the loop and
+   ;; memory the same whatever its size, so the producer is asked only while
+   ;; fewer than 64 writes are outstanding too (M6.3's second review): the
+   ;; head and 62 pieces leave 63, and it is asked; one more leaves 64, far
+   ;; below the high water, and it waits.
+   (row 'S18 "responding, a piece that leaves 64 writes outstanding, below the high water -> responding: write, arm write; the producer waits"
+        (i (asked-after 61) `(handler-body-chunk ,hello 0 5)
+           `(responding #f (,(written "5\r\n" "hello" "\r\n") (arm-deadline write) (notify-producer)) #t))
+        (i (asked-after 62) `(handler-body-chunk ,hello 0 5)
+           `(responding #f (,(written "5\r\n" "hello" "\r\n") (arm-deadline write)) #t)))
+
+   ;; Waiting at 64 writes, the producer is asked again once a completion
+   ;; leaves 16 or fewer, the bytes at or below the low water as they are here.
+   (row 'S19 "responding, waiting at 64 writes, a completion to 16 -> responding: arm write, notify-producer; to 17, the producer still waits"
+        (i (stalled 17) '(write-completed 10)
+           '(responding #f ((arm-deadline write) (notify-producer)) #t))
+        (i (stalled 18) '(write-completed 10)
            '(responding #f ((arm-deadline write)) #t)))))
 
 ;; index : Any (Listof Any) -> Nat — where `x` stands in `xs`.
@@ -1256,6 +1299,21 @@
                       (verdict (lambda () (producer-event (make-bytevector 0))))
                       (verdict (lambda () (producer-event 'done)))
                       (verdict (lambda () (producer-event "abc")))))
+    ;; The shells log the refusal as the producer failing, and an answer that
+    ;; is no piece is the response's data, a whole page when a string was
+    ;; answered for its bytes: so the refusal names the answer by its kind
+    ;; and its length, where it has one, and never holds the answer (M6.3's
+    ;; second review).
+    (test-equal "a producer's answer that is no piece is named by its kind and length, never held"
+                '(((bytevector 0)) ((string 100000)) ((vector 2)) ((list 2)) ((pair)) ((symbol))
+                  ((char)) ((number)) ((boolean)) ((procedure)) ((other)))
+                (map (lambda (x)
+                       (guard (e ((assertion-violation? e) (condition-irritants e)))
+                         (producer-event x)
+                         'accepted))
+                     (list (make-bytevector 0) (make-string 100000 #\a) (vector 1 2)
+                           (list (b "a") (b "b")) (cons (b "a") (b "b")) 'done #\a 42 #f car
+                           (make-response 200 #f '() #f))))
     (test-eq "an unknown event is an assertion violation" 'refused
              (verdict (lambda () (conn-step (state 'idle) '(no-such-event)))))
     (test-eq "an event that is not a tagged list is an assertion violation" 'refused
@@ -1300,7 +1358,7 @@
       (test-eqv "M5.2: all 4 tick rows have a test" 4 ticks)
       (test-eqv "M6.1: all 19 body rows have a test" 19 bodies)
       (test-eqv "M6.2: all 11 credit rows have a test" 11 credits)
-      (test-eqv "M6.3: all 17 stream rows have a test" 17 streams))
+      (test-eqv "M6.3: all 19 stream rows have a test" 19 streams))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it: `notify-producer` since M6.3.
