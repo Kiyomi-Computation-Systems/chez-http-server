@@ -712,3 +712,57 @@ Every check this change added or changed is reddened by one mutant at least:
 - the bug once a write is held: the stream's end by M4.2-X, and nothing written, the
   close the last event, by G, K and M4.2-X;
 - the stream suite's bytevector handed out again, its producer shared now, by O.
+
+### After the PR's review (2026-09-29)
+
+A /code-review high of PR #79 found seven, none a correctness bug; a deeper review of
+three, on the owner's ask, measured each, and the owner chose by form: what is held goes
+out before a drain's first producer call (`producer-called?`), `hold!` copies with a
+named let, a check for a turn's one write refused at the call, and the docs' cutoff.
+
+Red before green: on the first commit's shell, the head-first check failed, its
+producer's first call finding no write request more than the handler had: the head was
+still held. The refused turn's two checks passed there, and are watched to fail by S and
+M4.2's W2 and W3 below.
+
+Twenty-five mutants on the fixed tree against all forty-one suites, four at a time: the
+twenty-one before, three of them re-cut for the named let (batch-A, batch-A2, batch-M),
+and four new, batch-P to batch-S. None failed to load. One more survived than before:
+batch-E, the writes held not sent before a larger write. The MiB's check had killed it,
+its head held when the first 16 KiB piece was written; now the head goes out before the
+producer is first called, so nothing is held then. A check of pieces of 100 bytes and
+5,000 in turn, `/mixed`, was added, and batch-E, run again with it, is killed.
+
+| # | mutated | mutation | observed |
+|---|---|---|---|
+| batch-A | `shell.sls` | re-cut for the named let: the copy dropped, a held write kept by reference | shell 1 — the refilled rows, each as handed over |
+| batch-A2 | `shell.sls`, `tests/producers.sls` | calibration: batch-A, and the refilled producer hands out a fresh bytevector each call | SURVIVES, as meant |
+| batch-B | `shell.sls` | nothing sent once the queue is empty | clients 11; contract 58; serve 4; shell 58 |
+| batch-C | `shell.sls` | the writes held not sent before a close | contract 3 — the bare close's read, bytes and traces; shell 1 — the bare close's body cut short |
+| batch-D | `shell.sls` | the writes held not sent before a shutdown | SURVIVES: a scope statement, as before |
+| batch-E | `shell.sls` | the writes held not sent before a larger write | shell 1 — "a 200, chunked, the pieces in the order handed over", `/mixed` (the check added for it; without it, SURVIVED) |
+| batch-F | `shell.sls` | every write held, however large | shell 1 — the 16 KiB pieces' write requests |
+| batch-G | `shell.sls` | no write held | shell 2 — the rows' one write request, and the held write's bug check |
+| batch-H | `shell.sls` | a failed write reports its read error alone | shell 4 — both rows' settling checks and M4.2's two |
+| batch-I | `shell.sls` | a failed write settles only the first write it carried | shell 2 — both rows' settling checks |
+| batch-J | `shell.sls` | the writes a write carried reported completed last first | contract 2 — the two streamed scripts' traces |
+| batch-K | `shell.sls` | what is held not dropped when a dispatch raises | shell 1 — the held write's bug check |
+| batch-L | `shell.sls` | a new chunk the write's own length | SURVIVES: a scope statement, as before |
+| batch-M | `shell.sls` | re-cut for the named let: a write that fits the last chunk copied over its start | clients 1; contract 1; shell 6, the head-first check among them |
+| batch-N | `shell.sls` | a chunk closed at its length | clients 2; contract 2; shell 5 |
+| batch-O | `tests/fake-shell.sls` | the fake shell makes a write's wire when its writes are read | connection-stream 1 |
+| batch-P | `shell.sls` | nothing sent before the drain's first producer call | shell 1 — "the second stream's head went out before its producer was first called, one write request" |
+| batch-Q | `shell.sls` | what is held sent before every producer call | shell 1 — the rows' one write request |
+| batch-R | `shell.sls` | a drain starts with the last one's producer calls counted, so only a connection's first stream sends its head first | shell 1 — the head-first check, on the stream behind another |
+| batch-S | `shell.sls` | a write refused at the call settles only the first write it carried | shell 1 — the refused turn's settling |
+| M4.2-W1 | `shell.sls` | a failed write settled before its read error | shell 2 |
+| M4.2-W2 | `shell.sls` | a write's completion reads its error as success | shell 5, both rows' settling checks among them |
+| M4.2-W3 | `shell.sls` | a write refused at the call is not caught | shell 4 — the refused turn's close and settling, and M4.2's refused write's two |
+| M4.2-R | `shell.sls` | the write's completion keeps its segments | shell 1 |
+| M4.2-X | `shell.sls` | a raise from the outermost dispatch goes on without closing the connection | shell 10 |
+
+Every check the fixes added is reddened by one mutant at least: the two streams on one
+connection read by B, and the second's head-first check by P, R, M and B; the refused
+turn's close by M4.2-W3, and its settling by S, H, I, M4.2-W2 and M4.2-W3; the mixed
+pieces read to the stream's end by B, and in order by E and B. B's shell list was run by
+hand against the finished tests, the mixed check among them: 60 failures.

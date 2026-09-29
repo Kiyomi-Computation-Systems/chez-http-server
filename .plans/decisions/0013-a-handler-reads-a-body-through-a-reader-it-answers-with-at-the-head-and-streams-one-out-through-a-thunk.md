@@ -266,4 +266,7 @@ takes it, so a producer may still hand out one bytevector again: the shell suite
 mutant that holds the pieces by reference turns it red. handlers.org's advice to gather
 small rows stands, on a smaller gain: 100-byte rows gathered into 16 KiB pieces streamed
 about 4.7 times faster than the rows one at a time, where they had streamed about 26
-times faster (Linux).
+times faster (Linux). After the PR's review, on the owner's word by form, a stream's
+head goes out before its producer is first called, and its pieces a turn at a time, so
+a producer slow to make them delays its own pieces, as it delays every other
+connection, and not the head: handlers.org says so.

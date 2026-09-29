@@ -3228,3 +3228,34 @@ Size: 259 inserted lines of code and tests, 73 deleted: one PR, under plan §1 r
 DECIDED on the owner's word (2026-09-29), by form, after the walkthrough: committed and opened as one PR. Weighed: holding it for changes.
 
 NEXT: the PR, merged on the owner's "do closing ritual". Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
+
+
+WRITE BATCHING, ITS REVIEW (2026-09-29, PR #79 open): a /code-review high, on the owner's ask, found seven, none a correctness bug; then, on the owner's ask, a deeper review of three of them, each measured with scratch prototypes.
+- (1) **A stream's head waited for the turn.** What was held went out only as the drain emptied, so a stream's head and first pieces waited for the turn's producer calls, up to 64. On Linux (Docker, five runs each, the median), a producer taking 200 µs a piece delayed its head from 0.12 ms to 12.74, one taking 2 ms from 0.14 to 126.3, one answering at once from 0.08 to 0.12; every stream still ended as soon or sooner. Two fixes were prototyped: what is held sent before the drain's first producer call, the head back at 0.10 to 0.19 ms, throughput unchanged (100-byte pieces 180.3 MB/s against 183.7); and what has been held a millisecond sent before each producer call, a slow producer's pieces as made, but fast small pieces 5 to 17 % slower (1-byte 11.5 MB/s to 9.6) and a turn's batch hanging on time, one check failing.
+- (5) **`hold!`'s `fold-left` made a closure for every write held:** 32 bytes and some 6 ns in a scratch library (28.5 ns against 22.8 for a named let); through a whole process, some 15 of a piece's 1,430 bytes, its time within noise.
+- (6) **The copy of a lone small response is not waste:** a process serving itself small keep-alive GETs allocated 367 bytes a request less than main's (11,561 against 11,928), one span costing chez-libuv less than four segments, and a prototype sending a lone write by reference 384 more (Darwin, 20,000 requests, three runs each).
+- The other four: (2) a turn's one write refused at the call was tested with one write only; (3) handlers.org's "under 4 KiB" left out the chunk framing; (4) a completion's writes are dispatched one by one, so the producer refills at 16 and a batch carries 48; (7) the dev-build counters' guard is repeated in the shell suite.
+
+DECIDED on the owner's word (2026-09-29), by form, after the deeper review: (1) what is held goes out before the drain's first producer call, and handlers.org says the pieces go out a turn at a time; weighed: the docs alone; a flush after a millisecond. (5) a named let. (2) and (3) fixed. (4) and (7) left. (6) no change, the premise measured wrong.
+
+The fixes, a second commit on feat/write-batching:
+- `(http-server private shell)`: the connection's `producer-called?`, cleared as each drain starts; `run!` sends what is held before the drain's first `notify-producer`. `hold!` copies with a named let.
+- The checks: `tests/test-shell.sps`, 125 (the first commit's 119): a stream's head sent before its producer is first called, one write request, on a stream behind another on one connection; rows whose handle is closed behind the core mid-turn, the turn's one write refused at the call, a read error, then each row's write settled, none outstanding; pieces of 100 bytes and 5,000 in turn, read back in order.
+- Docs: handlers.org, gathered pieces of up to 4,088 bytes, the headers before the producer's first call, the pieces up to 64 at a time.
+- Records: design §7.3's note, re-measured; decision 0005's amendment and 0013's note; plan §14's note; m6-mutations.md, "After the PR's review".
+
+FOUND WHILE FIXING: sending the head first let batch-E, the writes held not sent before a larger write, survive: the MiB's check had killed it, its head held when its first 16 KiB piece was written, and now nothing is held then. The mixed pieces' check was added for it.
+
+Measured on the fixed tree (2026-09-29):
+- `make test` green on Darwin arm64: forty-one suites, 1,252 expected passes, exit 0. On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, libuv 1.44.2), from a copy made with `COPYFILE_DISABLE=1`, curl and ab installed, less the submodule and pin checks: forty-one suites, 1,252; the shell, contract, stream and clients suites three runs each: 125, 65, 16 and 13 each time.
+- Red before green: on the first commit's shell, the head-first check failed, its producer's first call finding no write request more than the handler had.
+- The head, Linux, five runs each, the median, for producers taking 0, 20, 200 and 2,000 µs a piece: 0.10, 0.10, 0.13 and 0.19 ms, where main sent it at 0.09, 0.09, 0.12 and 0.20; the first piece at 0.10, 1.37, 12.76 and 126.37, where main's at 0.09, 0.09, 0.33 and 2.22; the stream's end at 0.26, 5.32, 51.52 and 513.03, where main's at 0.95, 6.32, 53.11 and 515.16. On Darwin the head at 0.21 to 0.32 ms, where main's at 0.13 to 0.27.
+- The probe, main against the fixed tree, three runs each, the median. Linux: 1-byte pieces 1.9 to 11.4 MB/s, 100-byte 32.8 to 182.9, 1,000-byte 284.2 to 989.1, 4,000-byte 864.8 to 1,569.7; 8 and 16 KiB as before, 1,444.9 and 2,066.0; another client's median wait behind the 100-byte pieces 0.85 ms to 0.19; 100-byte rows a handler gathers 851.1 MB/s, about 4.7 times the rows one at a time. Darwin: 1-byte 0.4 to 7.9, 100-byte 7.3 to 132.4, 1,000-byte 68.2 to 905.2, 4,000-byte 265.5 to 1,385.1; the wait 3.24 ms to 0.37.
+- Ten clients that never read, Linux, one run each: 0.03 MB each of 100-byte pieces, where main's 0.05, and 0.26 MB of 16 KiB ones, as main's.
+- One process serving itself (Darwin, three runs each): a small keep-alive GET 11,577 bytes and 53.4 µs, where main's 11,920 and 54.3; a streamed 100-byte piece 1,661 bytes and 0.73 µs, where main's 3,913 and 12.2 µs.
+
+Watched to fail (m6-mutations.md, "After the PR's review"): twenty-five mutants on the fixed tree against all forty-one suites, the twenty-one before, three of them re-cut for the named let, and four new, batch-P to batch-S; every check the fixes added is reddened by at least one. Three survive, as before: batch-D and batch-L, scope statements, and batch-A2, the calibration.
+
+Size, the second commit: 122 inserted lines of code and tests, 28 deleted; the PR against main, 361 and 81, under plan §1 rule 1's ~400.
+
+NEXT: the PR, updated, merged on the owner's "do closing ritual". Then M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.

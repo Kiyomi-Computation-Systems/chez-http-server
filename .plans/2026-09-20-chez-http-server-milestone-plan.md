@@ -1196,9 +1196,10 @@ has nineteen rows (S1 to S19).
 *Noted 2026-09-29 (write batching, after M6.3; its own PR, on the owner's word, by
 form):* the libuv shell holds a write under 4,096 bytes, its bytes copied as it is held,
 and sends a turn's held writes as one libuv write. The core, its events and the contract
-are unchanged. On Linux, 100-byte pieces stream 180.8 MB/s where they streamed 32.4, and
-another client waits 0.20 ms at the median behind them where it waited 0.81 (decision
-0005's amendment of that day, design §7.3's note). The cap stays.
+are unchanged. On Linux, 100-byte pieces stream 182.9 MB/s where they streamed 32.8, and
+another client waits 0.19 ms at the median behind them where it waited 0.85 (decision
+0005's amendment of that day, design §7.3's note). A stream's head goes out before its
+producer is first called. The cap stays.
 
 **M6.4 — Expect, trailers, and the exit's files.**
 - `100 Continue` goes out when the handler pulls the body, not before (the brief).

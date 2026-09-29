@@ -34,10 +34,14 @@
 ;;;     chez-libuv's, the shell holding a turn's small writes for one libuv
 ;;;     write, then read whole; the rows handed out in one bytevector,
 ;;;     refilled at each call, read whole and in order, each as it was
-;;;     handed over; rows whose client goes while they are outstanding, a
-;;;     read error, then each row's write settled; pieces close-delimited to
-;;;     HTTP/1.0, read at the close; and a producer that raises after a piece,
-;;;     a bare close, the body cut short, what it raised logged;
+;;;     handed over; pieces of 100 bytes and 5,000 in turn, in order, a larger
+;;;     write sent after the smaller ones held; rows whose client goes while
+;;;     they are outstanding, a read error, then each row's write settled,
+;;;     and so are the rows of a turn whose one write is refused at the call;
+;;;     a stream's head sent before its producer is first called, on a stream
+;;;     behind another on one connection; pieces close-delimited to HTTP/1.0,
+;;;     read at the close; and a producer that raises after a piece, a bare
+;;;     close, the body cut short, what it raised logged;
 ;;;   - a write outstanding keeps nothing of its response: chez-libuv copied
 ;;;     the segments at the call, and the completion keeps their byte count
 ;;;     alone (design §7.3; M3.3's check, against the real write executor);
@@ -244,8 +248,13 @@
 ;; k-th filled with the k-th letter from `a`, and `stream-calls` says how many
 ;; times the last one was called; `/rows` streams 4,000 rows of 100 bytes the
 ;; same way, `rows-calls` counting; `/refilled` the same rows, each handed
-;; out in one bytevector, refilled at each call; `/pieces` streams three
-;; texts; and `/stream-raise` a piece, then raises.
+;; out in one bytevector, refilled at each call; `/rows-close` the same rows,
+;; closing the connection's handle behind the core as its producer is called
+;; the second time; `/mixed` streams four pieces, of 100 bytes and 5,000 in
+;; turn; `/pieces` streams three texts; `/head-first` two, its
+;; producer keeping in `head-first-seen`, at its first call, how many more
+;; write requests chez-libuv holds than when the handler was called
+;; (`head-first-requests`); and `/stream-raise` a piece, then raises.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -266,6 +275,12 @@
 (define rows 4000)
 (define row-size 100)
 (define rows-calls (lambda () 0))
+;; /mixed's pieces: a write of 5,000 bytes or more goes out alone, after the
+;; smaller ones held before it.
+(define mixed-pieces
+  (list (make-string 100 #\a) (make-string 5000 #\b) (make-string 100 #\c) (make-string 5000 #\d)))
+(define head-first-requests 0)
+(define head-first-seen 'not-called)
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
     (when (bytevector=? target (b "/slow"))
@@ -299,8 +314,26 @@
              (make-response 200 #f '() p)))
           ((bytevector=? target (b "/refilled"))
            (make-response 200 #f '() (refilled-producer rows row-size)))
+          ((bytevector=? target (b "/rows-close"))
+           (let ((p (sized-producer rows row-size)) (calls 0))
+             (make-response 200 #f '()
+                            (lambda ()
+                              (set! calls (+ calls 1))
+                              (when (= calls 2) (connection-close! (newest)))
+                              (p)))))
+          ((bytevector=? target (b "/head-first"))
+           (set! head-first-requests (live-count 'write-req))
+           (set! head-first-seen 'not-called)
+           (let ((p (producer-of '("one " "two"))))
+             (make-response 200 #f '()
+                            (lambda ()
+                              (when (eq? head-first-seen 'not-called)
+                                (set! head-first-seen (- (live-count 'write-req) head-first-requests)))
+                              (p)))))
           ((bytevector=? target (b "/pieces"))
            (make-response 200 #f '() (producer-of '("one " "two " "three"))))
+          ((bytevector=? target (b "/mixed"))
+           (make-response 200 #f '() (producer-of mixed-pieces)))
           ((bytevector=? target (b "/stream-raise"))
            (make-response 200 #f '()
                           (producer-of '("one piece")
@@ -844,6 +877,17 @@
                   (let ((r (read-response (client-bytes cl) #f #t)))
                     (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4))))
       (client-close! cl))
+    ;; Pieces of 100 bytes and 5,000 in turn: the larger write goes out alone,
+    ;; but only after the smaller one held before it, so the pieces keep
+    ;; their order.
+    (let ((cl (open-client! (b "GET /mixed HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"))))
+      (test-eq "a client reads pieces of 100 bytes and 5,000 in turn, and the stream's end" 'satisfied
+               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+      (test-equal "a 200, chunked, the pieces in the order handed over"
+                  (list 200 "chunked" (apply string-append mixed-pieces) 'complete)
+                  (let ((r (read-response (client-bytes cl) #f #t)))
+                    (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4))))
+      (client-close! cl))
     ;; Rows whose client goes while they are outstanding: the turn's one
     ;; libuv write fails, at its completion or as the close cancels it, and
     ;; the connection closes as a read error (design §6.3).  Each row's write
@@ -866,6 +910,24 @@
                               (and c (events c)))
                           (and c (conn-outstanding (connection-state c)))
                           (and c (conn-outstanding-bytes (connection-state c)))))))
+    ;; A turn's one write refused at the call: the connection's handle is
+    ;; closed behind the core as the producer is called the second time, so
+    ;; the rows the turn goes on writing are held, and the write that carries
+    ;; them is refused (chez-libuv's &uv-handle-closed).  A read error, then
+    ;; each row's write settled, none left outstanding.
+    (let* ((before (newest))
+           (cl (open-client! (b "GET /rows-close HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "rows whose handle is closed behind the core mid-turn close the connection" 'satisfied
+               (wait-for (lambda () (let ((c (adopted-since before))) (and c (closed-and-gone? shell c))))))
+      (let ((c (adopted-since before)))
+        (test-equal "a read error, then each row's write settled, the turn's write refused at the call; none left outstanding"
+                    '(read-error-then-settled 0 0)
+                    (list (if (and c (in-order? '(read-error write-completed) (events c)))
+                              'read-error-then-settled
+                              (and c (events c)))
+                          (and c (conn-outstanding (connection-state c)))
+                          (and c (conn-outstanding-bytes (connection-state c))))))
+      (client-close! cl))
     ;; To HTTP/1.0 the pieces are close-delimited, and the connection closes
     ;; after them (RFC 9112 §6.3 rule 8), though this client asked to keep it
     ;; (M3.2's carried arm): the client has the body at the stream's end.
@@ -886,6 +948,24 @@
                   '((200 "chunked" "one two three") (200 absent "/after"))
                   (map (lambda (r) (list (status r) (field r "Transfer-Encoding") (body r)))
                        (responses (client-bytes cl))))
+      (client-close! cl))
+    ;; A stream's head goes out before its producer is first called (write
+    ;; batching): a producer slow to make its pieces delays them a turn at a
+    ;; time, not the head.  So the producer's first call finds one write
+    ;; request more held by chez-libuv than the handler did, the head's.  The
+    ;; stream is behind another on one connection, so the head goes out first
+    ;; in each drain that calls a producer, not only the connection's first.
+    ;; chez-libuv's dev build counts the requests; a prod shim answers zero.
+    (let ((cl (open-client! (b "GET /pieces HTTP/1.1\r\nHost: x\r\n\r\nGET /head-first HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "a client reads a stream, and another behind it on one connection" 'satisfied
+               (wait-for (lambda () (= 2 (length (responses (client-bytes cl)))))))
+      (if (= (live-count 'loop) 1)
+          (test-equal "the second stream's head went out before its producer was first called, one write request"
+                      '(1 "one two")
+                      (list head-first-seen
+                            (let ((rs (responses (client-bytes cl))))
+                              (if (= 2 (length rs)) (body (cadr rs)) 'no-second-response))))
+          (display "shell: chez-libuv's counters are off in this build; the write requests not read\n"))
       (client-close! cl))
     ;; A producer that raises once the head is on the wire: no status can be
     ;; written, so the connection closes at once, with no half-close, and

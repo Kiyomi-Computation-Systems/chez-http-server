@@ -125,22 +125,26 @@ bytevector, and the eof object when there is no more.
   yet taken by the client, it waits until no more than 64 KiB
   (~CHEZ_HTTP_WRITE_LOW_WATER~) and 16 pieces are. So a slow client costs the
   server little more than 256 KiB and one piece.
-- The server gathers pieces under 4 KiB into one write, so small rows cost it
-  little. Each piece still costs a call and its framing, so return pieces of a
-  few KiB where you can: 100-byte rows gathered into 16 KiB pieces streamed
-  about 4.7 times faster than the rows one at a time (measured on Linux).
+- The server gathers pieces of up to 4,088 bytes (4 KiB less the chunk
+  framing) into one write, so small rows cost it little. Each piece still
+  costs a call and its framing, so return pieces of a few KiB where you can:
+  100-byte rows gathered into 16 KiB pieces streamed about 4.7 times faster
+  than the rows one at a time (measured on Linux).
 - A producer must answer at once: while it runs, the server serves no other
   connection. Stream what is ready, such as a file. A pipe or a socket can
   make it wait for data. Never return an empty bytevector: it counts as a
   failure, like any answer that is not a piece.
+- The server calls the producer up to 64 times in a row and sends those
+  pieces together, so a producer slow to make each piece delays its own
+  pieces too.
 - You may return the same bytevector each time: the server copies a piece as
   soon as it takes it.
-- The headers go out before the first piece. If the producer raises, or returns
-  what is not a bytevector with bytes in it or the eof object, it is too late
-  for a ~500~: the server closes the connection at once and logs
-  ~handler-failed~, naming what came back by its kind and length, such as
-  ~(string 5)~, never its value. An HTTP/1.1 client sees the body cut short.
-  An HTTP/1.0 client cannot tell a cut-short body from a whole one.
+- The headers go out before the producer is first called. If the producer
+  raises, or returns what is not a bytevector with bytes in it or the eof
+  object, it is too late for a ~500~: the server closes the connection at once
+  and logs ~handler-failed~, naming what came back by its kind and length,
+  such as ~(string 5)~, never its value. An HTTP/1.1 client sees the body cut
+  short. An HTTP/1.0 client cannot tell a cut-short body from a whole one.
 - A ~HEAD~ request, a ~204~ or a ~304~ has no body, so the producer is never
   called. And the server stops calling it early when the client leaves, a
   write times out, or it fails. So don't count on reaching the eof object to

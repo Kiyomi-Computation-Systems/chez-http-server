@@ -308,13 +308,19 @@ sixth stacked PR; a note for later.
   again, refilled; a prototype that held pieces by reference sent every piece of a turn
   as its last.
 - **Measured on Linux**, as the amendment above measured (Debian 12, libuv 1.44.2, in
-  Docker, aarch64), three runs each, the median: 100-byte pieces stream 180.8 MB/s where
-  they streamed 32.4, and 1-byte pieces 11.4 where they streamed 1.9; another client's
-  request waits 0.20 ms at the median behind the 100-byte pieces, where it waited 0.81;
-  16 KiB pieces are unchanged, 2,107.6 MB/s. A handler that gathers 100-byte rows into
-  16 KiB pieces still streams them faster, 852.6 MB/s, about 4.7 times, where it was
+  Docker, aarch64), three runs each, the median: 100-byte pieces stream 182.9 MB/s where
+  they streamed 32.8, and 1-byte pieces 11.4 where they streamed 1.9; another client's
+  request waits 0.19 ms at the median behind the 100-byte pieces, where it waited 0.85;
+  16 KiB pieces are unchanged, 2,066.0 MB/s. A handler that gathers 100-byte rows into
+  16 KiB pieces still streams them faster, 851.1 MB/s, about 4.7 times, where it was
   about 26: each piece still costs a producer's call, the core's step and its framing.
 - **The cap stays.** It bounds how many pieces a turn asks the producer for, and libuv's
   own guard, 33 requests a pass, counts writes, now one a turn.
+- **The head goes out first** (decided on the owner's word, by form, after the PR's
+  review): what is held goes out before the drain first calls a producer, so a stream's
+  head never waits for its pieces, which go out a turn at a time. A producer that took
+  2 ms a piece had delayed its head from 0.14 ms to 126.3; it arrives at 0.19 now, where
+  main sent it at 0.20. Weighed: the docs alone; sending what had been held a
+  millisecond before each producer call, which cost fast small pieces 5 to 17 %.
 - Design §7.3's note of this day has the three shapes tried and the cutoff's
   measurement.

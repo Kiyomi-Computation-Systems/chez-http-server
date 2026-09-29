@@ -36,10 +36,11 @@
 ;;;                   or, if it raises, `handler-failed`, logged
 ;;;   notify-producer the producer a streamed response is written from
 ;;;                   (conn-producer; decision 0013 item 8), called for its
-;;;                   next piece: its answer as `handler-body-chunk` or
-;;;                   `handler-body-end` (producer-event), or, if it raises
-;;;                   or answers neither, `handler-failed`, logged; with no
-;;;                   producer, nothing
+;;;                   next piece, the drain's first call once the writes held
+;;;                   have gone out (WRITE BATCHING): its answer as
+;;;                   `handler-body-chunk` or `handler-body-end`
+;;;                   (producer-event), or, if it raises or answers neither,
+;;;                   `handler-failed`, logged; with no producer, nothing
 ;;;   write           the segments, the Date slot filled from the clock
 ;;;                   (decision 0010): held for the turn's one write if under
 ;;;                   4,096 bytes (WRITE BATCHING, below), or else one
@@ -120,12 +121,14 @@
 ;;; bytes or more, so the bytes keep the order the core wrote them in.  So a
 ;;; turn's small pieces of a streamed response, up to 64 (M6.3's second
 ;;; review), are one write request of libuv's, where each was one, with its
-;;; `uv_write_t` and its completion.  The copy is made as a write is held,
-;;; not as the turn's write is issued: a producer may hand out one
-;;; bytevector again, refilled (handlers.org).  A larger write is copied by
-;;; chez-libuv at the call, as every write was before.  The completion
-;;; reports `write-completed` for each write it carried, with its byte count,
-;;; in the order written.
+;;; `uv_write_t` and its completion.  What is held goes out too before the
+;;; drain first calls a producer, so a stream's head never waits for its
+;;; pieces: a producer slow to make them delays them, a turn at a time, but
+;;; not the head.  The copy is made as a write is held, not as the turn's
+;;; write is issued: a producer may hand out one bytevector again, refilled
+;;; (handlers.org).  A larger write is copied by chez-libuv at the call, as
+;;; every write was before.  The completion reports `write-completed` for
+;;; each write it carried, with its byte count, in the order written.
 ;;;
 ;;; A TRANSPORT FAILURE IS A `read-error` (design §6.3): a read's error, and a
 ;;; write's or a shutdown's, whether chez-libuv raises it at the call or
@@ -252,7 +255,8 @@
             (mutable entry)                   ; its deadline's, in the shell's wheel
             (mutable held)                    ; the writes held: their byte counts, newest first
             (mutable chunk) (mutable chunk-end) ; the last chunk they fill, or #f, and where they end in it
-            (mutable chunks)))                ; the chunks before it, as spans, newest first
+            (mutable chunks)                  ; the chunks before it, as spans, newest first
+            (mutable producer-called?)))      ; whether the drain has called a producer yet
 
   ;; connection-state : Connection -> ConnState — the core's state.
   (define (connection-state c) (conn-context-state (connection-ctx c)))
@@ -395,7 +399,7 @@
   ;; option has already failed, which reading will report.  A start that
   ;; raises goes on to shell-adopt!, which closes the handle.
   (define (serve! sh tcp)
-    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '())))
+    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f)))
       (connection-entry-set! c (make-wheel-entry c))
       (connection-ctx-set! c (make-conn-context
                               (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
@@ -453,13 +457,16 @@
   ;; drain! : Connection -> Void
   ;; Run the queue, in order, and once it is empty send the writes held
   ;; (flush!), until nothing is queued or held: a write that fails at the
-  ;; call queues what its failure dispatches.  A raise abandons the dispatch
+  ;; call queues what its failure dispatches.  A drain starts having called
+  ;; no producer (run!'s `notify-producer`).  A raise abandons the dispatch
   ;; it came from: the depth is restored, and what is still queued or held
   ;; is dropped.
   (define (drain! c)
     (let ((before (connection-depth c)))
       (dynamic-wind
-       (lambda () (connection-depth-set! c (fx+ before 1)))
+       (lambda ()
+         (connection-depth-set! c (fx+ before 1))
+         (connection-producer-called?-set! c #f))
        (lambda ()
          (let loop ()
            (let ((a (dequeue! c)))
@@ -488,7 +495,11 @@
       ((call-handler) (call-handler! c (cadr a)))
       ((deliver-body) (deliver-body! c (cadr a) (caddr a) (cadddr a)))
       ((deliver-body-end) (deliver-body-end! c))
-      ((notify-producer) (notify-producer! c))
+      ((notify-producer)
+       (unless (connection-producer-called? c)
+         (connection-producer-called?-set! c #t)
+         (flush! c))
+       (notify-producer! c))
       ((write) (write! c (cadr a) (caddr a)))
       ((read-stop) (read-stop! c))
       ((read-start) (read-start! c))
@@ -592,7 +603,8 @@
   ;; into a new one, twice the last's length or the write's, whichever is
   ;; more.  A chunk's bytes are never copied again, and the first chunk is
   ;; the first write's own length, so a turn that holds one write holds its
-  ;; bytes and no more.
+  ;; bytes and no more.  The copy is a loop of its own, not fold-left's,
+  ;; whose procedure would be a closure made for every write held.
   (define (hold! c segments line nbytes)
     (let* ((last (connection-chunk c))
            (end (connection-chunk-end c))
@@ -606,12 +618,14 @@
                           (connection-chunk-set! c new)
                           new)))))
       (connection-chunk-end-set! c
-        (fold-left (lambda (at seg)
-                     (cond ((eq? seg 'date) (copy-span! line 0 (bytevector-length line) chunk at))
-                           ((bytevector? seg) (copy-span! seg 0 (bytevector-length seg) chunk at))
-                           (else (copy-span! (car seg) (cadr seg) (caddr seg) chunk at))))
-                   (if (eq? chunk last) end 0)
-                   segments))
+        (let copy ((segments segments) (at (if (eq? chunk last) end 0)))
+          (if (null? segments)
+              at
+              (let ((seg (car segments)))
+                (copy (cdr segments)
+                      (cond ((eq? seg 'date) (copy-span! line 0 (bytevector-length line) chunk at))
+                            ((bytevector? seg) (copy-span! seg 0 (bytevector-length seg) chunk at))
+                            (else (copy-span! (car seg) (cadr seg) (caddr seg) chunk at))))))))
       (connection-held-set! c (cons nbytes (connection-held c)))))
 
   ;; copy-span! : Bytevector Nat Nat Bytevector Nat -> Nat
