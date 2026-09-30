@@ -262,6 +262,22 @@
 ;;; 9110 says it must be, on a request with no body, and when it is not
 ;;; 100-continue (decided on the owner's word, 2026-09-29).
 ;;;
+;;; WHAT A CHUNKED BODY CARRIES BESIDE ITS DATA IS HELD TO LIMITS (M6.4;
+;;; decided on the owner's word, 2026-09-29).  Its trailer fields arrive as
+;;; header callbacks in `body`, once the last chunk is read, and are held to
+;;; the four header limits, as a head's fields are, counted afresh: the
+;;; head's fields leave the trailers their own, and none is kept.  Its chunk
+;;; extensions, the bytes of their names and values, all of a body's
+;;; together, are held to 16 KiB (`max-chunk-extension-bytes`), fixed, not a
+;;; setting, as hyper holds a body's and RFC 9112 §7.1.1 advises a total for
+;;; a request (Node holds each chunk's to 16 KiB instead).  One past
+;;; a limit is refused as a head's field is, `(reply-parser (fail reason))`:
+;;; a trailer for the head's reason, answered 431, and the extensions as
+;;; 'chunk-extensions-too-large, answered 413, as a body past a cap.  The
+;;; bytes the parser reads and hands the core no span of are not counted:
+;;; the spaces before a field's value, and the digits of a chunk's size (the
+;;; ledger, M6.4, for the PR after it).
+;;;
 ;;; WHAT HAPPENS NEVER DEPENDS ON HOW THE BYTES WERE SPLIT INTO READS (design
 ;;; §8.1's second property).  The feed that completes a head can go on into
 ;;; its body before the handler is asked.  What it meets there waits for the
@@ -481,14 +497,17 @@
 
   ;; The request head being read: the target and the header fields so far,
   ;; and the running sizes the header limits are checked against.  One per
-  ;; connection, rolled at each on-message-begin.
+  ;; connection, rolled at each on-message-begin.  Once the head is
+  ;; complete, the sizes count the trailer fields instead, afresh, and the
+  ;; trailers are not kept (M6.4).
   ;;   target   the request-target, once on-url-complete has run
   ;;   fields   the completed (name . value) pairs, newest first
   ;;   count    the header names completed so far
   ;;   total    the header name and value bytes so far
   ;;   name     the completed name waiting for its value
   ;;   piece    the span being read: #f, a Span, or several, newest first
-  ;;   size     the bytes of the piece so far
+  ;;   size     the bytes of the piece so far, or of the trailer's name or
+  ;;            value
   ;;   refusal  #f, or the reason the core answered a callback with fail
   ;;   location #f, or where a redirected target points (decision 0009)
   (define-record-type head
@@ -572,6 +591,8 @@
   ;;             it owes none
   ;;   continue? whether the client waits for `100 Continue` and it is still
   ;;             to be written (M6.4)
+  ;;   extensions the bytes of the chunk extensions' names and values met
+  ;;             (M6.4)
   (define-record-type (body-state make-body-state body-state?)
     (fields (mutable framed?   body-framed?   body-framed?-set!)
             (mutable declared  body-declared  body-declared-set!)
@@ -585,8 +606,9 @@
             (mutable filled    body-filled    body-filled-set!)
             (mutable credit?   body-credit?   body-credit?-set!)
             (mutable owed      body-owed      body-owed-set!)
-            (mutable continue? body-continue? body-continue?-set!))
-    (protocol (lambda (new) (lambda () (new #f #f 0 #f '() #f #f #f #f 0 #f 0 #f)))))
+            (mutable continue? body-continue? body-continue?-set!)
+            (mutable extensions body-extensions body-extensions-set!))
+    (protocol (lambda (new) (lambda () (new #f #f 0 #f '() #f #f #f #f 0 #f 0 #f 0)))))
 
   ;; body-roll! : Body -> Void — nothing read, and nothing kept.
   (define (body-roll! bd)
@@ -602,7 +624,8 @@
     (body-filled-set! bd 0)
     (body-credit?-set! bd #f)
     (body-owed-set! bd 0)
-    (body-continue?-set! bd #f))
+    (body-continue?-set! bd #f)
+    (body-extensions-set! bd 0))
 
   ;; over? : (U Nat #f) (U Nat #f) -> Boolean — whether `n` is past `cap`.
   (define (over? cap n) (and cap n (> n cap)))
@@ -1039,7 +1062,9 @@
 
   ;; The callbacks' transitions.  idle, on-message-begin -> head, with a fresh
   ;; head; in head, the target and the header fields are kept, each refused
-  ;; once it grows past its limit; body,
+  ;; once it grows past its limit; in body, the trailer fields are counted
+  ;; against the same limits, and the chunk extensions against theirs, and
+  ;; none is kept (M6.4); body,
   ;; on-body-data -> body; body, on-message-complete -> handling, pausing the
   ;; parser and stopping reads in the same step, so one delivery carrying two
   ;; messages cannot start a second handler (design §4.4).  Every other
@@ -1076,21 +1101,25 @@
        (case (conn-phase s)
          ((head) (header-bytes s bv from to limits-max-header-field-bytes
                                'header-field-too-large))
+         ((body) (trailer-bytes s from to limits-max-header-field-bytes
+                                'header-field-too-large))
          (else (continue s))))
       ((on-header-field-complete)
        (case (conn-phase s)
          ((head)
           (let ((h (conn-head s)))
-            (head-count-set! h (fx+ (head-count h) 1))
             (head-name-set! h (take-piece! h))
-            (if (fx>? (head-count h) (limits-max-header-count (conn-limits s)))
-                (refuse s 'too-many-headers)
-                (continue s))))
+            (field-counted s)))
+         ((body)
+          (head-size-set! (conn-head s) 0)
+          (field-counted s))
          (else (continue s))))
       ((on-header-value-data)
        (case (conn-phase s)
          ((head) (header-bytes s bv from to limits-max-header-value-bytes
                                'header-value-too-large))
+         ((body) (trailer-bytes s from to limits-max-header-value-bytes
+                                'header-value-too-large))
          (else (continue s))))
       ((on-header-value-complete)
        (case (conn-phase s)
@@ -1099,6 +1128,13 @@
             (head-fields-set! h (cons (cons (head-name h) (take-piece! h)) (head-fields h)))
             (head-name-set! h #f)
             (continue s)))
+         ((body)
+          (head-size-set! (conn-head s) 0)
+          (continue s))
+         (else (continue s))))
+      ((on-chunk-extension-name-data on-chunk-extension-value-data)
+       (case (conn-phase s)
+         ((body) (extension-bytes s from to))
          (else (continue s))))
       ((on-body-data)
        (case (conn-phase s)
@@ -1204,13 +1240,63 @@
   ;; A fragment of a header name or value: keep it, and refuse the message
   ;; once the name or value, or the header section, grows past its limit.
   (define (header-bytes s bv from to piece-limit piece-reason)
+    (add-fragment! (conn-head s) bv from to)
+    (field-bytes s (fx- to from) piece-limit piece-reason))
+
+  ;; trailer-bytes : ConnState Nat Nat (Limits -> Nat) Symbol
+  ;;                 -> (values ConnState (Listof Action))
+  ;; A fragment of a trailer field's name or value (M6.4): counted, not
+  ;; kept, and the message refused as a head's is.
+  (define (trailer-bytes s from to piece-limit piece-reason)
+    (let ((h (conn-head s)))
+      (head-size-set! h (fx+ (head-size h) (fx- to from)))
+      (field-bytes s (fx- to from) piece-limit piece-reason)))
+
+  ;; field-bytes : ConnState Nat (Limits -> Nat) Symbol
+  ;;               -> (values ConnState (Listof Action))
+  ;; `n` more bytes of the name or value being read, whose size the head
+  ;; holds already, added to the section's: the message is refused once the
+  ;; name or value, or the section, is past its limit.
+  (define (field-bytes s n piece-limit piece-reason)
     (let ((h (conn-head s)) (limits (conn-limits s)))
-      (add-fragment! h bv from to)
-      (head-total-set! h (fx+ (head-total h) (fx- to from)))
+      (head-total-set! h (fx+ (head-total h) n))
       (cond ((fx>? (head-size h) (piece-limit limits)) (refuse s piece-reason))
             ((fx>? (head-total h) (limits-max-header-bytes limits))
              (refuse s 'headers-too-large))
             (else (continue s)))))
+
+  ;; field-counted : ConnState -> (values ConnState (Listof Action))
+  ;; One more field name complete, a head's or a trailer's: counted, and the
+  ;; message refused once the fields are more than max-header-count.
+  (define (field-counted s)
+    (let ((h (conn-head s)))
+      (head-count-set! h (fx+ (head-count h) 1))
+      (if (fx>? (head-count h) (limits-max-header-count (conn-limits s)))
+          (refuse s 'too-many-headers)
+          (continue s))))
+
+  ;; extension-bytes : ConnState Nat Nat -> (values ConnState (Listof Action))
+  ;; A fragment of a chunk extension's name or value (M6.4): counted with
+  ;; all the body's others, and the message refused as
+  ;; 'chunk-extensions-too-large once they come to more than
+  ;; `max-chunk-extension-bytes`.
+  (define (extension-bytes s from to)
+    (let* ((bd (conn-body s)) (n (fx+ (body-extensions bd) (fx- to from))))
+      (body-extensions-set! bd n)
+      (if (fx>? n max-chunk-extension-bytes)
+          (refuse s 'chunk-extensions-too-large)
+          (continue s))))
+
+  ;; max-chunk-extension-bytes : Nat
+  ;; The most bytes a body's chunk extensions, their names and values, may
+  ;; come to together: 16 KiB, fixed, not a setting (decided on the owner's
+  ;; word, 2026-09-29; kept after M6.4's review weighed the servers
+  ;; researched, the ledger).  hyper holds a body's to 16 KiB, as RFC 9112
+  ;; §7.1.1 advises a total for a request; Node holds each chunk's to
+  ;; 16 KiB, since CVE-2024-22019, whose server read a chunk's extensions
+  ;; without limit.  The server keeps no extension, so the bound is on the
+  ;; work, not on memory.
+  (define max-chunk-extension-bytes 16384)
 
   ;; refuse : ConnState Symbol -> (values ConnState (Listof Action))
   ;; A limit tripped inside a parser callback (design §6.3): tell the parser to
@@ -1260,7 +1346,7 @@
   ;; before any of the body is met (decision 0013 items 1 and 5).  So is
   ;; whether its client waits for `100 Continue`, an HTTP/1.1 request whose
   ;; Expect lists 100-continue: then no body deadline is armed until the 100
-  ;; is written (M6.4).
+  ;; is written (M6.4).  The head's sizes start again for the trailers.
   (define (conn-headers-complete-step s method http-major http-minor flags content-length upgrade)
     (case (conn-phase s)
       ((head)
@@ -1300,6 +1386,8 @@
                (refuse s 'body-too-large))
               (else
                (when framed? (body-answer-set! bd 'call))
+               (head-count-set! h 0)
+               (head-total-set! h 0)
                (conn-phase-set! s 'body)
                (cond
                 ((and framed? (http/1.1? http-major http-minor)

@@ -3269,3 +3269,106 @@ MERGED to main on 2026-09-29, on the owner's "do ritual": **write batching, PR #
 DONE and merged (83cebc9; PR #79): **write batching.** The libuv shell holds a turn's small writes and sends them as one libuv write, a stream's head first. On Linux, 100-byte pieces stream 182.9 MB/s where they streamed 32.8, and another client waits 0.19 ms at the median behind them where it waited 0.85; the core, its events and the contract are unchanged.
 
 NEXT: M6.4 (plan §14), Expect, trailers and the exit's files, when the owner asks.
+
+
+M6.4, EXPECT, TRAILERS AND THE EXIT'S FILES (feat/m6.4-expect-trailers, cut from main at e1a57f6), on the owner's "Let's start on M6.4".
+
+DECIDED on the owner's word (2026-09-29), by form, before anything was built, each on numbers measured on main (Darwin arm64, the fake shell, and curl 8.7.1 against a scratch server):
+- **Trailer fields are held to the four header limits, counted afresh.** On main, 101 trailer fields, a 9,000-byte trailer value and 16 MB of trailers were each answered 200. Weighed: one budget with the head; the body's cap, as freenginx counts them, which would leave them unbounded by default here.
+- **A body's chunk extensions, all of them together, are held to 16 KiB, answered 413** (found, not in the plan). On main a 16-byte body carrying 16 MB of extensions was answered 200: the kind of attack Node's CVE-2024-22019 fixed. hyper holds a body's to 16 KiB; Node holds each chunk's to 16 KiB, with a 413 (corrected in the review below: the form called 16 KiB "hyper's and Node's figure"). Weighed: left for M8.3.
+- **An Expect other than 100-continue is ignored**, as nginx and hyper ignore it. Weighed: 417, as Go, Apache, Node and Python answer.
+- **libhtp's two Expect files are delivered with CRLF**, and 99's handler refuses `/forbidden` as its recorded origin did: after a discussion the owner asked for ("i need more discussion on this"). Both files end their lines in a bare LF, which the strict parser refuses at the first line (`invalid-version`, bytes 16 and 24), so as vendored they check only that, which llhttp's fixture "Only LFs present" pins already. Weighed: their 400s; our own CRLF copies; left not-yet, the M6 exit amended.
+- **What the parser reads and hands the core no span of gets its own PR, after M6.4** (found while checking the extension cap): the spaces between a field's colon and its value, in a head or a trailer section, and a chunk size's leading zeros; a megabyte of either was answered 200. Weighed: folded into M6.4; asked of chez-httparse first (decision 0008). Go refuses a chunk size of more than 16 hex digits and a size line over 4 KiB, nginx a header line over 8 KiB.
+
+What was built:
+- `(http-server connection)`: a request's client waits for `100 Continue` when it is HTTP/1.1, announces a body, and its Expect lists 100-continue (`body-continue?`); then the head arms no body deadline. Accepting a reader writes the 100 first, `accept-reader`, before what reading brings (`read-with`, the rest of the old procedure), and arms the body deadline while the connection still reads; a reader refused by its cap, a response instead, and a handler that raises get their final status alone (the review below: a cap the body met so far passes is answered after the 100). The 100's completion is settled in `body`, `handling` and `awaiting-credit` too. In `body`, a trailer's name and value are counted as a head's are (`trailer-bytes`, and `field-bytes` and `field-counted`, shared with the head's `header-bytes`), the head's sizes started again for them, and a chunk extension's name and value bytes are counted over the whole body against `max-chunk-extension-bytes`, 16,384 (`extension-bytes`).
+- `(http-server headers)`: `field-lists?`, whether a field's comma-separated list holds a token, without regard to case, OWS trimmed, over any of its lines, read in place.
+- `(http-server serializer)`: `serialize-continue`, the 100 as one shared segment, its status line and the blank line.
+- `(http-server decisions)`: `chunk-extensions-too-large`, 413.
+- `tests/libhtp-lane.sls`: `libhtp-packets`, the two Expect streams delivered with CRLF (`crlf-files`); `handler-for`, 99's refusing `/forbidden`; the two expectations. `tests/ratchet.txt`: both promoted, fourteen libhtp streams passing.
+
+The checks:
+- `tests/test-connection-table.sps`, 258 (main's 210): E1 to E7 for Expect, E8 for the 100's completion through M3.3's accounting step, F1 to F7 for the trailers and extensions, and their three counts.
+- `tests/test-connection-expect.sps`, new, 14: at every delivery size, the 100 first for a streaming and a whole reader, the 100 as a client reads it, none for a response instead, on HTTP/1.0, with no body, or for another expectation; the 408 once the body deadline armed with the 100 passes; trailers as large as a head after a head near the limits served, and a section, a count and a value past them answered 431; extensions at 16 KiB served over two chunks, and a byte more 413, at sampled sizes.
+- `tests/test-headers.sps`, 21 (18): `field-lists?`.
+- `tests/test-shell.sps`, 129 (125): a client that waits for the 100 on a socket reads it alone before it sends its body, then the response; one answered at once gets no 100 and the stream's end.
+- `tests/test-contract.sps`, 68 (65): a body expecting 100-continue, sent once the server has read the head.
+- `tests/test-clients.sps`, 14 (13): curl, with `--expect100-timeout 60`, reads the 100, then the response.
+- `tests/test-connection-originated.sps`, 23 (21): a body's extensions past 16 KiB, 413; a trailer value past its limit, 431; both with `kept`, the shape of a refusal met in the head's delivery.
+- `tests/test-libhtp-lane.sps`, 19 (15): fourteen streams; the scope over the streams as delivered; every other stream delivered as cut; the two converted and nothing else changed. `tests/test-ratchet.sps`, 9: fourteen passing, 88 not-yet.
+- Records: design §4.3's `body` row and §4.4's M6.4 amendment, §8.2's note; decision 0013's built note; decision 0005's amendment of this day; plan §14's note. Docs: handlers.org (Expect, trailers), connections.org (the 100 and the body timeout), configuration.org (the trailers' and extensions' limits), responses.org (413, 431).
+
+FOUND WHILE BUILDING:
+- **The 100 goes out though the whole body came with the head.** Omitting it then, as RFC 9110 allows, would make what happens depend on how the bytes were split into reads; a client must be able to read a 100 it did not wait for.
+- **The Expect files' bodies say where their line ends came from.** 05's is curl 7.18's upload, and its body is its Content-Length, 216 bytes, only with CRLF: 210 as vendored. 99's was written by hand: its 14 bytes count a bare LF.
+- **The lane's scope holds as delivered.** Its check counts the streams that carry pipelining or a split request; with CRLF both Expect streams carry a request split across packets, so the scope check reads the packets the lane delivers.
+- **Two survivors, J and K**: the 100's completion ignored in `handling` or `awaiting-credit` leaves the phase and actions as they were, and E8 read only those. On a v1 shell those completions cannot come there, the reader's response following in the same turn, so only a row can reach them; E8 now reads the writes outstanding, and both redden it.
+- **Four contract scripts were written and taken out**: the trailers and extensions within and past their limits, and an Expect head answered at once. The shells share the core and differ in nothing those scripts exercise, so no fault of either could redden them. The contract keeps the one new thing a shell does, a write while the connection still reads.
+
+Measured on the finished tree (2026-09-29, Darwin arm64):
+- `make test` green: forty-two suites, 1,331 expected passes, exit 0 (main's forty-one, 1,252).
+- Red before green: against main's source, the finished table failed 24 checks, the new flows suite 8, the shell suite 2, curl's 1 (held past the cap, 24 s), and the lane's 05.
+- curl 8.7.1 asks for the 100 on an upload of 1,048,577 bytes or more, POST and PUT alike, and not at 1,048,576. Against a scratch server, main's source and this tree, three runs each: a 2 MiB POST took 1.016 s on main, waiting out curl's own second, and takes 5.4 to 6.4 ms; with Expect off, main 5.9 to 20.7 ms and this tree 5.0 to 5.3; a 100-byte POST with Expect forced, main 1.011 to 1.012 s, this tree 0.87 to 0.88 ms; a handler that refuses at once, 403 and no byte uploaded, main 0.9 to 1.2 ms, this tree 0.7 to 0.9.
+- The probes that measured main, run again (the fake shell, the default limits): 101 trailer fields, a 9,000-byte trailer value and 16 MB of trailers are answered 431, the 16 MB refused in 3.0 ms of CPU where they were read in 40; 16 MB of extensions on a 16-byte body 413 in 2.5 ms, where 65; a MB of spaces before a field's value, in a head or a trailer section, and a MB of a chunk size's zeros, still 200, the next PR's.
+- The allocation suite's figures are main's: curl's GET 1,840 B, the JSON POST 2,624 read whole and 2,432 streamed, ab -k's GET 2,112. A scratch probe, two runs: the Expect check costs a POST without Expect nothing, and a POST expecting 100-continue 128 B more than one with a field of the same size that is not Expect, the 100's write and its completion.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1, libuv 1.44.2), from a copy of the finished tree made with `COPYFILE_DISABLE=1`, curl 7.88.1 and ab 2.3 installed:
+- `make test`, less its submodule and pin checks: forty-two suites, 1,331 expected passes;
+- the shell, contract, flows and clients suites, three runs each: 129, 68, 14 and 14 each time;
+- curl 7.88.1 asks for the 100 from 1,048,577 bytes too; a 2 MiB POST, three runs each: main's source 1.006 to 1.017 s, this tree 1.2 to 1.8 ms; with Expect off, main 1.2 to 2.1 ms, this tree 1.1 to 1.3 ms.
+
+Watched to fail (m6-mutations.md, "M6.4"): forty mutants on the finished tree against all forty-two suites, thirty-nine by `mut.py` and one by hand, and every check this slice added or changed reddened by at least one. None survives: J and K did, until E8 read the writes outstanding. The plan's mutation, the 100 written with the head (M6.4-A), turns the Expect rows red, E1 to E6, and the flows, the lane's two files and the socket's refusal.
+
+Size: 1,079 inserted lines of code and tests (the new flows suite's 252 among them), 112 deleted; over plan §1 rule 1's ~400, so it goes up as PRs of their own.
+
+DECIDED on the owner's word (2026-09-29), by form, after the walkthrough: **three stacked PRs**, each green on its own, proved in a scratch tree of its own files before its commit: the 100 in the core and the fake shell, with the header helper; the 100 on the wire, in the socket, contract and curl checks, and libhtp's two files; the trailer and extension limits, with the records. Weighed: two, four (the header helper apart), one. Measured once cut, against main, then each on the one below: 527, 206 and 359 inserted lines of code and tests, and 60, 42 and 23 deleted, where the form estimated about 460, 210 and 410. The first layer passes forty-two suites, 1,289 expected passes, the second 1,301, the third 1,331.
+
+NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the padding PR, then the M6 exit.
+
+M6.4, ITS REVIEW (2026-09-29, PRs #80 to #82 open): a /code-review high, on the owner's ask, found five. The owner asked for the second and third fixed, and for more on the first: how the servers researched hold chunk extensions.
+- (1) **The extensions' cap, 16 KiB for a body's together, would refuse an upload that signs every chunk**, S3's aws-chunked. Its premise did not hold: AWS's docs put `chunk-signature` in the body, under `Content-Encoding: aws-chunked` and a Content-Length that counts it, not in HTTP chunk extensions; hyper #3522, an S3 server's author asking hyper to hand extensions on, was declined, and a later comment calls the two orthogonal. No report was found of hyper's or Node's cap refusing a client; the one sender found is ICAP's `0; ieof`, not HTTP. RFC 9112 §7.1.1: a server "ought to limit the total length of chunk extensions received in a request". Read in each server's source by three research agents, the decisive lines checked again here:
+  - hyper holds a body's extensions to 16 KiB (16,383 bytes pass), its count never restarted, and hands the error to the service, which answers;
+  - freenginx counts every byte of a body's extensions and trailer lines against `client_max_body_size`, 1 MiB by default, 413;
+  - h2o fails a body once its bytes that are not data pass 100 KiB while the data is under a quarter of all it read, 400, and holds a size to 16 hex digits;
+  - Go lets a body's size lines run 16 KiB past a credit of 16 bytes and twice the data for each chunk, holds a line to 4 KiB and a size to 16 hex digits, and leaves the status to the handler;
+  - Node holds each chunk's to 16 KiB, its count restarted at every chunk header, 413; its own test serves three chunks of about 10 KB each;
+  - h11 holds an unfinished line to about 16 KiB, so as the reads fall; Racket a size line to 8 KiB, and closes with no response;
+  - nginx and Warp hold none, and Warp misframes a size line longer than a read (read and modelled, not run).
+  Behind Caddy none arrives: Go's chunk reader drops them (read, not run).
+- (2) **The 100 before a refusal the core already holds**, which the finding would have left out. Its premise, that the split already changed that outcome, was measured wrong on a probe: a bad chunk after an Expect head gets the 100, then 400, at all 90 delivery sizes, and the finding's change split them, the 100 at 32 and none at 58. Beside it the probe found the split deciding: a chunked 10-byte body read whole within 4 bytes got the 100 then 413 at 30 of its 99 sizes, and 413 alone at 69, the cap checked before the 100 against the body met so far, which only some splits had met; main sends no 100 at any.
+- (3) **The header's write accounting named only `responding` and `closing`** for a completion.
+- (4) `find-comma` is copied from `(http-server transfer-coding)`; (5) no deadline is armed while an Expect request waits on its handler, which the shells call at once. Left: not asked for (5 researched the next day, below).
+
+DECIDED on the owner's word (2026-09-29), by form, after the research: (2) the 100 still goes first, and the cap case is fixed, so every split gets one outcome; the finding withdrawn. Weighed: the 100 left out once a refusal is known, as the finding asked, a departure from design §8.1. (1) 16 KiB a body kept, the finding withdrawn, and the records corrected: the form had called 16 KiB "hyper's and Node's figure", and decision 0005's amendment and the core's comments had Node holding a body's. Weighed: Go's allowance, growing with the data, in the padding PR; 16 KiB a chunk, as Node. The fixes go into the PRs they belong to, the PRs above rebased and pushed with a lease. Weighed: one fix commit on #82.
+
+The fixes:
+- #80, a second commit (f745d7f): `accept-reader` refuses a reader whose cap the declared length passes before the 100, and `read-with` one whose cap the body met so far passes, after it; the header's write accounting names `body`, `handling` and `awaiting-credit` for the 100's completion, and its Expect section says what the head's feed met is answered after the 100. The checks: `tests/test-connection-expect.sps`, 16 (14), a declared length past a whole reader's cap, 413 and no 100, and a chunked body past it, the 100 then 413, each at every delivery size; `tests/test-connection-table.sps`, 260 (258), E6's body met past the cap, in `body` and, the body ended, in `handling`.
+- #81 and #82 rebased onto it: #81's patch unchanged; #82's one conflict, the flows suite's header, keeps both paragraphs.
+- #82, a second commit: the records. Design §4.4's M6.4 row and note, and §7.3's note of the 100's completion; decision 0005's amendment, corrected and weighed again; the core's two comments on Node; m6-mutations.md; this entry.
+
+Measured (2026-09-29):
+- `make test` green on Darwin arm64, each layer on its own tree: #80's forty-two suites, 1,293 expected passes (1,289 before the review); #81's 1,305 (1,301); #82's 1,335 (1,331), exit 0.
+- On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Linux 6.12.76-linuxkit aarch64, libuv 1.44.2, curl 7.88.1), from a copy of #82's tree made with `COPYFILE_DISABLE=1`, less the submodule and pin checks: forty-two suites, 1,335 expected passes, exit 0; the shell, contract, flows and clients suites, three runs each: 129, 68, 16 and 14 each time.
+- Red before green: on #80's first commit, the flows' chunked body past the cap failed, and E6's two new instances; the declared length's check passed there, and is watched red by R2.
+
+Watched to fail (m6-mutations.md, "After the PRs' review"): two mutants on #82's tree against all forty-two suites: M6.4-R1, the body met checked before the 100 as before the fix, reddens the flows' body past the cap and E6's two instances; M6.4-R2, the declared length checked after the 100, the flows' declared length and E7. Forty-two mutants in all; none survives.
+
+Size of code and tests: #80's second commit, 94 inserted lines and 52 deleted, most of them `read-with` indented anew; the layers, against main and then each on the one below, 551, 206 and 362 inserted, and 42, 42 and 23 deleted.
+
+NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the padding PR, its design by form on measurements, then the M6 exit.
+
+M6.4's REVIEW, THE FIFTH FINDING RESEARCHED (2026-09-30, PRs #80 to #82 open), on the owner's "Research 5 in more detail": no deadline is armed while an Expect request waits on its handler.
+- **Empty in v1.** Both shells call the handler in place, and its answer is dispatched in the same drain (`call-handler!` in `(http-server private shell)`, `perform-connection!` in `tests/fake-shell.sls`), so no tick and no read can come between the question and the answer.
+- **What M7's awaiting handler would meet**, probed on the core with the answer held back (a scratch program, states built as the table builds them): an Expect head alone arms nothing until the answer, which writes the 100 and arms the body deadline; a body met in full, with or without Expect, leaves `handling` with nothing armed, design §4.3's "a slow handler is the application's problem"; a piece the client sends without waiting arms the body deadline, and a stall after it, like a head without Expect whose client sends nothing, is answered 408 while the handler has not answered, its late answer then changing nothing. The client cannot lengthen the Expect wait: it lasts as long as the handler takes.
+- **Six servers, read in their source by two research agents, the decisive lines checked again here:**
+  - hyper writes the 100 when the service first polls the body, and bounds nothing: its one timer is the head's, 30 s, off unless a timer is given;
+  - Warp writes it on the application's first body read, and pauses its 30 s timer while the application runs ("Let the application run for as long as it wants");
+  - Go writes it on the handler's first body read, and bounds nothing by default: `ReadTimeout`, opt-in, starts before the head and spans the handler; `TimeoutHandler`, opt-in, answers 503;
+  - nginx writes it when a module starts reading the body, a proxy before it asks its backend, arms no client timer between head and decision, and bounds a backend's answer to 60 s, then 504;
+  - Node writes it at once unless the application listens for `checkContinue`; its whole-request timer, 300 s from the request's first byte, then answers 408;
+  - h2o writes it at once, before any handler, and its request timers stop before the handler runs.
+- **Clients** send the body without the 100 after 1 s (curl 8.22.0's default, Go's default transport, .NET 10), 3 s (Apache HttpClient 4 and 5) or 5 s (Java 24 on, fixed); Java 21 waits with no timer of its own.
+
+DECIDED on the owner's word (2026-09-30), by form: the finding is closed as the design's, and plan §14's M7 carries it, so that M7's rows cover the wait with the others: reading stopped while such a handler has not answered, nothing armed, and its answer bringing the 100, reading and the body deadline. Weighed: M7.2 also weighing an opt-in limit on a handler's decision time; leaving it unrecorded.
+
+NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the padding PR, its design by form on measurements, then the M6 exit.

@@ -123,6 +123,16 @@ which changes every handler's arity.
 - M6.4: answering with a reader is pulling the body, so `100 Continue` is written
   then, when the request asked for it. Answering with a response writes the final
   status and closes (item 4).
+  *Built 2026-09-29 (M6.4):* as this bullet says, with no new decision. The 100 is
+  written first when a reader is accepted, before the pieces kept for it, whatever of
+  the body came with the head, so the outcome does not depend on the reads; a reader
+  whose cap the declared length passes gets its 413 alone. Until the 100 the head arms
+  no body deadline, and the 100 arms it (plan §14's note of 2026-09-27). The request
+  asks for it when it is HTTP/1.1, announces a body, and its Expect lists 100-continue;
+  any other expectation is ignored (the owner's word, by form, that day). curl, which
+  asks for the 100 on an upload over 1 MiB, waited its own second for it before M6.4:
+  a 2 MiB POST took 1.016 s, and takes 5.4 to 6.4 ms now (Darwin arm64, three runs
+  each; on Linux, 1.006 to 1.017 s, and 1.2 to 1.8 ms).
 - The facade exports `read-body` and `read-whole-body`, and `docs/handlers.org`
   gains bodies.
 

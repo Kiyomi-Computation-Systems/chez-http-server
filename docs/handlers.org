@@ -79,6 +79,8 @@ response:
   body (curl does, for uploads over 1 MiB). Answering with a reader sends
   it ~100 Continue~, and then it sends the body. Answering with a response
   sends no ~100~, so the client never has to send the body at all.
+- Fields sent after a chunked body (trailers) are not part of the request:
+  the server reads them and drops them.
 - If a reader raises, the client gets ~500 Internal Server Error~.
 
 * Keep strings, not the request

@@ -383,7 +383,7 @@ being read:
 |---|---|---|---|
 | `idle` | yes | `idle-timeout-ms` | open, keep-alive, nothing in flight |
 | `head` | yes | `read-header-timeout-ms` | `on-message-begin` seen, head incomplete |
-| `body` | yes | `body-inactivity-timeout-ms`, re-armed per `on-body-data` | head complete, body expected |
+| `body` | yes | `body-inactivity-timeout-ms`, re-armed per `on-body-data`; for a client that waits for `100 Continue`, armed when the 100 is written (M6.4, 2026-09-29) | head complete, body expected |
 | `awaiting-credit` | **no** | none | a read's pieces handed to a reader on credit, not yet credited; reading waits for its credit (M6.2, 2026-09-28) |
 | `handling` | **no** | none in v1 | parser paused at `on-message-complete`, handler running |
 | `responding` | **no** | write deadline per completion | segments written, awaiting completions |
@@ -686,6 +686,46 @@ Termination and error rows:
 > length, `(string 100000)`, and never holds it: the shells log it, and a string answered
 > for its bytes had put a 100,000-character page in a 100,141-character log line, 154
 > characters now. The table holds the cap and its resume (S18, S19).
+
+> *Amended 2026-09-29 (M6.4; plan §14; decision 0013's consequences; decided on the
+> owner's word, by form, that day):* `Expect: 100-continue`, and what a chunked body
+> carries beside its data. An HTTP/1.1 request whose head announces a body and whose
+> Expect lists 100-continue, matched without regard to case as a member of the field's
+> list, is one whose client may wait for `100 Continue` before it sends the body (RFC
+> 9110 §10.1.1). Answering with a reader is pulling the body, so the 100 is written
+> then, before anything else the answer brings, and until then the server is the one
+> waiting, so the head arms no body deadline (plan §14's note of 2026-09-27). HTTP/1.0's
+> expectation is ignored, as RFC 9110 says it must be, and so is one on a request with no
+> body, and any but 100-continue (weighed: 417, as Go, Apache, Node and Python answer).
+> A chunked body's trailer fields are held to the four header limits, counted afresh
+> (weighed: one budget with the head; the body's cap, as freenginx counts them), and its
+> chunk extensions, all of a body's together, to 16 KiB, fixed (weighed: left for
+> M8.3). The rows:
+>
+> | State | Event | State' | Actions |
+> |---|---|---|---|
+> | `head` | `on-headers-complete`, a body announced, expecting 100-continue, HTTP/1.1 | `body` | `reply-parser continue`, `disarm-deadline`: no body deadline until the 100 |
+> | `head` | `on-headers-complete`, the expectation on HTTP/1.0, on a request with no body, or not 100-continue | `body` | as without it, `arm-deadline body` |
+> | `body`/`handling` | `handler-responded`, a reader, expecting 100-continue | as the reader leaves it | the 100's `write` first, then what accepting the reader brings, the status for an error kept or a body met past the reader's cap among it; `arm-deadline body` while the connection still reads, and no deadline when it waits for credit |
+> | `body`/`handling` | `handler-responded`, a response, or a reader whose cap the declared length passes; `handler-failed` | `responding` | the final status alone, no 100 |
+> | `body`/`handling`/`awaiting-credit` | `write-completed`, for the 100 | the same | nothing more |
+> | `body` | a trailer's `on-header-field-data`/`-complete`, `on-header-value-data`/`-complete` | `body` | `reply-parser continue`, nothing kept; past a header limit, `reply-parser (fail reason)` for the head's reason, answered 431 |
+> | `body` | `on-chunk-extension-name-data`/`-value-data` | `body` | `reply-parser continue`; past 16 KiB together, `reply-parser (fail chunk-extensions-too-large)`, answered 413 |
+>
+> A trailer's or the extensions' refusal met by the feed that completed the head waits
+> for the handler's answer, as any refusal in the body does. The 100 is written though
+> the whole body came with the head, so what happens does not depend on the reads, and a
+> client may be sent a 100 it did not wait for, which it must be able to read (RFC 9110
+> §15.2). So is the 100 before a 413 for a body met past the reader's cap: only a
+> declared length past the cap is known from the head (M6.4's review found the 100 left
+> out there at 69 of 99 delivery sizes, and sent at 30). The bytes the parser reads and
+> hands the core no span of are not counted: the spaces before a field's value, and a
+> chunk size's digits, 1 MB of either accepted on this tree; the owner's word that day
+> gives them a PR of their own, after M6.4.
+> `tests/test-connection-table.sps` holds the rows (E1 to E8, F1 to F7);
+> `tests/test-connection-expect.sps` the flows through the fake shell at every delivery
+> size; `tests/test-shell.sps` a client that waits for the 100 on a socket, and one
+> refused at once; `tests/test-clients.sps` curl's.
 
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with
@@ -1175,6 +1215,10 @@ Three consequences for M3:
 > write left. The second consequence is a check: `tests/test-connection-retention.sps`
 > collects with a write outstanding and finds the response, its body and its segments
 > released.
+>
+> *Amended 2026-09-29 (M6.4):* and in `body`, `handling` or `awaiting-credit` for a
+> `100 Continue`, written while the request is still read or answered (§4.4's M6.4
+> rows).
 
 > *Noted 2026-09-27 (the M5 exit; Darwin arm64, Chez 10.4.1):* at chez-libuv v0.7.0
 > this copy, and §7.1's out of the read buffer, move one byte at a time in Scheme:
@@ -1506,6 +1550,19 @@ limits, with no Host required. Its outcome is the outcome lane's record plus the
 body delivered. The first expectations cover the twelve streams that carry
 pipelining or a request split across packets (`tests/libhtp-lane.sls`), and the
 ratchet promotes them by name.
+
+*Noted 2026-09-29 (M6.4):* libhtp's two Expect streams, `05-expect.t` and
+`99-expect-100.t`, join the lane. Their lines end in a bare LF, which the strict parser
+refuses at the first line (`invalid-version`, at bytes 16 and 24), so the lane delivers
+them with CRLF, decided on the owner's word, by form: 05's is curl 7.18's upload, whose
+body comes to its Content-Length, 216 bytes, only with CRLF, so its capture was CRLF and
+the file was converted after; 99's was written by hand. Recorded as their 400s, they would
+check only the bare-LF refusal, which llhttp's fixture "Only LFs present" pins already.
+The vendored bytes are untouched, every other stream is delivered as cut, and the lane's
+suite checks both. As delivered, each carries a request split across packets, so the
+lane's scope, what the streams carry, takes them in. 99's handler refuses `PUT
+/forbidden` at the head, as its recorded origin did: the lane's first handler that reads
+nothing. The ratchet has fourteen libhtp streams passing.
 
 ### 8.3 Connection-semantics tables
 
