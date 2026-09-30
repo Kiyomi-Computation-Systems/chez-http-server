@@ -31,7 +31,9 @@
 ;;; close-delimited to 1.0 (M3.2's carried arm), asked for only at or below
 ;;; decision 0005's high water, and past it, again once the bytes outstanding
 ;;; fall to its low water; and a failure after the head is on the wire closes
-;;; with no response.
+;;; with no response.  And M6.4's eight rows for `Expect: 100-continue`, from
+;;; RFC 9110 §10.1.1 and decision 0013's consequences: the 100 written when
+;;; the handler answers with a reader, and the body deadline armed then.
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -54,11 +56,12 @@
 ;; state : Symbol . Plist -> ConnState
 ;; A synthetic state: the phase, plus any of deadline / close-after /
 ;; outstanding / outstanding-bytes / pending / request / target / host /
-;; limits; every field not named takes its default, and the limits are
-;; decision 0005's defaults unless given.  The head
+;; fields / limits; every field not named takes its default, and the limits
+;; are decision 0005's defaults unless given.  The head
 ;; is the core's own, so a target (a string) is read into it the way the
 ;; parser delivers one, on-url-data then on-url-complete, and a host (a
-;; string) likewise, as a Host header line.
+;; string) likewise, as a Host header line, then each of `fields`, a list of
+;; (name . value) strings (M6.4).
 (define (state phase . plist)
   (define (get key default)
     (let loop ((p plist))
@@ -76,14 +79,19 @@
         (let*-values (((s1 a1) (conn-parser-step s 'on-url-data tbv 0 (bytevector-length tbv)))
                       ((s2 a2) (conn-parser-step s 'on-url-complete)))
           #t)))
-    (when host
-      (let ((line (b (string-append "Host: " host))))
-        (let*-values (((s1 a1) (conn-parser-step s 'on-header-field-data line 0 4))
-                      ((s2 a2) (conn-parser-step s 'on-header-field-complete))
-                      ((s3 a3) (conn-parser-step s 'on-header-value-data line 6 (bytevector-length line)))
-                      ((s4 a4) (conn-parser-step s 'on-header-value-complete)))
-          #t)))
+    (when host (field-line! s "Host" host))
+    (for-each (lambda (f) (field-line! s (car f) (cdr f))) (get 'fields '()))
     s))
+
+;; field-line! : ConnState String String -> Void
+;; A header line `name: value` read into the head, as the parser delivers it:
+;; its name's span, then its value's.
+(define (field-line! s name value)
+  (let ((line (b (string-append name ": " value))) (n (string-length name)))
+    (conn-parser-step s 'on-header-field-data line 0 n)
+    (conn-parser-step s 'on-header-field-complete)
+    (conn-parser-step s 'on-header-value-data line (+ n 2) (bytevector-length line))
+    (conn-parser-step s 'on-header-value-complete)))
 
 ;; render-action : Action -> Datum
 ;; A write's segments are bytes, so it is rendered with each as text, a span
@@ -1170,6 +1178,166 @@
         (i (stalled 18) '(write-completed 10)
            '(responding #f ((arm-deadline write)) #t)))))
 
+;; ---------------------------------------------------------------------------
+;; M6.4: Expect: 100-continue (plan §14; decision 0013's consequences).  A
+;; client that sends `Expect: 100-continue` with a head that announces a
+;; body may wait for `100 Continue` before it sends the body (RFC 9110
+;; §10.1.1).  Answering with a reader is pulling the body, so the 100 is
+;; written then, before anything else the answer brings, however much of the
+;; body has arrived, so what happens does not depend on the reads (design
+;; §8.1's second property).  Until then the server is the one waiting, so
+;; the head arms no body deadline, and the 100 arms it (plan §14's note of
+;; 2026-09-27); a piece the client sends without waiting arms it too, as any
+;; piece does.  A response instead of a reader, a reader whose cap the
+;; declared length passes, and a handler that raises write their final status
+;; and no 100.  The expectation is ignored on HTTP/1.0, as RFC 9110 §10.1.1
+;; says it must be, on a request with no body, and when it is not
+;; 100-continue (decided on the owner's word, 2026-09-29).  The value is
+;; matched without regard to case, as a member of its list.
+
+;; expecting : (U Nat 'chunked) String [Nat] -> ConnState
+;; A POST whose head carries `Expect: value` and, just complete, announced a
+;; body of `framing` on HTTP/1.`minor`, 1 unless given: in body, its handler
+;; to be asked.
+(define (expecting framing value . minor)
+  (let ((s (state 'head 'deadline 'header 'target "/" 'host "x"
+                  'fields (list (cons "Expect" value)))))
+    (conn-step s `(parser-event on-headers-complete 3 1 ,(if (null? minor) 1 (car minor))
+                                ,(if (eq? framing 'chunked) F-CHUNKED F-CONTENT-LENGTH)
+                                ,(if (eq? framing 'chunked) 0 framing) 0))
+    s))
+
+;; expected : (U Nat 'chunked) . Piece -> ConnState
+;; A POST expecting 100-continue that met `pieces` in the feed that
+;; completed its head, which has returned and asked its handler.
+(define (expected framing . pieces)
+  (let ((s (met (expecting framing "100-continue") pieces)))
+    (conn-step s '(parser-result need-input 49 49 #f #f))
+    s))
+
+;; ended-expecting : -> ConnState
+;; A POST expecting 100-continue whose head and whole 5-byte body came in one
+;; feed, which has returned and asked its handler.
+(define (ended-expecting)
+  (let ((s (met (expecting 5 "100-continue") '((3 8)))))
+    (conn-step s '(parser-event on-message-complete))
+    (conn-step s '(parser-result paused 54 54 #f #f))
+    s))
+
+;; The 100 as render-action shows it: its status line and the blank line,
+;; with no Date, which a 1xx may leave out (RFC 9110 §6.6.1), and no field.
+(define continue-write (written "HTTP/1.1 100 Continue\r\n\r\n"))
+
+;; head-expecting : String -> ConnState
+;; A POST head, not yet complete, whose fields hold `Expect: value`.
+(define (head-expecting value)
+  (state 'head 'deadline 'header 'target "/" 'host "x" 'fields (list (cons "Expect" value))))
+
+(define (expect-rows)
+  (list
+   ;; The value's case is not the client's to get right, and an expectation
+   ;; is a member of the field's list, which may run over two lines.
+   (row 'E1 "head, on-headers-complete announcing a body, expecting 100-continue, HTTP/1.1 -> body: continue, disarm; no deadline until the 100"
+        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           '(body #f ((reply-parser continue) (disarm-deadline))))
+        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0)
+           '(body #f ((reply-parser continue) (disarm-deadline))))
+        (i (head-expecting "100-Continue") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           '(body #f ((reply-parser continue) (disarm-deadline))))
+        (i (state 'head 'deadline 'header 'target "/" 'host "x"
+                  'fields '(("expect" . "foo, 100-continue")))
+           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           '(body #f ((reply-parser continue) (disarm-deadline))))
+        (i (state 'head 'deadline 'header 'target "/" 'host "x"
+                  'fields '(("Expect" . "foo") ("Expect" . " 100-continue ")))
+           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           '(body #f ((reply-parser continue) (disarm-deadline)))))
+
+   ;; RFC 9110 §10.1.1: HTTP/1.0's is ignored, and so is one with no body to
+   ;; wait for; another expectation is ignored, on the owner's word.
+   (row 'E2 "head, on-headers-complete where 100-continue does not apply -> body: continue, disarm, arm body"
+        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 0 ,F-CONTENT-LENGTH 10 0)
+           '(body not-keep-alive ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 0 0)
+           '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+        (i (head-expecting "200-ok") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+        (i (head-expecting "100-continues") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
+        (i (head-expecting "") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
+
+   (row 'E3 "body, handler-responded with a reader, expecting 100-continue -> body: write the 100, then the pieces kept, arm body"
+        (i (expected 10) `(handler-responded ,streamer)
+           `(body #f (,continue-write (arm-deadline body))))
+        (i (expected 10 '(3 5) '(5 8)) `(handler-responded ,streamer)
+           `(body #f (,continue-write (deliver-body ,bv 3 5) (deliver-body ,bv 5 8) (arm-deadline body))))
+        (i (expected 10 '(3 8)) `(handler-responded ,(whole-reader))
+           `(body #f (,continue-write (arm-deadline body)))))
+
+   ;; The 100 though the whole body is in: had it come in a later read, the
+   ;; 100 would have gone first, and the outcome is the same either way.
+   (row 'E4 "handling, the body ended in the head's feed, handler-responded with a reader -> handling: write the 100, the pieces, deliver-body-end"
+        (i (ended-expecting) `(handler-responded ,streamer)
+           `(handling #f (,continue-write (deliver-body ,bv 3 8) (deliver-body-end))))
+        (i (ended-expecting) `(handler-responded ,(whole-reader))
+           `(handling #f (,continue-write (deliver-body ,(b " / HT") 0 5) (deliver-body-end)))))
+
+   (row 'E5 "body, handler-responded with a reader on credit -> write the 100, the pieces kept, then awaiting-credit: read-stop, disarm"
+        (i (expected 10 '(3 5) '(5 8)) `(handler-responded ,streamer credit)
+           `(awaiting-credit #f (,continue-write (deliver-body ,bv 3 5) (deliver-body ,bv 5 8)
+                                                 (read-stop) (disarm-deadline)))))
+
+   ;; What the head's feed met waits for the answer, and the 100 still goes
+   ;; first, as it would have had the body come in a later read: an error
+   ;; kept, or a body met past the reader's own cap, in body or, the body
+   ;; ended, in handling (M6.4's review).
+   (row 'E6 "handling or body, an error kept or a body met past the reader's cap, handler-responded with a reader -> responding: the 100, the pieces, then the status"
+        (let ((s (met (expecting 'chunked "100-continue") '((3 8)))))
+          (conn-step s '(parser-result error 60 60 invalid-chunk-size #f))
+          (i s `(handler-responded ,streamer)
+             `(responding parser-error (,continue-write (deliver-body ,bv 3 8)
+                                        ,(status-write 400 "Bad Request") (arm-deadline write)))))
+        (i (expected 'chunked '(3 8)) `(handler-responded ,(whole-reader 4))
+           `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
+                                        (read-stop) (arm-deadline write))))
+        (let ((s (met (expecting 'chunked "100-continue") '((3 8)))))
+          (conn-step s '(parser-event on-message-complete))
+          (conn-step s '(parser-result paused 54 54 #f #f))
+          (i s `(handler-responded ,(whole-reader 4))
+             `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
+                                          (arm-deadline write))))))
+
+   (row 'E7 "body, a response instead of a reader, a reader whose cap the declared length passes, or handler-failed -> responding: the final status, no 100"
+        (i (expected 10) `(handler-responded ,resp)
+           `(responding unread-body (,answered-closing (read-stop) (arm-deadline write))))
+        (i (expected 10) `(handler-responded ,(whole-reader 5))
+           `(responding body-too-large (,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write))))
+        (i (expected 10) '(handler-failed boom)
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (read-stop) (arm-deadline write)))))))
+
+;; The 100 is a write like any other, outstanding until it completes (M3.3's
+;; accounting, which these rows are run through): in a state that reads, or
+;; waits for the reader, its completion settles it and changes nothing else,
+;; and once the response follows it, the response's completion is the last.
+(define (continue-accounting-rows)
+  (list
+   (row 'E8 "body, handling, awaiting-credit or responding, write-completed for the 100 -> the same: nothing more, the 100 no longer outstanding"
+        (let ((s (expected 10)))
+          (conn-step s `(handler-responded ,streamer))
+          (i s '(write-completed 25) '(body #f () 0 0)))
+        (let ((s (ended-expecting)))
+          (conn-step s `(handler-responded ,streamer))
+          (i s '(write-completed 25) '(handling #f () 0 0)))
+        (let ((s (expected 10 '(3 8))))
+          (conn-step s `(handler-responded ,streamer credit))
+          (i s '(write-completed 25) '(awaiting-credit #f () 0 0)))
+        (let ((s (ended-expecting))
+              (w (written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 6\r\n\r\n" "row H7")))
+          (conn-step s `(handler-responded ,streamer))
+          (conn-step s `(handler-responded ,resp))
+          (i s '(write-completed 25) `(responding #f ((arm-deadline write)) 1 ,(nbytes w)))))))
+
 ;; index : Any (Listof Any) -> Nat — where `x` stands in `xs`.
 (define (index x xs)
   (let loop ((xs xs) (n 0))
@@ -1347,7 +1515,9 @@
            (ticks (count-rows "tick" deadline-rows ticked))
            (bodies (count-rows "body" body-rows asked-by))
            (credits (count-rows "credit" credit-rows credited))
-           (streams (count-rows "stream" stream-rows produced)))
+           (streams (count-rows "stream" stream-rows produced))
+           (expects (count-rows "expect" expect-rows asked-by))
+           (continues (count-rows "continue-accounting" continue-accounting-rows accounted)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
       (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
@@ -1358,7 +1528,9 @@
       (test-eqv "M5.2: all 4 tick rows have a test" 4 ticks)
       (test-eqv "M6.1: all 19 body rows have a test" 19 bodies)
       (test-eqv "M6.2: all 11 credit rows have a test" 11 credits)
-      (test-eqv "M6.3: all 19 stream rows have a test" 19 streams))
+      (test-eqv "M6.3: all 19 stream rows have a test" 19 streams)
+      (test-eqv "M6.4: all 7 Expect rows have a test" 7 expects)
+      (test-eqv "M6.4: the 100's accounting row has a test" 1 continues))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it: `notify-producer` since M6.3.

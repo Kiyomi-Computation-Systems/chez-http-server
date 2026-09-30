@@ -1,8 +1,9 @@
 #!r6rs
 ;;; (http-server headers): ASCII case-insensitive field-name operations over a
-;;; header alist, and the byte helpers a field value's list is read with.
-;;; Oracles: RFC 9110 §5.1 (field names are case-insensitive) and §5.6.3
-;;; (OWS is SP and HTAB).  Names and values are bytevectors or spans: the
+;;; header alist, the byte helpers a field value's list is read with, and
+;;; whether a field's list holds a token (M6.4).  Oracles: RFC 9110 §5.1
+;;; (field names are case-insensitive), §5.6.1 (lists) and §5.6.3 (OWS is SP
+;;; and HTAB).  Names and values are bytevectors or spans: the
 ;;; connection core builds a request's headers as spans of the delivery
 ;;; (design §7.1).
 (import (rnrs) (srfi :64) (testing) (http-server headers) (http-server span))
@@ -68,4 +69,38 @@
                   '(same same diff diff diff)
                   (map (lambda (r) (if (range-ci=? bv (car r) (cadr r) (b (caddr r))) 'same 'diff))
                        '((3 10 "chunked") (3 10 "CHUNKED") (3 9 "chunked") (3 10 "chunk")
-                         (3 10 "chunkex")))))))
+                         (3 10 "chunkex")))))
+
+    ;; --- a token in a field's list (M6.4) ---------------------------------------------
+    ;; RFC 9110 §5.6.1: a list-based field is `#element`, its elements
+    ;; separated by commas with OWS around them, and empty elements are no
+    ;; elements; a list may run over several lines of the same field (§5.3).
+    ;; Expect's value is case-insensitive (§10.1.1).
+    (let ((lists (lambda (fields) (if (field-lists? (map (lambda (f) (cons (b (car f)) (b (cdr f)))) fields)
+                                                    (b "expect") (b "100-continue"))
+                                      'lists 'not))))
+      (test-equal "field-lists? finds a token as an element of a field's list, in any case, over any of its lines"
+                  '(lists lists lists lists lists lists)
+                  (map lists '((("Expect" . "100-continue"))
+                               (("expect" . "100-CONTINUE"))
+                               (("Expect" . "foo, 100-continue"))
+                               (("Expect" . " ,\t100-continue ,"))
+                               (("Host" . "x") ("Expect" . "foo") ("EXPECT" . "100-continue"))
+                               (("Expect" . "100-continue, foo")))))
+      (test-equal "…and nothing else: a near miss, a token inside an element, another field, none"
+                  '(not not not not not not not)
+                  (map lists '((("Expect" . "100-continues"))
+                               (("Expect" . "x100-continue"))
+                               (("Expect" . "100-continue=1"))
+                               (("Expect" . "100 continue"))
+                               (("X-Expect" . "100-continue"))
+                               (("Expect" . ""))
+                               ()))))
+    ;; The core's head keeps its fields as spans of the delivery.
+    (let* ((wire (b "POST / HTTP/1.1\r\nExpect: a, 100-continue\r\n"))
+           (sp (lambda (from to) (make-span wire from to))))
+      (test-eq "field-lists? reads a span's list in place, honouring its bounds" 'in-bounds
+               (if (and (field-lists? (list (cons (sp 17 23) (sp 25 40))) (b "expect") (b "100-continue"))
+                        (not (field-lists? (list (cons (sp 17 23) (sp 25 39))) (b "expect") (b "100-continue"))))
+                   'in-bounds
+                   'out-of-bounds)))))

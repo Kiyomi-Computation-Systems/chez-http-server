@@ -44,6 +44,7 @@
 ;;; PURE: imports only (rnrs) and this project's pure libraries.
 (library (http-server serializer)
   (export serialize-response serialize-checked-response serialize-piece serialize-end
+          serialize-continue
           response-fault response-closes? framing-modes date-line date-line-length)
   (import (rnrs) (http-server response) (http-server span)
           (only (http-server headers) header-name=? trim-ows range-ci=?))
@@ -290,6 +291,14 @@
       (else (assertion-violation 'serialize-end "not a mode a producer's body is written in" mode))))
 
   (define last-chunk (list (string->utf8 "0\r\n\r\n")))
+
+  ;; serialize-continue : -> (values (Listof Segment) Nat)
+  ;; The interim `100 Continue` (M6.4; RFC 9110 §15.2.1): its status line
+  ;; and the blank line, one shared segment.  It carries no field: a 1xx may
+  ;; leave out Date (RFC 9110 §6.6.1), and has no body to frame.
+  (define (serialize-continue) (values continue-line (bytevector-length (car continue-line))))
+
+  (define continue-line (list (string->utf8 "HTTP/1.1 100 Continue\r\n\r\n")))
 
   ;; chunk-size-line : Nat -> Bytevector — `length` in lowercase hex, CRLF.
   (define (chunk-size-line length)
