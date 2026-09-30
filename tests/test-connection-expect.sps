@@ -7,7 +7,10 @@
 ;;; `100 Continue` when the handler answers with a reader, which is pulling
 ;;; the body (decision 0013's consequences), and not when it answers with a
 ;;; response, on HTTP/1.0, or for a request with no body (RFC 9110
-;;; §10.1.1).  The 100 arms the body deadline.
+;;; §10.1.1).  The 100 arms the body deadline.  A reader whose cap the
+;;; declared length passes is answered 413 with no 100, as the head says;
+;;; one whose cap the body met so far passes, after the 100, as it would be
+;;; had the body come later.
 ;;;
 ;;; Each row runs at every delivery size, from a byte at a time to the whole
 ;;; input in one delivery, so one expected answer is also the outcome's
@@ -81,9 +84,11 @@
     (if (zero? size) (at-sizes sizes input limits handler view) (loop (- size 1) (cons size sizes)))))
 
 ;; The handlers: one that streams every body, one that reads it whole, one
-;; that answers at once, reading nothing.
+;; that reads it whole within 4 bytes, one that answers at once, reading
+;; nothing.
 (define (streaming request) (read-body (lambda (bv from to) #t) (lambda () ok)))
 (define (whole request) (read-whole-body (lambda (body) ok)))
+(define (whole-within-4 request) (read-whole-body (lambda (body) ok) 4))
 (define (answers request) ok)
 
 ;; --- the inputs --------------------------------------------------------------
@@ -155,6 +160,18 @@
                    idle #f))
                 (every-size (post "1" (string-append "Expect: 200-ok\r\n" ten) "0123456789") default-limits
                             streaming outcome))
+    ;; A reader's cap: a declared length past it is in the head, so it is
+    ;; answered 413 with no 100 whatever the split.  A body past it is known
+    ;; only once met: had it come after the answer, the 100 would have gone
+    ;; first, so it goes first when the body came with the head too.
+    (test-equal "a declared length past the reader's cap, every delivery size: 413, no 100, then the staged close"
+                '((((call-handler (POST "/a")) (write 413)) lingering body-too-large))
+                (every-size (post "1" (string-append expect ten) "0123456789") default-limits
+                            whole-within-4 outcome))
+    (test-equal "a chunked body past the reader's cap, every delivery size: the 100, then 413 and the staged close"
+                '((((call-handler (POST "/a")) (write 100) (write 413)) lingering body-too-large))
+                (every-size (post "1" (string-append expect chunked) "a\r\nabcdefghij\r\n0\r\n\r\n")
+                            default-limits whole-within-4 outcome))
     ;; The 100 arms the body deadline: a client that waits for it, then never
     ;; sends its body, is answered 408 once the deadline passes, a minute on
     ;; (decision 0005), and the connection closes, in stages.

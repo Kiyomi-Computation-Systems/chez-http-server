@@ -147,9 +147,11 @@
 ;;;
 ;;; A WRITE IS COUNTED, NOT KEPT (M3.3; design §7.3; decision 0010 item 5).
 ;;; Each write is outstanding, with the bytes it comes to, until the shell
-;;; reports `(write-completed nbytes)`, in `responding` or, for a write a
-;;; close cut short, in `closing`.  A completion the core did not ask for is
-;;; an assertion violation.  The write water marks read the bytes
+;;; reports `(write-completed nbytes)`: in `responding`; in `body`,
+;;; `handling` or `awaiting-credit` for a `100 Continue`, written while the
+;;; request is still read or answered (M6.4, below); or, for a write a close
+;;; cut short, in `closing`.  A completion the core did not ask for is an
+;;; assertion violation.  The write water marks read the bytes
 ;;; outstanding (M6.3, below).  The core keeps nothing of the response itself:
 ;;; chez-libuv copies the segments when the write is issued, so nothing
 ;;; needs them after that (tests/test-connection-retention.sps checks it).
@@ -249,14 +251,16 @@
 ;;; of the body has arrived, so that what happens does not depend on how the
 ;;; bytes were split into reads.  A response given instead, a reader whose
 ;;; cap the declared length passes, and a handler that raises write their
-;;; final status and no 100.  Until the 100 the server is the one waiting, so
-;;; the head arms no body deadline, and the 100 arms it (plan §14's note of
-;;; 2026-09-27); a piece the client sends without waiting arms it too, as any
-;;; piece does.  The 100 is a write like any other, outstanding until the
-;;; shell reports it completed, in whatever state that finds the connection.
-;;; The expectation is ignored on HTTP/1.0, as RFC 9110 says it must be, on
-;;; a request with no body, and when it is not 100-continue (decided on the
-;;; owner's word, 2026-09-29).
+;;; final status and no 100.  What the head's feed met in the body, an error
+;;; or a body past the reader's cap, is answered after the 100, as it would
+;;; be had it come in a later read.  Until the 100 the server is the one
+;;; waiting, so the head arms no body deadline, and the 100 arms it (plan
+;;; §14's note of 2026-09-27); a piece the client sends without waiting arms
+;;; it too, as any piece does.  The 100 is a write like any other,
+;;; outstanding until the shell reports it completed, in whatever state that
+;;; finds the connection.  The expectation is ignored on HTTP/1.0, as RFC
+;;; 9110 says it must be, on a request with no body, and when it is not
+;;; 100-continue (decided on the owner's word, 2026-09-29).
 ;;;
 ;;; WHAT HAPPENS NEVER DEPENDS ON HOW THE BYTES WERE SPLIT INTO READS (design
 ;;; §8.1's second property).  The feed that completes a head can go on into
@@ -1453,16 +1457,18 @@
 
   ;; accept-reader : ConnState BodyReader Boolean -> (values ConnState (Listof Action))
   ;; A reader, answered for the request being read, and whether the shell
-  ;; hands it its pieces on credit.  A declared length, or a body met so far,
-  ;; past the reader's cap is answered 413 at once, then close.  Otherwise
-  ;; the reader reads (`read-with`), and a client that waits for `100
-  ;; Continue` is sent it first (M6.4): the body deadline is armed with it,
-  ;; if the connection still reads, and does not wait for the reader's
-  ;; credit.
+  ;; hands it its pieces on credit.  A declared length past the reader's cap
+  ;; is answered 413 at once, then close: the head says so, so a client that
+  ;; waits for `100 Continue` is sent none.  Otherwise the reader reads
+  ;; (`read-with`), and a client that waits for the 100 is sent it first
+  ;; (M6.4), whatever reading brings, a 413 for a body met past the cap
+  ;; among it, since the 100 would have gone first had that body come later:
+  ;; the body deadline is armed with it, if the connection still reads, and
+  ;; does not wait for the reader's credit.
   (define (accept-reader s r credit?)
-    (let ((bd (conn-body s)) (cap (body-reader-max-bytes r)))
+    (let ((bd (conn-body s)))
       (cond
-       ((or (over? cap (body-declared bd)) (over? cap (body-count bd)))
+       ((over? (body-reader-max-bytes r) (body-declared bd))
         (respond-and-close s 'body-too-large '()))
        ((body-continue? bd)
         (body-continue?-set! bd #f)
@@ -1476,36 +1482,42 @@
        (else (read-with s r credit?)))))
 
   ;; read-with : ConnState BodyReader Boolean -> (values ConnState (Listof Action))
-  ;; The reader accepted reads: the pieces kept for it are handed over now,
-  ;; as `deliver-body` to a streaming one and into its buffer for a whole
-  ;; one; then an error kept for the answer is answered, or once the message
-  ;; has ended, the reader is handed its end, or a streaming reader on credit
-  ;; owes for those pieces, and reading waits for its credit (M6.2).
+  ;; The reader accepted reads.  A body met so far past its cap is answered
+  ;; 413 at once, then close.  Otherwise the pieces kept for it are handed
+  ;; over now, as `deliver-body` to a streaming one and into its buffer for
+  ;; a whole one; then an error kept for the answer is answered, or once the
+  ;; message has ended, the reader is handed its end, or a streaming reader
+  ;; on credit owes for those pieces, and reading waits for its credit
+  ;; (M6.2).
   (define (read-with s r credit?)
-    (let* ((bd (conn-body s)) (held (reverse (body-held bd))) (error (body-error bd)))
-      (body-held-set! bd '())
-      (body-reader-set! bd r)
-      (body-credit?-set! bd credit?)
-      (cond
-       ((and error (body-reader-whole? r)) (answer-error s error))
-       (error
-        (let-values (((s answered) (answer-error s error)))
-          (values s (append held answered))))
-       ((body-reader-whole? r)
-        (body-answer-set! bd 'whole)
-        (buffer-start! bd)
-        (for-each (lambda (a) (buffer-add! bd (cadr a) (caddr a) (cadddr a))) held)
-        (if (body-complete? bd) (hand-over-whole s) (values s '())))
-       ((body-complete? bd)
-        (body-answer-set! bd 'ending)
-        (values s (append held '((deliver-body-end)))))
-       (else
-        (body-answer-set! bd 'stream)
-        (for-each (lambda (a) (owe! bd (fx- (cadddr a) (caddr a)))) held)
-        (if (fxzero? (body-owed bd))
-            (values s held)
-            (let-values (((s waiting) (await-credit s)))
-              (values s (append held waiting))))))))
+    (let ((bd (conn-body s)))
+      (if (over? (body-reader-max-bytes r) (body-count bd))
+          (respond-and-close s 'body-too-large '())
+          (let ((held (reverse (body-held bd))) (error (body-error bd)))
+            (body-held-set! bd '())
+            (body-reader-set! bd r)
+            (body-credit?-set! bd credit?)
+            (cond
+             ((and error (body-reader-whole? r)) (answer-error s error))
+             (error
+              (let-values (((s answered) (answer-error s error)))
+                (values s (append held answered))))
+             ((body-reader-whole? r)
+              (body-answer-set! bd 'whole)
+              (buffer-start! bd)
+              (for-each (lambda (a) (buffer-add! bd (cadr a) (caddr a) (cadddr a)))
+                        held)
+              (if (body-complete? bd) (hand-over-whole s) (values s '())))
+             ((body-complete? bd)
+              (body-answer-set! bd 'ending)
+              (values s (append held '((deliver-body-end)))))
+             (else
+              (body-answer-set! bd 'stream)
+              (for-each (lambda (a) (owe! bd (fx- (cadddr a) (caddr a)))) held)
+              (if (fxzero? (body-owed bd))
+                  (values s held)
+                  (let-values (((s waiting) (await-credit s)))
+                    (values s (append held waiting))))))))))
 
   ;; respond-with : ConnState Response -> (values ConnState (Listof Action))
   ;; -> responding: write the response, arm the write deadline, and let the

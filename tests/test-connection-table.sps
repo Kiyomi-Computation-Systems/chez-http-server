@@ -1288,12 +1288,25 @@
            `(awaiting-credit #f (,continue-write (deliver-body ,bv 3 5) (deliver-body ,bv 5 8)
                                                  (read-stop) (disarm-deadline)))))
 
-   (row 'E6 "handling, an error kept, handler-responded with a reader -> responding: the 100, the pieces, then the error's status"
+   ;; What the head's feed met waits for the answer, and the 100 still goes
+   ;; first, as it would have had the body come in a later read: an error
+   ;; kept, or a body met past the reader's own cap, in body or, the body
+   ;; ended, in handling (M6.4's review).
+   (row 'E6 "handling or body, an error kept or a body met past the reader's cap, handler-responded with a reader -> responding: the 100, the pieces, then the status"
         (let ((s (met (expecting 'chunked "100-continue") '((3 8)))))
           (conn-step s '(parser-result error 60 60 invalid-chunk-size #f))
           (i s `(handler-responded ,streamer)
              `(responding parser-error (,continue-write (deliver-body ,bv 3 8)
-                                        ,(status-write 400 "Bad Request") (arm-deadline write))))))
+                                        ,(status-write 400 "Bad Request") (arm-deadline write)))))
+        (i (expected 'chunked '(3 8)) `(handler-responded ,(whole-reader 4))
+           `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
+                                        (read-stop) (arm-deadline write))))
+        (let ((s (met (expecting 'chunked "100-continue") '((3 8)))))
+          (conn-step s '(parser-event on-message-complete))
+          (conn-step s '(parser-result paused 54 54 #f #f))
+          (i s `(handler-responded ,(whole-reader 4))
+             `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
+                                          (arm-deadline write))))))
 
    (row 'E7 "body, a response instead of a reader, a reader whose cap the declared length passes, or handler-failed -> responding: the final status, no 100"
         (i (expected 10) `(handler-responded ,resp)
