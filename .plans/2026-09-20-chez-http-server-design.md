@@ -706,7 +706,7 @@ Termination and error rows:
 > |---|---|---|---|
 > | `head` | `on-headers-complete`, a body announced, expecting 100-continue, HTTP/1.1 | `body` | `reply-parser continue`, `disarm-deadline`: no body deadline until the 100 |
 > | `head` | `on-headers-complete`, the expectation on HTTP/1.0, on a request with no body, or not 100-continue | `body` | as without it, `arm-deadline body` |
-> | `body`/`handling` | `handler-responded`, a reader, expecting 100-continue | as the reader leaves it | the 100's `write` first, then what accepting the reader brings; `arm-deadline body` while the connection still reads, and no deadline when it waits for credit |
+> | `body`/`handling` | `handler-responded`, a reader, expecting 100-continue | as the reader leaves it | the 100's `write` first, then what accepting the reader brings, the status for an error kept or a body met past the reader's cap among it; `arm-deadline body` while the connection still reads, and no deadline when it waits for credit |
 > | `body`/`handling` | `handler-responded`, a response, or a reader whose cap the declared length passes; `handler-failed` | `responding` | the final status alone, no 100 |
 > | `body`/`handling`/`awaiting-credit` | `write-completed`, for the 100 | the same | nothing more |
 > | `body` | a trailer's `on-header-field-data`/`-complete`, `on-header-value-data`/`-complete` | `body` | `reply-parser continue`, nothing kept; past a header limit, `reply-parser (fail reason)` for the head's reason, answered 431 |
@@ -716,9 +716,12 @@ Termination and error rows:
 > for the handler's answer, as any refusal in the body does. The 100 is written though
 > the whole body came with the head, so what happens does not depend on the reads, and a
 > client may be sent a 100 it did not wait for, which it must be able to read (RFC 9110
-> §15.2). The bytes the parser reads and hands the core no span of are not counted: the
-> spaces before a field's value, and a chunk size's digits, 1 MB of either accepted on
-> this tree; the owner's word that day gives them a PR of their own, after M6.4.
+> §15.2). So is the 100 before a 413 for a body met past the reader's cap: only a
+> declared length past the cap is known from the head (M6.4's review found the 100 left
+> out there at 69 of 99 delivery sizes, and sent at 30). The bytes the parser reads and
+> hands the core no span of are not counted: the spaces before a field's value, and a
+> chunk size's digits, 1 MB of either accepted on this tree; the owner's word that day
+> gives them a PR of their own, after M6.4.
 > `tests/test-connection-table.sps` holds the rows (E1 to E8, F1 to F7);
 > `tests/test-connection-expect.sps` the flows through the fake shell at every delivery
 > size; `tests/test-shell.sps` a client that waits for the 100 on a socket, and one
@@ -1212,6 +1215,10 @@ Three consequences for M3:
 > write left. The second consequence is a check: `tests/test-connection-retention.sps`
 > collects with a write outstanding and finds the response, its body and its segments
 > released.
+>
+> *Amended 2026-09-29 (M6.4):* and in `body`, `handling` or `awaiting-credit` for a
+> `100 Continue`, written while the request is still read or answered (§4.4's M6.4
+> rows).
 
 > *Noted 2026-09-27 (the M5 exit; Darwin arm64, Chez 10.4.1):* at chez-libuv v0.7.0
 > this copy, and §7.1's out of the read buffer, move one byte at a time in Scheme:

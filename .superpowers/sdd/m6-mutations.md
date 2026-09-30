@@ -866,3 +866,25 @@ Every check M6.4 added or changed is reddened by one mutant at least:
 - the lane's: the count by AH, the scope by AC, AD, AH, the delivery's two by AC and AD,
   05 by A, B, I, R, AD, 99 by A, H, AD, AE, AM; the ratchet's counts by AK, and its
   violations by the lane's mutants.
+
+### After the PRs' review (2026-09-29)
+
+A /code-review high of PRs #80 to #82 found five. On the owner's word, by form, the 100
+still goes first before a refusal the head's feed met, and the finding that would have
+left it out is withdrawn; the cap case beside it is fixed: `accept-reader` refuses a
+reader whose cap the declared length passes before the 100, and `read-with` one whose cap
+the body met so far passes, after it.
+
+Red before green: on #80's first commit, the flows' chunked body past a whole reader's cap
+failed, and so did E6's two new instances, in body and, the body ended, in handling. The
+flows' declared length past the cap passed there, and is watched red by R2.
+
+Two mutants on the fixed tree (#82's, 1,335 expected passes) against all forty-two
+suites, two at a time, each reddening only the checks it was cut for:
+
+| Mutant | Where | Change | Reddens |
+|---|---|---|---|
+| M6.4-R1 | `connection.sls` | the body met so far checked before the 100, as before the fix | connection-expect 1 — the chunked body past the cap; connection-table 2 — E6's instances in body and in handling |
+| M6.4-R2 | `connection.sls` | the declared length checked after the 100, with the body met | connection-expect 1 — the declared length past the cap; connection-table 1 — E7 |
+
+Forty-two mutants in all; none survives.

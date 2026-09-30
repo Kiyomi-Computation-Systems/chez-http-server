@@ -269,7 +269,8 @@
 ;;; head's fields leave the trailers their own, and none is kept.  Its chunk
 ;;; extensions, the bytes of their names and values, all of a body's
 ;;; together, are held to 16 KiB (`max-chunk-extension-bytes`), fixed, not a
-;;; setting, as hyper and Node hold theirs (Node's CVE-2024-22019).  One past
+;;; setting, as hyper holds a body's and RFC 9112 §7.1.1 advises a total for
+;;; a request (Node holds each chunk's to 16 KiB instead).  One past
 ;;; a limit is refused as a head's field is, `(reply-parser (fail reason))`:
 ;;; a trailer for the head's reason, answered 431, and the extensions as
 ;;; 'chunk-extensions-too-large, answered 413, as a body past a cap.  The
@@ -1289,10 +1290,12 @@
   ;; max-chunk-extension-bytes : Nat
   ;; The most bytes a body's chunk extensions, their names and values, may
   ;; come to together: 16 KiB, fixed, not a setting (decided on the owner's
-  ;; word, 2026-09-29).  hyper holds a body's to 16 KiB, and Node its to
-  ;; 16 KiB since CVE-2024-22019, whose server read without limit a body's
-  ;; extensions that held little data.  The server keeps no extension, so
-  ;; the bound is on the work, not on memory.
+  ;; word, 2026-09-29; kept after M6.4's review weighed the servers
+  ;; researched, the ledger).  hyper holds a body's to 16 KiB, as RFC 9112
+  ;; §7.1.1 advises a total for a request; Node holds each chunk's to
+  ;; 16 KiB, since CVE-2024-22019, whose server read a chunk's extensions
+  ;; without limit.  The server keeps no extension, so the bound is on the
+  ;; work, not on memory.
   (define max-chunk-extension-bytes 16384)
 
   ;; refuse : ConnState Symbol -> (values ConnState (Listof Action))

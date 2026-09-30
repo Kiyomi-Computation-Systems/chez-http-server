@@ -342,9 +342,15 @@ these bytes.
   budget with the head; the body's cap, as freenginx counts trailers and extensions
   together, which would leave them unbounded here by default.
 - **A body's chunk extensions, their names' and values' bytes, all of them together, are
-  held to 16 KiB**, fixed, not a setting, as hyper and Node (since CVE-2024-22019) hold
-  theirs. Past it, `413`, then close, as a body past a cap, logged as
-  `chunk-extensions-too-large`. Weighed: leaving them for M8.3's robustness lane.
+  held to 16 KiB**, fixed, not a setting, as hyper holds a body's, and as RFC 9112 §7.1.1
+  advises a limit on the total in a request. Past it, `413`, then close, as a body past a
+  cap, logged as `chunk-extensions-too-large`. Weighed: leaving them for M8.3's robustness
+  lane. *Corrected in M6.4's review, the same day:* the form called 16 KiB "hyper's and
+  Node's figure", and this bullet had Node holding a body's; Node holds each chunk's to
+  16 KiB (since CVE-2024-22019), its count restarted at every chunk. Weighed again, on the
+  owner's word by form, over the eight servers researched: hyper, h2o and Go bound a body
+  (h2o and Go by a share of the data), as freenginx does within its body cap; Node bounds
+  each chunk, h11 and Racket each line; nginx and Warp nothing. Kept.
 - **What the parser reads and hands the core no span of is not counted**, found while
   building: the spaces between a field's colon and its value, in a head or a trailer
   section, and a chunk size's leading zeros. A megabyte of either was accepted. The
