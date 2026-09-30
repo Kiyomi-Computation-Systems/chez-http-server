@@ -246,3 +246,22 @@ the CPS workload's three, at 176 B each (the parser's 64 B and the core's 112 B)
 for the keyword table its `Connection` value is read through. A third shape joins the other two: a field name costs the same
 however much of a parser keyword it matches. The research spike
 `research/spike/m3-exit-keyword-alloc.sps` records every number here, at both pins.
+
+## Amendment (2026-09-30) — every event callback carries the parser's position
+
+The third amendment's first shape changes for the fifteen event callbacks: the adapter
+passes the parser's position with each, the bytes of the connection it has read, which
+byte-machine's runtime commits before calling any callback (`parser-stream-offset`; the
+generated lane commits it at callback entry, and byte-machine's differential lane checks
+it against the interpreted one). `on-headers-complete`'s arguments gain it too, after
+`upgrade`. The tagged list follows: `(parser-event name at)`, and on-headers-complete's
+payload's seventh field. A callback given its old shape is an assertion violation, as any
+wrong shape is.
+
+The reason is the padding PR's (decision 0005's amendment of this day): the parser reads
+four runs of bytes it hands on in no span, and only positions can measure them. At every
+delivery size an event sees the same position (45 of 45 sizes for a padded head, 95 of 95
+for padded chunks, a scratch probe). A span needs none: its position is its delivery's
+base plus its bound, and the core knows each base, the bytes each read's result took, and
+where each delivery it feeds begins. Nothing is allocated for it: the position is a
+fixnum argument, and curl's GET costs 1,840 B a request, as before.

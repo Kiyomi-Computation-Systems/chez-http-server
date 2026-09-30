@@ -7,7 +7,8 @@
 ;;;
 ;;;   - the callback names are a closed set, chez-httparse's twenty-five, and
 ;;;     a name outside it or given the wrong shape is an assertion violation
-;;;     (item 5);
+;;;     (item 5); an event callback's shape carries the parser's position,
+;;;     the bytes it has read before the callback (the padding PR);
 ;;;   - every callback is answered: the first action is its reply-parser, in
 ;;;     every state (item 2);
 ;;;   - both ways in agree: a callback as a tagged list through conn-step and
@@ -20,8 +21,9 @@
 ;;; Oracles: chez-httparse's own table of its callbacks and their kinds
 ;;; (`adapter-trace-names`, from its test harness), and its parser, which
 ;;; refuses a binding list with a hole or an extra name; the callbacks that
-;;; parser fires on three inputs; the amendment's "allocates nothing"; Chez's
-;;; cumulative allocation counter, calibrated below.
+;;; parser fires on three inputs, each event with the position its runtime
+;;; commits before it (`parser-stream-offset`); the amendment's "allocates
+;;; nothing"; Chez's cumulative allocation counter, calibrated below.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) statistics sstats-bytes)
         (http-server connection) (http-server response) (http-server request)
@@ -68,39 +70,40 @@
 (define (reading-state)
   (let ((s (fresh 'head)) (target (string->utf8 "/")))
     (conn-parser-step s 'on-url-data target 0 1)
-    (conn-parser-step s 'on-url-complete)
+    (conn-parser-step s 'on-url-complete 1)
     (let ((host (string->utf8 "Host: x")))
       (conn-parser-step s 'on-header-field-data host 0 4)
-      (conn-parser-step s 'on-header-field-complete)
+      (conn-parser-step s 'on-header-field-complete 5)
       (conn-parser-step s 'on-header-value-data host 6 7)
-      (conn-parser-step s 'on-header-value-complete))
-    (conn-headers-complete-step s 3 1 1 F-CONTENT-LENGTH 1000 0)
+      (conn-parser-step s 'on-header-value-complete 7))
+    (conn-headers-complete-step s 3 1 1 F-CONTENT-LENGTH 1000 0 7)
     (conn-step s '(parser-result need-input 0 0 #f #f))
     (conn-step s (list 'handler-responded reader))
     (unless (eq? (conn-body-reader s) reader)
       (assertion-violation 'reading-state "the steps did not reach a reader reading" (conn-phase s)))
     s))
 
-;; A span for the span callbacks, and on-headers-complete's six fields for a
-;; keep-alive GET: llhttp's method 1, HTTP/1.1, no flags, no content-length,
-;; and a parser `upgrade` of 0.
+;; A span for the span callbacks, and on-headers-complete's seven fields for
+;; a keep-alive GET: llhttp's method 1, HTTP/1.1, no flags, no
+;; content-length, a parser `upgrade` of 0, and the parser's position.
 (define span-bv (make-bytevector 1000 (char->integer #\x)))
-(define head-fields '(1 1 1 0 0 0))
+(define head-fields '(1 1 1 0 0 0 0))
 
 ;; payload : Symbol Nat -> (Listof Any)
-;; The parser-event payload for `name`, with a span `len` bytes long.
+;; The parser-event payload for `name`, with a span `len` bytes long, and
+;; an event at the parser's first byte.
 (define (payload name len)
   (cond ((eq? name 'on-headers-complete) (cons name head-fields))
         ((eq? (oracle-kind name) 'span) (list name span-bv 0 len))
-        (else (list name))))
+        (else (list name 0))))
 
 ;; direct : ConnState (Listof Any) -> (values ConnState (Listof Action))
 ;; The adapter's way in: the payload's own fields as arguments.
 (define (direct s p)
   (let ((name (car p)))
-    (cond ((eq? name 'on-headers-complete) (apply conn-headers-complete-step s (cdr p)))
-          ((null? (cdr p)) (conn-parser-step s name))
-          (else (apply conn-parser-step s name (cdr p))))))
+    (if (eq? name 'on-headers-complete)
+        (apply conn-headers-complete-step s (cdr p))
+        (apply conn-parser-step s name (cdr p)))))
 
 ;; tagged : ConnState (Listof Any) -> (values ConnState (Listof Action))
 ;; The table's way in: one tagged list through conn-step.
@@ -136,8 +139,8 @@
 
 ;; record-callbacks : Bytevector -> (Listof Payload)
 ;; What chez-httparse fires parsing `input` whole, each as the payload the
-;; adapter passes: (name), (name bv from to), or on-headers-complete with the
-;; six fields read inside it.
+;; adapter passes: (name position), (name bv from to), or
+;; on-headers-complete with the six fields read inside it and the position.
 (define (record-callbacks input)
   (let* ((acc '())
          (push! (lambda (x) (set! acc (cons x acc))))
@@ -150,11 +153,14 @@
                                      (push! (list name bv from to)) callback-continue))
                            ((state-line)
                             (lambda (p ctx)
-                              (push! (cons name (map (lambda (f) (parser-field-ref p f))
-                                                     '(method http-major http-minor
-                                                       flags content-length upgrade))))
+                              (push! (cons name (append (map (lambda (f) (parser-field-ref p f))
+                                                             '(method http-major http-minor
+                                                               flags content-length upgrade))
+                                                        (list (parser-stream-offset p)))))
                               callback-continue))
-                           (else (lambda (p ctx) (push! (list name)) callback-continue))))))
+                           (else (lambda (p ctx)
+                                   (push! (list name (parser-stream-offset p)))
+                                   callback-continue))))))
                adapter-trace-names))
          (p (make-parser httparse-message-machine bindings #f request-inits))
          (r (parser-feed! p input 0 (bytevector-length input))))
@@ -228,13 +234,13 @@
 ;; entry : Symbol Nat -> (ConnState -> (values ConnState (Listof Action)))
 ;; One callback entered exactly as the adapter enters it, with its arguments
 ;; written out.  `direct` spreads a payload with `apply`, which allocates for
-;; on-headers-complete's seven arguments; the adapter never does.
+;; on-headers-complete's eight arguments; the adapter never does.
 (define (entry name len)
   (cond ((eq? name 'on-headers-complete)
-         (lambda (s) (conn-headers-complete-step s 1 1 1 0 0 0)))
+         (lambda (s) (conn-headers-complete-step s 1 1 1 0 0 0 0)))
         ((eq? (oracle-kind name) 'span)
          (lambda (s) (conn-parser-step s name span-bv 0 len)))
-        (else (lambda (s) (conn-parser-step s name)))))
+        (else (lambda (s) (conn-parser-step s name 0)))))
 
 ;; enter-all! : (Vectorof ConnState) (ConnState -> (values ...)) -> Void
 ;; Enter one callback on each state.
@@ -313,12 +319,21 @@
                'made))
 
     (test-eq "an unknown callback is an assertion violation" 'refused
-             (verdict (lambda () (conn-parser-step (fresh 'head) 'on-no-such-thing))))
+             (verdict (lambda () (conn-parser-step (fresh 'head) 'on-no-such-thing 0))))
     (test-eq "an unknown callback with a span is an assertion violation" 'refused
              (verdict (lambda () (conn-parser-step (fresh 'head) 'on-no-such-data span-bv 0 1))))
     (test-equal "a span callback without its span is refused, all ten" '()
                 (filter (lambda (n)
                           (eq? 'accepted (verdict (lambda () (conn-parser-step (fresh 'head) n)))))
+                        oracle-spans))
+    (test-equal "an event callback without the parser's position is refused, all fifteen" '()
+                (filter (lambda (n)
+                          (and (not (eq? (oracle-kind n) 'span))
+                               (eq? 'accepted (verdict (lambda () (conn-parser-step (fresh 'head) n))))))
+                        oracle-names))
+    (test-equal "a span callback given a position in place of its span is refused, all ten" '()
+                (filter (lambda (n)
+                          (eq? 'accepted (verdict (lambda () (conn-parser-step (fresh 'head) n 0)))))
                         oracle-spans))
     (test-equal "an event callback given a span is refused, all fifteen" '()
                 (filter (lambda (n)
@@ -327,15 +342,18 @@
                                     (verdict (lambda () (conn-parser-step (fresh 'head) n span-bv 0 1))))))
                         oracle-names))
     (test-eq "on-headers-complete does not enter as an event callback" 'refused
-             (verdict (lambda () (conn-parser-step (fresh 'head) 'on-headers-complete))))
+             (verdict (lambda () (conn-parser-step (fresh 'head) 'on-headers-complete 0))))
     (test-eq "an unknown callback as a tagged list is an assertion violation" 'refused
-             (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-no-such-thing)))))
-    (test-eq "on-headers-complete as a tagged list needs its six fields" 'refused
+             (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-no-such-thing 0)))))
+    (test-eq "on-headers-complete as a tagged list needs its seven fields" 'refused
              (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-headers-complete)))))
-    ;; The sixth is the parser's `upgrade` (chez-httparse v0.4.1, #47): a payload
-    ;; without it is the shape before the core read it, and is refused.
+    ;; The sixth is the parser's `upgrade` (chez-httparse v0.4.1, #47), and the
+    ;; seventh its position (the padding PR): a payload without either is a
+    ;; shape from before the core read it, and is refused.
     (test-eq "on-headers-complete without the parser's upgrade field is refused" 'refused
              (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-headers-complete 1 1 1 0 0)))))
+    (test-eq "on-headers-complete without the parser's position is refused" 'refused
+             (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-headers-complete 1 1 1 0 0 0)))))
 
     ;; --- every callback is answered, in every state --------------------------
     (test-equal "the first action is the reply, for every callback in every state" '()
