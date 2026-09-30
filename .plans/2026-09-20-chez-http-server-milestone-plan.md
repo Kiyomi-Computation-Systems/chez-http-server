@@ -1290,6 +1290,23 @@ by default. M7 stops reading while such a handler has not answered, as
 answers a reader on credit, `(handler-responded reader credit)`, and gives the credit
 as the reader takes each piece (decision 0013's consequences).
 
+*Carried from M6.4 (2026-09-30, the review's fifth finding, on the owner's word by
+form):* a handler asked at a head that expects `100 Continue` answers in the same drain
+in v1, so its client waits no longer than the handler takes. An awaiting handler answers
+later, and until it does nothing is armed, since the server is the one waiting, as in
+`handling`; a piece the client sends without waiting arms the body deadline, as any
+piece does, and a stall after it is answered 408 while the handler has not answered.
+M7's rows cover this wait with the others: reading stopped while such a handler has not
+answered, nothing armed, and its answer bringing the 100, reading and the body deadline,
+or, a response instead, the response with no 100. Clients stop waiting and send the
+body after 1 s (curl, Go's default transport, .NET), 3 s (Apache HttpClient) or 5 s
+(Java 24 on), so a slower handler meets its body first, held by the stopped reading.
+Weighed: M7.2 weighing an opt-in limit on a handler's decision time. Of the six servers
+read for it (hyper, Warp, Go, nginx, Node, h2o), none bounds a handler's decision by
+default: Node's 300 s whole-request timer covers only a body not yet read, Go's
+`TimeoutHandler` is opt-in, and nginx's 60 s bounds a proxy's backend. Also weighed:
+leaving it unrecorded.
+
 ### M8 — shutdown, hand-off, black-box, release
 
 **M8.1 — the drain.** `drain-timeout-ms` (10,000) arrives with §3's four things.

@@ -3337,7 +3337,7 @@ M6.4, ITS REVIEW (2026-09-29, PRs #80 to #82 open): a /code-review high, on the 
   Behind Caddy none arrives: Go's chunk reader drops them (read, not run).
 - (2) **The 100 before a refusal the core already holds**, which the finding would have left out. Its premise, that the split already changed that outcome, was measured wrong on a probe: a bad chunk after an Expect head gets the 100, then 400, at all 90 delivery sizes, and the finding's change split them, the 100 at 32 and none at 58. Beside it the probe found the split deciding: a chunked 10-byte body read whole within 4 bytes got the 100 then 413 at 30 of its 99 sizes, and 413 alone at 69, the cap checked before the 100 against the body met so far, which only some splits had met; main sends no 100 at any.
 - (3) **The header's write accounting named only `responding` and `closing`** for a completion.
-- (4) `find-comma` is copied from `(http-server transfer-coding)`; (5) no deadline is armed while an Expect request waits on its handler, which the shells call at once. Left: not asked for.
+- (4) `find-comma` is copied from `(http-server transfer-coding)`; (5) no deadline is armed while an Expect request waits on its handler, which the shells call at once. Left: not asked for (5 researched the next day, below).
 
 DECIDED on the owner's word (2026-09-29), by form, after the research: (2) the 100 still goes first, and the cap case is fixed, so every split gets one outcome; the finding withdrawn. Weighed: the 100 left out once a refusal is known, as the finding asked, a departure from design §8.1. (1) 16 KiB a body kept, the finding withdrawn, and the records corrected: the form had called 16 KiB "hyper's and Node's figure", and decision 0005's amendment and the core's comments had Node holding a body's. Weighed: Go's allowance, growing with the data, in the padding PR; 16 KiB a chunk, as Node. The fixes go into the PRs they belong to, the PRs above rebased and pushed with a lease. Weighed: one fix commit on #82.
 
@@ -3354,5 +3354,21 @@ Measured (2026-09-29):
 Watched to fail (m6-mutations.md, "After the PRs' review"): two mutants on #82's tree against all forty-two suites: M6.4-R1, the body met checked before the 100 as before the fix, reddens the flows' body past the cap and E6's two instances; M6.4-R2, the declared length checked after the 100, the flows' declared length and E7. Forty-two mutants in all; none survives.
 
 Size of code and tests: #80's second commit, 94 inserted lines and 52 deleted, most of them `read-with` indented anew; the layers, against main and then each on the one below, 551, 206 and 362 inserted, and 42, 42 and 23 deleted.
+
+NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the padding PR, its design by form on measurements, then the M6 exit.
+
+M6.4's REVIEW, THE FIFTH FINDING RESEARCHED (2026-09-30, PRs #80 to #82 open), on the owner's "Research 5 in more detail": no deadline is armed while an Expect request waits on its handler.
+- **Empty in v1.** Both shells call the handler in place, and its answer is dispatched in the same drain (`call-handler!` in `(http-server private shell)`, `perform-connection!` in `tests/fake-shell.sls`), so no tick and no read can come between the question and the answer.
+- **What M7's awaiting handler would meet**, probed on the core with the answer held back (a scratch program, states built as the table builds them): an Expect head alone arms nothing until the answer, which writes the 100 and arms the body deadline; a body met in full, with or without Expect, leaves `handling` with nothing armed, design §4.3's "a slow handler is the application's problem"; a piece the client sends without waiting arms the body deadline, and a stall after it, like a head without Expect whose client sends nothing, is answered 408 while the handler has not answered, its late answer then changing nothing. The client cannot lengthen the Expect wait: it lasts as long as the handler takes.
+- **Six servers, read in their source by two research agents, the decisive lines checked again here:**
+  - hyper writes the 100 when the service first polls the body, and bounds nothing: its one timer is the head's, 30 s, off unless a timer is given;
+  - Warp writes it on the application's first body read, and pauses its 30 s timer while the application runs ("Let the application run for as long as it wants");
+  - Go writes it on the handler's first body read, and bounds nothing by default: `ReadTimeout`, opt-in, starts before the head and spans the handler; `TimeoutHandler`, opt-in, answers 503;
+  - nginx writes it when a module starts reading the body, a proxy before it asks its backend, arms no client timer between head and decision, and bounds a backend's answer to 60 s, then 504;
+  - Node writes it at once unless the application listens for `checkContinue`; its whole-request timer, 300 s from the request's first byte, then answers 408;
+  - h2o writes it at once, before any handler, and its request timers stop before the handler runs.
+- **Clients** send the body without the 100 after 1 s (curl 8.22.0's default, Go's default transport, .NET 10), 3 s (Apache HttpClient 4 and 5) or 5 s (Java 24 on, fixed); Java 21 waits with no timer of its own.
+
+DECIDED on the owner's word (2026-09-30), by form: the finding is closed as the design's, and plan §14's M7 carries it, so that M7's rows cover the wait with the others: reading stopped while such a handler has not answered, nothing armed, and its answer bringing the 100, reading and the body deadline. Weighed: M7.2 also weighing an opt-in limit on a handler's decision time; leaving it unrecorded.
 
 NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the padding PR, its design by form on measurements, then the M6 exit.
