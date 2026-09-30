@@ -766,3 +766,103 @@ connection read by B, and the second's head-first check by P, R, M and B; the re
 turn's close by M4.2-W3, and its settling by S, H, I, M4.2-W2 and M4.2-W3; the mixed
 pieces read to the stream's end by B, and in order by E and B. B's shell list was run by
 hand against the finished tests, the mixed check among them: 60 failures.
+
+## M6.4 — Expect, trailers, and the exit's files (feat/m6.4-expect-trailers, 2026-09-29)
+
+Red before green, each new suite and check run against main's source (`git archive main
+src`) with the finished tests:
+- the table: 24 failures, the Expect rows E1, E3 to E6 and E8, and the trailer and
+  extension rows F2, F5, F6 and F7's two answered instances; the rest are guards, watched
+  red by the mutants below;
+- `tests/test-connection-expect.sps`: 8 of its 14, the 100 and its deadline, the trailer
+  431s and the extensions' 413;
+- the shell suite: the two checks of a client that waits for the 100, which never came
+  within the cap; the refusal's two passed there;
+- curl's: held past the cap, 24 s, waiting a minute for a 100 main never sends;
+- the originated suite: its coverage check, once the reason existed with no row; the two
+  rows then failed on the shape of a refusal read as it arrives (a `read-stop` after the
+  status), where both requests arrive in the head's delivery, so what they meet waits for
+  the handler's answer, reading stopped already (`kept`);
+- the lane: 05's expectation, no 100 on main.
+`field-lists?` is new, so the headers suite does not load against main; its three
+checks are watched red by M to R and AG.
+
+Forty mutants on the finished tree against all forty-two suites, four at a time
+(thirty-nine by `mut.py`, AK by hand). None failed to load. The first run, thirty-three,
+left two survivors, J and K: the 100's completion ignored in `handling` and in
+`awaiting-credit` instead of settled leaves the phase and the actions as they were, and
+E8 read only those. E8 now runs through M3.3's accounting step, which reads the writes
+and bytes outstanding after the completion, and J and K, run again, redden it; B, I and
+AF, which reddened E8 before, were run again against its new form and still do. Then
+AG, AH, AI, AJ, AL and AK were added for checks no mutant had reddened (the other
+expectation's flow, and the four counts), and AM for the refusal's socket check.
+
+Three contract scripts were written and taken out before the run: a chunked body's
+extension and trailer within their limits, a trailer past them and extensions past
+them. The two shells share the core, and differ in nothing those scripts exercise: no
+fault of either shell could redden them, and both would agree on any fault of the core.
+A fourth, an Expect head answered at once, went after the run for the same reason: no
+mutant reddened its three checks. What the contract keeps for M6.4 is the one new thing a
+shell does, a write while the connection still reads.
+
+| # | mutated | mutation | observed |
+|---|---|---|---|
+| M6.4-A | `connection.sls` | the plan's: the 100 written with the head | connection-expect 4; connection-table 12 — E1 (5), E3 (3), E4 (2), E5, E6; libhtp-lane 2 — 05 and 99; ratchet 1; shell 1 — the refusal's "no 100" |
+| M6.4-B | `connection.sls` | the 100 never written | clients 1 — curl's; connection-expect 4; connection-table 11 — E3 (3), E4 (2), E5, E6, E8 (4); libhtp-lane 1 — 05; ratchet 1; shell 2 — the waiting client's two |
+| M6.4-C | `connection.sls` | the expectation met on HTTP/1.0 too | connection-expect 1 — HTTP/1.0's; connection-table 1 — E2 |
+| M6.4-D | `connection.sls` | the expectation met with no body too | connection-expect 1 — no body's; connection-table 1 — E2 |
+| M6.4-E | `connection.sls` | the body deadline armed at an Expect head anyway | connection-table 5 — E1 (5) |
+| M6.4-F | `connection.sls` | the 100 arms no body deadline | connection-expect 1 — the 408; connection-table 3 — E3 (3) |
+| M6.4-G | `connection.sls` | the 100 written after the pieces kept | connection-expect 2; connection-table 5 — E3, E4 (2), E5, E6 |
+| M6.4-H | `connection.sls` | the 100 written before a response given instead of a reader too | connection-expect 1; connection-table 1 — E7; libhtp-lane 1 — 99; ratchet 1; shell 1 |
+| M6.4-I | `connection.sls` | the 100's completion not settled in `body` | clients 4 — the ends' counts; connection-expect 4; connection-table 1 — E8; contract 2 — the Expect script's close, and the end's; libhtp-lane 1; ratchet 1; shell 3 — the ends' counts |
+| M6.4-J | `connection.sls` | the 100's completion not settled in `handling` | connection-table 1 — E8 (SURVIVED before E8 read the writes outstanding) |
+| M6.4-K | `connection.sls` | the 100's completion not settled in `awaiting-credit` | connection-table 1 — E8 (likewise) |
+| M6.4-L | `connection.sls` | a reader past its cap sent the 100 and read, not refused | connection-table 1 — E7 |
+| M6.4-M | `headers.sls` | the expectation matched with case | connection-table 1 — E1; headers 1 |
+| M6.4-N | `headers.sls` | the first field of the name decides | headers 1 — "over any of its lines" |
+| M6.4-O | `headers.sls` | an element matched by its prefix | connection-table 1 — E2; headers 1 — "…and nothing else" |
+| M6.4-P | `headers.sls` | an element's OWS not trimmed | connection-table 2 — E1 (2); headers 2 |
+| M6.4-Q | `headers.sls` | the list not split at its commas | connection-table 1 — E1; headers 2 |
+| M6.4-R | `headers.sls` | a span's list read to its bytevector's end | clients 1; connection-expect 4; headers 1 — "honouring its bounds"; libhtp-lane 1; ratchet 1; shell 2 |
+| M6.4-S | `connection.sls` | trailer fields counted against no limit, as before | connection-expect 3 — the three 431s; connection-originated 1 — the trailer's 431; connection-table 6 — F2 (4), F6, F7 |
+| M6.4-T | `connection.sls` | the trailers counted with the head's fields | connection-expect 2 — the full section served, and the value's 431; connection-table 2 — F3 (2) |
+| M6.4-U | `connection.sls` | a trailer's size not started again at its name's end | connection-expect 2; connection-table 1 — F1 |
+| M6.4-V | `connection.sls` | a trailer's size not started again at its value's end | connection-table 2 — F2, F3 |
+| M6.4-W | `connection.sls` | the field count refused at the limit, not past it | connection-expect 2; connection-head 1 — "max-header-count headers pass"; connection-table 1 — F3 |
+| M6.4-X | `connection.sls` | chunk extensions counted against no limit, as before | connection-expect 1 — the 413; connection-originated 1; connection-table 5 — F5 (3), F6, F7 |
+| M6.4-Y | `connection.sls` | chunk extensions counted a chunk at a time | connection-expect 1; connection-table 2 — F5's two across chunks |
+| M6.4-Z | `connection.sls` | chunk extensions refused at 16 KiB, not past it | connection-expect 1 — 16 KiB served; connection-table 2 — F4 (2) |
+| M6.4-AA | `connection.sls` | an extension's value not counted | connection-expect 1; connection-originated 1; connection-table 1 — F5 |
+| M6.4-AB | `decisions.sls` | chunk extensions past 16 KiB answered 400 | connection-expect 1; connection-originated 1; connection-table 2 — F6, F7 |
+| M6.4-AC | `tests/libhtp-lane.sls` | every stream delivered with CRLF | libhtp-lane 2 — every other stream as cut, and the scope |
+| M6.4-AD | `tests/libhtp-lane.sls` | the Expect streams delivered as cut | libhtp-lane 4 — 05, 99, the scope, and the conversion's check; ratchet 1 |
+| M6.4-AE | `tests/libhtp-lane.sls` | 99's handler reads, as every other stream's | libhtp-lane 1 — 99; ratchet 1 |
+| M6.4-AF | `serializer.sls` | the 100 without its blank line | clients 1; connection-expect 1 — the 100 as read; connection-table 11 — E3 (3), E4 (2), E5, E6, E8 (4); shell 2 |
+| M6.4-AG | `headers.sls` | any Expect value taken for 100-continue | connection-expect 1 — another expectation's; connection-table 3 — E2 (3); headers 2 |
+| M6.4-AH | `tests/libhtp-lane.sls` | the lane loses 99-expect-100.t's expectation | libhtp-lane 2 — "fourteen streams have an expectation", and the scope; ratchet 1 |
+| M6.4-AI | `tests/test-connection-table.sps` | E8 loses its instances | connection-table 1 — "the 100's accounting row has a test" |
+| M6.4-AJ | `tests/test-connection-table.sps` | F7 loses its instances | connection-table 1 — "all 7 trailer and extension rows have a test" |
+| M6.4-AK | `tests/ratchet.txt`, by hand | 05-expect.t marked not-yet (the suite reads the file by path, so it ran in a scratch root of symlinks to the tree, the one file a copy) | ratchet 3 — "14 passing", "88 not-yet", and a violation, "marked not-yet but now passes" |
+| M6.4-AL | `tests/test-connection-table.sps` | E1 loses its instances | connection-table 1 — "all 7 Expect rows have a test" |
+| M6.4-AM | `connection.sls` | an Expect head answered at once keeps the connection, its body never sent | connection-expect 1 — the response's; connection-table 1 — E7; libhtp-lane 1 — 99; ratchet 1; shell 2 — the refusal's two |
+| M6.4-SH1 | `shell.sls` | the libuv shell writes only while responding or closing | clients 1 — curl's; contract 4 — the Expect script's three, and the end's; shell 5 — the waiting client's two, and the ends' counts |
+
+Every check M6.4 added or changed is reddened by one mutant at least:
+- the table: E1 by A, E, M, P, Q; E2 by C, D, O, AG; E3 by A, B, F, G, AF; E4 to E6 by
+  A, B, G, AF; E7 by H, L, AM; E8 by B, I, J, K, AF; F1 by U; F2 by S, V; F3 by T, V, W;
+  F4 by Z; F5 by X, Y, AA; F6 and F7 by S, X, AB; the three counts by AI, AJ and AL;
+- the headers suite's three by M to R and AG;
+- the flows' fourteen: the streaming reader's and the chunked one's by A, B, G, I, R;
+  the 100 as read by B, I, R, AF; a response instead by A, H, AM; HTTP/1.0's by C; no
+  body's by D; another expectation's by AG; the 408 by A, B, F, I, R; the full trailer
+  section served by T, U, W; the section past by S, U, W; the fourth field by S; the value
+  past by S, T; 16 KiB of extensions served by Z; a byte more by X, Y, AA, AB;
+- the shell's four: the waiting client's two by B, R, AF, SH1, and the refusal's two by
+  AM, "no 100" by A and H too;
+- the contract's Expect script, its three checks by SH1, its close by I;
+- curl's by B, R, AF, SH1;
+- the originated suite's two rows by S, and by X, AA, AB;
+- the lane's: the count by AH, the scope by AC, AD, AH, the delivery's two by AC and AD,
+  05 by A, B, I, R, AD, 99 by A, H, AD, AE, AM; the ratchet's counts by AK, and its
+  violations by the lane's mutants.

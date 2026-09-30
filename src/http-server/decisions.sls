@@ -45,6 +45,7 @@
       (header-timeout . 408)
       (body-timeout . 408)                   ; a body stalled past its deadline (M5.2)
       (body-too-large . 413)                 ; a body past a cap (0013 item 5)
+      (chunk-extensions-too-large . 413)     ; a body's chunk extensions past 16 KiB (M6.4)
       (target-too-large . 414)
       (headers-too-large . 431) (too-many-headers . 431)
       (header-field-too-large . 431) (header-value-too-large . 431)

@@ -35,7 +35,11 @@
 ;;; cap, here the limits' max-body-bytes.  A request whose head announces a
 ;;; body is handed to its handler at the head, and a response given instead
 ;;; of a reader closes the connection (decision 0013), so the 408's body is
-;;; read by its handler.
+;;; read by its handler.  M6.4 adds a second way in, a body's chunk
+;;; extensions past 16 KiB together, and a trailer field past the header
+;;; limits, answered 431 as a head's is.  Both rows' requests arrive in the
+;;; head's delivery, so what they meet waits for the handler's answer, and
+;;; reading stops where it is met.
 ;;;
 ;;; Oracles: design §6.5's table, and decision 0009 for the 301; RFC 9110
 ;;; §15's reason phrases, and RFC 6585 §5's for 431; decision 0010 item 6;
@@ -84,6 +88,12 @@
 ;; A status in place of a handler's answer, after reading stopped at the
 ;; pause; `before` is the log naming a fault.
 (define (failed status reason why fields . before) (closes status reason why fields before '()))
+
+;; kept : Nat String Symbol (Listof Field) -> Outcome
+;; A status for what the feed that completed the head met in the body, which
+;; waited for the handler's answer (decision 0013): reading stopped where it
+;; was met, before the handler was asked.
+(define (kept status reason why fields) (closes status reason why fields '() '()))
 
 (define get "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
 
@@ -186,6 +196,13 @@
         reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello" get))
         (refused 413 "Content Too Large" 'body-too-large (at epoch))
         (limits-with default-limits '((max-body-bytes . 4))))
+   ;; A chunked body's extensions, all of them together, one byte past
+   ;; 16 KiB (M6.4): answered as a body past a cap is.  The reader is handed
+   ;; no piece: the extension comes before the chunk's data.
+   (row "413: a body's chunk extensions one byte past 16 KiB"
+        reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5;e="
+                                   (make-string 16384 #\v) "\r\nhello\r\n0\r\n\r\n" get))
+        (kept 413 "Content Too Large" 'chunk-extensions-too-large (at epoch)))
    ;; 414 and 431: one past a limit.
    (row "414: a target one byte past max-target-bytes"
         answers (sent (string-append "GET /" (make-string max-target #\a) " HTTP/1.1\r\nHost: x\r\n\r\n" get))
@@ -209,6 +226,12 @@
                                      (lines 3 (string-append "X: " (make-string 6000 #\v) "\r\n"))
                                      "\r\n" get))
         (refused 431 "Request Header Fields Too Large" 'headers-too-large (at epoch)))
+   ;; A chunked body's trailer fields are held to the same four limits
+   ;; (M6.4), and one past them is answered as a head's is.
+   (row "431: a trailer field value one byte past max-header-value-bytes"
+        reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                   "5\r\nhello\r\n0\r\nT: " (make-string (+ max-value 1) #\v) "\r\n\r\n" get))
+        (kept 431 "Request Header Fields Too Large" 'header-value-too-large (at epoch)))
    ;; 500: the handler raised, or answered what cannot be written safely.
    ;; Its request was read whole, so the one behind it in the delivery is
    ;; the pause's pending input, never fed.

@@ -33,7 +33,10 @@
 ;;; fall to its low water; and a failure after the head is on the wire closes
 ;;; with no response.  And M6.4's eight rows for `Expect: 100-continue`, from
 ;;; RFC 9110 §10.1.1 and decision 0013's consequences: the 100 written when
-;;; the handler answers with a reader, and the body deadline armed then.
+;;; the handler answers with a reader, and the body deadline armed then; and
+;;; its seven for what a chunked body carries beside its data, its trailer
+;;; fields held to the four header limits and its chunk extensions to 16 KiB
+;;; (both decided on the owner's word, 2026-09-29).
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -1338,6 +1341,152 @@
           (conn-step s `(handler-responded ,resp))
           (i s '(write-completed 25) `(responding #f ((arm-deadline write)) 1 ,(nbytes w)))))))
 
+;; ---------------------------------------------------------------------------
+;; M6.4: what a chunked body carries beside its data is held to limits
+;; (decided on the owner's word, 2026-09-29).  Its trailer fields, which the
+;; parser delivers as header callbacks once the last chunk is read (the
+;; ledger, M2), are held to the four header limits, as a head is, counted
+;; afresh, so the head's fields leave the trailers theirs; none is kept.
+;; Its chunk extensions, their names' and values' bytes, all of a body's
+;; together, are held to 16 KiB, fixed, as hyper and Node hold theirs.  One
+;; past a limit is refused as a head's field is, `(reply-parser (fail
+;; reason))`, and the parser's error that follows is answered with the
+;; reason's status: a trailer's the head's 431, the extensions' 413, as a
+;; body past a cap.
+
+;; tight : Limits — header limits small enough to pass in a row: a name or a
+;; value of 4 bytes, 10 bytes in all, and 2 fields.
+(define tight
+  (limits-with default-limits
+               '((max-header-field-bytes . 4) (max-header-value-bytes . 4)
+                 (max-header-bytes . 10) (max-header-count . 2))))
+
+;; Bytes for a trailer's or an extension's span, a letter each.
+(define big (make-bytevector 20000 97))
+
+;; trailing : Limits . (Pair String String) -> ConnState
+;; A chunked POST under `limits`, its head holding Host: x and `fields`,
+;; with its streaming reader reading.
+(define (trailing limits . fields)
+  (let ((s (state 'head 'deadline 'header 'target "/" 'host "x" 'fields fields 'limits limits)))
+    (conn-step s `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0))
+    (conn-step s '(parser-result need-input 49 49 #f #f))
+    (conn-step s `(handler-responded ,streamer))
+    s))
+
+;; trailer : ConnState Nat Nat -> ConnState
+;; The same, having met a trailer field whose name is `name` bytes and whose
+;; value is `value`.
+(define (trailer s name value)
+  (conn-step s `(parser-event on-header-field-data ,big 0 ,name))
+  (conn-step s '(parser-event on-header-field-complete))
+  (conn-step s `(parser-event on-header-value-data ,big 0 ,value))
+  (conn-step s '(parser-event on-header-value-complete))
+  s)
+
+;; extended : Nat ... -> ConnState
+;; A chunked POST, its streaming reader reading, that met an extension name
+;; of each of `sizes` bytes, one a chunk.
+(define (extended . sizes)
+  (let ((s (reading 'chunked streamer)))
+    (for-each (lambda (n)
+                (conn-step s `(parser-event on-chunk-extension-name-data ,big 0 ,n))
+                (conn-step s '(parser-event on-chunk-extension-name-complete))
+                (conn-step s '(parser-event on-chunk-header))
+                (conn-step s '(parser-event on-chunk-complete)))
+              sizes)
+    s))
+
+(define max-extensions 16384)
+
+(define (framing-rows)
+  (list
+   (row 'F1 "body, a trailer field within the four header limits -> body: continue, nothing kept"
+        (i (trailing tight) `(parser-event on-header-field-data ,big 0 4)
+           '(body #f ((reply-parser continue))))
+        (i (trailing tight) '(parser-event on-header-field-complete)
+           '(body #f ((reply-parser continue))))
+        (let ((s (trailing tight)))
+          (conn-step s `(parser-event on-header-field-data ,big 0 1))
+          (conn-step s '(parser-event on-header-field-complete))
+          (i s `(parser-event on-header-value-data ,big 0 4)
+             '(body #f ((reply-parser continue)))))
+        (i (trailer (trailing tight) 1 4) '(parser-event on-header-value-complete)
+           '(body #f ((reply-parser continue)))))
+
+   (row 'F2 "body, a trailer field past one of the four header limits -> body: fail, for the head's reason"
+        (i (trailing tight) `(parser-event on-header-field-data ,big 0 5)
+           '(body #f ((reply-parser (fail header-field-too-large)))))
+        (let ((s (trailing tight)))
+          (conn-step s `(parser-event on-header-field-data ,big 0 1))
+          (conn-step s '(parser-event on-header-field-complete))
+          (i s `(parser-event on-header-value-data ,big 0 5)
+             '(body #f ((reply-parser (fail header-value-too-large))))))
+        (i (trailer (trailing tight) 4 4) `(parser-event on-header-field-data ,big 0 3)
+           '(body #f ((reply-parser (fail headers-too-large)))))
+        (i (trailer (trailer (trailing tight) 1 1) 1 1) '(parser-event on-header-field-complete)
+           '(body #f ((reply-parser (fail too-many-headers))))))
+
+   ;; The head holds 2 fields, 9 bytes, at the tight limits' edge; its
+   ;; trailers may hold as many again.
+   (row 'F3 "body, trailer fields after a head at the limits -> body: continue; the trailers are counted on their own"
+        (i (trailer (trailing tight '("Ab" . "cd")) 4 4) `(parser-event on-header-field-data ,big 0 1)
+           '(body #f ((reply-parser continue))))
+        (let ((s (trailer (trailing tight '("Ab" . "cd")) 4 4)))
+          (conn-step s `(parser-event on-header-field-data ,big 0 1))
+          (i s '(parser-event on-header-field-complete)
+             '(body #f ((reply-parser continue))))))
+
+   (row 'F4 "body, a body's chunk extensions within 16 KiB, all of them together -> body: continue"
+        (i (extended) `(parser-event on-chunk-extension-name-data ,big 0 ,max-extensions)
+           '(body #f ((reply-parser continue))))
+        (i (extended 8192) `(parser-event on-chunk-extension-value-data ,big 0 8192)
+           '(body #f ((reply-parser continue)))))
+
+   (row 'F5 "body, a body's chunk extensions past 16 KiB, all of them together -> body: fail chunk-extensions-too-large"
+        (i (extended) `(parser-event on-chunk-extension-name-data ,big 0 ,(+ max-extensions 1))
+           '(body #f ((reply-parser (fail chunk-extensions-too-large)))))
+        (i (extended 8192) `(parser-event on-chunk-extension-value-data ,big 0 8193)
+           '(body #f ((reply-parser (fail chunk-extensions-too-large)))))
+        (i (extended 4096 4096 4096) `(parser-event on-chunk-extension-name-data ,big 0 4097)
+           '(body #f ((reply-parser (fail chunk-extensions-too-large))))))
+
+   (row 'F6 "body, the parser's error for a trailer or the extensions refused -> responding 431 or 413, read-stop, close-after"
+        (let ((s (trailing tight)))
+          (conn-step s `(parser-event on-header-field-data ,big 0 5))
+          (i s '(parser-result error 60 60 header-field-too-large #f)
+             `(responding header-field-too-large
+                          (,(status-write 431 "Request Header Fields Too Large") (read-stop) (arm-deadline write)))))
+        (let ((s (extended)))
+          (conn-step s `(parser-event on-chunk-extension-name-data ,big 0 ,(+ max-extensions 1)))
+          (i s '(parser-result error 60 60 chunk-extensions-too-large #f)
+             `(responding chunk-extensions-too-large
+                          (,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write))))))
+
+   ;; What the feed that completed the head met of the body waits for the
+   ;; handler's answer, a refusal among it (design §8.1's second property).
+   (row 'F7 "body, a trailer or the extensions refused in the head's feed, before the handler is asked -> handling: read-stop, disarm, call-handler, the refusal kept, then answered with its status"
+        (let ((s (announced 'chunked tight)))
+          (conn-step s `(parser-event on-header-field-data ,big 0 5))
+          (i s '(parser-result error 60 60 header-field-too-large #f)
+             '(handling #f ((read-stop) (disarm-deadline) (call-handler POST)))))
+        (let ((s (announced 'chunked)))
+          (conn-step s `(parser-event on-chunk-extension-name-data ,big 0 ,(+ max-extensions 1)))
+          (i s '(parser-result error 60 60 chunk-extensions-too-large #f)
+             '(handling #f ((read-stop) (disarm-deadline) (call-handler POST)))))
+        (let ((s (announced 'chunked tight)))
+          (conn-step s `(parser-event on-header-field-data ,big 0 5))
+          (conn-step s '(parser-result error 60 60 header-field-too-large #f))
+          (i s `(handler-responded ,streamer)
+             `(responding header-field-too-large
+                          (,(status-write 431 "Request Header Fields Too Large") (arm-deadline write)))))
+        (let ((s (announced 'chunked)))
+          (conn-step s `(parser-event on-chunk-extension-name-data ,big 0 ,(+ max-extensions 1)))
+          (conn-step s '(parser-result error 60 60 chunk-extensions-too-large #f))
+          (i s `(handler-responded ,streamer)
+             `(responding chunk-extensions-too-large
+                          (,(status-write 413 "Content Too Large") (arm-deadline write))))))))
+
 ;; index : Any (Listof Any) -> Nat — where `x` stands in `xs`.
 (define (index x xs)
   (let loop ((xs xs) (n 0))
@@ -1517,7 +1666,8 @@
            (credits (count-rows "credit" credit-rows credited))
            (streams (count-rows "stream" stream-rows produced))
            (expects (count-rows "expect" expect-rows asked-by))
-           (continues (count-rows "continue-accounting" continue-accounting-rows accounted)))
+           (continues (count-rows "continue-accounting" continue-accounting-rows accounted))
+           (framings (count-rows "framing" framing-rows asked-by)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
       (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
@@ -1530,7 +1680,8 @@
       (test-eqv "M6.2: all 11 credit rows have a test" 11 credits)
       (test-eqv "M6.3: all 19 stream rows have a test" 19 streams)
       (test-eqv "M6.4: all 7 Expect rows have a test" 7 expects)
-      (test-eqv "M6.4: the 100's accounting row has a test" 1 continues))
+      (test-eqv "M6.4: the 100's accounting row has a test" 1 continues)
+      (test-eqv "M6.4: all 7 trailer and extension rows have a test" 7 framings))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it: `notify-producer` since M6.3.

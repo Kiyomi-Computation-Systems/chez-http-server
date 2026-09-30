@@ -1,6 +1,6 @@
 #!r6rs
-;;; (http-server connection): `Expect: 100-continue`, through the fake shell's
-;;; message loop.  M6.4.
+;;; (http-server connection): `Expect: 100-continue`, and what a chunked body
+;;; carries beside its data, through the fake shell's message loop.  M6.4.
 ;;;
 ;;; With chez-httparse driving the core through the adapter.  A client that
 ;;; sends `Expect: 100-continue` with a head that announces a body is sent
@@ -10,15 +10,21 @@
 ;;; §10.1.1).  The 100 arms the body deadline.  A reader whose cap the
 ;;; declared length passes is answered 413 with no 100, as the head says;
 ;;; one whose cap the body met so far passes, after the 100, as it would be
-;;; had the body come later.
+;;; had the body come later.  A chunked body's trailer fields are held to
+;;; the four header limits, counted afresh, and its chunk extensions to
+;;; 16 KiB, all of a body's together (decided on the owner's word,
+;;; 2026-09-29).
 ;;;
 ;;; Each row runs at every delivery size, from a byte at a time to the whole
 ;;; input in one delivery, so one expected answer is also the outcome's
 ;;; independence from how the bytes were split (design §8.1's second
-;;; property).  The pieces a reader is handed are joined in the outcome.
+;;; property).  The extensions' inputs, over 16 KiB, run at a sample of
+;;; sizes.  The pieces a reader is handed are joined in the outcome.
 ;;;
 ;;; Oracles: RFC 9110 §10.1.1 and §15.2.1; decision 0013; the inputs' own
-;;; bytes; decision 0005's 60 s body deadline; decision 0011's staged close.
+;;; bytes; the limits each row sets; design §6.5's 413 and 431 (RFC 6585
+;;; §5's phrase); decision 0005's 60 s body deadline; decision 0011's staged
+;;; close.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server span) (http-server limits) (http-server body)
@@ -83,6 +89,12 @@
   (let loop ((size (bytevector-length input)) (sizes '()))
     (if (zero? size) (at-sizes sizes input limits handler view) (loop (- size 1) (cons size sizes)))))
 
+;; sampled : Bytevector -> (Listof Nat)
+;; Delivery sizes for an input too long to run at every size: small ones, a
+;; few that fall across its framing, and the whole.
+(define (sampled input)
+  (append '(1 2 3 5 8 13 64 509 4096 16384) (list (bytevector-length input))))
+
 ;; The handlers: one that streams every body, one that reads it whole, one
 ;; that reads it whole within 4 bytes, one that answers at once, reading
 ;; nothing.
@@ -107,6 +119,34 @@
 
 ;; The 100 as the client reads it: its status line and the blank line.
 (define continue-wire "HTTP/1.1 100 Continue\r\n\r\n")
+
+;; --- trailers: header limits small enough to fill ------------------------------
+;; A field's name up to 17 bytes, Transfer-Encoding's, its value up to 8, 32
+;; bytes in all and 3 fields.  The head holds 29 bytes in 2 fields: Host, x,
+;; Transfer-Encoding, chunked.
+(define small
+  (limits-with default-limits
+               '((max-header-field-bytes . 17) (max-header-value-bytes . 8)
+                 (max-header-bytes . 32) (max-header-count . 3))))
+
+;; trailed : String -> Bytevector
+;; A chunked POST of "abc" whose trailer section is `trailers`, and the GET
+;; behind it.
+(define (trailed trailers)
+  (post "1" chunked (string-append "3\r\nabc\r\n0\r\n" trailers "\r\n")))
+
+;; Three trailer fields, 18, 9 and 5 bytes: 32 in all, and 3 fields, as much
+;; as `small` lets a section hold.
+(define full-trailers "Trailer-One: 1234567\r\nTw: 1234567\r\nTh: 123\r\n")
+
+;; --- extensions: 16 KiB of names and values, over two chunks -----------------
+;; extended : Nat Nat -> Bytevector
+;; A chunked POST of "abc" and "de", each chunk carrying one extension `e`
+;; whose value is `n1` and `n2` bytes, and the GET behind it.
+(define (extended n1 n2)
+  (post "1" chunked
+        (string-append "3;e=" (make-string n1 #\v) "\r\nabc\r\n"
+                       "2;e=" (make-string n2 #\v) "\r\nde\r\n0\r\n\r\n")))
 
 (run-suite "connection-expect"
   (lambda ()
@@ -190,4 +230,40 @@
                       '(((call-handler (POST "/a")) (write 100))
                         ((call-handler (POST "/a")) (write 100))
                         (((call-handler (POST "/a")) (write 100) (write 408)) lingering body-timeout))
-                      (list before at-59999 (outcome sh))))))))
+                      (list before at-59999 (outcome sh))))))
+
+    ;; --- trailers --------------------------------------------------------------------
+    ;; Counted afresh: the head's 29 bytes and 2 fields leave the trailers
+    ;; the whole 32 and 3, so a section at the limits is served.
+    (test-equal "trailers as large as a head may be, after a head near the limits, every delivery size: served"
+                '((((call-handler (POST "/a")) (body "abc") (end) (write 200)
+                    (call-handler (GET "/b")) (end) (write 200))
+                   idle #f))
+                (every-size (trailed full-trailers) small streaming outcome))
+    ;; One past a limit is answered 431, as a head would be, after the body
+    ;; the reader was handed; the GET behind is never served.
+    (test-equal "a trailer section a byte past max-header-bytes, every delivery size: 431, then the staged close"
+                '((((call-handler (POST "/a")) (body "abc") (write 431)) lingering headers-too-large))
+                (every-size (trailed "Trailer-One: 1234567\r\nTw: 1234567\r\nTh: 1234\r\n") small
+                            streaming outcome))
+    (test-equal "a fourth trailer field, every delivery size: 431 for the count"
+                '((((call-handler (POST "/a")) (body "abc") (write 431)) lingering too-many-headers))
+                (every-size (trailed "A: 1\r\nB: 2\r\nC: 3\r\nD: 4\r\n") small streaming outcome))
+    (test-equal "a trailer value a byte past max-header-value-bytes, every delivery size: 431"
+                '((((call-handler (POST "/a")) (body "abc") (write 431)) lingering header-value-too-large))
+                (every-size (trailed "T: 123456789\r\n") small streaming outcome))
+
+    ;; --- chunk extensions ---------------------------------------------------------
+    ;; Two extensions of 1 + 8,191 bytes each: 16,384 together, the most.
+    (test-equal "a body's chunk extensions at 16 KiB, together over two chunks, sampled delivery sizes: served"
+                '((((call-handler (POST "/a")) (body "abcde") (end) (write 200)
+                    (call-handler (GET "/b")) (end) (write 200))
+                   idle #f))
+                (let ((input (extended 8191 8191)))
+                  (at-sizes (sampled input) input default-limits streaming outcome)))
+    ;; A byte more, in the second chunk's: the first chunk's data was handed
+    ;; over, then 413.
+    (test-equal "a byte more, sampled delivery sizes: the first chunk's data, then 413 and the staged close"
+                '((((call-handler (POST "/a")) (body "abc") (write 413)) lingering chunk-extensions-too-large))
+                (let ((input (extended 8191 8192)))
+                  (at-sizes (sampled input) input default-limits streaming outcome)))))

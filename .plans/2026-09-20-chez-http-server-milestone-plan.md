@@ -1216,6 +1216,29 @@ expects the 100 and never sends its body would hold its connection with no bound
 arms the body deadline when the 100 is written, not at the head. A body the client sends
 without waiting re-arms it, as any body does.
 
+*Noted 2026-09-29 (M6.4):* built as the bullets and the note above say, with four
+choices the owner made by form that day, and one found.
+- The 100 goes out when the handler answers with a reader, before the pieces kept for
+  it, and with it the body deadline is armed; a response, a reader refused by its cap and
+  a handler that raises get their final status alone. Expect is ignored on HTTP/1.0, on a
+  request with no body, and when it is not 100-continue (decided: ignored; weighed, 417).
+  curl, which asks for the 100 on an upload over 1 MiB, had waited its own second for it:
+  a 2 MiB POST took 1.016 s, and takes 5.4 to 6.4 ms (Darwin arm64; on Linux 1.006 to
+  1.017 s, and 1.2 to 1.8 ms). The plan's mutation, the 100
+  written with the head, turns the Expect rows red (the table's E1, and the flows').
+- libhtp's two Expect files end their lines in a bare LF, which the strict parser refuses
+  at the first line, so as vendored they would check only that. The lane delivers them
+  with CRLF (decided, after a discussion the owner asked for; weighed: their 400s, left
+  not-yet, our own CRLF copies), and 99's handler refuses as its recorded origin did
+  (design §8.2's note). The ratchet moves: fourteen libhtp streams pass.
+- Trailer fields are held to the four header limits, counted afresh (decided; weighed:
+  one budget with the head, the body's cap), and a body's chunk extensions, found
+  unbounded too, to 16 KiB together, 413 (decided; weighed: left for M8.3). Decision
+  0005's amendment of this day.
+- Found, and given its own PR after M6.4 by the owner's word: what the parser reads and
+  hands the core no span of passes every limit, the spaces before a field's value and a
+  chunk size's leading zeros, a megabyte of either accepted.
+
 **M6 exit:** the brief's. 16 MiB each way against a slow peer, with memory bounded,
 read as the M4 exit read a connection: the server's heap, the client in a process of
 its own. libhtp's Expect and early-response files pass. `docs/handlers.org` gains
