@@ -3,9 +3,14 @@
 ;;; span of, through the fake shell's message loop.  The padding PR.
 ;;;
 ;;; With chez-httparse driving the core through the adapter, each event
-;;; callback carrying the parser's position.  Two runs of bytes the parser
+;;; callback carrying the parser's position.  Four runs of bytes the parser
 ;;; reads outside the pieces it hands on are held to limits (decided on the
 ;;; owner's word, 2026-09-30):
+;;;   - the empty lines before a request line: two are skipped (RFC 9112
+;;;     §2.2 asks for one, and llhttp's own fixture has two after a POST's
+;;;     body), and more are refused, 400;
+;;;   - the spaces between the request line's parts: one each (§3), and more
+;;;     are refused, 400;
 ;;;   - the spaces and tabs before a field's value: counted with the value,
 ;;;     against its limit and the section's, 431, in a head and in a
 ;;;     trailer section; an empty value's with its line end;
@@ -22,7 +27,7 @@
 ;;; byte at a time, a connection that did not refuse would pass the fake
 ;;; shell's cap of 100,000 dispatches.
 ;;;
-;;; Oracles: RFC 9112 §5 and §7.1; the inputs' own bytes; the
+;;; Oracles: RFC 9112 §2.2, §3, §5 and §7.1; the inputs' own bytes; the
 ;;; limits each row sets; design §6.5's 400 and 431; decision 0011's staged
 ;;; close.
 (import (rnrs) (srfi :64) (testing)
@@ -112,7 +117,12 @@
 
 ;; --- the inputs --------------------------------------------------------------
 
+(define get-a "GET /a HTTP/1.1\r\nHost: x\r\n\r\n")
 (define get-b "GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+
+;; repeat : String Nat -> String
+(define (repeat s n)
+  (let loop ((n n) (acc '())) (if (zero? n) (apply string-append acc) (loop (- n 1) (cons s acc)))))
 
 (define (spaces n) (make-string n #\space))
 (define (zeros n) (make-string n #\0))
@@ -134,8 +144,11 @@
 (define (chunked body)
   (b (string-append "POST /a HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" body get-b)))
 
-;; The outcomes: a refusal before any request; one after the POST's
-;; handler was asked, the body handed over so far.
+;; The outcomes: both requests served; a refusal before any request; one
+;; after the POST's handler was asked, the body handed over so far.
+(define both-served
+  '((((call-handler (GET "/a")) (end) (write 200) (call-handler (GET "/b")) (end) (write 200))
+     idle #f)))
 (define (refused-first status reason) (list (list (list (list 'write status)) 'lingering reason)))
 (define post-served
   '((((call-handler (POST "/a")) (body "abc") (end) (write 200)
@@ -148,6 +161,36 @@
 
 (run-suite "connection-padding"
   (lambda ()
+    ;; --- empty lines before a request line --------------------------------------
+    ;; Two are skipped, at a connection's start, between requests, or after a
+    ;; POST's body, as CRLFs or bare LFs: their 4 bytes are the most.
+    (test-equal "two empty lines before a request line, CRLF or LF, at the start, between requests and after a body, every delivery size: served"
+                (list both-served both-served both-served post-served)
+                (list (every-size (b (string-append "\r\n\r\n" get-a get-b)) default-limits)
+                      (every-size (b (string-append "\n\n\n\n" get-a get-b)) default-limits)
+                      (every-size (b (string-append get-a "\r\n\r\n" get-b)) default-limits)
+                      (every-size (b (string-append "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\n"
+                                                    "abc\r\n\r\n" get-b))
+                                  default-limits)))
+    (test-equal "a byte more, at the start or between requests, every delivery size: 400, then the staged close"
+                (list (refused-first 400 'empty-lines)
+                      '((((call-handler (GET "/a")) (end) (write 200) (write 400)) lingering empty-lines)))
+                (list (every-size (b (string-append "\r\n\r\n\n" get-a get-b)) default-limits)
+                      (every-size (b (string-append get-a "\r\n\r\n\r" get-b)) default-limits)))
+    (test-equal "a megabyte of empty lines, sampled delivery sizes: 400"
+                (refused-first 400 'empty-lines)
+                (sampled (b (string-append (repeat "\r\n" (div megabyte 2)) get-a)) default-limits))
+
+    ;; --- the request line's spaces ------------------------------------------------
+    (test-equal "two spaces after the method, or before the version, every delivery size: 400"
+                (list (refused-first 400 'request-line-spaces) (refused-first 400 'request-line-spaces))
+                (list (every-size (b (string-append "GET  /a HTTP/1.1\r\nHost: x\r\n\r\n" get-b)) default-limits)
+                      (every-size (b (string-append "GET /a  HTTP/1.1\r\nHost: x\r\n\r\n" get-b)) default-limits)))
+    (test-equal "a megabyte of spaces after the method, sampled delivery sizes: 400"
+                (refused-first 400 'request-line-spaces)
+                (sampled (b (string-append "GET" (spaces megabyte) "/a HTTP/1.1\r\nHost: x\r\n\r\n"))
+                         default-limits))
+
     ;; --- the whitespace before a field's value -----------------------------------
     ;; Under `small`, 8 bytes of value: the whitespace and the value together.
     (test-equal "spaces or tabs before a value, with it at the value's limit, every delivery size: served"
@@ -207,8 +250,10 @@
     ;; more: a megabyte of padding costs it one read.  The rest is read and
     ;; dropped as the connection lingers (decision 0011).
     (test-equal "a megabyte of each run, in 16 KiB reads: refused at the first read's end, the rest never parsed"
-                '(16384 16384 16384)
+                '(16384 16384 16384 16384 16384)
                 (map (lambda (input) (fed-of input 16384))
-                     (list (field-get (string-append "X:" (spaces megabyte) "v"))
+                     (list (b (string-append (repeat "\r\n" (div megabyte 2)) get-a))
+                           (b (string-append "GET" (spaces megabyte) "/a HTTP/1.1\r\nHost: x\r\n\r\n"))
+                           (field-get (string-append "X:" (spaces megabyte) "v"))
                            (chunked (string-append "3\r\nabc\r\n0\r\nT:" (spaces megabyte) "t\r\n\r\n"))
                            (chunked (string-append "3\r\nabc\r\n" (zeros megabyte) "\r\n\r\n")))))))

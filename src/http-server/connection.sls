@@ -280,13 +280,17 @@
 ;;; 'chunk-extensions-too-large, answered 413, as a body past a cap.
 ;;;
 ;;; WHAT THE PARSER READS AND HANDS NO SPAN OF IS HELD TO LIMITS TOO (the
-;;; padding PR; decided on the owner's word, 2026-09-30).  Two runs of it,
-;;; a megabyte of each answered 200 before: the whitespace before a field's
+;;; padding PR; decided on the owner's word, 2026-09-30).  Four runs of it,
+;;; a megabyte of each answered 200 before: the empty lines before a request
+;;; line, the spaces between its parts, the whitespace before a field's
 ;;; value, and a chunk size's digits.  Every event carries the parser's
 ;;; position, and a span's is its delivery's base plus its bound, so a run
 ;;; is measured from where one piece ends to where the next begins
-;;; (`open-run!`).  A chunk size has 16 hex digits at most, zeros included,
-;;; and more is refused as 'chunk-size-too-long, answered 400.  The whitespace before a value counts with it,
+;;; (`open-run!`).  Two empty lines, 4 bytes, are skipped, and more are
+;;; refused as 'empty-lines; one space between the request line's parts,
+;;; and more as 'request-line-spaces; a chunk size has 16 hex digits at
+;;; most, zeros included, and more is refused as 'chunk-size-too-long: all
+;;; three answered 400.  The whitespace before a value counts with it,
 ;;; against its limit and the section's, as the whitespace after it already
 ;;; did, 431 past one; an empty value's counts its line end too, since the
 ;;; parser hands it over after that.  A run is judged at the callback that
@@ -422,7 +426,9 @@
   ;; padding PR): the bytes it has taken, as the reads' results count them;
   ;; the parser's position of index 0 of the delivery being fed; and the
   ;; run of bytes it reads and hands no span of that is open, where it
-  ;; began and what it is (see open-run!).  A state made in `handling` has a message that
+  ;; began and what it is (see open-run!).  A state is made at a
+  ;; connection's first byte, so the empty lines before its first request
+  ;; line are open from there.  A state made in `handling` has a message that
   ;; has ended, and is waiting for its handler's answer, as a request with no
   ;; body is.
   (define-record-type (conn-state make-conn-state conn-state?)
@@ -463,7 +469,7 @@
              (body-answer-set! body 'asked)
              (body-complete?-set! body #t))
            (new phase deadline close-after outstanding outstanding-bytes pending request limits
-                (make-head) body (make-target-judge) #f #f #f #f 0 0 #f #f))))))
+                (make-head) body (make-target-judge) #f #f #f #f 0 0 0 'lines))))))
 
   ;; conn-body-reader : ConnState -> (U #f BodyReader)
   ;; The reader the handler answered with, while the core hands it the body:
@@ -1106,8 +1112,10 @@
   ;; none is kept (M6.4); and a run the parser reads and hands no span of
   ;; opens at the event before it and is judged at the span or event after
   ;; it, and refused past its limit as a limit tripped here is (the padding
-  ;; PR): the whitespace at a value's first bytes, a chunk size's digits at
-  ;; its first extension or at on-chunk-header; body,
+  ;; PR): the empty lines at on-message-begin, the request line's spaces at
+  ;; the target's and the protocol's first bytes, the whitespace at a value's
+  ;; first bytes, a chunk size's digits at its first extension or at
+  ;; on-chunk-header; body,
   ;; on-body-data -> body; body, on-message-complete -> handling, pausing the
   ;; parser and stopping reads in the same step, so one delivery carrying two
   ;; messages cannot start a second handler (design §4.4).  Every other
@@ -1118,27 +1126,52 @@
       ((on-message-begin)
        (case (conn-phase s)
          ((idle)
-          (head-roll! (conn-head s))
-          (body-roll! (conn-body s))
-          (conn-request-set! s #f)
-          (conn-phase-set! s 'head)
-          (conn-deadline-set! s 'header)
-          (values s '((reply-parser continue) (disarm-deadline) (arm-deadline header))))
+          (let ((empty (close-run! s 'lines at)))
+            (begin-head! s)
+            (if (and empty (> empty max-empty-line-bytes))
+                (begin
+                  (head-refusal-set! (conn-head s) 'empty-lines)
+                  (values s '((reply-parser (fail empty-lines))
+                              (disarm-deadline) (arm-deadline header))))
+                (values s '((reply-parser continue) (disarm-deadline) (arm-deadline header))))))
+         (else (continue s))))
+      ((on-method-complete)
+       (case (conn-phase s)
+         ((head) (open-run! s 'after-method at) (continue s))
          (else (continue s))))
       ((on-url-data)
        (case (conn-phase s)
          ((head)
-          (let ((h (conn-head s)))
-            (add-fragment! h bv from to)
-            (if (fx>? (head-size h) (limits-max-target-bytes (conn-limits s)))
-                (refuse s 'target-too-large)
-                (continue s))))
+          (let ((spaces (close-run! s 'after-method (position s from))))
+            (when spaces (open-run! s 'target (position s from)))
+            (if (and spaces (> spaces 1))
+                (refuse s 'request-line-spaces)
+                (let ((h (conn-head s)))
+                  (add-fragment! h bv from to)
+                  (if (fx>? (head-size h) (limits-max-target-bytes (conn-limits s)))
+                      (refuse s 'target-too-large)
+                      (continue s))))))
          (else (continue s))))
       ((on-url-complete)
        (case (conn-phase s)
          ((head)
-          (let ((h (conn-head s))) (head-target-set! h (take-piece! h)))
+          (let* ((h (conn-head s))
+                 (end (and (eq? (conn-run s) 'target) (+ (conn-mark s) (head-size h)))))
+            (head-target-set! h (take-piece! h))
+            ;; One space past the target's end: the spaces up to the protocol
+            ;; follow.  Two, its line end: a request line with no version.
+            (if (and end (= at (+ end 1)))
+                (open-run! s 'after-target at)
+                (conn-run-set! s #f)))
           (continue s))
+         (else (continue s))))
+      ((on-protocol-data)
+       (case (conn-phase s)
+         ((head)
+          (let ((spaces (close-run! s 'after-target (position s from))))
+            (if (and spaces (> spaces 0))
+                (refuse s 'request-line-spaces)
+                (continue s))))
          (else (continue s))))
       ((on-header-field-data)
        (case (conn-phase s)
@@ -1210,6 +1243,7 @@
        (case (conn-phase s)
          ((body)
           (let ((bd (conn-body s)))
+            (open-run! s 'lines at)
             (conn-phase-set! s 'handling)
             (conn-deadline-set! s #f)
             (body-complete?-set! bd #t)
@@ -1365,6 +1399,14 @@
   ;; work, not on memory.
   (define max-chunk-extension-bytes 16384)
 
+  ;; max-empty-line-bytes : Nat
+  ;; The most bytes of empty lines skipped before a request line: two lines'
+  ;; CRLFs (decided on the owner's word, 2026-09-30).  RFC 9112 §2.2 asks a
+  ;; server to ignore at least one; llhttp's own fixture has a POST's body
+  ;; followed by two, and Go forgives 4 bytes of them after a POST.  Four
+  ;; bare LFs come to as much, and pass too.
+  (define max-empty-line-bytes 4)
+
   ;; max-size-digits : Nat
   ;; The most hex digits a chunk size may have, leading zeros included
   ;; (decided on the owner's word, 2026-09-30, as Go and h2o hold it): a
@@ -1373,8 +1415,12 @@
 
   ;; open-run! : ConnState Symbol Nat -> Void
   ;; A run of bytes the parser reads and hands no span of begins at the
-  ;; parser's position `at`: `whitespace`, before a field's value; `digits`,
-  ;; a chunk size's.  One is open at a time, and opening one lets the last
+  ;; parser's position `at`: `lines`, the empty lines before a request line;
+  ;; `after-method` and `after-target`, the spaces after the method and
+  ;; after the target's one; `whitespace`, before a field's value; `digits`,
+  ;; a chunk size's.  And `target`, the target itself, which the parser does
+  ;; hand on, counted by its own limit: open only so that its end is known,
+  ;; and never judged.  One is open at a time, and opening one lets the last
   ;; go.
   (define (open-run! s kind at)
     (conn-mark-set! s at)
@@ -1405,6 +1451,16 @@
           (head-pad-set! h n)
           (head-total-set! h (+ (head-total h) n))))))
 
+  ;; begin-head! : ConnState -> Void
+  ;; idle -> head, for a request line's first byte: a fresh head and body,
+  ;; no request, the header deadline recorded.
+  (define (begin-head! s)
+    (head-roll! (conn-head s))
+    (body-roll! (conn-body s))
+    (conn-request-set! s #f)
+    (conn-phase-set! s 'head)
+    (conn-deadline-set! s 'header))
+
   ;; run-past-limit : ConnState Boolean -> (U #f Symbol)
   ;; At a read's end, the reason to refuse the run still open, if it is
   ;; past its limit: its bytes run from its start to the parser's position.
@@ -1421,6 +1477,9 @@
                  (and (memq phase '(head body)) (whitespace-past-limit s n))
                  (and (not error?)
                       (case run
+                        ((lines) (and (eq? phase 'idle) (> n max-empty-line-bytes) 'empty-lines))
+                        ((after-method) (and (eq? phase 'head) (> n 1) 'request-line-spaces))
+                        ((after-target) (and (eq? phase 'head) (> n 0) 'request-line-spaces))
                         ((digits) (and (eq? phase 'body) (> n (+ max-size-digits 1))
                                        'chunk-size-too-long))
                         (else #f))))))))
@@ -1585,9 +1644,9 @@
   ;; `next`, is kept as the pending input the resume feeds (decision 0004
   ;; item 1).  Any other result there is not answered, llhttp's "Data after
   ;; `Connection: close`" included (0004 item 4).
-  ;; Every result: first, the bytes the read took are counted where the
-  ;; parser is; in head or body, a run it reads and hands no span of, still
-  ;; open and past its limit, is refused as a callback's refusal is when the
+  ;; idle, head or body: first, the bytes the read took are counted where
+  ;; the parser is, and a run it reads and hands no span of, still open and
+  ;; past its limit, is refused as a callback's refusal is when the
   ;; parser's error comes back (the padding PR; `run-past-limit`).
   (define (on-parser-result s ev)
     (conn-parsed-set! s (+ (conn-parsed s) (list-ref ev 2)))
@@ -1597,9 +1656,12 @@
           (read-result s ev))))
 
   ;; refuse-run : ConnState Symbol -> (values ConnState (Listof Action))
-  ;; A run past its limit at a read's end, closed and refused for `reason`.
+  ;; A run past its limit at a read's end, closed and refused for `reason`:
+  ;; from idle, the empty lines, as their request line's first byte would
+  ;; be, in head.
   (define (refuse-run s reason)
     (conn-run-set! s #f)
+    (when (eq? (conn-phase s) 'idle) (begin-head! s))
     (head-refusal-set! (conn-head s) reason)
     (answer-refusal s #f))
 
