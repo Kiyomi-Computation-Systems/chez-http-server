@@ -14,8 +14,9 @@
 #              §8.1 property 2): the 135 strict fixtures pass, the 4 upgrades
 #              since M2.5; the 32 lenient ones are deferred.
 #   libhtp  -- our per-file expectations hold (tests/libhtp-lane.sls): the 12
-#              pipelining and multi-packet streams pass since the M2 exit; the
-#              other 90 are not-yet.
+#              pipelining and multi-packet streams pass since the M2 exit, and
+#              the 2 Expect streams since M6.4, delivered with CRLF; the other
+#              88 are not-yet.
 passing trace/request/connection.md#1
 passing trace/request/connection.md#2
 passing trace/request/connection.md#3
@@ -355,7 +356,7 @@ not-yet libhtp/files/01-get.t
 not-yet libhtp/files/02-header-test-apache2.t
 not-yet libhtp/files/03-post-urlencoded.t
 passing libhtp/files/04-post-urlencoded-chunked.t
-not-yet libhtp/files/05-expect.t
+passing libhtp/files/05-expect.t
 not-yet libhtp/files/06-uri-normal.t
 passing libhtp/files/07-pipelined-connection.t
 passing libhtp/files/08-not-pipelined-connection.t
@@ -451,4 +452,4 @@ not-yet libhtp/files/95-compressed-response-gzipasdeflate.t
 not-yet libhtp/files/96-compressed-response-lzma.t
 not-yet libhtp/files/97-requests-cut.t
 not-yet libhtp/files/98-responses-cut.t
-not-yet libhtp/files/99-expect-100.t
+passing libhtp/files/99-expect-100.t

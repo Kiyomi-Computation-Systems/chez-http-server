@@ -760,6 +760,36 @@
       (test-equal "after a 413" '(413) (map status (responses (client-bytes cl))))
       (client-close! cl))
 
+    ;; Expect: 100-continue (M6.4), over loopback.  The client sends the head
+    ;; alone and waits for the 100 before it sends its body, as curl does
+    ;; for a large upload: the 100 is a write of its own, and nothing else
+    ;; comes before the body is sent.  The response then answers the body
+    ;; sent after it.
+    (let* ((cl (open-client! (b "POST /expect HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n")))
+           (got-100 (wait-for (lambda () (>= (bytevector-length (client-bytes cl)) 25))))
+           (before-body (utf8->string (client-bytes cl))))
+      (client-send! cl (b "hello"))
+      (let ((answered (wait-for (lambda () (= 2 (length (responses (client-bytes cl))))))))
+        (test-equal "a client that waits for the 100 reads it, alone, before it sends its body"
+                    '(satisfied "HTTP/1.1 100 Continue\r\n\r\n")
+                    (list got-100 before-body))
+        (test-equal "then the response to the body it sent after it, on the connection kept"
+                    '(satisfied ((100 "") (200 "/expect")) absent)
+                    (list answered
+                          (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))
+                          (field (cadr (responses (client-bytes cl))) "Connection"))))
+      (client-close! cl))
+    ;; A handler that answers at once gets no 100 before its response, and
+    ;; the client, told the connection closes, never sends its body.
+    (let ((cl (open-client! (b "POST /early HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n"))))
+      (test-eq "the client of a handler that answers an Expect head at once reads the stream's end" 'satisfied
+               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+      (test-equal "after a 200 that says Connection: close, and no 100"
+                  '((200 "/early" "close"))
+                  (map (lambda (r) (list (status r) (body r) (field r "Connection")))
+                       (responses (client-bytes cl))))
+      (client-close! cl))
+
     ;; A handler that raises.
     (set! logged '())
     (let ((cl (open-client! (b "GET /raise HTTP/1.1\r\nHost: x\r\n\r\n"))))
