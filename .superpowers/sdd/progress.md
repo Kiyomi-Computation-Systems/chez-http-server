@@ -3372,3 +3372,16 @@ M6.4's REVIEW, THE FIFTH FINDING RESEARCHED (2026-09-30, PRs #80 to #82 open), o
 DECIDED on the owner's word (2026-09-30), by form: the finding is closed as the design's, and plan §14's M7 carries it, so that M7's rows cover the wait with the others: reading stopped while such a handler has not answered, nothing armed, and its answer bringing the 100, reading and the body deadline. Weighed: M7.2 also weighing an opt-in limit on a handler's decision time; leaving it unrecorded.
 
 NEXT: the three stacked PRs, merged bottom up on the owner's word. Then the padding PR, its design by form on measurements, then the M6 exit.
+
+MERGED to main on 2026-09-30, on the owner's "do closing ritual": **M6.4, as three stacked PRs**, bottom up.
+- **#80, the 100 in the core,** its two commits (c87e01b, and the review's fix f745d7f) squashed as a149def. Its squash tree (22ad889) is the tested tip's, f745d7f's, and its parent is e1a57f6. It merged first and kept its branch, since #81 was based on it.
+- **#81, the 100 on the wire and libhtp's two Expect files,** retargeted to main and rebased from #80's tip, f745d7f: 91becde became 0f9320c, its tree (85bf4a5) the tested one's, and it merged as 23ce73c, whose parent is a149def.
+- **#82, the trailer and extension limits and M6.4's records,** retargeted and rebased from #81's old tip, 91becde: its three commits (2dc1f03, ec0869b, 778a472) became e159a78, acb8e93 and a7f19a0, the tip's tree (7c000e2) the tested 778a472's, and they merged as d7c4b30, whose parent is 23ce73c.
+- **CI.** Every run was the billing block, the `linux` job with 0 steps: 36650182193, 36650185023 and 36650187998 as opened; 36655148024, 36655150142 and 36655149369 after the review; 36696914621 for the M7 note; 36697213666 and 36697301376 for the rebased tips.
+- **Branches.** #82's `--delete-branch` merged it and deleted its remote branch, but left this checkout on the branch, as for #20, #22, #68, #70, #72 and #73: the switch to main, the fast-forward and the three local deletions were by hand, and #80's and #81's remote branches went in one `git push origin --delete`. No PR is open.
+
+`make test` green on main: forty-two suites, 1,335 expected passes.
+
+DONE and merged (a149def, 23ce73c, d7c4b30; PRs #80 to #82): **M6.4, Expect, trailers and the exit's files.** A client that expects 100-continue is sent it when the handler answers with a reader, at every delivery size, and the body deadline waits for it: curl's 2 MiB POST, which waited out its own second on main, takes 5.4 to 6.4 ms on Darwin and 1.2 to 1.8 on Linux. A chunked body's trailers are held to the four header limits, 431, and its extensions to 16 KiB a body, 413. libhtp's two Expect files join the lane with CRLF: fourteen streams pass. The review fixed the 100 before a body met past a reader's cap, kept the extensions' rule after reading eight servers' source, and carried the Expect wait to M7.
+
+NEXT: the padding PR (the owner's word, by form, 2026-09-29: its own PR after M6.4): the spaces before a field's value and a chunk size's leading zeros, which the parser hands the core no span of, its design by form on measurements, when the owner asks. Then the M6 exit (plan §14).
