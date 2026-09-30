@@ -18,7 +18,9 @@
 ;;;     inside on-headers-complete: decision 0006 item 1's four rows, alone
 ;;;     and pipelined;
 ;;;   - each of the four header limits passes a request at the limit and
-;;;     refuses one past it with 431, through the parser's own failure;
+;;;     refuses one past it with 431, through the parser's own failure; a
+;;;     value's limit and the section's count the whitespace before each
+;;;     value too (the padding PR);
 ;;;   - so does the target's limit, with 414 (M2.3);
 ;;;   - a target that is not the form its method calls for, or whose bytes
 ;;;     uriparse refuses, or that names no host where RFC 9110 needs one, is
@@ -216,24 +218,26 @@
     (test-equal "a header name one byte past it is refused"
                 (list (refusal 'header-field-too-large))
                 (every-size (b "GET / HTTP/1.1\r\nX-Abc: 1\r\n\r\n") (with-limits '((field . 4)))))
-    (test-equal "a header value at max-header-value-bytes passes"
-                (list (ok (list (req 'GET "/" 1 1 '("X" . "abc"))) 'idle #f))
-                (every-size (b "GET / HTTP/1.1\r\nX: abc\r\n\r\n") (with-limits '((value . 3)))))
+    ;; A value counts the whitespace before it (the padding PR): here the one
+    ;; space after the colon.
+    (test-equal "a header value at max-header-value-bytes, the space before it counted, passes"
+                (list (ok (list (req 'GET "/" 1 1 '("X" . "ab"))) 'idle #f))
+                (every-size (b "GET / HTTP/1.1\r\nX: ab\r\n\r\n") (with-limits '((value . 3)))))
     (test-equal "a header value one byte past it is refused"
                 (list (refusal 'header-value-too-large))
-                (every-size (b "GET / HTTP/1.1\r\nX: abcd\r\n\r\n") (with-limits '((value . 3)))))
+                (every-size (b "GET / HTTP/1.1\r\nX: abc\r\n\r\n") (with-limits '((value . 3)))))
     (test-equal "max-header-count headers pass"
                 (list (ok (list (req 'GET "/" 1 1 '("A" . "1") '("B" . "2"))) 'idle #f))
                 (every-size (b "GET / HTTP/1.1\r\nA: 1\r\nB: 2\r\n\r\n") (with-limits '((count . 2)))))
     (test-equal "one header more is refused"
                 (list (refusal 'too-many-headers))
                 (every-size (b "GET / HTTP/1.1\r\nA: 1\r\nB: 2\r\nC: 3\r\n\r\n") (with-limits '((count . 2)))))
-    (test-equal "names and values totalling max-header-bytes pass"
-                (list (ok (list (req 'GET "/" 1 1 '("Ab" . "123") '("C" . "4567"))) 'idle #f))
-                (every-size (b "GET / HTTP/1.1\r\nAb: 123\r\nC: 4567\r\n\r\n") (with-limits '((bytes . 10)))))
+    (test-equal "names, values and the spaces before them totalling max-header-bytes pass"
+                (list (ok (list (req 'GET "/" 1 1 '("Ab" . "12") '("C" . "456"))) 'idle #f))
+                (every-size (b "GET / HTTP/1.1\r\nAb: 12\r\nC: 456\r\n\r\n") (with-limits '((bytes . 10)))))
     (test-equal "one byte more across the section is refused"
                 (list (refusal 'headers-too-large))
-                (every-size (b "GET / HTTP/1.1\r\nAb: 123\r\nC: 45678\r\n\r\n") (with-limits '((bytes . 10)))))
+                (every-size (b "GET / HTTP/1.1\r\nAb: 12\r\nC: 4567\r\n\r\n") (with-limits '((bytes . 10)))))
 
     ;; --- the target's limit: at the limit, and one past it (M2.3) ---------------
     ;; Counted over the target's bytes as they arrive, so a target split across

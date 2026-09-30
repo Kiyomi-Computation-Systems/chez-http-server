@@ -39,7 +39,9 @@
 ;;; extensions past 16 KiB together, and a trailer field past the header
 ;;; limits, answered 431 as a head's is.  Both rows' requests arrive in the
 ;;; head's delivery, so what they meet waits for the handler's answer, and
-;;; reading stops where it is met.
+;;; reading stops where it is met.  The padding PR adds a 400 for what the
+;;; parser reads and hands no span of: a chunk size of more than 16 digits,
+;;; met in the head's delivery too.
 ;;;
 ;;; Oracles: design §6.5's table, and decision 0009 for the 301; RFC 9110
 ;;; §15's reason phrases, and RFC 6585 §5's for 431; decision 0010 item 6;
@@ -182,6 +184,12 @@
    (row "400: a parser error, a Transfer-Encoding with no chunked"
         answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: pigeons\r\n\r\n" get))
         (refused 400 "Bad Request" 'parser-error (at epoch)))
+   ;; What the parser reads and hands no span of (the padding PR): a chunk
+   ;; size of 17 digits, zeros included.
+   (row "400: a chunk size of 17 digits"
+        reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                   (make-string 16 #\0) "5\r\nhello\r\n0\r\n\r\n" get))
+        (kept 400 "Bad Request" 'chunk-size-too-long (at epoch)))
    ;; 408: the header deadline passes with the head unfinished, or the body
    ;; deadline with the body unfinished (M5.2): two of its five bytes.
    (row "408: a head still unfinished when the header deadline passes"

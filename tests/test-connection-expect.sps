@@ -122,8 +122,9 @@
 
 ;; --- trailers: header limits small enough to fill ------------------------------
 ;; A field's name up to 17 bytes, Transfer-Encoding's, its value up to 8, 32
-;; bytes in all and 3 fields.  The head holds 29 bytes in 2 fields: Host, x,
-;; Transfer-Encoding, chunked.
+;; bytes in all and 3 fields, a value counting the whitespace before it (the
+;; padding PR).  The head holds 31 bytes in 2 fields: Host, x,
+;; Transfer-Encoding, chunked, and a space before each value.
 (define small
   (limits-with default-limits
                '((max-header-field-bytes . 17) (max-header-value-bytes . 8)
@@ -135,9 +136,9 @@
 (define (trailed trailers)
   (post "1" chunked (string-append "3\r\nabc\r\n0\r\n" trailers "\r\n")))
 
-;; Three trailer fields, 18, 9 and 5 bytes: 32 in all, and 3 fields, as much
-;; as `small` lets a section hold.
-(define full-trailers "Trailer-One: 1234567\r\nTw: 1234567\r\nTh: 123\r\n")
+;; Three trailer fields, 18, 9 and 5 bytes with their spaces: 32 in all, and
+;; 3 fields, as much as `small` lets a section hold.
+(define full-trailers "Trailer-One: 123456\r\nTw: 123456\r\nTh: 12\r\n")
 
 ;; --- extensions: 16 KiB of names and values, over two chunks -----------------
 ;; extended : Nat Nat -> Bytevector
@@ -233,7 +234,7 @@
                       (list before at-59999 (outcome sh))))))
 
     ;; --- trailers --------------------------------------------------------------------
-    ;; Counted afresh: the head's 29 bytes and 2 fields leave the trailers
+    ;; Counted afresh: the head's 31 bytes and 2 fields leave the trailers
     ;; the whole 32 and 3, so a section at the limits is served.
     (test-equal "trailers as large as a head may be, after a head near the limits, every delivery size: served"
                 '((((call-handler (POST "/a")) (body "abc") (end) (write 200)
@@ -244,14 +245,14 @@
     ;; the reader was handed; the GET behind is never served.
     (test-equal "a trailer section a byte past max-header-bytes, every delivery size: 431, then the staged close"
                 '((((call-handler (POST "/a")) (body "abc") (write 431)) lingering headers-too-large))
-                (every-size (trailed "Trailer-One: 1234567\r\nTw: 1234567\r\nTh: 1234\r\n") small
+                (every-size (trailed "Trailer-One: 123456\r\nTw: 123456\r\nTh: 123\r\n") small
                             streaming outcome))
     (test-equal "a fourth trailer field, every delivery size: 431 for the count"
                 '((((call-handler (POST "/a")) (body "abc") (write 431)) lingering too-many-headers))
                 (every-size (trailed "A: 1\r\nB: 2\r\nC: 3\r\nD: 4\r\n") small streaming outcome))
     (test-equal "a trailer value a byte past max-header-value-bytes, every delivery size: 431"
                 '((((call-handler (POST "/a")) (body "abc") (write 431)) lingering header-value-too-large))
-                (every-size (trailed "T: 123456789\r\n") small streaming outcome))
+                (every-size (trailed "T: 12345678\r\n") small streaming outcome))
 
     ;; --- chunk extensions ---------------------------------------------------------
     ;; Two extensions of 1 + 8,191 bytes each: 16,384 together, the most.
