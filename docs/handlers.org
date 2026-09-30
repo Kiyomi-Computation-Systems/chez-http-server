@@ -75,6 +75,10 @@ response:
   request with a reader.
 - Answer with a response instead, and the server sends it at once, without
   reading the body, and closes the connection after it.
+- A client can send ~Expect: 100-continue~ and wait to be asked for a big
+  body (curl does, for uploads over 1 MiB). Answering with a reader sends
+  it ~100 Continue~, and then it sends the body. Answering with a response
+  sends no ~100~, so the client never has to send the body at all.
 - If a reader raises, the client gets ~500 Internal Server Error~.
 
 * Keep strings, not the request

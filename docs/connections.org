@@ -42,9 +42,9 @@ The server stops waiting for a client that stalls:
   ~CHEZ_HTTP_WRITE_TIMEOUT~ (60 s), with no answer: nothing more can be
   written to it.
 
-Until M6 the server does not send ~100 Continue~. A client that sends
-~Expect: 100-continue~ and waits for it, instead of sending its body, also
-gets ~408~ once the body timeout passes.
+A client that sends ~Expect: 100-continue~ waits for ~100 Continue~ before
+it sends its body. The server sends it when your handler starts reading the
+body ([[file:handlers.org][handlers.org]]), and the body timeout starts then.
 
 * How the server closes a connection
 

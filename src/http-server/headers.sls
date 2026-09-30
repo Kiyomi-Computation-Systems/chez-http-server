@@ -8,10 +8,11 @@
 ;;; comparison is ASCII case-insensitive (RFC 9110 §5.1).  Values are kept as
 ;;; raw bytes; no decoding here.  The byte helpers a value's list is read with
 ;;; are here too: OWS (RFC 9110 §5.6.3), and a range compared with a token
-;;; without regard to case, each reading the bytes in place.  PURE: imports
-;;; only (rnrs) and (http-server span).
+;;; without regard to case, each reading the bytes in place; and whether a
+;;; field's list holds a token (§5.6.1), which the core asks of a request's
+;;; Expect (M6.4).  PURE: imports only (rnrs) and (http-server span).
 (library (http-server headers)
-  (export header-name=? headers-ref headers-ref-all ows? trim-ows range-ci=?)
+  (export header-name=? headers-ref headers-ref-all ows? trim-ows range-ci=? field-lists?)
   (import (rnrs) (http-server span))
 
   ;; Bytes = (U Bytevector Span)
@@ -76,4 +77,32 @@
       (cond ((null? hs) (reverse acc))
             ((header-name=? (caar hs) name)
              (loop (cdr hs) (cons (cdar hs) acc)))
-            (else (loop (cdr hs) acc))))))
+            (else (loop (cdr hs) acc)))))
+
+  ;; field-lists? : (Listof (Pair Bytes Bytes)) Bytes Bytevector -> Boolean
+  ;; Whether a field named `name` lists `token`: whether an element of the
+  ;; comma-separated list in one of its values, the OWS around it trimmed,
+  ;; is `token`, all of it, without regard to ASCII case (RFC 9110 §5.6.1).
+  ;; A list may run over several lines, each a field of the name, in any
+  ;; order.  An empty element is none.  Values are read in place, and
+  ;; nothing is allocated.
+  (define (field-lists? headers name token)
+    (and (pair? headers)
+         (or (and (header-name=? (caar headers) name)
+                  (let ((v (cdar headers)))
+                    (lists? (bytes-vector v) (bytes-start v) (bytes-end v) token)))
+             (field-lists? (cdr headers) name token))))
+
+  ;; lists? : Bytevector Nat Nat Bytevector -> Boolean
+  ;; Whether the list in bv[start, end) has the element `token`.
+  (define (lists? bv start end token)
+    (let loop ((i start))
+      (and (fx<=? i end)
+           (let ((comma (find-comma bv i end)))
+             (let-values (((from to) (trim-ows bv i comma)))
+               (or (range-ci=? bv from to token)
+                   (loop (fx+ comma 1))))))))
+
+  ;; find-comma : Bytevector Nat Nat -> Nat — the first comma in [i, end), or end.
+  (define (find-comma bv i end)
+    (if (or (fx=? i end) (fx=? (bytevector-u8-ref bv i) 44)) i (find-comma bv (fx+ i 1) end))))
