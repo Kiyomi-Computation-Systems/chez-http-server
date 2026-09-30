@@ -174,7 +174,12 @@
     ("a producer that raises after a piece: the bare close"
      (send "GET /stream-raises HTTP/1.1\r\nHost: x\r\n\r\n") (bare-close))
     ("two requests in one write, the second answered in the next second"
-     (send "GET /now HTTP/1.1\r\nHost: x\r\n\r\nGET /next-second HTTP/1.1\r\nHost: x\r\n\r\n"))))
+     (send "GET /now HTTP/1.1\r\nHost: x\r\n\r\nGET /next-second HTTP/1.1\r\nHost: x\r\n\r\n"))
+    ;; M6.4: a write made while the connection still reads, the 100 the core
+    ;; writes when the handler answers with a reader.
+    ("a body expecting 100-continue, sent once the server has read the head"
+     (send "POST /read HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n")
+     (read) (send "hello"))))
 
 ;; The scripts whose deadlines pass, played to a shell with short limits: a
 ;; fifth of a second or a little more for a head, an idle connection and a

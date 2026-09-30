@@ -1,16 +1,24 @@
 #!r6rs
 ;;; The libhtp lane: our expectations for libhtp's pipelining and multi-packet
-;;; streams (design §8.2).  The M2 exit.
+;;; streams (design §8.2).  The M2 exit; its two Expect streams since M6.4.
 ;;;
 ;;; The scope is what the streams carry, not their names (the owner's word,
 ;;; 2026-09-25): every stream whose client packets hold two or more requests,
 ;;; or one request split across packets.  A plain strict request parser counts
-;;; that over all 102 streams, so a stream that carries either with no
-;;; expectation is red, and so is an expectation for one that carries
-;;; neither.  Then each of those streams must meet its expectation, from
-;;; (libhtp-lane).  And a stream whose run raises is a mismatch that says what
-;;; it raised, never a raise out of `libhtp-mismatch`, which the ratchet calls
-;;; outside any check.
+;;; that over all 102 streams, as the lane delivers them, so a stream that
+;;; carries either with no expectation is red, and so is an expectation for
+;;; one that carries neither.  Then each of those streams must meet its
+;;; expectation, from (libhtp-lane).  And a stream whose run raises is a
+;;; mismatch that says what it raised, never a raise out of
+;;; `libhtp-mismatch`, which the ratchet calls outside any check.
+;;;
+;;; The two Expect streams end their lines in a bare LF, which the strict
+;;; parser refuses at the first line, so the lane delivers them with CRLF (the
+;;; owner's word, by form, 2026-09-29): as delivered, each carries a request
+;;; split across packets.  Every other stream is delivered as libhtp's
+;;; chunker cuts it, which is checked here, and so is the conversion: the two
+;;; delivered have no bare LF left, and with their CRs taken out they are the
+;;; chunks as cut, which have none.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) directory-list)
         (libhtp-corpus) (libhtp-lane)
@@ -24,19 +32,31 @@
   (let ((n (string-length s)) (m (string-length suf)))
     (and (>= n m) (string=? (substring s (- n m) n) suf))))
 
-;; packets : String -> (Listof Bytevector)
-;; A stream's client chunks, in order.
-(define (packets name)
+;; cut : String -> (Listof Bytevector)
+;; A stream's client chunks, in order, as libhtp's chunker cuts them.
+(define (cut name)
   (map cdr (filter (lambda (c) (eq? (car c) 'client))
                    (libhtp-parse-stream
                     (call-with-port (open-file-input-port (string-append files-dir "/" name))
                       get-bytevector-all)))))
 
+;; bare-lf? : Bytevector -> Boolean — whether an LF follows no CR.
+(define (bare-lf? bv)
+  (let loop ((i 0))
+    (and (< i (bytevector-length bv))
+         (or (and (= (bytevector-u8-ref bv i) 10)
+                  (not (and (> i 0) (= (bytevector-u8-ref bv (- i 1)) 13))))
+             (loop (+ i 1))))))
+
+;; without-cr : Bytevector -> Bytevector — every CR taken out.
+(define (without-cr bv)
+  (u8-list->bytevector (filter (lambda (c) (not (= c 13))) (bytevector->u8-list bv))))
+
 ;; carries? : String -> Boolean
-;; #t when the stream's client packets, fed one by one to a strict request
-;; parser that continues at every callback, complete two or more messages, or
-;; complete one that began in an earlier packet.  The count stops at the
-;; parser's first pause or error.
+;; #t when the stream's client packets, as the lane delivers them, fed one by
+;; one to a strict request parser that continues at every callback, complete
+;; two or more messages, or complete one that began in an earlier packet.
+;; The count stops at the parser's first pause or error.
 (define (carries? name)
   (let* ((packet 0) (began #f) (messages '())
          (p (make-parser
@@ -55,7 +75,7 @@
                                       (lambda (p ctx) callback-continue))))))
                   adapter-trace-names)
              #f (list (cons 'type (httparse-message-type-value 'request))))))
-    (let loop ((ps (packets name)))
+    (let loop ((ps (libhtp-packets name)))
       (when (pair? ps)
         (let ((r (parser-feed! p (car ps) 0 (bytevector-length (car ps)))))
           (when (eq? (parser-result-status r) 'need-input)
@@ -64,17 +84,32 @@
     (or (>= (length messages) 2)
         (exists (lambda (m) (not (= (car m) (cdr m)))) messages))))
 
+;; all-files : -> (Listof String) — the 102 streams, in file-name order.
+(define (all-files)
+  (list-sort string<? (filter (lambda (f) (suffix? ".t" f)) (directory-list files-dir))))
+
 ;; carrying-files : -> (Listof String) — the streams that carry either, by
 ;; name, in file-name order.
-(define (carrying-files)
-  (filter carries?
-          (list-sort string<? (filter (lambda (f) (suffix? ".t" f)) (directory-list files-dir)))))
+(define (carrying-files) (filter carries? (all-files)))
 
 (run-suite "libhtp-lane"
   (lambda ()
-    (test-eqv "twelve streams have an expectation" 12 (length libhtp-expected-files))
+    (test-eqv "fourteen streams have an expectation" 14 (length libhtp-expected-files))
     (test-equal "the streams that carry pipelining or a split request are the ones with one"
                 libhtp-expected-files (carrying-files))
+    (test-equal "every stream but the two Expect streams is delivered as libhtp's chunker cuts it"
+                '()
+                (filter (lambda (f) (not (or (member f crlf-files) (equal? (libhtp-packets f) (cut f)))))
+                        (all-files)))
+    (test-equal "the two Expect streams are delivered with each bare LF made CRLF, and nothing else changed"
+                '(("05-expect.t" #t #f #t) ("99-expect-100.t" #t #f #t))
+                (map (lambda (f)
+                       (let ((cuts (cut f)) (delivered (libhtp-packets f)))
+                         (list f
+                               (exists bare-lf? cuts)
+                               (exists bare-lf? delivered)
+                               (equal? (map without-cr delivered) cuts))))
+                     crlf-files))
     (for-each (lambda (name)
                 (test-equal (string-append name " meets its expectation")
                             (libhtp-expectation name) (libhtp-outcome name)))

@@ -1,6 +1,7 @@
 #!r6rs
 ;;; (libhtp-lane) — our expectations for libhtp's pipelining and multi-packet
-;;; streams, and the run they are held to (design §8.2).  The M2 exit.
+;;; streams, and for its two Expect streams, and the run they are held to
+;;; (design §8.2).  The M2 exit; the Expect streams since M6.4.
 ;;;
 ;;; A stream's client chunks (`>>>`) are its packets.  Each is delivered to one
 ;;; fake connection as one `bytes-arrived`, while the connection reads, with
@@ -8,9 +9,12 @@
 ;;; the connection still reads, as when a capture ends.  The `<<<` chunks are a
 ;;; recorded origin's replies, not an oracle (decision 0007), so none is
 ;;; delivered, and every handler reads the body, if the request has one, and
-;;; answers 200 ((outcome-lane)'s `reads`; decision 0013).  The lane runs under the trace
+;;; answers 200 ((outcome-lane)'s `reads`; decision 0013), but
+;;; 99-expect-100.t's (below).  The lane runs under the trace
 ;;; lane's `corpus-limits`, with no Host required, like the llhttp lanes: six
 ;;; of the twelve send HTTP/1.1 without one (the owner's word, 2026-09-25).
+;;; The two Expect streams end their lines in a bare LF, which the strict
+;;; parser refuses, so they are delivered with CRLF (`libhtp-packets`).
 ;;;
 ;;; What the connection did is the outcome lane's record, plus the body:
 ;;;   - each handler call, with the request it was given;
@@ -22,11 +26,12 @@
 ;;; The expectations are ours (design §8.2), written from RFC 9112 and the
 ;;; decisions before the lane first ran, each with its reason beside it.
 (library (libhtp-lane)
-  (export libhtp-expected-files libhtp-expectation
+  (export libhtp-expected-files libhtp-expectation libhtp-packets crlf-files
           libhtp-outcome libhtp-mismatch)
   (import (rnrs)
           (libhtp-corpus) (fake-shell)
-          (http-server connection) (http-server response)
+          (http-server connection) (http-server response) (http-server request)
+          (http-server span)
           (only (outcome-lane) render-request attempt reads)
           (only (trace-lane) corpus-limits))
 
@@ -77,6 +82,28 @@
     (list
      ;; the chunked POST, its trailer across the two packets
      (cons "04-post-urlencoded-chunked.t" chunked-post)
+     ;; curl 7.18's upload, expecting 100-continue, its head alone in the
+     ;; first packet (RFC 9110 §10.1.1).  The handler is asked at the head
+     ;; and answers with a reader, so the 100 goes out before any of the
+     ;; body arrives (decision 0013; M6.4); then the body, in three packets,
+     ;; its Content-Length of 216 bytes, and the response.
+     (cons "05-expect.t"
+           `(((call-handler
+               (POST "/" 1 1
+                     (("User-Agent" . "curl/7.18.2 (i486-pc-linux-gnu) libcurl/7.18.2 OpenSSL/0.9.8g zlib/1.2.3.3 libidn/1.8 libssh2/0.18")
+                      ("Accept" . "*/*") ("Content-Length" . "216") ("Expect" . "100-continue")
+                      ("Content-Type" . "multipart/form-data; boundary=----------------------------07869933ca1b"))))
+              (write 100)
+              (body ,(string-append
+                      "------------------------------07869933ca1b\r\n"
+                      "Content-Disposition: form-data; name=\"file\"; filename=\"404.php\"\r\n"
+                      "Content-Type: application/octet-stream\r\n"
+                      "\r\n"
+                      "<? echo \"404\"; ?>\r\n"
+                      "------------------------------07869933ca1b--\r\n"))
+              (write 200)
+              (close eof))
+             closed #f ()))
      ;; the two GETs in one packet: pipelined
      (cons "07-pipelined-connection.t" two-gets)
      ;; the two GETs in two packets, each after the first's response
@@ -140,7 +167,17 @@
            '(((call-handler (GET "/0123456789/0123456789/" 1 0 (("User-Agent" . "Mozilla"))))
               (write 200)
               (close not-keep-alive))
-             closed not-keep-alive ()))))
+             closed not-keep-alive ()))
+     ;; A PUT to /forbidden expecting 100-continue, which its handler
+     ;; refuses at the head, as the recorded origin did: answered with a
+     ;; response, not a reader, so no 100 goes out, the body is not read, and
+     ;; the connection closes after the response (decision 0013 item 4),
+     ;; dropping the POST behind it, which the recorded origin served.
+     (cons "99-expect-100.t"
+           '(((call-handler (PUT "/forbidden" 1 1 (("Content-Length" . "14") ("Expect" . "100-continue"))))
+              (write 401)
+              (close unread-body))
+             closed unread-body ()))))
 
   ;; libhtp-expected-files : (Listof String) — the streams with an
   ;; expectation, in file-name order.
@@ -157,23 +194,66 @@
   ;; What every handler answers.
   (define ok (make-response 200 #f '() #f))
 
-  ;; packets : String -> (Listof Bytevector)
-  ;; The stream's client chunks, in order.  The loader skips an empty chunk,
-  ;; so none is empty.
-  (define (packets name)
-    (map cdr (filter (lambda (c) (eq? (car c) 'client))
-                     (libhtp-parse-stream
-                      (call-with-port
-                          (open-file-input-port (string-append "test/vendor/libhtp/files/" name))
-                        get-bytevector-all)))))
+  ;; crlf-files : (Listof String)
+  ;; The streams delivered with each bare LF made CRLF, the line end HTTP
+  ;; requires (RFC 9112 §2.2), which the strict parser holds a request to:
+  ;; libhtp's two Expect streams, whose lines end in a bare LF.  05's is curl
+  ;; 7.18's upload, whose body comes to its Content-Length, 216 bytes, only
+  ;; with CRLF: its capture was CRLF, and the file was converted after.  99's
+  ;; was written by hand.  Decided on the owner's word, by form, 2026-09-29:
+  ;; the vendored bytes are never edited, and every other stream is
+  ;; delivered as libhtp's chunker cuts it.
+  (define crlf-files '("05-expect.t" "99-expect-100.t"))
+
+  ;; libhtp-packets : String -> (Listof Bytevector)
+  ;; The stream's client chunks, in order, as the lane delivers them: made
+  ;; CRLF for a stream in crlf-files, and as the loader cuts them otherwise.
+  ;; The loader skips an empty chunk, so none is empty.
+  (define (libhtp-packets name)
+    (let ((chunks (map cdr (filter (lambda (c) (eq? (car c) 'client))
+                                   (libhtp-parse-stream
+                                    (call-with-port
+                                        (open-file-input-port (string-append "test/vendor/libhtp/files/" name))
+                                      get-bytevector-all))))))
+      (if (member name crlf-files) (map crlf chunks) chunks)))
+
+  ;; crlf : Bytevector -> Bytevector — each LF not after a CR made CRLF.
+  (define (crlf bv)
+    (let-values (((port take) (open-bytevector-output-port)))
+      (let loop ((i 0))
+        (when (< i (bytevector-length bv))
+          (let ((c (bytevector-u8-ref bv i)))
+            (when (and (= c 10) (not (and (> i 0) (= (bytevector-u8-ref bv (- i 1)) 13))))
+              (put-u8 port 13))
+            (put-u8 port c)
+            (loop (+ i 1)))))
+      (take)))
+
+  ;; handler-for : String -> (Request -> (U Response BodyReader))
+  ;; What the stream `name`'s handler answers: `reads` for every stream but
+  ;; 99-expect-100.t, whose recorded origin refused its PUT to /forbidden at
+  ;; the head, and whose handler does too, so the stream shows the other half
+  ;; of the Expect rule: no 100 for a request the handler answers at once.
+  (define (handler-for name)
+    (if (string=? name "99-expect-100.t") refuses-forbidden reads))
+
+  ;; refuses-forbidden : Request -> (U Response BodyReader)
+  ;; 401 at once, reading nothing, for a request for /forbidden; `reads`
+  ;; otherwise.
+  (define (refuses-forbidden request)
+    (if (equal? (span->bytevector (request-target request)) forbidden)
+        (make-response 401 #f '() #f)
+        (reads request)))
+
+  (define forbidden (string->utf8 "/forbidden"))
 
   ;; libhtp-outcome : String -> Outcome
   ;; What one fake connection did with the stream `name`'s client packets, one
   ;; delivery each, then the client's eof if it still reads.
   (define (libhtp-outcome name)
-    (let ((sh (make-fake-connection corpus-limits reads)))
+    (let ((sh (make-fake-connection corpus-limits (handler-for name))))
       (for-each (lambda (bv) (fake-shell-feed-input! sh bv (bytevector-length bv)))
-                (packets name))
+                (libhtp-packets name))
       (fake-shell-settle! sh)
       (when (fake-shell-reading? sh)
         (fake-shell-deliver! sh '(eof))

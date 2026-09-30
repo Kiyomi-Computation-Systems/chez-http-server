@@ -188,6 +188,19 @@
       (test-equal "curl: two POSTs with a body, the second on the first's connection"
                   (list 'satisfied '(0 #f) "/p -\n200 1 5\n/q -\n200 0 5\n")
                   (run loop sh "curl" (list "-sS" "-d" "k=v" "-w" curl-out (url "/p") (url "/q"))))
+      ;; curl asks for the 100 on its own for a large upload; asked here for
+      ;; a small one.  It waits up to a minute for the 100, so a server that
+      ;; never sends one holds it past the cap, and --dump-header shows the
+      ;; 100 it read before the response (M6.4; RFC 9110 §10.1.1).
+      (test-equal "curl: a POST expecting 100-continue reads the 100, then the response to the body it sent after it"
+                  (list 'satisfied '(0 #f)
+                        (list (string-append "HTTP/1.1 100 Continue\r\n\r\n"
+                                             "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n/e -\n200 1 5\n")
+                              1))
+                  (let ((r (run loop sh "curl" (list "-sS" "-D" "-" "-H" "Expect: 100-continue"
+                                                     "--expect100-timeout" "60" "-d" "k=v"
+                                                     "-w" curl-out (url "/e")))))
+                    (list (car r) (cadr r) (undated (caddr r)))))
       (test-equal "curl: two HTTP/1.0 GETs, each on a connection of its own"
                   (list 'satisfied '(0 #f) "/y -\n200 1 5\n/z -\n200 1 5\n")
                   (run loop sh "curl" (list "-sS" "--http1.0" "-w" curl-out (url "/y") (url "/z"))))
