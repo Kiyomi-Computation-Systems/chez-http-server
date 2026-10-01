@@ -3685,3 +3685,11 @@ On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Li
 Size: `src/` +58 −84 and `tests/` +64 −74, comments included; the Makefile's three pins; the two gitlinks; the records, `.plans/` +36 −2 and `.superpowers/` +144 −1, this entry among them. One PR, by the form.
 
 NEXT: this PR, merged on the owner's "do closing ritual" once CI is green on its head. Then the M6 exit (plan §14).
+
+MERGED to main on 2026-10-01, on the owner's "do closing ritual": **#92, the pin PR.** fe543ee was squashed as 29ae566 (tree 2594120, the tested tip's), whose parent is 4086735.
+- **CI.** Its run, 36928864872, passed on fe543ee.
+- **Branches.** `--delete-branch` switched this checkout to main, fast-forwarded it, and deleted the branch, local and remote.
+
+`make test` green on main at chez-httparse v0.4.5 and uriparse v0.6.2, with byte-machine v0.7.0 through both: forty-four suites, 1,433 expected passes, every pin ok.
+
+NEXT: the M6 exit (plan §14). Also under way, in a session of its own started on the owner's word: chez-httparse #55's missing row in decision 0008 (FOUND above).
