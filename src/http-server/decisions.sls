@@ -42,6 +42,7 @@
       (invalid-target . 400)                 ; not a form RFC 9112 §3.2 allows
       (invalid-host . 400)                   ; RFC 9112 §3.2's Host rules
       (faulty-framing . 400)                 ; Transfer-Encoding below HTTP/1.1 (RFC 9112 §6.1)
+      (chunk-size-too-long . 400)            ; a chunk size past 16 hex digits (§7.1)
       (header-timeout . 408)
       (body-timeout . 408)                   ; a body stalled past its deadline (M5.2)
       (body-too-large . 413)                 ; a body past a cap (0013 item 5)

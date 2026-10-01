@@ -59,7 +59,8 @@
 ;;; parser callback is always its `reply-parser`.  An event's `at` is the
 ;;; parser's position, the bytes of the connection it has read before the
 ;;; callback, which its runtime commits before calling it (byte-machine's
-;;; `parser-stream-offset`).
+;;; `parser-stream-offset`); the core measures by it what the parser reads
+;;; and hands no span of (the padding PR, below).
 ;;;
 ;;; THE HEAD IS KEPT AS SPANS (design §7.1).  From on-message-begin to
 ;;; on-headers-complete the core keeps the request-target and each header
@@ -276,10 +277,26 @@
 ;;; a request (Node holds each chunk's to 16 KiB instead).  One past
 ;;; a limit is refused as a head's field is, `(reply-parser (fail reason))`:
 ;;; a trailer for the head's reason, answered 431, and the extensions as
-;;; 'chunk-extensions-too-large, answered 413, as a body past a cap.  The
-;;; bytes the parser reads and hands the core no span of are not counted:
-;;; the spaces before a field's value, and the digits of a chunk's size (the
-;;; ledger, M6.4, for the PR after it).
+;;; 'chunk-extensions-too-large, answered 413, as a body past a cap.
+;;;
+;;; WHAT THE PARSER READS AND HANDS NO SPAN OF IS HELD TO LIMITS TOO (the
+;;; padding PR; decided on the owner's word, 2026-09-30).  Two runs of it,
+;;; a megabyte of each answered 200 before: the whitespace before a field's
+;;; value, and a chunk size's digits.  Every event carries the parser's
+;;; position, and a span's is its delivery's base plus its bound, so a run
+;;; is measured from where one piece ends to where the next begins
+;;; (`open-run!`).  A chunk size has 16 hex digits at most, zeros included,
+;;; and more is refused as 'chunk-size-too-long, answered 400.  The whitespace before a value counts with it,
+;;; against its limit and the section's, as the whitespace after it already
+;;; did, 431 past one; an empty value's counts its line end too, since the
+;;; parser hands it over after that.  A run is judged at the callback that
+;;; ends it and, while it runs, at every read's end, so it is refused within
+;;; the read that passes its limit, whatever the split (`run-past-limit`);
+;;; one refused at a read's end is answered as a callback's refusal is when
+;;; the parser's error comes back.  At the parser's error only the
+;;; whitespace is judged: a span the error cut off is never handed on, so
+;;; its bytes would count as the run's, and only a value's count with the
+;;; whitespace before it anyway.
 ;;;
 ;;; WHAT HAPPENS NEVER DEPENDS ON HOW THE BYTES WERE SPLIT INTO READS (design
 ;;; §8.1's second property).  The feed that completes a head can go on into
@@ -401,7 +418,11 @@
   ;; the last delivery it fed the parser, `(bv start end)` or #f (M2.4), and
   ;; a streamed response's producer, how its pieces are framed, and whether
   ;; a piece has been asked for and its answer is to come (M6.3); only the
-  ;; producer is exported, for the shells.  A state made in `handling` has a message that
+  ;; producer is exported, for the shells.  And where the parser is (the
+  ;; padding PR): the bytes it has taken, as the reads' results count them;
+  ;; the parser's position of index 0 of the delivery being fed; and the
+  ;; run of bytes it reads and hands no span of that is open, where it
+  ;; began and what it is (see open-run!).  A state made in `handling` has a message that
   ;; has ended, and is waiting for its handler's answer, as a request with no
   ;; body is.
   (define-record-type (conn-state make-conn-state conn-state?)
@@ -419,7 +440,11 @@
             (mutable delivery    conn-delivery    conn-delivery-set!)
             (mutable producer    conn-producer    conn-producer-set!)
             (mutable pieces      conn-pieces      conn-pieces-set!)
-            (mutable asked?      conn-asked?      conn-asked?-set!))
+            (mutable asked?      conn-asked?      conn-asked?-set!)
+            (mutable parsed      conn-parsed      conn-parsed-set!)
+            (mutable base        conn-base        conn-base-set!)
+            (mutable mark        conn-mark        conn-mark-set!)
+            (mutable run         conn-run         conn-run-set!))
     (protocol
      (lambda (new)
        (lambda (phase deadline close-after outstanding outstanding-bytes pending request limits)
@@ -438,7 +463,7 @@
              (body-answer-set! body 'asked)
              (body-complete?-set! body #t))
            (new phase deadline close-after outstanding outstanding-bytes pending request limits
-                (make-head) body (make-target-judge) #f #f #f #f))))))
+                (make-head) body (make-target-judge) #f #f #f #f 0 0 #f #f))))))
 
   ;; conn-body-reader : ConnState -> (U #f BodyReader)
   ;; The reader the handler answered with, while the core hands it the body:
@@ -506,18 +531,21 @@
   ;;   target   the request-target, once on-url-complete has run
   ;;   fields   the completed (name . value) pairs, newest first
   ;;   count    the header names completed so far
-  ;;   total    the header name and value bytes so far
+  ;;   total    the header name and value bytes so far, and the whitespace
+  ;;            before each value
   ;;   name     the completed name waiting for its value
   ;;   piece    the span being read: #f, a Span, or several, newest first
   ;;   size     the bytes of the piece so far, or of the trailer's name or
   ;;            value
   ;;   refusal  #f, or the reason the core answered a callback with fail
   ;;   location #f, or where a redirected target points (decision 0009)
+  ;;   pad      the whitespace before the value being read, counted with it
+  ;;            (the padding PR)
   (define-record-type head
     (fields (mutable target) (mutable fields) (mutable count) (mutable total)
             (mutable name) (mutable piece) (mutable size) (mutable refusal)
-            (mutable location))
-    (protocol (lambda (new) (lambda () (new #f '() 0 0 #f #f 0 #f #f)))))
+            (mutable location) (mutable pad))
+    (protocol (lambda (new) (lambda () (new #f '() 0 0 #f #f 0 #f #f 0)))))
 
   ;; head-roll! : Head -> Void — empty the head for the next message.
   (define (head-roll! h)
@@ -529,7 +557,8 @@
     (head-piece-set! h #f)
     (head-size-set! h 0)
     (head-refusal-set! h #f)
-    (head-location-set! h #f))
+    (head-location-set! h #f)
+    (head-pad-set! h 0))
 
   ;; The value of a piece that arrived with no bytes, such as an empty header
   ;; value: one span, shared.
@@ -767,8 +796,17 @@
     (case (conn-phase s)
       ((idle head body)
        (conn-delivery-set! s (cdr ev))
+       (feeding! s (caddr ev))
        (values s (list (cons 'feed-parser (cdr ev)))))
       (else (values s '()))))
+
+  ;; feeding! : ConnState Nat -> Void
+  ;; A feed from index `start` of a delivery: the parser reads it from the
+  ;; bytes it has taken, so index 0 is that less `start`.  The rest a pause
+  ;; keeps is its delivery's own bytes, from where the parser stopped, so it
+  ;; is fed with the delivery's base, unchanged.
+  (define (feeding! s start)
+    (conn-base-set! s (- (conn-parsed s) start)))
 
   ;; idle, head or body, eof -> closing: close, with no response.
   ;; lingering, eof -> closing: the client closed, so close, for the reason
@@ -1065,7 +1103,11 @@
   ;; head; in head, the target and the header fields are kept, each refused
   ;; once it grows past its limit; in body, the trailer fields are counted
   ;; against the same limits, and the chunk extensions against theirs, and
-  ;; none is kept (M6.4); body,
+  ;; none is kept (M6.4); and a run the parser reads and hands no span of
+  ;; opens at the event before it and is judged at the span or event after
+  ;; it, and refused past its limit as a limit tripped here is (the padding
+  ;; PR): the whitespace at a value's first bytes, a chunk size's digits at
+  ;; its first extension or at on-chunk-header; body,
   ;; on-body-data -> body; body, on-message-complete -> handling, pausing the
   ;; parser and stopping reads in the same step, so one delivery carrying two
   ;; messages cannot start a second handler (design §4.4).  Every other
@@ -1110,17 +1152,21 @@
          ((head)
           (let ((h (conn-head s)))
             (head-name-set! h (take-piece! h))
+            (open-run! s 'whitespace at)
             (field-counted s)))
          ((body)
           (head-size-set! (conn-head s) 0)
+          (open-run! s 'whitespace at)
           (field-counted s))
          (else (continue s))))
       ((on-header-value-data)
        (case (conn-phase s)
-         ((head) (header-bytes s bv from to limits-max-header-value-bytes
-                               'header-value-too-large))
-         ((body) (trailer-bytes s from to limits-max-header-value-bytes
-                                'header-value-too-large))
+         ((head)
+          (whitespace-counted! s from)
+          (header-bytes s bv from to limits-max-header-value-bytes 'header-value-too-large))
+         ((body)
+          (whitespace-counted! s from)
+          (trailer-bytes s from to limits-max-header-value-bytes 'header-value-too-large))
          (else (continue s))))
       ((on-header-value-complete)
        (case (conn-phase s)
@@ -1128,14 +1174,33 @@
           (let ((h (conn-head s)))
             (head-fields-set! h (cons (cons (head-name h) (take-piece! h)) (head-fields h)))
             (head-name-set! h #f)
+            (head-pad-set! h 0)
             (continue s)))
          ((body)
           (head-size-set! (conn-head s) 0)
+          (head-pad-set! (conn-head s) 0)
           (continue s))
          (else (continue s))))
       ((on-chunk-extension-name-data on-chunk-extension-value-data)
        (case (conn-phase s)
-         ((body) (extension-bytes s from to))
+         ((body)
+          (let ((digits (and (eq? name 'on-chunk-extension-name-data)
+                             (close-run! s 'digits (- (position s from) 1)))))
+            (if (and digits (> digits max-size-digits))
+                (refuse s 'chunk-size-too-long)
+                (extension-bytes s from to))))
+         (else (continue s))))
+      ((on-chunk-header)
+       (case (conn-phase s)
+         ((body)
+          (let ((digits (close-run! s 'digits (- at 2))))
+            (if (and digits (> digits max-size-digits))
+                (refuse s 'chunk-size-too-long)
+                (continue s))))
+         (else (continue s))))
+      ((on-chunk-complete)
+       (case (conn-phase s)
+         ((body) (open-run! s 'digits at) (continue s))
          (else (continue s))))
       ((on-body-data)
        (case (conn-phase s)
@@ -1257,11 +1322,12 @@
   ;;               -> (values ConnState (Listof Action))
   ;; `n` more bytes of the name or value being read, whose size the head
   ;; holds already, added to the section's: the message is refused once the
-  ;; name or value, or the section, is past its limit.
+  ;; name or value, a value with the whitespace before it, or the section,
+  ;; is past its limit.
   (define (field-bytes s n piece-limit piece-reason)
     (let ((h (conn-head s)) (limits (conn-limits s)))
       (head-total-set! h (fx+ (head-total h) n))
-      (cond ((fx>? (head-size h) (piece-limit limits)) (refuse s piece-reason))
+      (cond ((fx>? (fx+ (head-size h) (head-pad h)) (piece-limit limits)) (refuse s piece-reason))
             ((fx>? (head-total h) (limits-max-header-bytes limits))
              (refuse s 'headers-too-large))
             (else (continue s)))))
@@ -1298,6 +1364,76 @@
   ;; without limit.  The server keeps no extension, so the bound is on the
   ;; work, not on memory.
   (define max-chunk-extension-bytes 16384)
+
+  ;; max-size-digits : Nat
+  ;; The most hex digits a chunk size may have, leading zeros included
+  ;; (decided on the owner's word, 2026-09-30, as Go and h2o hold it): a
+  ;; 64-bit size's, and a 17th significant digit is the parser's overflow.
+  (define max-size-digits 16)
+
+  ;; open-run! : ConnState Symbol Nat -> Void
+  ;; A run of bytes the parser reads and hands no span of begins at the
+  ;; parser's position `at`: `whitespace`, before a field's value; `digits`,
+  ;; a chunk size's.  One is open at a time, and opening one lets the last
+  ;; go.
+  (define (open-run! s kind at)
+    (conn-mark-set! s at)
+    (conn-run-set! s kind))
+
+  ;; close-run! : ConnState Symbol Nat -> (U #f Integer)
+  ;; The bytes of the run of `kind` that ends at the parser's position `end`,
+  ;; the run closed; #f when no such run is open, as for a span's later
+  ;; fragments.
+  (define (close-run! s kind end)
+    (and (eq? (conn-run s) kind)
+         (begin (conn-run-set! s #f) (- end (conn-mark s)))))
+
+  ;; position : ConnState Nat -> Nat
+  ;; The parser's position of index `i` of the delivery being fed: a span's
+  ;; bounds index the delivery, and the parser read to its start before it.
+  (define (position s i) (+ (conn-base s) i))
+
+  ;; whitespace-counted! : ConnState Nat -> Void
+  ;; A value's first bytes, at `from` in the delivery: the whitespace since
+  ;; its name's colon, the run they end, counted with the value, as its
+  ;; `pad`, and with the section.  An empty value is handed over after its
+  ;; line end, so its whitespace counts that too.
+  (define (whitespace-counted! s from)
+    (let ((n (close-run! s 'whitespace (position s from))))
+      (when n
+        (let ((h (conn-head s)))
+          (head-pad-set! h n)
+          (head-total-set! h (+ (head-total h) n))))))
+
+  ;; run-past-limit : ConnState Boolean -> (U #f Symbol)
+  ;; At a read's end, the reason to refuse the run still open, if it is
+  ;; past its limit: its bytes run from its start to the parser's position.
+  ;; On the parser's error only the whitespace is judged: a span the error
+  ;; cut off is never handed on, so its bytes would count as the run's, and
+  ;; only a value's count with the whitespace before it anyway.  A chunk
+  ;; size's digits are allowed the byte that ends them, `;` or CR, which a
+  ;; read can end after.
+  (define (run-past-limit s error?)
+    (let ((run (conn-run s)) (phase (conn-phase s)))
+      (and run
+           (let ((n (- (conn-parsed s) (conn-mark s))))
+             (if (eq? run 'whitespace)
+                 (and (memq phase '(head body)) (whitespace-past-limit s n))
+                 (and (not error?)
+                      (case run
+                        ((digits) (and (eq? phase 'body) (> n (+ max-size-digits 1))
+                                       'chunk-size-too-long))
+                        (else #f))))))))
+
+  ;; whitespace-past-limit : ConnState Integer -> (U #f Symbol)
+  ;; `n` bytes of whitespace before a value, past the value's limit or,
+  ;; with the section's bytes so far, the section's: its reason.
+  (define (whitespace-past-limit s n)
+    (let ((limits (conn-limits s)))
+      (cond ((> n (limits-max-header-value-bytes limits)) 'header-value-too-large)
+            ((> (+ (head-total (conn-head s)) n) (limits-max-header-bytes limits))
+             'headers-too-large)
+            (else #f))))
 
   ;; refuse : ConnState Symbol -> (values ConnState (Listof Action))
   ;; A limit tripped inside a parser callback (design §6.3): tell the parser to
@@ -1348,7 +1484,9 @@
   ;; before any of the body is met (decision 0013 items 1 and 5).  So is
   ;; whether its client waits for `100 Continue`, an HTTP/1.1 request whose
   ;; Expect lists 100-continue: then no body deadline is armed until the 100
-  ;; is written (M6.4).  The head's sizes start again for the trailers.
+  ;; is written (M6.4).  The head's sizes start again for the trailers.  A
+  ;; chunked body's first size line begins where the head ends, its digits
+  ;; to be counted (the padding PR).
   (define (conn-headers-complete-step s method http-major http-minor flags content-length upgrade
                                       at)
     (case (conn-phase s)
@@ -1392,6 +1530,7 @@
                (head-count-set! h 0)
                (head-total-set! h 0)
                (conn-phase-set! s 'body)
+               (if chunked? (open-run! s 'digits at) (conn-run-set! s #f))
                (cond
                 ((and framed? (http/1.1? http-major http-minor)
                       (field-lists? (head-fields h) expect-name continue-token))
@@ -1446,7 +1585,27 @@
   ;; `next`, is kept as the pending input the resume feeds (decision 0004
   ;; item 1).  Any other result there is not answered, llhttp's "Data after
   ;; `Connection: close`" included (0004 item 4).
+  ;; Every result: first, the bytes the read took are counted where the
+  ;; parser is; in head or body, a run it reads and hands no span of, still
+  ;; open and past its limit, is refused as a callback's refusal is when the
+  ;; parser's error comes back (the padding PR; `run-past-limit`).
   (define (on-parser-result s ev)
+    (conn-parsed-set! s (+ (conn-parsed s) (list-ref ev 2)))
+    (let ((reason (run-past-limit s (eq? (list-ref ev 1) 'error))))
+      (if reason
+          (refuse-run s reason)
+          (read-result s ev))))
+
+  ;; refuse-run : ConnState Symbol -> (values ConnState (Listof Action))
+  ;; A run past its limit at a read's end, closed and refused for `reason`.
+  (define (refuse-run s reason)
+    (conn-run-set! s #f)
+    (head-refusal-set! (conn-head s) reason)
+    (answer-refusal s #f))
+
+  ;; read-result : ConnState Event -> (values ConnState (Listof Action))
+  ;; A parser-result, its bytes counted: the rows above.
+  (define (read-result s ev)
     (let ((status (list-ref ev 1))
           (next   (list-ref ev 3))
           (pause  (list-ref ev 5)))
@@ -1468,20 +1627,30 @@
                                    (list 'hand-off (conn-request s)))))))
             ((not (eq? status 'error))
              (if (fxzero? (body-owed (conn-body s))) (ask-handler s) (await-credit s)))
-            ((eq? (body-answer (conn-body s)) 'call)
-             (body-error-set! (conn-body s)
-                              (let ((reason (head-refusal (conn-head s))))
-                                (if reason (list 'refused reason) (list 'parser err))))
-             (conn-phase-set! s 'handling)
-             (conn-deadline-set! s #f)
-             (let-values (((s asked) (ask-handler s)))
-               (values s (cons* '(read-stop) '(disarm-deadline) asked))))
-            ((head-refusal (conn-head s))
-             => (lambda (reason)
-                  (respond-and-close s reason (refusal-headers (conn-head s)))))
-            (else
-             (respond s (parser-error-status err) 'parser-error '())))))
+            (else (answer-refusal s err)))))
         (else (values s '())))))
+
+  ;; answer-refusal : ConnState (U #f Symbol) -> (values ConnState (Listof Action))
+  ;; A read that ended in the parser's error, `err` its code, or in a
+  ;; refusal of the core's, whose reason the head holds.  When the feed
+  ;; that completed a head announcing a body met it, it waits for the
+  ;; handler's answer, in handling, reading stopped; otherwise it is
+  ;; answered with the refusal's status, or the error's, then close.
+  (define (answer-refusal s err)
+    (cond
+     ((eq? (body-answer (conn-body s)) 'call)
+      (body-error-set! (conn-body s)
+                       (let ((reason (head-refusal (conn-head s))))
+                         (if reason (list 'refused reason) (list 'parser err))))
+      (conn-phase-set! s 'handling)
+      (conn-deadline-set! s #f)
+      (let-values (((s asked) (ask-handler s)))
+        (values s (cons* '(read-stop) '(disarm-deadline) asked))))
+     ((head-refusal (conn-head s))
+      => (lambda (reason)
+           (respond-and-close s reason (refusal-headers (conn-head s)))))
+     (else
+      (respond s (parser-error-status err) 'parser-error '()))))
 
   ;; await-credit : ConnState -> (values ConnState (Listof Action))
   ;; body -> awaiting-credit: the reader has been handed pieces it has not

@@ -36,7 +36,11 @@
 ;;; the handler answers with a reader, and the body deadline armed then; and
 ;;; its seven for what a chunked body carries beside its data, its trailer
 ;;; fields held to the four header limits and its chunk extensions to 16 KiB
-;;; (both decided on the owner's word, 2026-09-29).
+;;; (both decided on the owner's word, 2026-09-29).  And the padding PR's
+;;; eight for what the parser reads and hands no span of, each event at the
+;;; parser's position: the whitespace before a field's value and a chunk
+;;; size's digits, judged where they end and at a read's end (decided on the
+;;; owner's word, 2026-09-30).
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -1506,6 +1510,124 @@
              `(responding chunk-extensions-too-large
                           (,(status-write 413 "Content Too Large") (arm-deadline write))))))))
 
+;; ---------------------------------------------------------------------------
+;; The padding PR: what the parser reads and hands the core no span of is
+;; held to limits (decided on the owner's word, 2026-09-30).  Two runs of
+;; it: the spaces and tabs before a field's value, counted with the value
+;; against its limit and the section's; and a chunk size's digits, 16 at
+;; most, zeros included.  Every event carries the parser's position, and a run is
+;; measured from where one piece ends to where the next begins: at the
+;; callback that ends it, and at a read's end while it runs, where only
+;; the whitespace is judged on the parser's error, since a span the error
+;; cut off counts with its value.  The rows' spans are at their bounds in
+;; the bytevectors named, and their events at the positions a parse of the
+;; same bytes commits.
+
+;; after : ConnState Event ... -> ConnState — the state, having taken `events`.
+(define (after s . events)
+  (for-each (lambda (ev) (conn-step s ev)) events)
+  s)
+
+;; reading-chunks : -> ConnState
+;; A chunked POST read by a streaming reader, which has met its first
+;; chunk: the chunk ends at 60, where the next size line begins.
+(define (reading-chunks)
+  (after (reading 'chunked streamer) '(parser-event on-chunk-complete 60)))
+
+(define status-400 (status-write 400 "Bad Request"))
+(define status-431 (status-write 431 "Request Header Fields Too Large"))
+
+(define (padding-rows)
+  (list
+   ;; Under `tight`: a value of 4 bytes, 10 in a section.  The head holds
+   ;; `Host: x`, 6 bytes with its space; a field `Ab` ends its name at 2,
+   ;; its colon read by 3.
+   ;; A name after a value counts none of that value's whitespace: here 4
+   ;; bytes, the name's limit, after Host's space, or a trailer's.
+   (row 'G5 "head or body, a value's first bytes: the whitespace since the colon counts with the value -> continue within the limits; and the next name counts none"
+        (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
+                  `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
+           `(parser-event on-header-value-data ,big 3 5)
+           '(head #f ((reply-parser continue))))
+        (i (after (trailing tight) `(parser-event on-header-field-data ,big 0 2)
+                  '(parser-event on-header-field-complete 3))
+           `(parser-event on-header-value-data ,big 4 7)
+           '(body #f ((reply-parser continue))))
+        (i (state 'head 'deadline 'header 'host "x" 'limits tight)
+           `(parser-event on-header-field-data ,big 0 4)
+           '(head #f ((reply-parser continue))))
+        (i (after (trailing tight) `(parser-event on-header-field-data ,big 0 2)
+                  '(parser-event on-header-field-complete 3) `(parser-event on-header-value-data ,big 4 7)
+                  '(parser-event on-header-value-complete 9))
+           `(parser-event on-header-field-data ,big 0 4)
+           '(body #f ((reply-parser continue)))))
+
+   (row 'G6 "head or body, a value's first bytes past the value's limit or the section's, counted with the whitespace since the colon -> fail"
+        (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
+                  `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
+           `(parser-event on-header-value-data ,big 5 6)
+           '(head #f ((reply-parser (fail headers-too-large)))))
+        (i (after (trailing tight) `(parser-event on-header-field-data ,big 0 2)
+                  '(parser-event on-header-field-complete 3))
+           `(parser-event on-header-value-data ,big 5 8)
+           '(body #f ((reply-parser (fail header-value-too-large))))))
+
+   ;; The next size line begins at 60; 16 digits end at 76, then `;` or its
+   ;; line end.
+   (row 'G7 "body, a chunk size of 16 digits, zeros included, ended by its line or its first extension -> continue"
+        (i (reading-chunks) '(parser-event on-chunk-header 78)
+           '(body #f ((reply-parser continue))))
+        (i (reading-chunks) `(parser-event on-chunk-extension-name-data ,big 77 78)
+           '(body #f ((reply-parser continue)))))
+
+   (row 'G8 "body, a chunk size of 17 digits -> fail chunk-size-too-long"
+        (i (reading-chunks) '(parser-event on-chunk-header 79)
+           '(body #f ((reply-parser (fail chunk-size-too-long)))))
+        (i (reading-chunks) `(parser-event on-chunk-extension-name-data ,big 78 79)
+           '(body #f ((reply-parser (fail chunk-size-too-long)))))
+        (i (after (state 'head 'deadline 'header 'target "/" 'host "x")
+                  `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0 46))
+           '(parser-event on-chunk-header 65)
+           '(body #f ((reply-parser (fail chunk-size-too-long))))))
+
+   ;; A read's end within the run, within its limit: nothing; the reads here
+   ;; are all the connection's, from its first byte.
+   (row 'G9 "a read's end inside a run within its limit -> the same: nothing"
+        (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
+                  `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
+           '(parser-result need-input 5 5 #f #f)
+           '(head #f ()))
+        (i (reading-chunks) '(parser-result need-input 28 28 #f #f)
+           '(body #f ())))
+
+   (row 'G10 "head or body, a read's end inside a run past its limit -> responding: the run's status, read-stop, close-after"
+        (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
+                  `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
+           '(parser-result need-input 7 7 #f #f)
+           `(responding header-value-too-large (,status-431 (read-stop) (arm-deadline write))))
+        (i (reading-chunks) '(parser-result need-input 29 29 #f #f)
+           `(responding chunk-size-too-long (,status-400 (read-stop) (arm-deadline write)))))
+
+   ;; The feed that completed the head went on past the next size line's
+   ;; 17th digit: the refusal waits for the handler's answer, as T3's does.
+   (row 'G11 "body, the head's feed ends inside a run past its limit -> handling: read-stop, disarm, call-handler, the refusal kept"
+        (i (after (announced 'chunked) `(parser-event on-body-data ,bv 3 4)
+                  '(parser-event on-chunk-complete 52))
+           '(parser-result need-input 71 71 #f #f)
+           '(handling #f ((read-stop) (disarm-deadline) (call-handler POST)))))
+
+   ;; The parser's error inside a run: a span it cut off is not handed on, so
+   ;; its bytes cannot be told from the run's, and the parser's status
+   ;; stands; the whitespace's is judged, since a value it runs into counts
+   ;; with it.
+   (row 'G12 "head or body, the parser's error at a read's end inside a run -> the parser's status, the whitespace's past its limits"
+        (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
+                  `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
+           '(parser-result error 9 9 invalid-header-token #f)
+           `(responding header-value-too-large (,status-431 (read-stop) (arm-deadline write))))
+        (i (reading-chunks) '(parser-result error 29 29 invalid-chunk-size #f)
+           `(responding parser-error (,status-400 (read-stop) (arm-deadline write)))))))
+
 ;; index : Any (Listof Any) -> Nat — where `x` stands in `xs`.
 (define (index x xs)
   (let loop ((xs xs) (n 0))
@@ -1686,7 +1808,8 @@
            (streams (count-rows "stream" stream-rows produced))
            (expects (count-rows "expect" expect-rows asked-by))
            (continues (count-rows "continue-accounting" continue-accounting-rows accounted))
-           (framings (count-rows "framing" framing-rows asked-by)))
+           (framings (count-rows "framing" framing-rows asked-by))
+           (paddings (count-rows "padding" padding-rows asked-by)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
       (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
@@ -1700,7 +1823,8 @@
       (test-eqv "M6.3: all 19 stream rows have a test" 19 streams)
       (test-eqv "M6.4: all 7 Expect rows have a test" 7 expects)
       (test-eqv "M6.4: the 100's accounting row has a test" 1 continues)
-      (test-eqv "M6.4: all 7 trailer and extension rows have a test" 7 framings))
+      (test-eqv "M6.4: all 7 trailer and extension rows have a test" 7 framings)
+      (test-eqv "the padding PR: all 8 padding rows have a test" 8 paddings))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it: `notify-producer` since M6.3.
