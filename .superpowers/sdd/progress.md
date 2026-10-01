@@ -3550,6 +3550,12 @@ The pin moves alone: the gitlink, the Makefile's pin and the comments, besides t
 
 DECIDED on the owner's word (2026-10-01), by form: one PR, the pin alone. Weighed: a review first; nothing committed.
 
+MERGED to main on 2026-10-01, on the owner's "ci is green do closing ritual": **#89, the chez-httparse v0.4.4 pin.** 6ea6558 was squashed as e909e5b (tree 027bc4a, the tested tip's), whose parent is 8993ff0.
+- **CI.** Its run, 36857836010, passed: the `linux` job built and tested the PR on GitHub, the first pull request so checked since #88 gave CI its read token.
+- **Branches.** `--delete-branch` merged it and deleted its remote branch, but left this checkout on the branch, as for #73 and #87. The switch to main, the fast-forward and the local deletion were by hand.
+
+`make test` green on main at v0.4.4: forty-three suites, 1,407 expected passes, every pin ok.
+
 NEXT, by the owner's word (2026-09-30):
 - **The PR for the split found**, main's own limits cut off by the parser's error, now with the run-then-error reason. Its design goes by form on measurements.
 - **Then the M6 exit** (plan §14).
