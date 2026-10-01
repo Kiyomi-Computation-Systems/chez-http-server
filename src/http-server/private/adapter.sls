@@ -15,7 +15,8 @@
 ;;; its runtime commits before calling it (chez-httparse's docs/api.org,
 ;;; "Where a callback is in the stream", since v0.4.4 for its #55): the core
 ;;; measures by it what the parser reads and hands no span of (the padding
-;;; PR).
+;;; PR).  And the event a feed's result becomes is built here, once, for both
+;;; shells, with the span the parser has open (the cut-off-span PR).
 ;;;
 ;;; The core's first action is its `reply-parser`, and that one is answered
 ;;; here, inside the callback (0002 item 3): continue, pause, or a failure
@@ -32,7 +33,7 @@
 (library (http-server private adapter)
   (export make-conn-context conn-context? conn-context-state
           conn-context-step!
-          adapter-bindings make-conn-parser)
+          adapter-bindings make-conn-parser parser-result-event)
   (import (rnrs)
           (byte-machine runtime) (generated httparse-message) (httparse modes)
           (http-server connection))
@@ -106,6 +107,21 @@
                                                                  (parser-stream-offset p))))
                        (answer! ctx s actions)))))))
          conn-parser-callbacks))
+
+  ;; parser-result-event : ParserResult Parser -> Event
+  ;; What a feed's result tells the core, as both shells hand it over:
+  ;; `(parser-result status offset next code span)` (decision 0002's
+  ;; amendment of 2026-10-01).  `offset` is the parser's count of the bytes
+  ;; it has taken, `parser-result-stream-offset`.  `code` is the error's code
+  ;; or the pause's, since a result has one or neither, or #f.  `span` is the
+  ;; span the parser has open, `parser-active-span`: after an error, the one
+  ;; the error cut off, which it never hands on.
+  (define (parser-result-event r p)
+    (let ((e (parser-result-error r)))
+      (list 'parser-result (parser-result-status r) (parser-result-stream-offset r)
+            (parser-result-next r)
+            (let ((c (or e (parser-result-pause r)))) (and c (parser-error-code c)))
+            (parser-active-span p))))
 
   ;; make-conn-parser : ConnContext -> Parser
   ;; A request parser for one connection, strict (no lenient flags), carrying

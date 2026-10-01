@@ -361,7 +361,7 @@
     ;; A parser-result is read whole before it is answered: one short of its
     ;; five fields is refused, even where the bytes it says the parser took
     ;; would pass the empty lines' limit.
-    (test-eq "a parser-result without its error and pause codes is refused" 'refused
+    (test-eq "a parser-result without its code and span is refused" 'refused
              (verdict (lambda () (conn-step (fresh 'idle) '(parser-result need-input 5 5)))))
 
     ;; --- every callback is answered, in every state --------------------------
