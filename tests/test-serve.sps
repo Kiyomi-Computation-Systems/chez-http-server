@@ -120,6 +120,14 @@
                   '(414 "" complete)
                   (exchange loop sh port
                             (b (string-append "GET /" (make-string 70 #\a) " HTTP/1.1\r\nHost: h\r\n\r\n"))))
+      ;; Sent in one write, the target and the byte after it reach the
+      ;; parser in one read, and the parser's error cuts the target off: the
+      ;; shell hands the core the span it had open, so the limit it passed
+      ;; first still names the answer (the cut-off-span PR).
+      (test-equal "and so does such a target followed by a byte no target may hold, the parser's error cutting it off"
+                  '(414 "" complete)
+                  (exchange loop sh port
+                            (b (string-append "GET /" (make-string 70 #\a) "\x1; HTTP/1.1\r\nHost: h\r\n\r\n"))))
       (test-equal "and a body over CHEZ_HTTP_MAX_BODY_BYTES gets 413"
                   '(413 "" complete)
                   (exchange loop sh port

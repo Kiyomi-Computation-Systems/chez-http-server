@@ -66,4 +66,8 @@ request cannot be read safely.
 | ~501 Not Implemented~                   | another coding before ~chunked~, as in ~Transfer-Encoding: gzip, chunked~ |
 | ~505 HTTP Version Not Supported~        | HTTP/2's opening line, ~PRI * HTTP/2.0~                       |
 
+When a request breaks more than one rule, the rule its bytes break first
+decides the answer, however the bytes arrived: a target over its limit and
+then a byte no target may hold is a ~414~, not a ~400~.
+
 The limits are in [[file:configuration.org][configuration.org]].

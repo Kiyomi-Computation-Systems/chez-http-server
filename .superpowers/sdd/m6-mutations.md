@@ -1086,3 +1086,79 @@ F3, whose head changed.
 | T-E14 | `test-connection-entry` | the entry suite's event callbacks lose one | connection-entry 1 |
 
 Sixty-five mutants on the reviewed tree; none survives.
+
+## The cut-off-span PR (fix/cut-off-spans, 2026-10-01)
+
+At the parser's error the core now judges what the error cut off, a target's or a field
+name's bytes it was not handed, and then the run still open, as a read's end would have
+(decided on the owner's word, by form; the ledger). A parser-result is `(parser-result
+status offset next code span)`, built once by the adapter, its offset at an error the
+refused byte's.
+
+Red before green: on main's code, a copy of the new suite without its two checks of the
+adapter failed five of its nine checks, those whose inputs split on main, and passed the
+other four: a target and the names at their limits, the tabs, and the tripwire. The whole
+suite cannot load on main, which has no `parser-result-event`. test-serve's new check failed
+against main's sources. Every new and changed check is watched red by at least one mutant
+below, mapped by its name in the runner's reports:
+- the cut-off suite's eleven: a target at its limit by X-T1; a byte past it by X-T2 and
+  X-T4; the spaces by X-T3 and X-C3; the tabs by X-A1 and X-C1; the names at their limit
+  by X-L1 to X-L7; a byte past by X-N1 and X-N3; the section by X-N2; the digits by X-R1,
+  X-R2 and X-C1; the result as a shell hands it by X-A1, X-A2 and X-A4; a pause's code by
+  X-A3; the tripwire for byte-machine #145 by X-B1;
+- the table's G12 by X-C1 and X-R1; K1 by X-T1; K2 by X-T4; K3 by X-T3; K4 by X-L1, X-L3,
+  X-L4, X-L7, X-N1 and X-N2; T7, its pause code moved, by X-C4; the cut-off rows' count by
+  T-K;
+- the entry suite's renamed check by X-C2;
+- test-serve's new check by X-A4 and X-S1.
+
+Twenty-eight mutants, every one run against all forty-four suites (T-K against the table's
+alone), none surviving. Two notes:
+- X-S1 reddens five contract checks as well. The contract suite holds the two shells' traces
+  equal, and a libuv shell that drops the span differs from the fake one at the first read
+  that ends inside a span.
+- X-T5, a space check that raises, reddens the outcome lane and the ratchet too, so the
+  corpora reach the check: an error cutting off a target while the spaces after the method
+  are open. Their answers there are main's.
+
+The padding PR's sixty-five, on this tree. Sixty-two were run again, each against the
+suites it reddened before, or all of them where cut again:
+- fifty-seven as written;
+- five cut again against the rewritten text: P-AI, P-J3, P-O, P-O2 and R-G1.
+
+Three were withdrawn:
+- P-Q and P-Q2: their mutation, runs judged at the parser's error, is now the rule;
+- R-K8, a result's fields read only where present: it is X-C2 now.
+
+All sixty-two are still killed.
+
+| Mutant | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|
+| X-A1 | `adapter` | the adapter does not step back past a byte the parser took and refused | connection-cut-off 2 |
+| X-A2 | `adapter` | the adapter steps back past a callback's failure too | connection-cut-off 1 |
+| X-A3 | `adapter` | the adapter drops a pause's code | connection-cut-off 1 |
+| X-A4 | `adapter` | the adapter hands no span | connection-cut-off 7, serve 1 |
+| X-B1 | byte-machine's runtime | byte-machine's runtime exports an accessor for the span an error abandoned (#145 landed) | connection-cut-off 1 |
+| X-C1 | `connection` | at an error the core counts the refused byte too | connection-cut-off 2, connection-table 1 |
+| X-C2 | `connection` | a result's code and span are read only where present | connection-entry 1 |
+| X-C3 | `connection` | a refusal of the core's own does not stop the cut-off judgment | connection-cut-off 1, connection-padding 1 |
+| X-C4 | `connection` | a pause's code is read from the span's place | connection-table 3 |
+| X-L1 | `connection` | the first field's line begins at the version's CR, not past its CRLF | connection-cut-off 1, connection-table 1 |
+| X-L2 | `connection` | a versionless request line sets no line start | connection-cut-off 1 |
+| X-L3 | `connection` | a head's value end sets no line start | connection-cut-off 2, connection-table 1 |
+| X-L4 | `connection` | a chunk's size line sets no line start | connection-cut-off 1, connection-table 1 |
+| X-L5 | `connection` | a trailer's value end sets no line start | connection-cut-off 1 |
+| X-L6 | `connection` | a cut-off name counts from its line start always | connection-cut-off 2 |
+| X-L7 | `connection` | a cut-off name counts from the read's start always | connection-cut-off 2, connection-table 3 |
+| X-N1 | `connection` | a cut-off field name is not judged | connection-cut-off 3, connection-table 3 |
+| X-N2 | `connection` | a cut-off name is not counted with the section | connection-cut-off 1, connection-table 1 |
+| X-N3 | `connection` | a cut-off name forgets the fragments a read's end handed on | connection-cut-off 1 |
+| X-R1 | `connection` | at the parser's error only the whitespace run is judged, as before | connection-cut-off 1, connection-table 2 |
+| X-R2 | `connection` | a run is judged with no slack | connection-cut-off 1, connection-padding 2, connection-table 2, outcome-lane 2, ratchet 1 |
+| X-S1 | `shell` | the libuv shell builds its own result, with no span | contract 5, serve 1 |
+| X-T1 | `connection` | a target cut off before its first fragment is counted a byte long | connection-cut-off 2, connection-table 1 |
+| X-T2 | `connection` | a cut-off target is not placed: the open run is judged instead | connection-cut-off 3, connection-table 3, serve 1 |
+| X-T3 | `connection` | no space check: a target always begins one byte after the method's space | connection-cut-off 1, connection-table 2 |
+| X-T4 | `connection` | a carried target counts only the bytes of the read that failed | connection-cut-off 1, connection-table 1 |
+| X-T5 | `connection` | the space check reads the delivery at the wrong index | connection-cut-off 4, connection-table 4, outcome-lane 2, ratchet 1, serve 1 |
+| T-K | the table suite | row K3 holds no instance | connection-table 1 |

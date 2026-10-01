@@ -317,7 +317,7 @@ violation, a test-caught bug and never a runtime path):
 | `closed` | — | `on-close` |
 | `tick` | `now` | the per-loop tick timer via the wheel |
 | `parser-event` | callback name + payload | inside `parser-feed!` |
-| `parser-result` | status, offset (the parser's own count since the padding PR's review, 2026-09-30; `consumed` before), next, error/pause | after `parser-feed!` returns |
+| `parser-result` | status, offset (the parser's own count since the padding PR's review, 2026-09-30; `consumed` before; at an error, the refused byte's since 2026-10-01), next, code (the error's or the pause's; two fields, error and pause, before 2026-10-01), span (the parser's open span, since 2026-10-01) | after `parser-feed!` returns |
 | `handler-responded` | a `response` record, or a reader (decision 0013, M6.1), and `credit` after it when the shell hands the reader its pieces on credit (M6.2) | the `call-handler` executor, and a reader's end |
 | `handler-body-chunk` | `bv start end` | a streaming producer |
 | `handler-body-end` | — | a streaming producer |
@@ -399,6 +399,20 @@ Four facts about them that shape the core:
 > the limit its bytes passed first; an empty value's line end does not count; and a
 > chunk's extensions count a byte for each `;` and `=`, so every byte of them counts
 > (decision 0005's amendment).
+
+> *Amended 2026-10-01 (the cut-off-span PR), on the owner's word by form:* **what the
+> parser's error cuts off is judged too.** A malformed byte ends the parse and abandons
+> the span being read, a target's or a field name's (a value, an extension and the
+> protocol are handed on first), so the paragraph above judged only the whitespace there.
+> A `parser-result` is now `(parser-result status offset next code span)`: one code, the
+> error's or the pause's; the span the parser has open, `parser-active-span`; and at an
+> error the refused byte's position, one less than the parser's count where it took the
+> byte first (decision 0002's amendment). At the error the core judges the span's bytes
+> it was not handed, up to that byte, and then the run still open, as a read's end would
+> have: the first limit passed in the order of the bytes names the response at every
+> split (decision 0005's amendment). Where the span began the parser does not say;
+> until byte-machine #145 lands the core places it, a field name where its line begins
+> and a target one byte after the method's space, unless that byte is another space.
 
 ### 4.3 Connection states
 
@@ -496,7 +510,7 @@ Termination and error rows:
 |---|---|---|---|
 | any reading | `eof` | `closing` | `close` (or finish the in-flight response first, from `responding`) |
 | any | `read-error` | `closing` | `log`, `close` — no response |
-| `head`/`body` | `parser-result status=error` | `responding` | `write` §6.5's status, `close-after? = #t` |
+| `head`/`body` | `parser-result status=error` | `responding` | `write` §6.5's status, `close-after? = #t`; a limit passed before the refused byte, by what the error cut off or a run, names it (2026-10-01) |
 | `head` | `tick` past `header` deadline | `responding` | `write` 408, `close-after? = #t` |
 | `idle` | `tick` past `idle` deadline | `closing` | `close` — **no response** (0005) |
 | `handling` | `handler-failed` | `responding` | `write` 500, `close-after? = #t`; bare `close` if the head is already on the wire |

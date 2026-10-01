@@ -1255,6 +1255,16 @@ this day). One goes to the next PR, before the M6 exit: a run past its limit, th
 error, gets a reason that depends on the split, as main's own limits do when an error
 cuts off their span. Both need to know where a span the error cut off began.
 
+*Noted 2026-10-01 (the cut-off-span PR):* built, its design decided by two forms on
+measurements of main and a scratch prototype. Only a target's and a field name's spans
+are ever cut off; at the parser's error the core now judges the bytes of them it was not
+handed, and then the run still open, as a read's end would have, so the first limit
+passed names the response at every split (980 of 40,000 fuzzed malformed requests split
+on main, none now). A `parser-result` carries one code and the parser's open span, and at
+an error the refused byte's position (decisions 0002 and 0005, amended this day). Where a
+cut-off span began the parser does not say: byte-machine #145 asks that its error should,
+and the core places the span until it lands (decision 0008).
+
 **M6 exit:** the brief's. 16 MiB each way against a slow peer, with memory bounded,
 read as the M4 exit read a connection: the server's heap, the client in a process of
 its own. libhtp's Expect and early-response files pass. `docs/handlers.org` gains
