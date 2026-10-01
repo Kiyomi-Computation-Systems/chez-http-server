@@ -3520,7 +3520,13 @@ DONE and merged (777d36e, eea26fc, 7e43fb6, f64f410, 17df6cc; PRs #83 to #87): *
 
 **CI reads the private submodules through a secret, on `fix/ci-private-submodules` (2026-10-01).** The job's own token reads only this repository, and chez-libuv, chez-httparse, uriparse and chez-httparse's byte-machine are private. Checkout now fetches this repository alone. `make submodules` clones every submodule with the Actions secret `SUBMODULES_READ_TOKEN`, through a URL rewrite held in that step's environment and limited to Kiyomi-Computation-Systems' URLs. A first step fails, naming the secret, until the owner adds it: a fine-grained token with Contents read-only on those four repositories. Proved offline on Darwin arm64 (git 2.50.1; the runner has 2.55.0). Against a stand-in for github.com, with the real Makefile, 19 checks pass. One shows that a nested clone never sees a token checkout saves, so a token given to checkout alone still fails at byte-machine. Eleven checks on ci.yml's own strings pass, each watched red under a mutant. `make test`: forty-three suites, 1,407 expected passes. The job's later steps have never run on GitHub; the first run with the secret is their first. DECIDED on the owner's word (2026-10-01), by form: checkout keeps the job's own token, and the change goes up as one PR. Weighed: the secret on checkout too, which would also have to read chez-http-server.
 
+MERGED to main on 2026-10-01, on the owner's "do closing ritual": **#88, CI reads the private submodules through a secret.** 3dcde03 was squashed as 3d006b0 (tree f7454e9, the tested tip's), whose parent is 37afef1. The owner added `SUBMODULES_READ_TOKEN` at 09:58Z. The PR's re-run (36844511280, attempt 2) then passed all 17 steps, the job's first green run on GitHub:
+- the five submodules cloned at their pins in 5 s;
+- Chez 10.4.1 built from source in 195 s and was cached, under the PR's ref, so main's first run builds it once more;
+- `make test` on ubuntu-24.04 (git 2.55.0, libuv 1.48.0) ran forty-three suites, 1,407 expected passes.
+
+The branch was deleted by hand, local and remote, and the shared checkout's `main` was fast-forwarded behind the guard.
+
 NEXT, by the owner's word (2026-09-30):
 - **The PR for the split found**, main's own limits cut off by the parser's error, now with the run-then-error reason. Its design goes by form on measurements.
 - **Then the M6 exit** (plan §14).
-- **Open:** CI's checkout of the private submodules, which needs the owner's token.
