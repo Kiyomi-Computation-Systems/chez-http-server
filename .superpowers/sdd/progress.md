@@ -3616,3 +3616,11 @@ DECIDED on the owner's word (2026-10-01), by form, after the walkthrough: **two 
 Weighed: three stacked PRs (the result; targets and runs; names and the records), each under the ~400 guide but one mechanism split across two; one PR.
 
 NEXT: the two PRs, merged bottom up on the owner's "do closing ritual". Then the M6 exit (plan §14). When byte-machine #145 lands and its release reaches chez-httparse and uriparse, their pins move together, the tripwire goes red, and the core's line starts and space check go.
+
+MERGED to main on 2026-10-01, on the owner's word by form ("Merge #90/#91, then PR"): **the cut-off-span PR, as two stacked PRs**, bottom up. Each squash tree is the tested tip's, and each merge was pinned to its head's full SHA.
+- **#90, the five-field result,** dd21879, squashed as baec0e6 (tree 6e4cefa), whose parent is f89ad73. CI's `linux` job passed on dd21879 (36866733334). It merged first and kept its branch.
+- **#91, the rule,** retargeted to main and rebased from dd21879: 7a6fd94 became bf11f16 (tree e75ce71, the tested one's), pushed with the lease from `ls-remote`. CI passed on both heads (36866785944, 36925445076). It merged as cab39b1, whose parent is baec0e6. `--delete-branch` switched this checkout to main and fast-forwarded it; the bottom branch was deleted by hand.
+
+`make test` green on main: forty-four suites, 1,433 expected passes, every pin ok.
+
+NEXT, by the owner's word (2026-10-01, the same form): **the pin PR**, one PR from main. byte-machine v0.7.0 (c338a57) shipped #145 the same day: a parse error names the span it abandoned (`parser-error-span`) and where its withheld bytes begin (`parser-error-span-offset`). chez-httparse v0.4.5 (0b7058e) and uriparse v0.6.2 (5ecd88f) carry it, their `src/` unchanged. Both pins move, and the core reads the two values in place of its line starts and space check; the result's `span` becomes the error's `(name . where its withheld bytes begin)`, or #f (DECIDED, the same form). Then the M6 exit (plan §14).
