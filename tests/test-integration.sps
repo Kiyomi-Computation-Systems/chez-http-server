@@ -5,9 +5,9 @@
 ;;; byte-machine (transitive) and uriparse, all on the one library path.
 (import (rnrs) (srfi :64) (testing)
         (libuv)                          ; chez-libuv v0.7.3
-        (generated httparse-message)     ; chez-httparse v0.4.3 (generated parser)
-        (httparse decisions)             ; chez-httparse v0.4.3
-        (httparse methods)               ; chez-httparse v0.4.3
+        (generated httparse-message)     ; chez-httparse v0.4.4 (generated parser)
+        (httparse decisions)             ; chez-httparse v0.4.4
+        (httparse methods)               ; chez-httparse v0.4.4
         (byte-machine runtime)           ; byte-machine v0.6.1 (transitive)
         (uri collect)                    ; uriparse v0.6.1
         (uri components))                ; uriparse v0.6.1

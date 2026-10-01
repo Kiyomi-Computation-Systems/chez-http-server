@@ -286,5 +286,6 @@ Weighed:
 - keeping the sum.
 
 A result is read whole before it is answered, so one short of its fields is an assertion
-violation, as any wrong shape is. The parser's offset inside a callback is asked of
-chez-httparse's docs as its #55.
+violation, as any wrong shape is. The parser's offset inside a callback was asked of
+chez-httparse's docs as its #55, and is documented there since v0.4.4 (2026-10-01), held
+over its corpus by `unit.stream-offset`.

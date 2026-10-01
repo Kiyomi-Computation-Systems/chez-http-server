@@ -3527,6 +3527,29 @@ MERGED to main on 2026-10-01, on the owner's "do closing ritual": **#88, CI read
 
 The branch was deleted by hand, local and remote, and the shared checkout's `main` was fast-forwarded behind the guard.
 
+THE CHEZ-HTTPARSE v0.4.4 PIN (2026-10-01), on the owner's word: "chez-http-server can now move its vendor/chez-httparse pin to the v0.4.4". Branch `chore/chez-httparse-v0.4.4`, cut from main at 8993ff0; Darwin arm64, Chez 10.4.1.
+
+UPSTREAM: chez-httparse tagged v0.4.4 (3342428, annotated tag 9b198d4). Checked against the sibling checkout's history:
+- **#56 answers our #55** (closed 2026-10-01). `docs/api.org` gains "Where a callback is in the stream":
+  - an event callback reads the bytes taken before it, llhttp's `off=`;
+  - a span callback reads its fragment's end, so the fragment starts at the offset less `(- to from)`, including a fragment cut off at a feed's end and an empty one.
+  - That is what the core reads, and `unit.stream-offset` holds both over the 274 fixtures at chunk sizes 1, 2, 3, 7 and whole.
+- **#57:** `parser-finish!` on a close-delimited body with no bytes runs no empty `on-body-data`, as llhttp. The generated parser gains one state, so it is not byte-identical to v0.4.3. The core never finishes a parser. The tests' response reader reads only the finish's status and whether its message completed, and an empty body's text is "" either way.
+- Conformance is 274 of 274 and the generated-runtime ABI is 9. Its byte-machine is still v0.6.1 at 5c1cb7e, so uriparse, the other carrier, stays. The vendored llhttp corpus is unchanged from v0.4.3. Its CI clones its private byte-machine with a read token (#58).
+
+Decision 0008's ask is closed by its landing: the pin moves on its own commit, and the adapter's comment, which cited the ask, now cites the documented section.
+
+Measured at v0.4.4:
+- `make test` (2026-10-01, Darwin arm64): forty-three suites, 1,407 expected passes, exit 0, as main. Every pin is ok: chez-httparse 3342428, its byte-machine 5c1cb7e, and uriparse released with the same.
+- The corpus lanes under `CORPUS=full`: trace 7, outcome 6 and libhtp 19 expected passes, ratchet 9.
+- On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy made with `COPYFILE_DISABLE=1`, less the submodule and pin checks: forty-three suites, 1,407 expected passes. The shell, contract, clients and integration suites gave 129, 68, 14 and 5 in each of three runs.
+
+Records: the global constraints' pin line; decision 0002's amendment (the offset documented); the adapter's comment; test-integration's and test-corpus-inventory's version comments.
+
+The pin moves alone: the gitlink, the Makefile's pin and the comments, besides these records.
+
+DECIDED on the owner's word (2026-10-01), by form: one PR, the pin alone. Weighed: a review first; nothing committed.
+
 NEXT, by the owner's word (2026-09-30):
 - **The PR for the split found**, main's own limits cut off by the parser's error, now with the run-then-error reason. Its design goes by form on measurements.
 - **Then the M6 exit** (plan §14).
