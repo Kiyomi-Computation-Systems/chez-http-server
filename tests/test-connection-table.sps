@@ -45,7 +45,9 @@
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
-;;; (design §6.3, amended 2026-09-26).
+;;; (design §6.3, amended 2026-09-26).  It carries a pause's code in the same
+;;; place, since a result has one or neither, and then the span the parser
+;;; has open (the cut-off-span PR).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server limits) (http-server body) (fake-shell)
@@ -367,9 +369,9 @@
    ;; is the door M8 opens for a handler that takes upgrades (decision 0006's
    ;; amendment of 2026-09-25).  The error channel is U2's.
    (row 'T7 "head/body, parser-result hands off -> handed-off: read-stop, disarm, the hand-off hook"
-        (i (state 'head 'deadline 'header 'request req) '(parser-result paused 55 55 #f paused-upgrade)
+        (i (state 'head 'deadline 'header 'request req) '(parser-result paused 55 55 paused-upgrade #f)
            `(handed-off #f ((read-stop) (disarm-deadline) (hand-off ,req))))
-        (i (state 'body 'deadline 'body 'request req) '(parser-result paused 63 63 #f paused-upgrade)
+        (i (state 'body 'deadline 'body 'request req) '(parser-result paused 63 63 paused-upgrade #f)
            `(handed-off #f ((read-stop) (disarm-deadline) (hand-off ,req)))))
 
    ;; Instantiated on idle only: with nothing in flight "finish in flight" is

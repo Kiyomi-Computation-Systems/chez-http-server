@@ -25,7 +25,7 @@
 ;;;   events   (bytes-arrived bv start end)  (eof)  (read-error errno)
 ;;;            (write-completed nbytes)  (shutdown-completed)  (closed)
 ;;;            (tick now)  (parser-event callback-name . payload)
-;;;            (parser-result status offset next error pause)
+;;;            (parser-result status offset next code span)
 ;;;            (handler-responded answer [credit])  (handler-body-chunk bv start end)
 ;;;            (handler-body-end)  (handler-failed raised)  (body-credit n)
 ;;;            (shutdown-requested)
@@ -38,10 +38,12 @@
 ;;;            (log what . details)  (hand-off request)
 ;;;
 ;;; A parser-result's `offset` is the parser's own count of the bytes it has
-;;; taken since it was made (chez-httparse's `parser-result-stream-offset`),
-;;; its `error` is #f or the error's code, and its `pause` #f or the pause's
-;;; code.  A span payload `bv start end` indexes the delivery the shell
-;;; handed in; the core never copies it (design §7.1).
+;;; taken since it was made (chez-httparse's `parser-result-stream-offset`);
+;;; its `code` is #f, or the error's or the pause's code, as its status says;
+;;; and its `span` is #f or the span the parser has open, after an error the
+;;; one the error cut off (the cut-off-span PR).  A span payload
+;;; `bv start end` indexes the delivery the shell handed in; the core never
+;;; copies it (design §7.1).
 ;;; `reply-parser` is the one action the shell answers inside the parser
 ;;; callback that produced it (0002 item 3).
 ;;;
@@ -1703,12 +1705,13 @@
   ;; result is read whole first: one short of its fields is refused.
   (define (on-parser-result s ev)
     (let* ((status (cadr ev)) (more (cddr ev)) (offset (car more))
-           (next (cadr more)) (err (caddr more)) (pause (cadddr more)))
+           (next (cadr more)) (code (caddr more)) (span (cadddr more)))
       (conn-parsed-set! s offset)
       (let ((reason (run-past-limit s (eq? status 'error))))
         (if reason
             (refuse-run s reason)
-            (read-result s status next err pause)))))
+            (read-result s status next (and (eq? status 'error) code)
+                         (and (eq? status 'paused) code))))))
 
   ;; refuse-run : ConnState Symbol -> (values ConnState (Listof Action))
   ;; A run past its limit at a read's end, closed and refused for `reason`:
