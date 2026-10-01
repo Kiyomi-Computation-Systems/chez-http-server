@@ -41,6 +41,11 @@
 (define oracle-names (map car adapter-trace-names))
 (define (oracle-kind name) (cadr (assq name adapter-trace-names)))
 (define oracle-spans (filter (lambda (n) (eq? (oracle-kind n) 'span)) oracle-names))
+;; The event callbacks that enter through conn-parser-step: all but the
+;; spans and on-headers-complete, which has its own entry point.
+(define oracle-events
+  (filter (lambda (n) (not (or (eq? (oracle-kind n) 'span) (eq? n 'on-headers-complete))))
+          oracle-names))
 
 (define request-inits (list (cons 'type (httparse-message-type-value 'request))))
 
@@ -77,7 +82,7 @@
       (conn-parser-step s 'on-header-value-data host 6 7)
       (conn-parser-step s 'on-header-value-complete 7))
     (conn-headers-complete-step s 3 1 1 F-CONTENT-LENGTH 1000 0 7)
-    (conn-step s '(parser-result need-input 0 0 #f #f))
+    (conn-step s '(parser-result need-input 7 7 #f #f))
     (conn-step s (list 'handler-responded reader))
     (unless (eq? (conn-body-reader s) reader)
       (assertion-violation 'reading-state "the steps did not reach a reader reading" (conn-phase s)))
@@ -214,7 +219,7 @@
          (lambda (s actions)
            (let ((acc (cons (snapshot s actions) acc)))
              (if (equal? (car actions) '(reply-parser pause))
-                 (let*-values (((s a0) (conn-step s '(parser-result paused 0 0 #f #f)))
+                 (let*-values (((s a0) (conn-step s (list 'parser-result 'paused (cadr (car cs)) (cadr (car cs)) #f #f)))
                                ((s a1) (if (or (assq 'call-handler actions) (assq 'call-handler a0))
                                            (conn-step s (list 'handler-responded reader))
                                            (values s '()))))
@@ -326,21 +331,20 @@
                 (filter (lambda (n)
                           (eq? 'accepted (verdict (lambda () (conn-parser-step (fresh 'head) n)))))
                         oracle-spans))
-    (test-equal "an event callback without the parser's position is refused, all fifteen" '()
+    (test-eqv "fourteen event callbacks enter through conn-parser-step" 14 (length oracle-events))
+    (test-equal "an event callback without the parser's position is refused, all fourteen" '()
                 (filter (lambda (n)
-                          (and (not (eq? (oracle-kind n) 'span))
-                               (eq? 'accepted (verdict (lambda () (conn-parser-step (fresh 'head) n))))))
-                        oracle-names))
+                          (eq? 'accepted (verdict (lambda () (conn-parser-step (fresh 'head) n)))))
+                        oracle-events))
     (test-equal "a span callback given a position in place of its span is refused, all ten" '()
                 (filter (lambda (n)
                           (eq? 'accepted (verdict (lambda () (conn-parser-step (fresh 'head) n 0)))))
                         oracle-spans))
-    (test-equal "an event callback given a span is refused, all fifteen" '()
+    (test-equal "an event callback given a span is refused, all fourteen" '()
                 (filter (lambda (n)
-                          (and (not (eq? (oracle-kind n) 'span))
-                               (eq? 'accepted
-                                    (verdict (lambda () (conn-parser-step (fresh 'head) n span-bv 0 1))))))
-                        oracle-names))
+                          (eq? 'accepted
+                               (verdict (lambda () (conn-parser-step (fresh 'head) n span-bv 0 1)))))
+                        oracle-events))
     (test-eq "on-headers-complete does not enter as an event callback" 'refused
              (verdict (lambda () (conn-parser-step (fresh 'head) 'on-headers-complete 0))))
     (test-eq "an unknown callback as a tagged list is an assertion violation" 'refused
@@ -354,6 +358,11 @@
              (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-headers-complete 1 1 1 0 0)))))
     (test-eq "on-headers-complete without the parser's position is refused" 'refused
              (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-headers-complete 1 1 1 0 0 0)))))
+    ;; A parser-result is read whole before it is answered: one short of its
+    ;; five fields is refused, even where the bytes it says the parser took
+    ;; would pass the empty lines' limit.
+    (test-eq "a parser-result without its error and pause codes is refused" 'refused
+             (verdict (lambda () (conn-step (fresh 'idle) '(parser-result need-input 5 5)))))
 
     ;; --- every callback is answered, in every state --------------------------
     (test-equal "the first action is the reply, for every callback in every state" '()

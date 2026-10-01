@@ -180,7 +180,7 @@
                   (when (or harness-paused (not core-paused))
                     (trace-recorder-note-requested-pause! r (parser-stream-offset p)))
                   (when core-paused
-                    (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed res)
+                    (conn-context-step! ctx (list 'parser-result 'paused (parser-result-stream-offset res)
                                                   (parser-result-next res) #f #f))
                     (conn-context-step! ctx (list 'handler-responded core-reader))
                     (let ((w (assq 'write (conn-context-step!

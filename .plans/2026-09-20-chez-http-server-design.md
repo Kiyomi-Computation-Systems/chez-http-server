@@ -317,7 +317,7 @@ violation, a test-caught bug and never a runtime path):
 | `closed` | — | `on-close` |
 | `tick` | `now` | the per-loop tick timer via the wheel |
 | `parser-event` | callback name + payload | inside `parser-feed!` |
-| `parser-result` | status, consumed, next, error/pause | after `parser-feed!` returns |
+| `parser-result` | status, offset (the parser's own count since the padding PR's review, 2026-09-30; `consumed` before), next, error/pause | after `parser-feed!` returns |
 | `handler-responded` | a `response` record, or a reader (decision 0013, M6.1), and `credit` after it when the shell hands the reader its pieces on credit (M6.2) | the `call-handler` executor, and a reader's end |
 | `handler-body-chunk` | `bv start end` | a streaming producer |
 | `handler-body-end` | — | a streaming producer |
