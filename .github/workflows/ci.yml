@@ -30,12 +30,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      # Top-level submodules only; the nested byte-machine is pulled by
-      # `make submodules` (targeted, so chez-libuv's own vendored libuv is not
-      # cloned — the system libuv installed below is what the shim links).
+      # chez-libuv, chez-httparse, uriparse and chez-httparse's nested
+      # byte-machine are private, and the job's own token reads only this
+      # repository. `make submodules` reads them with this secret, which the
+      # owner adds; without it, every run stops here, by name.
+      - name: Require the submodule read token
+        env:
+          SUBMODULES_READ_TOKEN: ${{ secrets.SUBMODULES_READ_TOKEN }}
+        run: |
+          if [ -z "${SUBMODULES_READ_TOKEN}" ]; then
+            echo "::error::The Actions secret SUBMODULES_READ_TOKEN is not set: a token with Contents read-only on Kiyomi-Computation-Systems' chez-libuv, chez-httparse, uriparse and byte-machine."
+            exit 1
+          fi
+
+      # This repository alone, with the job's own token; `make submodules`
+      # clones the submodules below.
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       # libuv for the shim (pkg-config path); the X11/ncurses/uuid headers are
       # what Chez's from-source build needs; curl and ab (apache2-utils) are
@@ -115,9 +125,21 @@ jobs:
           cmake --version | head -1
           echo "libuv: $(pkg-config --modversion libuv)"
 
-      # Pull the nested byte-machine, then verify every gitlink is at its pin
-      # before building anything.
+      # Clone the submodules, chez-httparse's byte-machine included, then
+      # verify every gitlink is at its pin before building anything. Targeted,
+      # so chez-libuv's own vendored libuv is not cloned: the system libuv
+      # installed above is what the shim links. The rewrite sends only the
+      # org's URLs through the read token (chez-srfi is public), and it lives
+      # in this step's environment, not a config file: git hands GIT_CONFIG_*
+      # to every clone, a nested one included, and a clone never reads the
+      # superproject's .git/config. Build and Test run `make submodules` again
+      # (deps needs it) without the token; every gitlink is at its pin by
+      # then, so git fetches nothing.
       - name: Init submodules
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: "url.https://x-access-token:${{ secrets.SUBMODULES_READ_TOKEN }}@github.com/Kiyomi-Computation-Systems/.insteadOf"
+          GIT_CONFIG_VALUE_0: "https://github.com/Kiyomi-Computation-Systems/"
         run: make submodules
 
       - name: Check dependency pins
