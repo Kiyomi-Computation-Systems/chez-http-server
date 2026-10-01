@@ -435,31 +435,43 @@
 
   ;; feed! : FakeShell Bytevector Nat Nat -> Void
   ;; Feed the parser bv[start, end), counting the feed in the depth, then
-  ;; dispatch its result: the status, the bytes consumed, where to resume,
-  ;; and the codes of its error and its pause.
+  ;; dispatch its result: the status, the parser's count of the bytes it has
+  ;; taken, where to resume, and the codes of its error and its pause.
   (define (feed! s bv start end)
     (fake-shell-depth-set! s (+ (fake-shell-depth s) 1))
     (let ((r (parser-feed! (fake-shell-parser s) bv start end)))
       (fake-shell-depth-set! s (- (fake-shell-depth s) 1))
       (fake-shell-deliver! s (list 'parser-result (parser-result-status r)
-                                   (parser-result-consumed r) (parser-result-next r)
+                                   (parser-result-stream-offset r) (parser-result-next r)
                                    (code (parser-result-error r))
                                    (code (parser-result-pause r))))))
 
   ;; code : (U #f ParserError) -> (U #f Symbol)
   (define (code e) (and e (parser-error-code e)))
 
-  ;; fake-shell-feed-input! : FakeShell Bytevector Nat -> Nat
+  ;; fake-shell-feed-input! : FakeShell Bytevector Nat [Nat] -> Nat
   ;; Deliver `input` in `size`-byte deliveries, each as `bytes-arrived`, while
   ;; the connection reads, letting every later turn happen in between.
   ;; Returns how many bytes were delivered: what a stopped connection never
-  ;; read is not delivered.
-  (define (fake-shell-feed-input! s input size)
+  ;; read is not delivered.  Each delivery is a slice of `input`; given an
+  ;; `offset`, it is a bytevector of its own instead, its bytes from that
+  ;; index, as a shell hands over a read: a delivery's index then differs
+  ;; from where the bytes sit in the connection (the padding PR).
+  (define fake-shell-feed-input!
+    (case-lambda
+      ((s input size) (feed-input! s input size #f))
+      ((s input size offset) (feed-input! s input size offset))))
+
+  (define (feed-input! s input size offset)
     (let ((len (bytevector-length input)))
       (let loop ((from 0))
         (fake-shell-settle! s)
         (if (and (< from len) (fake-shell-reading? s))
             (let ((to (min len (+ from size))))
-              (fake-shell-deliver! s (list 'bytes-arrived input from to))
+              (fake-shell-deliver! s (if offset
+                                         (let ((read (make-bytevector (+ offset (- to from)) 0)))
+                                           (bytevector-copy! input from read offset (- to from))
+                                           (list 'bytes-arrived read offset (+ offset (- to from))))
+                                         (list 'bytes-arrived input from to)))
               (loop to))
             from)))))

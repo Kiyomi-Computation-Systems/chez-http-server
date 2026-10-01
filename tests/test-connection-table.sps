@@ -37,7 +37,7 @@
 ;;; its seven for what a chunked body carries beside its data, its trailer
 ;;; fields held to the four header limits and its chunk extensions to 16 KiB
 ;;; (both decided on the owner's word, 2026-09-29).  And the padding PR's
-;;; twelve for what the parser reads and hands no span of, each event at the
+;;; thirteen for what the parser reads and hands no span of, each event at the
 ;;; parser's position: the empty lines before a request line, the spaces
 ;;; between its parts, the whitespace before a field's value and a chunk
 ;;; size's digits, judged where they end and at a read's end (decided on the
@@ -70,7 +70,8 @@
 ;; parser delivers one, in a request line `GET target HTTP/1.1`, each event
 ;; at the parser's position in it and each span at its bounds, and a host (a
 ;; string) likewise, as a Host header line, then each of `fields`, a list of
-;; (name . value) strings (M6.4).
+;; (name . value) strings (M6.4).  Each of those callbacks must be
+;; answered `continue` (`setup!`), so the head built is one a parse reaches.
 (define (state phase . plist)
   (define (get key default)
     (let loop ((p plist))
@@ -86,10 +87,10 @@
     (when target
       (let* ((line (b (string-append "GET " target " HTTP/1.1")))
              (end (- (bytevector-length line) 9)))
-        (conn-parser-step s 'on-method-complete 3)
-        (conn-parser-step s 'on-url-data line 4 end)
-        (conn-parser-step s 'on-url-complete (+ end 1))
-        (conn-parser-step s 'on-protocol-data line (+ end 1) (+ end 5))))
+        (setup! s 'on-method-complete 3)
+        (setup! s 'on-url-data line 4 end)
+        (setup! s 'on-url-complete (+ end 1))
+        (setup! s 'on-protocol-data line (+ end 1) (+ end 5))))
     (when host (field-line! s "Host" host))
     (for-each (lambda (f) (field-line! s (car f) (cdr f))) (get 'fields '()))
     s))
@@ -100,10 +101,19 @@
 ;; space after the colon.
 (define (field-line! s name value)
   (let ((line (b (string-append name ": " value))) (n (string-length name)))
-    (conn-parser-step s 'on-header-field-data line 0 n)
-    (conn-parser-step s 'on-header-field-complete (+ n 1))
-    (conn-parser-step s 'on-header-value-data line (+ n 2) (bytevector-length line))
-    (conn-parser-step s 'on-header-value-complete (bytevector-length line))))
+    (setup! s 'on-header-field-data line 0 n)
+    (setup! s 'on-header-field-complete (+ n 1))
+    (setup! s 'on-header-value-data line (+ n 2) (bytevector-length line))
+    (setup! s 'on-header-value-complete (bytevector-length line))))
+
+;; setup! : ConnState Symbol . Payload -> Void
+;; One parser callback a synthetic state is built from: one the core does
+;; not answer `continue` would leave a state no parse reaches, a refusal
+;; held for the next row's result to find, so it is an error here.
+(define (setup! s name . payload)
+  (let-values (((s actions) (apply conn-parser-step s name payload)))
+    (unless (equal? (car actions) '(reply-parser continue))
+      (assertion-violation 'state "a step building the state was refused" name actions))))
 
 ;; render-action : Action -> Datum
 ;; A write's segments are bytes, so it is rendered with each as text, a span
@@ -1220,17 +1230,13 @@
 ;; 100-continue (decided on the owner's word, 2026-09-29).  The value is
 ;; matched without regard to case, as a member of its list.
 
-;; expecting : (U Nat 'chunked) String [Nat] -> ConnState
+;; expecting : (U Nat 'chunked) String -> ConnState
 ;; A POST whose head carries `Expect: value` and, just complete, announced a
-;; body of `framing` on HTTP/1.`minor`, 1 unless given: in body, its handler
-;; to be asked.
-(define (expecting framing value . minor)
+;; body of `framing`: in body, its handler to be asked.
+(define (expecting framing value)
   (let ((s (state 'head 'deadline 'header 'target "/" 'host "x"
                   'fields (list (cons "Expect" value)))))
-    (conn-step s `(parser-event on-headers-complete 3 1 ,(if (null? minor) 1 (car minor))
-                                ,(if (eq? framing 'chunked) F-CHUNKED F-CONTENT-LENGTH)
-                                ,(if (eq? framing 'chunked) 0 framing) 0 46))
-    (when (eq? framing 'chunked) (conn-step s '(parser-event on-chunk-header 49)))
+    (head-complete! s framing)
     s))
 
 ;; expected : (U Nat 'chunked) . Piece -> ConnState
@@ -1451,12 +1457,12 @@
         (i (trailer (trailer (trailing tight) 1 1) 1 1) '(parser-event on-header-field-complete 0)
            '(body #f ((reply-parser (fail too-many-headers))))))
 
-   ;; The head holds 2 fields, 9 bytes, at the tight limits' edge; its
-   ;; trailers may hold as many again.
+   ;; The head holds 2 fields, 10 bytes with the space after each colon, at
+   ;; the tight limits' edge; its trailers may hold as many again.
    (row 'F3 "body, trailer fields after a head at the limits -> body: continue; the trailers are counted on their own"
-        (i (trailer (trailing tight '("Ab" . "cd")) 4 4) `(parser-event on-header-field-data ,big 0 1)
+        (i (trailer (trailing tight '("Ab" . "c")) 4 4) `(parser-event on-header-field-data ,big 0 1)
            '(body #f ((reply-parser continue))))
-        (let ((s (trailer (trailing tight '("Ab" . "cd")) 4 4)))
+        (let ((s (trailer (trailing tight '("Ab" . "c")) 4 4)))
           (conn-step s `(parser-event on-header-field-data ,big 0 1))
           (i s '(parser-event on-header-field-complete 0)
              '(body #f ((reply-parser continue))))))
@@ -1651,7 +1657,7 @@
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result need-input 5 5 #f #f)
            '(head #f ()))
-        (i (reading-chunks) '(parser-result need-input 28 28 #f #f)
+        (i (reading-chunks) '(parser-result need-input 77 77 #f #f)
            '(body #f ())))
 
    (row 'G10 "idle, head or body, a read's end inside a run past its limit -> responding: the run's status, read-stop, close-after"
@@ -1668,7 +1674,7 @@
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result need-input 7 7 #f #f)
            `(responding header-value-too-large (,status-431 (read-stop) (arm-deadline write))))
-        (i (reading-chunks) '(parser-result need-input 29 29 #f #f)
+        (i (reading-chunks) '(parser-result need-input 78 78 #f #f)
            `(responding chunk-size-too-long (,status-400 (read-stop) (arm-deadline write)))))
 
    ;; The feed that completed the head went on past the next size line's
@@ -1691,8 +1697,28 @@
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result error 9 9 invalid-header-token #f)
            `(responding header-value-too-large (,status-431 (read-stop) (arm-deadline write))))
-        (i (reading-chunks) '(parser-result error 29 29 invalid-chunk-size #f)
-           `(responding parser-error (,status-400 (read-stop) (arm-deadline write)))))))
+        (i (reading-chunks) '(parser-result error 78 78 invalid-chunk-size #f)
+           `(responding parser-error (,status-400 (read-stop) (arm-deadline write)))))
+
+   ;; A run is judged at a read's end only in the phase it is read in: one
+   ;; still open when a deadline's 408 moves the connection on is not, so a
+   ;; read's end after it changes nothing, as an event with no transition.
+   (row 'G14 "responding, a read's end with a run from head or body still open -> responding: nothing"
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3) '(tick 60000))
+           '(parser-result need-input 30 30 #f #f)
+           '(responding header-timeout ()))
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3)
+                  `(parser-event on-url-data ,spaced 4 5) '(parser-event on-url-complete 6) '(tick 60000))
+           '(parser-result need-input 30 30 #f #f)
+           '(responding header-timeout ()))
+        (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
+                  `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2)
+                  '(tick 60000))
+           '(parser-result need-input 30 30 #f #f)
+           '(responding header-timeout ()))
+        (i (after (reading-chunks) '(tick 60000))
+           '(parser-result need-input 100 100 #f #f)
+           '(responding body-timeout ())))))
 
 ;; index : Any (Listof Any) -> Nat — where `x` stands in `xs`.
 (define (index x xs)
@@ -1726,7 +1752,7 @@
    ;; fire; if it did, it is not answered.
    (row 'P2 "handling after a close-marked message, parser-result error -> handling: ignored"
         (i (paused 10 40 'not-keep-alive)
-           '(parser-result error 1 29 closed-connection #f)
+           '(parser-result error 19 29 closed-connection #f)
            '(handling not-keep-alive () #f)))
 
    ;; The states a close-marked message passes through after its pause.
@@ -1890,7 +1916,7 @@
       (test-eqv "M6.4: all 7 Expect rows have a test" 7 expects)
       (test-eqv "M6.4: the 100's accounting row has a test" 1 continues)
       (test-eqv "M6.4: all 7 trailer and extension rows have a test" 7 framings)
-      (test-eqv "the padding PR: all 12 padding rows have a test" 12 paddings))
+      (test-eqv "the padding PR: all 13 padding rows have a test" 13 paddings))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it: `notify-producer` since M6.3.

@@ -96,7 +96,7 @@
           (assertion-violation 'connection "the core did not pause the parser"
                                (parser-result-status r)))
         (set! queued '())
-        (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed r)
+        (conn-context-step! ctx (list 'parser-result 'paused (parser-result-stream-offset r)
                                       (parser-result-next r) #f #f))
         (let ((w (assq 'write (conn-context-step! ctx (list 'handler-responded response)))))
           (conn-context-step! ctx (list 'write-completed (caddr w))))
@@ -127,7 +127,7 @@
           (assertion-violation 'reading-connection "the core did not pause the parser"
                                (parser-result-status r)))
         (unless (assq 'call-handler
-                      (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed r)
+                      (conn-context-step! ctx (list 'parser-result 'paused (parser-result-stream-offset r)
                                                     (parser-result-next r) #f #f)))
           (assertion-violation 'reading-connection "the core did not ask the handler"))
         (let ((reader (make-reader)))
@@ -164,7 +164,7 @@
                               (len (bytevector-length head)))
                          (conn-context-step! ctx (list 'bytes-arrived head 0 len))
                          (parser-feed! p head 0 len)
-                         (conn-context-step! ctx '(parser-result need-input 0 0 #f #f))
+                         (conn-context-step! ctx (list 'parser-result 'need-input len len #f #f))
                          (conn-context-step! ctx (list 'handler-responded
                                                        (read-whole-body (lambda (body) resp) #f)))
                          (conn-context-state ctx))))
@@ -210,7 +210,7 @@
           (unless (eq? (parser-result-status r) 'paused)
             (assertion-violation 'streaming-connection "the core did not pause the parser"
                                  (parser-result-status r)))
-          (conn-context-step! ctx (list 'parser-result 'paused (parser-result-consumed r)
+          (conn-context-step! ctx (list 'parser-result 'paused (parser-result-stream-offset r)
                                         (parser-result-next r) #f #f))
           (take (conn-context-step! ctx (list 'handler-responded (make-response 200 #f '() producer))))
           (let settle ()

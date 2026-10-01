@@ -12,9 +12,9 @@
 ;;; upgrades, which is this message's only from on-headers-complete on
 ;;; (chez-httparse v0.4.1, #47).  Every event callback also passes the
 ;;; parser's position, `parser-stream-offset`, the bytes it has read, which
-;;; its runtime commits before calling it (byte-machine's contract): the core
-;;; measures by it what the parser reads and hands no span of (the padding
-;;; PR).
+;;; its runtime commits before calling it (byte-machine's contract; asked of
+;;; chez-httparse's docs as its #55): the core measures by it what the
+;;; parser reads and hands no span of (the padding PR).
 ;;;
 ;;; The core's first action is its `reply-parser`, and that one is answered
 ;;; here, inside the callback (0002 item 3): continue, pause, or a failure

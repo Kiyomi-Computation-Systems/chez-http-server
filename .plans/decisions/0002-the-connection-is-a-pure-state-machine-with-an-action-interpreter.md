@@ -265,3 +265,26 @@ for padded chunks, a scratch probe). A span needs none: its position is its deli
 base plus its bound, and the core knows each base, the bytes each read's result took, and
 where each delivery it feeds begins. Nothing is allocated for it: the position is a
 fixnum argument, and curl's GET costs 1,840 B a request, as before.
+
+## Amendment (2026-09-30, later) — a parser-result carries the parser's own count
+
+A `parser-result`'s second field was the bytes one feed consumed, and the padding PR
+summed them into the core's count of the parser's bytes. The field is now the parser's
+own count, `parser-result-stream-offset` (chez-httparse `docs/api.org`): the bytes taken
+since the parser was made. The event reads `(parser-result status offset next error
+pause)`. Both shells pass it, and the core keeps it instead of adding.
+
+Decided on the owner's word, by form, at the padding PR's review. A lane that passes on
+only some of the parser's results, as the trace lane does by design, left the summed
+count behind on 80 of its 141 reads. That was harmless only because no run is judged
+while a handler is asked. A delivery's base is still that count less where the feed
+starts.
+
+Weighed:
+- spans carrying the parser's position too: 17 code lines for 20, and 73 hand-built
+  events, with a shell that passed a wrong count caught by no check without one more;
+- keeping the sum.
+
+A result is read whole before it is answered, so one short of its fields is an assertion
+violation, as any wrong shape is. The parser's offset inside a callback is asked of
+chez-httparse's docs as its #55.

@@ -520,14 +520,14 @@
 
   ;; feed! : Connection Bytevector Nat Nat -> Void
   ;; Feed the parser bv[start, end), counting the feed in the depth, then
-  ;; dispatch its result: the status, the bytes consumed, where to resume,
-  ;; and the codes of its error and its pause.
+  ;; dispatch its result: the status, the parser's count of the bytes it has
+  ;; taken, where to resume, and the codes of its error and its pause.
   (define (feed! c bv start end)
     (connection-depth-set! c (fx+ (connection-depth c) 1))
     (let ((r (parser-feed! (connection-parser c) bv start end)))
       (connection-depth-set! c (fx- (connection-depth c) 1))
       (dispatch! c (list 'parser-result (parser-result-status r)
-                         (parser-result-consumed r) (parser-result-next r)
+                         (parser-result-stream-offset r) (parser-result-next r)
                          (code (parser-result-error r))
                          (code (parser-result-pause r))))))
 

@@ -31,57 +31,21 @@
 ;;; limits each row sets; design §6.5's 400 and 431; decision 0011's staged
 ;;; close.
 (import (rnrs) (srfi :64) (testing)
-        (http-server connection) (http-server request) (http-server response)
-        (http-server span) (http-server limits) (http-server body)
-        (fake-shell))
+        (http-server connection) (http-server response) (http-server limits)
+        (fake-shell) (decisive))
 
 (define (b s) (string->utf8 s))
 
 (define ok (make-response 200 #f '() #f))
-
-;; text : Bytevector Nat Nat -> String
-(define (text bv from to)
-  (let ((o (make-bytevector (- to from)))) (bytevector-copy! bv from o 0 (- to from)) (utf8->string o)))
-
-;; render-request : Request -> Datum — the method and target.
-(define (render-request r)
-  (list (request-method r) (utf8->string (span->bytevector (request-target r)))))
-
-;; decisive : (Listof Action) -> (Listof Datum)
-;; The handlers asked, the pieces handed over joined into one text between
-;; two other actions, each reader's end, and the writes by status.
-(define (decisive actions)
-  (let loop ((as actions) (acc '()))
-    (if (null? as)
-        (reverse acc)
-        (let ((a (car as)))
-          (case (car a)
-            ((call-handler) (loop (cdr as) (cons (list 'call-handler (render-request (cadr a))) acc)))
-            ((deliver-body)
-             (let ((piece (text (cadr a) (caddr a) (cadddr a))))
-               (if (and (pair? acc) (eq? (car (car acc)) 'body))
-                   (loop (cdr as) (cons (list 'body (string-append (cadr (car acc)) piece)) (cdr acc)))
-                   (loop (cdr as) (cons (list 'body piece) acc)))))
-            ((deliver-body-end) (loop (cdr as) (cons '(end) acc)))
-            ((write) (loop (cdr as) (cons (list 'write (written-status a)) acc)))
-            (else (loop (cdr as) acc)))))))
 
 ;; read! : Bytevector Nat Limits -> FakeShell
 ;; One connection reading `input` in `size`-byte deliveries while it reads,
 ;; each copied to index 3 of a bytevector of its own, its handler reading
 ;; every body.
 (define (read! input size limits)
-  (let ((sh (make-fake-connection limits (lambda (request) (read-body (lambda (bv from to) #t)
-                                                                      (lambda () ok)))))
-        (len (bytevector-length input)))
-    (let loop ((at 0))
-      (fake-shell-settle! sh)
-      (if (and (< at len) (fake-shell-reading? sh))
-          (let* ((end (min len (+ at size))) (n (- end at)) (read (make-bytevector (+ n 3) 0)))
-            (bytevector-copy! input at read 3 n)
-            (fake-shell-deliver! sh (list 'bytes-arrived read 3 (+ n 3)))
-            (loop end))
-          sh))))
+  (let ((sh (make-fake-connection limits (drops-body (lambda (request) ok)))))
+    (fake-shell-feed-input! sh input size 3)
+    sh))
 
 ;; outcome : Bytevector Nat Limits -> Datum
 ;; What the connection did with `input`, and the phase and close-after it
