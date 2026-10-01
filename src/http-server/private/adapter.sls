@@ -16,9 +16,9 @@
 ;;; "Where a callback is in the stream", since v0.4.4 for its #55): the core
 ;;; measures by it what the parser reads and hands no span of (the padding
 ;;; PR).  And the event a feed's result becomes is built here, once, for both
-;;; shells: with the span the parser has open, and at an error the refused
-;;; byte's position, by which the core judges what the error cut off (the
-;;; cut-off-span PR).
+;;; shells, from the result alone: at an error, with the refused byte's
+;;; position and the span the error abandoned, by which the core judges what
+;;; the error cut off (the cut-off-span PR).
 ;;;
 ;;; The core's first action is its `reply-parser`, and that one is answered
 ;;; here, inside the callback (0002 item 3): continue, pause, or a failure
@@ -110,20 +110,23 @@
                        (answer! ctx s actions)))))))
          conn-parser-callbacks))
 
-  ;; parser-result-event : ParserResult Parser -> Event
+  ;; parser-result-event : ParserResult -> Event
   ;; What a feed's result tells the core, as both shells hand it over:
   ;; `(parser-result status offset next code span)` (decision 0002's
-  ;; amendment of 2026-10-01).  `offset` is the parser's count of the bytes
+  ;; amendments of 2026-10-01).  `offset` is the parser's count of the bytes
   ;; it has taken, `parser-result-stream-offset`; at an error of the
   ;; parser's own, the refused byte's position: the count, less one where
   ;; the parser took the byte before refusing it, an error whose position
-  ;; kind is `boundary` (byte-machine's .reference/transition-and-cursor-
-  ;; semantics.md §4).  A callback's failure, the core's own refusal,
-  ;; refuses no byte, and keeps the count.  `code` is the error's code or the
-  ;; pause's, since a result has one or neither, or #f.  `span` is the span
-  ;; the parser has open, `parser-active-span`: after an error, the one the
-  ;; error cut off, which it never hands on.
-  (define (parser-result-event r p)
+  ;; kind is `boundary`.  That byte is never the token's in this grammar,
+  ;; which byte-machine leaves to the grammar to say (its .reference/
+  ;; transition-and-cursor-semantics.md §4).  A callback's failure, the
+  ;; core's own refusal, refuses no byte, and keeps the count.  `code` is the
+  ;; error's code or the pause's, since a result has one or neither, or #f.
+  ;; `span` is, at an error with a span open, the span the error abandoned
+  ;; and where its withheld bytes begin, `(name . offset)`, as the error
+  ;; records them (`parser-error-span`, `parser-error-span-offset`, since
+  ;; byte-machine v0.7.0 for its #145), and otherwise #f.
+  (define (parser-result-event r)
     (let ((e (parser-result-error r)) (offset (parser-result-stream-offset r)))
       (list 'parser-result (parser-result-status r)
             (if (and e (eq? (parser-error-domain e) 'machine)
@@ -132,7 +135,8 @@
                 offset)
             (parser-result-next r)
             (let ((c (or e (parser-result-pause r)))) (and c (parser-error-code c)))
-            (parser-active-span p))))
+            (and e (parser-error-span e)
+                 (cons (parser-error-span e) (parser-error-span-offset e))))))
 
   ;; make-conn-parser : ConnContext -> Parser
   ;; A request parser for one connection, strict (no lenient flags), carrying

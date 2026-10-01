@@ -1836,13 +1836,14 @@
 ;; What the parser's error cuts off (the cut-off-span PR; decided on the
 ;; owner's word, 2026-10-01).  A malformed byte ends the parse, and a
 ;; target or a field name the parser was reading is abandoned, never handed
-;; on.  The result says which span the parser had open, and its offset is
-;; the refused byte's; the core judges the span's bytes it was not handed as
-;; a read's end would have: from where a read's end last handed some, or
-;; from where the span began, which it places (byte-machine #145): a target
-;; one byte after the method's space, unless that byte is another space, and
-;; a name where its line began.  The rows' events are at the positions a
-;; parse of the bytes named commits, each delivery fed from its index 0.
+;; on.  The result names the span the error abandoned and where its
+;; withheld bytes begin (byte-machine v0.7.0's two accessors, for its #145),
+;; and its offset is the refused byte's; the core judges the span's bytes it
+;; was not handed, from there to that byte, as a read's end would have.  They
+;; begin where the span did when it began in the read that failed (a target
+;; past the method's spaces, a name at its line's start), and otherwise at
+;; that read's start.  The rows' events are at the positions a parse of the
+;; bytes named commits, each delivery fed from its index 0.
 
 ;; cut : Limits — tight's header limits, and a target of 4 bytes.
 (define cut (limits-with tight '((max-target-bytes . 4))))
@@ -1871,7 +1872,7 @@
 (define (carried line)
   (after (state 'head 'deadline 'header 'limits cut)
          (fed line 0 6) '(parser-event on-method-complete 3) `(parser-event on-url-data ,line 4 6)
-         '(parser-result need-input 6 6 #f url-span) (fed line 6 (bytevector-length line))))
+         '(parser-result need-input 6 6 #f #f) (fed line 6 (bytevector-length line))))
 
 ;; request-line : Limits -> ConnState
 ;; A GET of / in head, its request line, `GET / HTTP/1.1`, read to its
@@ -1903,36 +1904,37 @@
   (list
    ;; `GET /aaa`, and the control byte at 8: the target's 4 bytes from 4.
    (row 'K1 "head, the parser's error with the target cut off within its limit -> responding: the parser's status"
-        (i (method-read four) '(parser-result error 8 8 invalid-url url-span)
+        (i (method-read four) '(parser-result error 8 8 invalid-url (url-span . 4))
            `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
-        (i (carried four) '(parser-result error 8 8 invalid-url url-span)
+        (i (carried four) '(parser-result error 8 8 invalid-url (url-span . 6))
            `(responding parser-error (,status-400 (read-stop) (arm-deadline write)))))
    (row 'K2 "head, the parser's error with the target cut off past its limit -> responding: 414"
-        (i (method-read five) '(parser-result error 9 9 invalid-url url-span)
+        (i (method-read five) '(parser-result error 9 9 invalid-url (url-span . 4))
            `(responding target-too-large (,status-414 (read-stop) (arm-deadline write))))
-        (i (carried five) '(parser-result error 9 9 invalid-url url-span)
+        (i (carried five) '(parser-result error 9 9 invalid-url (url-span . 6))
            `(responding target-too-large (,status-414 (read-stop) (arm-deadline write)))))
-   ;; The spaces after the method come first: the 2nd, at 4, is past the one.
+   ;; The spaces after the method come first: the 2nd, at 4, is past the one,
+   ;; and the target, or the control byte where it would be, begins at 5.
    (row 'K3 "head, the parser's error with the target cut off after more than one space -> responding: the spaces' status"
-        (i (method-read spaced-five) '(parser-result error 10 10 invalid-url url-span)
+        (i (method-read spaced-five) '(parser-result error 10 10 invalid-url (url-span . 5))
            `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write))))
-        (i (method-read spaced-none) '(parser-result error 5 5 invalid-url url-span)
+        (i (method-read spaced-none) '(parser-result error 5 5 invalid-url (url-span . 5))
            `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write)))))
    ;; A name of 4 bytes is tight's limit, as 10 is its section's: Host: x
    ;; and its space, 6, and a name of 4; with Host: xx, 7, a name of 4 is
    ;; within its own limit but past the section's.
    (row 'K4 "head or body, the parser's error with a field name cut off -> responding: the parser's status within the limits; past one, 431 for the limit passed first"
-        (i (request-line tight) '(parser-result error 20 20 invalid-header-token header-field-span)
+        (i (request-line tight) '(parser-result error 20 20 invalid-header-token (header-field-span . 16))
            `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
-        (i (request-line tight) '(parser-result error 21 21 invalid-header-token header-field-span)
+        (i (request-line tight) '(parser-result error 21 21 invalid-header-token (header-field-span . 16))
            `(responding header-field-too-large (,status-431 (read-stop) (arm-deadline write))))
-        (i (one-field "x") '(parser-result error 29 29 invalid-header-token header-field-span)
+        (i (one-field "x") '(parser-result error 29 29 invalid-header-token (header-field-span . 25))
            `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
-        (i (one-field "xx") '(parser-result error 30 30 invalid-header-token header-field-span)
+        (i (one-field "xx") '(parser-result error 30 30 invalid-header-token (header-field-span . 26))
            `(responding headers-too-large (,status-431 (read-stop) (arm-deadline write))))
-        (i (last-chunk) '(parser-result error 59 59 invalid-header-token header-field-span)
+        (i (last-chunk) '(parser-result error 59 59 invalid-header-token (header-field-span . 55))
            `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
-        (i (last-chunk) '(parser-result error 60 60 invalid-header-token header-field-span)
+        (i (last-chunk) '(parser-result error 60 60 invalid-header-token (header-field-span . 55))
            `(responding header-field-too-large (,status-431 (read-stop) (arm-deadline write)))))))
 
 ;; count-rows : String (-> (Listof Row)) (ConnState Event -> Datum)

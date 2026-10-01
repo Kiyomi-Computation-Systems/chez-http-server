@@ -522,12 +522,12 @@
   ;; Feed the parser bv[start, end), counting the feed in the depth, then
   ;; dispatch its result as the adapter builds it: the status, where the
   ;; parser is, where to resume, the code of its error or its pause, and the
-  ;; span it has open.
+  ;; span an error abandoned.
   (define (feed! c bv start end)
     (connection-depth-set! c (fx+ (connection-depth c) 1))
     (let ((r (parser-feed! (connection-parser c) bv start end)))
       (connection-depth-set! c (fx- (connection-depth c) 1))
-      (dispatch! c (parser-result-event r (connection-parser c)))))
+      (dispatch! c (parser-result-event r))))
 
   ;; call-handler! : Connection Request -> Void
   ;; The handler's answer, and `credit` after it on a shell made on credit.

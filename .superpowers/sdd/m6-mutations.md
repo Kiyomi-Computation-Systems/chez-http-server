@@ -1162,3 +1162,85 @@ All sixty-two are still killed.
 | X-T4 | `connection` | a carried target counts only the bytes of the read that failed | connection-cut-off 1, connection-table 1 |
 | X-T5 | `connection` | the space check reads the delivery at the wrong index | connection-cut-off 4, connection-table 4, outcome-lane 2, ratchet 1, serve 1 |
 | T-K | the table suite | row K3 holds no instance | connection-table 1 |
+
+## The pin PR (refactor/abandoned-span, 2026-10-01)
+
+byte-machine v0.7.0's parse error records the span it abandoned and where that span's
+withheld bytes begin (its #145). So the core reads them in place of placing the span, and
+the result's `span` is the error's `(name . offset)` (decided on the owner's word, by form;
+the ledger). The pins move to chez-httparse v0.4.5 and uriparse v0.6.2.
+
+Red before green, at the new pins on the old code: the cut-off suite's two shape checks
+failed, and six of the table's twelve K1–K4 instances, in K1, K2 and K4. The new check of
+the core's refusal at the head's end, added after the run below found X-C3 surviving,
+failed on X-C3's mutant. Every new and changed check is watched red by at least one mutant
+below, mapped by its name in the runner's reports:
+- the cut-off suite's shape check by X-A1, X-A2 and Y-A1 to Y-A4 (Y-A3 by its error with
+  no span open); a pause's code by X-A3; the core's refusal at the head's end by X-C3;
+- the table's K1 by Y-C1, Y-C4, Y-C9 and Y-C10; K2 by Y-C3, Y-C9 and Y-C10; K3 by Y-C1 and
+  Y-C2; K4 by Y-C5, Y-C7 and Y-C8; the cut-off rows' count by T-K.
+
+Eighty-nine mutants, none surviving:
+- seventeen new, Y-A1 to Y-S2, each run against all forty-four suites;
+- ten of the cut-off-span PR's, each against all forty-four, T-K against the table's alone.
+  Three were cut again where `span` became `abandoned` (X-C2, X-C3 and X-C4), and T-K
+  against the rows' new results;
+- the padding PR's sixty-two, each against the suites it reddened before, or all of them
+  where cut again: fifty-nine as written, and three cut again where `conn-line`'s lines
+  went (P-J3, P-O and P-O2).
+
+Withdrawn, the code they mutated gone:
+- X-B1, the tripwire;
+- X-L1 to X-L7, the line starts;
+- X-T1 and X-T5, the placement of a target and its space check.
+
+Cut again as new ones, the code they mutated rewritten: X-A4 as Y-A4; X-S1 as Y-S1; X-T2,
+X-T3 and X-T4 as Y-C9, Y-C2 and Y-C3; X-N1, X-N2 and X-N3 as Y-C8, Y-C7 and Y-C6.
+
+Three notes:
+- **X-C3 survived the first run.** It drops the guard that keeps the core's own refusal from
+  the cut-off judgment. Under #91 it reddened two checks, both spaces after the method
+  refused as the target's first bytes arrived: two spaces and then a target (the cut-off
+  suite), and a megabyte of them (the padding suite). At the error that refusal causes,
+  #91's placement counted the read from its start as target, spaces and all, and named
+  the target instead. v0.7.0 records nothing withheld at a data callback that fails, since
+  the callback was handed its bytes, so the judgment now finds nothing past a limit. The
+  guard still matters where a run is left open. A request line with no version and no fields keeps the run after its target open
+  to its head's end, and on X-C3's mutant a target the core refuses there was answered for
+  the spaces (400, `request-line-spaces`, not `invalid-target`). The cut-off suite's new
+  check holds it, at every delivery size, and X-C3 reddens it.
+- **X-C4's first run did not load:** its cut named `span`. Cut again, it reddens the table's
+  three, as before.
+- **Y-S1 reddens test-serve alone.** X-S1 reddened five contract checks too, but a span now
+  reaches the core only at an error, so the two shells' traces over the contract's
+  requests stay equal. test-serve's target cut off through the libuv shell is what sees it.
+
+| Mutant | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|
+| Y-A1 | `adapter` | the pair's offset is the error's own, not where the withheld bytes begin | connection-cut-off 6, serve 1 |
+| Y-A2 | `adapter` | the adapter hands the abandoned span's name alone | connection-cut-off 8, connection-head 1, connection-originated 1, outcome-lane 2, ratchet 1, serve 1 |
+| Y-A3 | `adapter` | an error with no span open hands a pair of nothing | connection-cut-off 1 |
+| Y-A4 | `adapter` | the adapter hands no span | connection-cut-off 7, serve 1 |
+| Y-C1 | `connection` | a cut-off target counts from one past the method's space, as the workaround placed it, with no space check | connection-cut-off 3, connection-table 3 |
+| Y-C2 | `connection` | no spaces judgment before a cut-off target | connection-cut-off 1, connection-table 2 |
+| Y-C3 | `connection` | a carried target forgets the fragments a read's end handed on | connection-cut-off 1, connection-table 1 |
+| Y-C4 | `connection` | a cut-off target counts the refused byte too | connection-cut-off 2, connection-table 2 |
+| Y-C5 | `connection` | a cut-off name counts a byte short | connection-cut-off 2, connection-table 3 |
+| Y-C6 | `connection` | a carried name forgets the fragments a read's end handed on | connection-cut-off 1 |
+| Y-C7 | `connection` | a cut-off name is not counted with the section | connection-cut-off 1, connection-table 1 |
+| Y-C8 | `connection` | a cut-off field name is not judged | connection-cut-off 3, connection-table 3 |
+| Y-C9 | `connection` | a cut-off target is not judged | connection-cut-off 3, connection-table 3, serve 1 |
+| Y-C10 | `connection` | the spaces before a cut-off target are counted to the refused byte | connection-cut-off 3, connection-table 2, serve 1 |
+| Y-C11 | `connection` | the span is read with no guard for a result that carries none | connection-body 4, connection-cut-off 2, connection-head 2, connection-originated 2, connection-table 13, message-loop 1, outcome-lane 2, ratchet 1 |
+| Y-S1 | `shell` | the libuv shell drops the span | serve 1 |
+| Y-S2 | the fake shell | the fake shell drops the span | connection-cut-off 6 |
+| T-K | the table suite | row K3 holds no instance | connection-table 1 |
+| X-A1 | `adapter` | the adapter does not step back past a byte the parser took and refused | connection-cut-off 2 |
+| X-A2 | `adapter` | the adapter steps back past a callback's failure too | connection-cut-off 1 |
+| X-A3 | `adapter` | the adapter drops a pause's code | connection-cut-off 1 |
+| X-C1 | `connection` | at an error the core counts the refused byte too | connection-cut-off 2, connection-table 1 |
+| X-C2 | `connection` | a result's code and span are read only where present | connection-entry 1 |
+| X-C3 | `connection` | a refusal of the core's own does not stop the cut-off judgment | connection-cut-off 1 |
+| X-C4 | `connection` | a pause's code is read from the span's place | connection-table 3 |
+| X-R1 | `connection` | at the parser's error only the whitespace run is judged, as before | connection-cut-off 1, connection-table 2 |
+| X-R2 | `connection` | a run is judged with no slack | connection-cut-off 1, connection-padding 2, connection-table 2, outcome-lane 2, ratchet 1 |

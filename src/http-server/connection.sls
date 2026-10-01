@@ -41,8 +41,9 @@
 ;;; taken since it was made (chez-httparse's `parser-result-stream-offset`),
 ;;; or at an error of the parser's own, the position of the byte it refused;
 ;;; its `code` is #f, or the error's or the pause's code, as its status says;
-;;; and its `span` is #f or the span the parser has open, after an error the
-;;; one the error cut off (the cut-off-span PR, below).  A span payload
+;;; and its `span` is #f, or at an error the span the error abandoned and
+;;; where its withheld bytes begin, `(name . offset)` (the cut-off-span PR,
+;;; below).  A span payload
 ;;; `bv start end` indexes the delivery the shell handed in; the core never
 ;;; copies it (design §7.1).
 ;;; `reply-parser` is the one action the shell answers inside the parser
@@ -317,20 +318,16 @@
 ;;; on: a target's or a field name's, since a value, an extension and the
 ;;; protocol are handed on first.  So a target or a name past its limit was
 ;;; answered for the limit where a read ended between that byte and the
-;;; malformed one, and 400 where one read held both.  The shell hands the
-;;; core the span the parser has open with each result, and at an error the
-;;; position of the byte the parser refused (the adapter's
-;;; `parser-result-event`).  At the error the core judges what was cut off
-;;; as a read's end would have, the span's bytes it was not handed, up to
-;;; the refused byte, and then the run still open (`cut-off-past-limit`):
-;;; the first limit passed, in the order of the bytes, names the response,
-;;; whatever the split, as reads of a byte at a time would.  Where a span
-;;; began the parser does not say, and byte-machine #145 asks that its error
-;;; should; until then the core places it (decision 0008's workaround): a
-;;; field name begins where its line does, which the event before it gives
-;;; (`conn-line`), and a target one byte after the method's space, unless
-;;; that byte is another space, which the core reads from the delivery it
-;;; holds, and then the spaces are past their limit first.
+;;; malformed one, and 400 where one read held both.  At an error the shell
+;;; hands the core the position of the byte the parser refused, and the span
+;;; the error abandoned with where its withheld bytes begin, which the error
+;;; records (byte-machine's `parser-error-span` and
+;;; `parser-error-span-offset`, since v0.7.0 for its #145; the adapter's
+;;; `parser-result-event`).  The core judges what was cut off as a read's
+;;; end would have, the span's withheld bytes, up to the refused byte, and
+;;; then the run still open (`cut-off-past-limit`): the first limit passed,
+;;; in the order of the bytes, names the response, whatever the split, as
+;;; reads of a byte at a time would.
 ;;;
 ;;; WHAT HAPPENS NEVER DEPENDS ON HOW THE BYTES WERE SPLIT INTO READS (design
 ;;; §8.1's second property).  The feed that completes a head can go on into
@@ -457,9 +454,7 @@
   ;; padding PR): the bytes it has taken, as its last read's result counts them;
   ;; the parser's position of index 0 of the delivery being fed; and the
   ;; run of bytes it reads and hands no span of that is open, where it
-  ;; began and what it is (see open-run!); and where the line being read
-  ;; began, for a field name the parser's error cuts off (`conn-line`, the
-  ;; cut-off-span PR).  A state is made at a
+  ;; began and what it is (see open-run!).  A state is made at a
   ;; connection's first byte, so the empty lines before its first request
   ;; line are open from there.  A state made in `handling` has a message that
   ;; has ended, and is waiting for its handler's answer, as a request with no
@@ -483,8 +478,7 @@
             (mutable parsed      conn-parsed      conn-parsed-set!)
             (mutable base        conn-base        conn-base-set!)
             (mutable mark        conn-mark        conn-mark-set!)
-            (mutable run         conn-run         conn-run-set!)
-            (mutable line        conn-line        conn-line-set!))
+            (mutable run         conn-run         conn-run-set!))
     (protocol
      (lambda (new)
        (lambda (phase deadline close-after outstanding outstanding-bytes pending request limits)
@@ -503,7 +497,7 @@
              (body-answer-set! body 'asked)
              (body-complete?-set! body #t))
            (new phase deadline close-after outstanding outstanding-bytes pending request limits
-                (make-head) body (make-target-judge) #f #f #f #f 0 0 0 'lines 0))))))
+                (make-head) body (make-target-judge) #f #f #f #f 0 0 0 'lines))))))
 
   ;; conn-body-reader : ConnState -> (U #f BodyReader)
   ;; The reader the handler answered with, while the core hands it the body:
@@ -1191,10 +1185,8 @@
             ;; bytes.  The parser ends a target at a space, a CRLF or a bare
             ;; LF, and does not say which, so the run opens at each; a request
             ;; line with no version lets it go at its first field or the
-            ;; head's end.  Such a line has ended here, its line end taken,
-            ;; so its first field's line begins here too (`conn-line`).
-            (open-run! s 'after-target at)
-            (conn-line-set! s at))
+            ;; head's end.
+            (open-run! s 'after-target at))
           (continue s))
          (else (continue s))))
       ((on-protocol-data)
@@ -1203,12 +1195,6 @@
           (let ((reason (close-judged! s 'after-target (position s from))))
             (if reason (refuse s reason) (continue s))))
          (else (continue s))))
-      ;; The version ends at the request line's CRLF, the one line end the
-      ;; strict parser takes after it, so the first field's line begins past
-      ;; it (`conn-line`).
-      ((on-version-complete)
-       (conn-line-set! s (+ at line-end-bytes))
-       (continue s))
       ((on-header-field-data)
        (case (conn-phase s)
          ((head)
@@ -1245,12 +1231,10 @@
             (head-fields-set! h (cons (cons (head-name h) (take-piece! h)) (head-fields h)))
             (head-name-set! h #f)
             (head-pad-set! h 0)
-            (conn-line-set! s at)
             (continue s)))
          ((body)
           (head-size-set! (conn-head s) 0)
           (head-pad-set! (conn-head s) 0)
-          (conn-line-set! s at)
           (continue s))
          (else (continue s))))
       ((on-chunk-extension-name-data on-chunk-extension-value-data)
@@ -1267,12 +1251,9 @@
        (case (conn-phase s)
          ((body) (extension-bytes s 0 1))
          (else (continue s))))
-      ;; Past a size line: the last chunk's is followed by the trailer
-      ;; section's first line (`conn-line`).
       ((on-chunk-header)
        (case (conn-phase s)
          ((body)
-          (conn-line-set! s at)
           (let ((reason (close-judged! s 'digits (- at 2))))
             (if reason (refuse s reason) (continue s))))
          (else (continue s))))
@@ -1736,48 +1717,43 @@
   ;; `run-past-limit`).  At the parser's own error, with no refusal of the
   ;; core's held, whose callback came first, the offset is the refused
   ;; byte's, and what the error cut off is judged first: a target's or a
-  ;; name's bytes it was not handed, then the run (the cut-off-span PR;
+  ;; name's bytes it withheld, then the run (the cut-off-span PR;
   ;; `cut-off-past-limit`).  The result is read whole first: one short of
   ;; its fields is refused.
   (define (on-parser-result s ev)
     (let* ((status (cadr ev)) (more (cddr ev)) (offset (car more))
-           (next (cadr more)) (code (caddr more)) (span (cadddr more))
-           (start (conn-parsed s)))
+           (next (cadr more)) (code (caddr more)) (abandoned (cadddr more)))
       (conn-parsed-set! s offset)
       (let ((reason (if (eq? status 'error)
                         (and (not (head-refusal (conn-head s)))
-                             (cut-off-past-limit s span start offset))
+                             (cut-off-past-limit s abandoned offset))
                         (run-past-limit s))))
         (if reason
             (refuse-run s reason)
             (read-result s status next (and (eq? status 'error) code)
                          (and (eq? status 'paused) code))))))
 
-  ;; cut-off-past-limit : ConnState (U #f Symbol) Nat Nat -> (U #f Symbol)
-  ;; At the parser's own error, at `end`, the refused byte's position, in a
-  ;; read the parser began at `start`: the reason to refuse what the error
-  ;; cut off, as a read's end would have refused it.  `span` is the
-  ;; parser's open span.  A target's or a field name's bytes the core was
-  ;; not handed run to `end`: from the read's start, where a read's end
-  ;; handed it the span's first bytes, and otherwise from where the span
-  ;; began, which the core places until byte-machine #145 lands: a target
-  ;; one byte after the method's space, unless that byte is another space,
-  ;; and then the spaces passed their limit first; a name where its line
-  ;; began (`conn-line`).  The limit they pass first names the reason: the
-  ;; target's, or a name's or the section's (`first-past`).  With no such
-  ;; span cut off, the run still open is judged (`run-past-limit`).
-  (define (cut-off-past-limit s span start end)
+  ;; cut-off-past-limit : ConnState (U #f (Pair Symbol Nat)) Nat -> (U #f Symbol)
+  ;; At the parser's own error, at `end`, the refused byte's position: the
+  ;; reason to refuse what the error cut off, as a read's end would have
+  ;; refused it.  `abandoned` is the span the error abandoned and where its
+  ;; withheld bytes begin, as the error records them.  A target's or a field
+  ;; name's withheld bytes run from there to `end`, after the ones a read's
+  ;; end handed on.  A target that began in the read that failed handed on
+  ;; none, and the spaces before it are judged first, as its first bytes
+  ;; would have judged them (`close-judged!`).  The limit passed first names
+  ;; the reason: the spaces', the target's, or a name's or the section's
+  ;; (`first-past`).  With no such span cut off, the run still open is
+  ;; judged (`run-past-limit`).
+  (define (cut-off-past-limit s abandoned end)
     (let ((h (conn-head s)) (limits (conn-limits s)))
-      (case span
+      (case (and abandoned (car abandoned))
         ((url-span)
-         (if (eq? (conn-run s) 'after-method)
-             (let ((first (+ (conn-mark s) 1)))
-               (if (and (< first end) (space-at? s first))
-                   'request-line-spaces
-                   (target-past limits (- end first))))
-             (target-past limits (+ (head-size h) (- end start)))))
+         (let ((from (cdr abandoned)))
+           (or (close-judged! s 'after-method from)
+               (target-past limits (+ (head-size h) (- end from))))))
         ((header-field-span)
-         (let ((n (- end (max (conn-line s) start))))
+         (let ((n (- end (cdr abandoned))))
            (first-past (+ (head-size h) n) (limits-max-header-field-bytes limits)
                        'header-field-too-large
                        (+ (head-total h) n) (limits-max-header-bytes limits))))
@@ -1788,12 +1764,6 @@
   ;; max-target-bytes; #f within it.
   (define (target-past limits n)
     (and (> n (limits-max-target-bytes limits)) 'target-too-large))
-
-  ;; space-at? : ConnState Nat -> Boolean
-  ;; Whether the byte at the parser's position `p`, in the delivery being
-  ;; fed, is a space.
-  (define (space-at? s p)
-    (fx=? (bytevector-u8-ref (car (conn-delivery s)) (- p (conn-base s))) 32))
 
   ;; refuse-run : ConnState Symbol -> (values ConnState (Listof Action))
   ;; A run past its limit at a read's end, or what the parser's error cut

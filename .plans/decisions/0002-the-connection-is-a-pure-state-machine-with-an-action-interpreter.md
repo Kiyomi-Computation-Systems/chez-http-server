@@ -310,3 +310,17 @@ request.
 
 Decided on the owner's word, by form, for the cut-off-span PR. Weighed: a sixth field, the
 two codes kept apart, 16 B more a read (curl's GET 1,856 B).
+
+## Amendment (2026-10-01, the pin PR) — the result's span is the one its error abandoned
+
+byte-machine v0.7.0 records on a parse error the span it abandoned and where that span's
+withheld bytes begin (`parser-error-span`, `parser-error-span-offset`; its #145, decision
+0008). So the event's `span` is now the error's: `(name . offset)` at an error with a span
+open, the bytes from `offset` to the refused byte being the ones the parser took for it and
+never handed on, and #f on every other result, where the core never read it. The adapter
+builds the event from the result alone, and both shells call `(parser-result-event r)`.
+
+Still five fields, and a read allocates nothing more: curl's GET costs 1,840 B a request,
+and an error with a span open allocates one pair. Decided on the owner's word, by form, for
+the pin PR. Weighed: a sixth field beside the open span, 16 B more a read (curl's GET
+1,856 B), each result the tests build by hand gaining one.
