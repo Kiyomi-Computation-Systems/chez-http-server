@@ -437,12 +437,12 @@
   ;; Feed the parser bv[start, end), counting the feed in the depth, then
   ;; dispatch its result as the adapter builds it: the status, where the
   ;; parser is, where to resume, the code of its error or its pause, and the
-  ;; span it has open.
+  ;; span an error abandoned.
   (define (feed! s bv start end)
     (fake-shell-depth-set! s (+ (fake-shell-depth s) 1))
     (let ((r (parser-feed! (fake-shell-parser s) bv start end)))
       (fake-shell-depth-set! s (- (fake-shell-depth s) 1))
-      (fake-shell-deliver! s (parser-result-event r (fake-shell-parser s)))))
+      (fake-shell-deliver! s (parser-result-event r))))
 
   ;; fake-shell-feed-input! : FakeShell Bytevector Nat [Nat] -> Nat
   ;; Deliver `input` in `size`-byte deliveries, each as `bytes-arrived`, while

@@ -473,3 +473,11 @@ when the spaces passed their limit first.
 Decided on the owner's word, by form (2026-10-01), after the owner asked whether the change
 would make byte-machine a better product. Weighed: building only once #145 lands; the core
 alone, with no ask.
+
+*Since the pin PR (2026-10-01):* byte-machine v0.7.0's error records where the span it
+abandoned withheld its bytes (its #145), and the core reads that in place of placing the
+span. A target's or a name's withheld bytes run from there to the refused byte, after the
+ones a read's end handed on; a target that began in the read that failed has the spaces
+before it judged first, as its first bytes would have. Over the 40,000 fuzzed requests at
+every delivery size, the error's offset and the core's own placement agreed at all 615,192
+targets and names cut off, and every answer is unchanged.

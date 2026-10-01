@@ -21,11 +21,10 @@
 ;;;   - a chunk size's digits past 16 and the byte a read may end on, 400;
 ;;;   - and a byte the parser takes and then refuses, a tab, counted as
 ;;;     nothing: it is not the target's, nor a space.
-;;; A shell hands the core the parser's open span with the result, and at an
-;;; error, the refused byte's position.  Where the span began the parser
-;;; does not say, so the core places it (byte-machine #145, filed to have a
-;;; parse error say it): a name begins where its line does, a target one
-;;; byte after the method's space unless that byte is another space.
+;;; A shell hands the core, with an error's result, the refused byte's
+;;; position and the span the error abandoned, with where its withheld bytes
+;;; begin: byte-machine's `parser-error-span` and `parser-error-span-offset`,
+;;; since v0.7.0 (its #145, which this PR's first half filed).
 ;;;
 ;;; Each row runs at every delivery size, from a byte at a time to the whole
 ;;; input in one delivery, each delivery a bytevector of its own with the
@@ -36,9 +35,9 @@
 ;;; 400, 414 and 431; chez-httparse's parser, its errors' offsets and their
 ;;; position kinds (byte-machine's .reference/transition-and-cursor-
 ;;; semantics.md §4: `byte` at the refused byte, `boundary` past a byte the
-;;; parser took); byte-machine v0.6.1's exports.
+;;; parser took); byte-machine's record of the span an error abandons (its
+;;; decision 0056: from the span's offset to the error's, the bytes withheld).
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) library-exports)
         (http-server connection) (http-server response) (http-server limits)
         (http-server private adapter)
         (generated httparse-message) (httparse modes) (byte-machine runtime)
@@ -119,7 +118,7 @@
   (let* ((p (make-parser httparse-message-machine bindings #f
                          (list (cons 'type (httparse-message-type-value 'request)))))
          (bv (b text)))
-    (parser-result-event (parser-feed! p bv 0 (bytevector-length bv)) p)))
+    (parser-result-event (parser-feed! p bv 0 (bytevector-length bv)))))
 
 ;; bindings-with : SpanCallback -> Bindings
 ;; A binding for each callback the core declares, answering continue, but
@@ -133,18 +132,6 @@
        conn-parser-callbacks))
 (define quiet (bindings-with (lambda (p ctx bv from to) callback-continue)))
 (define failing-url (bindings-with (lambda (p ctx bv from to) (make-callback-failure 'refused #f))))
-
-;; The parser-error accessors byte-machine v0.6.1 exports, and the
-;; active-span one: none says where an abandoned span began.
-(define error-and-span-names
-  '(parser-active-span parser-error-code parser-error-detail parser-error-domain
-    parser-error-node-name parser-error-offset parser-error-position-kind
-    parser-error-reason parser-error-state-id parser-error?))
-
-;; starts-with? : String String -> Boolean
-(define (starts-with? s prefix)
-  (and (>= (string-length s) (string-length prefix))
-       (string=? (substring s 0 (string-length prefix)) prefix)))
 
 (run-suite "connection-cut-off"
   (lambda ()
@@ -200,34 +187,35 @@
                 (list (every-size (chunked (string-append (zeros 18) "g\r\nabc\r\n0\r\n\r\n")) default-limits)
                       (every-size (chunked (string-append (zeros 17) "g\r\nabc\r\n0\r\n\r\n")) default-limits)))
 
+    ;; --- a refusal of the core's own ---------------------------------------------------
+    ;; The core's refusal comes before the parser's error and names the
+    ;; response, not what the error leaves open.  A request line with no
+    ;; version and no fields leaves the run after its target open at its
+    ;; head's end, where the core refuses the target.
+    (test-equal "a target the core refuses at the head's end, on a request line with no version and no fields, every delivery size: 400 for the target, not the run left open"
+                (refused-first 400 'invalid-target)
+                (every-size (b "GET /%zz\r\n\r\n") default-limits))
+
     ;; --- what a shell hands the core -------------------------------------------------
     ;; `(parser-result status offset next code span)`, built once, by the
-    ;; adapter: the parser's count, or at an error the refused byte's
-    ;; position; one code, an error's or a pause's; the span it has open.
+    ;; adapter, from the result alone: the parser's count, or at an error
+    ;; the refused byte's position; one code, an error's or a pause's; and
+    ;; at an error, the span it abandoned and where its withheld bytes begin.
     ;; In "GET /a" the target's bytes are 4 and 5, so a control byte at 6 is
-    ;; refused where it stands, and a tab at 6 after the parser took it.
-    (test-equal "a result as a shell hands it: the count and the open span; at an error, the refused byte's position, the code, the span cut off; a callback's failure at its own position"
-                '((parser-result need-input 6 6 #f url-span)
-                  (parser-result error 6 6 invalid-url url-span)
-                  (parser-result error 6 7 invalid-url url-span)
-                  (parser-result error 6 6 refused url-span))
+    ;; refused where it stands, and a tab at 6 after the parser took it.  A
+    ;; target callback that fails was handed the target's bytes: none are
+    ;; withheld.  The whitespace before a value is in no span.
+    (test-equal "a result as a shell hands it: the count, no span; at an error, the refused byte's position, the code, the span abandoned and where its withheld bytes begin, or none with none open; a callback's failure at its own position, nothing withheld"
+                '((parser-result need-input 6 6 #f #f)
+                  (parser-result error 6 6 invalid-url (url-span . 4))
+                  (parser-result error 6 7 invalid-url (url-span . 4))
+                  (parser-result error 18 18 invalid-header-token #f)
+                  (parser-result error 6 6 refused (url-span . 6)))
                 (list (result-event "GET /a" quiet)
                       (result-event (string-append "GET /a" ctl "x") quiet)
                       (result-event "GET /a\tx" quiet)
+                      (result-event (string-append "GET / HTTP/1.1\r\nA:" ctl) quiet)
                       (result-event "GET /a " failing-url)))
-    (test-equal "a pause's code goes where an error's would: an upgrade's, with no span open"
+    (test-equal "a pause's code goes where an error's would: an upgrade's, and no span, which only an error carries"
                 '(parser-result paused 51 51 paused-upgrade #f)
-                (result-event "GET / HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: x\r\n\r\n" quiet))
-
-    ;; --- decision 0008: the workaround and its ask -----------------------------------
-    ;; The core places a cut-off span itself because a parse error does not
-    ;; say where the span it abandoned began.  byte-machine #145 asks that it
-    ;; should; when an accessor for it lands, this goes red, and the line
-    ;; starts and the space check go.
-    (test-equal "byte-machine #145 has not landed: its runtime's error and active-span accessors are v0.6.1's"
-                error-and-span-names
-                (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
-                           (filter (lambda (name)
-                                     (let ((s (symbol->string name)))
-                                       (or (starts-with? s "parser-error") (starts-with? s "parser-active-span"))))
-                                   (library-exports '(byte-machine runtime)))))))
+                (result-event "GET / HTTP/1.1\r\nConnection: upgrade\r\nUpgrade: x\r\n\r\n" quiet))))

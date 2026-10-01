@@ -3624,3 +3624,64 @@ MERGED to main on 2026-10-01, on the owner's word by form ("Merge #90/#91, then 
 `make test` green on main: forty-four suites, 1,433 expected passes, every pin ok.
 
 NEXT, by the owner's word (2026-10-01, the same form): **the pin PR**, one PR from main. byte-machine v0.7.0 (c338a57) shipped #145 the same day: a parse error names the span it abandoned (`parser-error-span`) and where its withheld bytes begin (`parser-error-span-offset`). chez-httparse v0.4.5 (0b7058e) and uriparse v0.6.2 (5ecd88f) carry it, their `src/` unchanged. Both pins move, and the core reads the two values in place of its line starts and space check; the result's `span` becomes the error's `(name . where its withheld bytes begin)`, or #f (DECIDED, the same form). Then the M6 exit (plan §14).
+
+THE PIN PR (refactor/abandoned-span, cut from main at 4086735), on the owner's word: "uriparse and chez-httparse are both updated to byte-machine 0.7.0". Its shape was decided by form (below).
+
+Checked against the siblings' own history first (2026-10-01):
+- byte-machine v0.7.0 (c338a57, annotated tag 8b493d4) carries #145, via PR #146 and its decision 0056, released in PR #150; #145 is closed. A parse error gains two members, `parser-error-span` and `parser-error-span-offset`, both #f when no span was open. `abandon-span!` fills them where both executors hand an error back, and a delivery now advances the span's mark (§13:822). The generated ABI is still 9, and the emitted text is unchanged.
+- chez-httparse v0.4.5 (0b7058e, tag 814f2df; PRs #60 and #61) and uriparse v0.6.2 (5ecd88f, tag 3cfec81; PR #31) each vendor c338a57. Neither library's `src/` changed since v0.4.4 and v0.6.1, nor chez-httparse's corpus since v0.4.0. All three tags are on GitHub.
+
+Measured before the form (2026-10-01, Darwin arm64, Chez 10.4.1). A copy of v0.7.0's `src/` went on the library path, leaving the checkout alone (scratch `bm7/`):
+- #91's tree at the new pins: 44 suites, 1,432 of 1,433 checks pass. The one red is the #145 tripwire. Allocation is unchanged: curl's GET 1,840 B; a JSON POST 2,624 read whole and 2,432 streamed; ab's GET 2,112; a browser's 3,312; the parser 1,056.
+- A probe in the core compared the error's offset with the core's own placement, at every error of the 40,000 fuzzed requests at every delivery size. They agreed at all 615,192 targets and names cut off: 103,787 targets that began in the read that failed, 7,551 carried in from an earlier read, and 503,854 names. The error's span always equalled `parser-active-span`, and its offset the result's. No other span ever withheld a byte, and no withheld range began past the refused byte.
+- A prototype, with the span field carrying the error's pair (`src/` +15 −31): none of the 40,000 split. On 20,000 more, it answered byte for byte as #91's tree. The eighteen hand-made inputs and the five corpus lanes print what #91's print: trace 7, outcome 6, libhtp lane 19, ratchet 9, libhtp 11.
+- A sixth field instead costs 16 B a read: curl's GET 1,856 B, a browser's 3,328. The allocation suite builds its results by hand, so its builders were widened to price it.
+- Time, as medians of twelve rounds whose order rotates:
+
+  | Tree | curl's GET | a browser's GET | a chunked POST |
+  |---|---|---|---|
+  | #91 at v0.6.1 | 5.05 µs | 9.575 | 6.975 |
+  | #91 at v0.7.0 | 5.15 | 9.625 | 6.975 |
+  | the prototype at v0.7.0 | 5.175 | 9.65 | 7.05 |
+
+DECIDED on the owner's word (2026-10-01), by one form:
+- **The span field carries the error's pair.** `span` is `(name . where its withheld bytes begin)` at an error with a span open, and #f on every other result, where the core never read it. Weighed: a sixth field, 16 B more a read.
+- **Merge #90 and #91 first, then this as one PR from main.** The closing ritual ran on that answer (above). Weighed: stacking it on #91; folding it into #91, so the workaround never reached main.
+
+What was built:
+- The pins: chez-httparse v0.4.5 and uriparse v0.6.2, gitlinks and `make check-pins`'s three commits, so byte-machine v0.7.0 arrives through both. Each tag was fetched from the sibling's own checkout, and both nested byte-machine checkouts follow.
+- `(http-server private adapter)`: `parser-result-event : ParserResult -> Event`, built from the result alone. At an error with a span open, `span` is `(cons (parser-error-span e) (parser-error-span-offset e))`, and otherwise #f.
+- `(http-server connection)`: `cut-off-past-limit` counts a target's or a name's withheld bytes from the error's offset to the refused byte, after the ones a read's end handed on. For a target that began in the read that failed, `close-judged!` judges the spaces before it first, as its first fragment's would have been. `conn-line` goes, with its five setters, the `on-version-complete` clause, and `space-at?`.
+- Both shells call `(parser-result-event r)`.
+
+Checks:
+- `tests/test-connection-cut-off.sps`, 11:
+  - The shape check holds the new results: need-input without a span; three errors with `(url-span . 4)` or `(url-span . 6)`; and one with none open, in the whitespace before a value.
+  - New: a target the core refuses at its head's end, on a request line with no version and no fields, is answered 400 for the target at every delivery size, not for the run the line leaves open (below).
+  - The tripwire is gone.
+- The table's K1–K4 hand the core the error's pair: from the target's start, from the read's start for a carried one, from past the spaces, or from a name's line start.
+
+Red before green, at the new pins:
+- On the old code, the cut-off suite failed its two shape checks.
+- The table failed six of K1–K4's twelve instances, in K1, K2 and K4. K3's answer, for the spaces, comes out the same either way.
+
+Mutants (`.superpowers/sdd/m6-mutations.md`, "The pin PR"): eighty-nine on the finished tree, none surviving:
+- seventeen new, Y-A1 to Y-S2, each against all forty-four suites;
+- ten of the cut-off-span PR's;
+- the padding PR's sixty-two.
+
+Withdrawn, their code gone: X-B1, the tripwire's; X-L1 to X-L7, the line starts'; X-T1 and X-T5, the target's placement and its space check. Seven more were cut again as new ones. Every new and changed check is mapped by name to a mutant that reddens it.
+
+FOUND WHILE BUILDING:
+- **The guard for the core's own refusal had lost its checks.** On the first run, X-C3, which lets the cut-off judgment run under a refusal the core already holds, survived. Under #91 its checks were two refusals of spaces after the method, met as the target's first bytes arrived; #91's placement counted that read from its start as target. v0.7.0 records nothing withheld at a data callback that fails, so those checks pass with the guard gone. The guard still matters where a run is left open. A request line with no version and no fields keeps the run after its target open to its head's end, and on X-C3's mutant `GET /%zz` with no version and no fields was answered for the spaces (400 `request-line-spaces`), where the tree answers `invalid-target`. The new check holds it, and X-C3 reddens it.
+- **X-C4's first run did not load:** its cut named `span`. The runner's tally now counts a suite that reports neither passes nor failures as a load failure, not a kill.
+- **The allocation suite builds its results by hand,** so a field added in `parser-result-event` prices the same there. Its builders were widened to price the sixth field.
+- **Decision 0008 has no row for chez-httparse #55,** filed on 2026-09-30 in the padding PR's review and landed in v0.4.4, though the ledger cites 0008 for it. It is not fixed here, so 0008's new line says every ask its table lists has landed, without a count.
+
+`make test`: forty-four suites, 1,433 expected passes, every pin ok.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree made with `COPYFILE_DISABLE=1`, curl 7.88.1 and apache2-utils' ab installed: forty-four suites, 1,433 expected passes. The shell, contract, clients, serve, cut-off and table suites each passed in all three repeat runs.
+
+Size: `src/` +58 −84 and `tests/` +64 −74, comments included; the Makefile's three pins; the two gitlinks; the records, `.plans/` +36 −2 and `.superpowers/` +144 −1, this entry among them. One PR, by the form.
+
+NEXT: this PR, merged on the owner's "do closing ritual" once CI is green on its head. Then the M6 exit (plan §14).

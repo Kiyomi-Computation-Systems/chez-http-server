@@ -1265,6 +1265,11 @@ an error the refused byte's position (decisions 0002 and 0005, amended this day)
 cut-off span began the parser does not say: byte-machine #145 asks that its error should,
 and the core places the span until it lands (decision 0008).
 
+*Noted 2026-10-01 (the pin PR):* byte-machine #145 landed the same day, in v0.7.0,
+carried by chez-httparse v0.4.5 and uriparse v0.6.2. Both pins moved on one commit, and
+the core reads where a cut-off span's withheld bytes begin from the parser's error, in
+place of placing the span (decision 0008).
+
 **M6 exit:** the brief's. 16 MiB each way against a slow peer, with memory bounded,
 read as the M4 exit read a connection: the server's heap, the client in a process of
 its own. libhtp's Expect and early-response files pass. `docs/handlers.org` gains

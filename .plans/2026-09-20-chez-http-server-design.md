@@ -414,6 +414,12 @@ Four facts about them that shape the core:
 > until byte-machine #145 lands the core places it, a field name where its line begins
 > and a target one byte after the method's space, unless that byte is another space.
 
+> *Amended 2026-10-01 (the pin PR), on the owner's word by form:* byte-machine v0.7.0's
+> parse error records the span it abandoned and where its withheld bytes begin (its
+> #145), so the result's `span` is now the error's `(name . offset)`, and #f on every
+> other result. The core counts a cut-off span's withheld bytes from there and places
+> nothing itself (decisions 0002 and 0005, amended again that day).
+
 ### 4.3 Connection states
 
 **Introduced here** — decision 0002 fixes the event and action vocabulary but names

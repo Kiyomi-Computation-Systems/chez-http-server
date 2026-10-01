@@ -19,10 +19,10 @@ SRFI_DIR         := vendor/chez-srfi
 BYTE_MACHINE_DIR := $(HTTPARSE_DIR)/vendor/byte-machine
 
 LIBUV_PIN        := d46654c64f123a6bb861de4cc0e100152cc4d295  # v0.7.3
-HTTPARSE_PIN     := 33424286f96fa19a85fbb54b30df3a6c557fdf30  # v0.4.4
-URIPARSE_PIN     := 88d538f461fc2ee94a86f323bf796ece7ebc0db5  # v0.6.1
+HTTPARSE_PIN     := 0b7058eeb9ccda767be4d20db207b4d3d6fe763f  # v0.4.5
+URIPARSE_PIN     := 5ecd88faefc66965361da2b701a78337c672fc68  # v0.6.2
 SRFI_PIN         := 7879b527f267f067416552fb989135ad1b4ea436
-BYTE_MACHINE_PIN := 5c1cb7ea8679df48d4e1c4da34b3dadf50f24922  # v0.6.1
+BYTE_MACHINE_PIN := c338a576f2166ada18c02ac0740afeb4ae4b0ea8  # v0.7.0
 
 # --- one library path --------------------------------------------------------
 # chez-libuv locates its C shim by an absolute path baked into a generated
