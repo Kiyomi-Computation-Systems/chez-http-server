@@ -7,8 +7,8 @@
 ;;; test/support/harness to the Makefile's LIBDIR_LIST, and asserts the request
 ;;; lane's shape as measured for milestone-plan §2.
 ;;;
-;;; The oracle is the vendored corpus AT THE PIN (chez-httparse v0.4.3,
-;;; bdcdfe2; its corpus is v0.4.0's byte for byte), so these numbers are a
+;;; The oracle is the vendored corpus AT THE PIN (chez-httparse v0.4.4,
+;;; 3342428; its corpus is v0.4.0's byte for byte), so these numbers are a
 ;;; drift guard, not an invariant: move the pin and the guard reddens, and
 ;;; §2's counts get re-measured on the new tree rather than silently aging.
 ;;; Measured 2026-09-20, Darwin arm64, Chez 10.4.1 `tarm64osx`.
