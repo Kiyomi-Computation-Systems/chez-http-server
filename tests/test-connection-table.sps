@@ -62,7 +62,8 @@
 ;; fields / limits; every field not named takes its default, and the limits
 ;; are decision 0005's defaults unless given.  The head
 ;; is the core's own, so a target (a string) is read into it the way the
-;; parser delivers one, on-url-data then on-url-complete, and a host (a
+;; parser delivers one, in a request line `GET target HTTP/1.1`, each event
+;; at the parser's position in it and each span at its bounds, and a host (a
 ;; string) likewise, as a Host header line, then each of `fields`, a list of
 ;; (name . value) strings (M6.4).
 (define (state phase . plist)
@@ -78,23 +79,26 @@
         (target (get 'target #f))
         (host (get 'host #f)))
     (when target
-      (let ((tbv (b target)))
-        (let*-values (((s1 a1) (conn-parser-step s 'on-url-data tbv 0 (bytevector-length tbv)))
-                      ((s2 a2) (conn-parser-step s 'on-url-complete)))
-          #t)))
+      (let* ((line (b (string-append "GET " target " HTTP/1.1")))
+             (end (- (bytevector-length line) 9)))
+        (conn-parser-step s 'on-method-complete 3)
+        (conn-parser-step s 'on-url-data line 4 end)
+        (conn-parser-step s 'on-url-complete (+ end 1))
+        (conn-parser-step s 'on-protocol-data line (+ end 1) (+ end 5))))
     (when host (field-line! s "Host" host))
     (for-each (lambda (f) (field-line! s (car f) (cdr f))) (get 'fields '()))
     s))
 
 ;; field-line! : ConnState String String -> Void
 ;; A header line `name: value` read into the head, as the parser delivers it:
-;; its name's span, then its value's.
+;; its name's span, its name's end past the colon, then its value's span, a
+;; space after the colon.
 (define (field-line! s name value)
   (let ((line (b (string-append name ": " value))) (n (string-length name)))
     (conn-parser-step s 'on-header-field-data line 0 n)
-    (conn-parser-step s 'on-header-field-complete)
+    (conn-parser-step s 'on-header-field-complete (+ n 1))
     (conn-parser-step s 'on-header-value-data line (+ n 2) (bytevector-length line))
-    (conn-parser-step s 'on-header-value-complete)))
+    (conn-parser-step s 'on-header-value-complete (bytevector-length line))))
 
 ;; render-action : Action -> Datum
 ;; A write's segments are bytes, so it is rendered with each as text, a span
@@ -209,27 +213,28 @@
            `(idle #f ((feed-parser ,bv 0 5)))))
 
    (row 'H2 "idle, on-message-begin -> head: continue, disarm, arm header"
-        (i (state 'idle 'deadline 'idle) '(parser-event on-message-begin)
+        (i (state 'idle 'deadline 'idle) '(parser-event on-message-begin 0)
            '(head #f ((reply-parser continue) (disarm-deadline) (arm-deadline header)))))
 
    (row 'H3 "head, on-header-* -> head: continue"
         (i (state 'head 'deadline 'header) `(parser-event on-header-field-data ,bv 16 20)
            '(head #f ((reply-parser continue))))
-        (i (state 'head 'deadline 'header) '(parser-event on-header-field-complete)
+        (i (state 'head 'deadline 'header) '(parser-event on-header-field-complete 21)
            '(head #f ((reply-parser continue))))
         (i (state 'head 'deadline 'header) `(parser-event on-header-value-data ,bv 22 23)
            '(head #f ((reply-parser continue))))
-        (i (state 'head 'deadline 'header) '(parser-event on-header-value-complete)
+        (i (state 'head 'deadline 'header) '(parser-event on-header-value-complete 25)
            '(head #f ((reply-parser continue)))))
 
    ;; on-headers-complete carries the six parser fields read inside it
    ;; (0002 item 4): here llhttp's method 1 (GET), HTTP/1.1, no flags, no
-   ;; content-length, and an `upgrade` of 0.  The head holds a target, as
+   ;; content-length, and an `upgrade` of 0; and the parser's position, the
+   ;; head's end, as every event callback carries it.  The head holds a target, as
    ;; every parsed one does, since the target is judged here (M2.3), and a
    ;; Host, as every HTTP/1.1 one must (RFC 9112 §3.2, 2026-09-25).
    (row 'H4 "head, on-headers-complete -> body: continue, disarm, arm body"
         (i (state 'head 'deadline 'header 'target "/" 'host "x")
-           '(parser-event on-headers-complete 1 1 1 0 0 0)
+           '(parser-event on-headers-complete 1 1 1 0 0 0 27)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    ;; The piece goes to the reader the handler answered with (M6.1,
@@ -240,7 +245,7 @@
            `(body #f ((reply-parser continue) (deliver-body ,bv 3 8) (arm-deadline body)))))
 
    (row 'H6 "body, on-message-complete -> handling: pause, read-stop, disarm, call-handler"
-        (i (state 'body 'deadline 'body 'request req) '(parser-event on-message-complete)
+        (i (state 'body 'deadline 'body 'request req) '(parser-event on-message-complete 27)
            `(handling #f ((reply-parser pause) (read-stop) (disarm-deadline) (call-handler ,req)))))
 
    ;; The write is the serializer's segments for the request being answered
@@ -374,11 +379,12 @@
 
 ;; paused : Nat Nat CloseAfter -> ConnState
 ;; A connection that fed the parser the delivery bv[from, to) and was paused
-;; by its own answer to on-message-complete: in handling, its result to come.
+;; by its own answer to on-message-complete, 18 bytes in: in handling, its
+;; result to come.
 (define (paused from to close-after)
   (let ((s (state 'body 'deadline 'body 'request req 'close-after close-after)))
     (conn-step s `(bytes-arrived ,bv ,from ,to))
-    (conn-step s '(parser-event on-message-complete))
+    (conn-step s '(parser-event on-message-complete 18))
     s))
 
 ;; kept : ConnState Event -> (List Phase CloseAfter (Listof Datum) Pending)
@@ -405,19 +411,19 @@
    ;; own reason.
    (row 'U1 "head, on-headers-complete of an upgrade -> body: served, close-after upgrade"
         (i (state 'head 'deadline 'header 'target "example.com:443" 'host "example.com:443")
-           '(parser-event on-headers-complete 5 1 1 0 0 1)
+           '(parser-event on-headers-complete 5 1 1 0 0 1 49)
            '(body upgrade ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
         (i (state 'head 'deadline 'header 'target "/chat" 'host "x")
-           `(parser-event on-headers-complete 1 1 1 ,upgrade-flags 0 1)
+           `(parser-event on-headers-complete 1 1 1 ,upgrade-flags 0 1 49)
            '(body upgrade ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
         (i (state 'head 'deadline 'header 'target "/chat")
-           `(parser-event on-headers-complete 1 1 0 ,upgrade-flags 0 1)
+           `(parser-event on-headers-complete 1 1 0 ,upgrade-flags 0 1 49)
            '(body not-keep-alive ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
         (i (state 'head 'deadline 'header 'target "/chat" 'host "x")
-           `(parser-event on-headers-complete 1 1 1 ,upgrade-flags 0 0)
+           `(parser-event on-headers-complete 1 1 1 ,upgrade-flags 0 0 49)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
         (i (state 'head 'deadline 'header 'target "example.com:443" 'host "example.com:443")
-           '(parser-event on-headers-complete 5 1 1 0 0 0)
+           '(parser-event on-headers-complete 5 1 1 0 0 0 49)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    (row 'U2 "head, parser-result hands off on the error channel (the HTTP/2 preface) -> responding 505, read-stop, close-after"
@@ -618,14 +624,25 @@
 
 ;; announced : (U Nat 'chunked) [Limits] -> ConnState
 ;; A POST whose head, just complete, announced a body of `n` bytes by
-;; Content-Length, or a chunked one: in body, its handler to be asked.
+;; Content-Length, or a chunked one: in body, its handler to be asked.  The
+;; head ends at the parser's position 46, and a chunked body's first size
+;; line, `1` and its line end, at 49, where the feed that completed the head
+;; returns.
 (define (announced framing . limits)
   (let ((s (apply state 'head 'deadline 'header 'target "/" 'host "x"
                   (if (null? limits) '() (list 'limits (car limits))))))
-    (conn-step s (if (eq? framing 'chunked)
-                     `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0)
-                     `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH ,framing 0)))
+    (head-complete! s framing)
     s))
+
+;; head-complete! : ConnState (U Nat 'chunked) -> Void
+;; A POST's head completes at 46, announcing its body; a chunked one's
+;; first size line is read, as the parser reads one before any of its data.
+(define (head-complete! s framing)
+  (if (eq? framing 'chunked)
+      (begin
+        (conn-step s `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0 46))
+        (conn-step s '(parser-event on-chunk-header 49)))
+      (conn-step s `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH ,framing 0 46))))
 
 ;; met : ConnState (Listof (List Nat Nat)) -> ConnState
 ;; The same state, having met `pieces`, each bv[from, to), as body data.
@@ -653,7 +670,7 @@
 ;; the message's end, its handler to be asked.
 (define (ended framing . pieces)
   (let ((s (met (announced framing) pieces)))
-    (conn-step s '(parser-event on-message-complete))
+    (conn-step s '(parser-event on-message-complete 54))
     s))
 
 ;; erred : (U Nat 'chunked) Event . Piece -> ConnState
@@ -688,10 +705,10 @@
   (list
    (row 'B1 "head, on-headers-complete announcing a body -> body: continue, disarm, arm body; nothing asked yet"
         (i (state 'head 'deadline 'header 'target "/" 'host "x")
-           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
         (i (state 'head 'deadline 'header 'target "/" 'host "x")
-           `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0)
+           `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    (row 'B2 "body or handling, the feed that completed the head returns -> the same: call-handler"
@@ -723,20 +740,20 @@
            '(body #f ((reply-parser continue) (arm-deadline body)))))
 
    (row 'B8 "body, on-message-complete, a streaming reader reading -> handling: pause, read-stop, disarm, deliver-body-end"
-        (i (reading 10 streamer) '(parser-event on-message-complete)
+        (i (reading 10 streamer) '(parser-event on-message-complete 59)
            '(handling #f ((reply-parser pause) (read-stop) (disarm-deadline) (deliver-body-end)))))
 
    ;; The body, "GET /" and " HTTP" of the delivery, whole in a bytevector
    ;; of its own.
    (row 'B9 "body, on-message-complete, a whole reader reading -> handling: pause, read-stop, disarm, the body as one piece, deliver-body-end"
         (let ((s (met (reading 10 (whole-reader)) '((0 5) (5 10)))))
-          (i s '(parser-event on-message-complete)
+          (i s '(parser-event on-message-complete 59)
              `(handling #f ((reply-parser pause) (read-stop) (disarm-deadline)
                             (deliver-body ,(b "GET / HTTP") 0 10) (deliver-body-end))))))
 
    (row 'B10 "handling, handler-responded with the reader's response -> responding: write, arm write"
         (let ((s (reading 10 streamer)))
-          (conn-step s '(parser-event on-message-complete))
+          (conn-step s '(parser-event on-message-complete 59))
           (i s `(handler-responded ,resp)
              `(responding #f (,(written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 6\r\n\r\n" "row H7")
                               (arm-deadline write))))))
@@ -762,7 +779,7 @@
    ;; cap its body.
    (row 'B13 "head, on-headers-complete declaring a length past max-body-bytes -> head: fail body-too-large"
         (i (state 'head 'deadline 'header 'target "/" 'host "x" 'limits (capped 5))
-           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(head #f ((reply-parser (fail body-too-large))))))
 
    ;; The piece up to the cap, bv[3, 7), is handed to a streaming reader, or
@@ -917,7 +934,7 @@
    ;; request was refused, and the reader keeps what it was handed.
    (row 'C9 "handling or responding, body-credit -> the same: nothing"
         (let ((s (met (on-credit 10) '((3 8)))))
-          (conn-step s '(parser-event on-message-complete))
+          (conn-step s '(parser-event on-message-complete 59))
           (i s '(body-credit 5) '(handling #f ())))
         (let ((s (withheld 10 '(3 8))))
           (conn-step s '(handler-failed boom))
@@ -1207,7 +1224,8 @@
                   'fields (list (cons "Expect" value)))))
     (conn-step s `(parser-event on-headers-complete 3 1 ,(if (null? minor) 1 (car minor))
                                 ,(if (eq? framing 'chunked) F-CHUNKED F-CONTENT-LENGTH)
-                                ,(if (eq? framing 'chunked) 0 framing) 0))
+                                ,(if (eq? framing 'chunked) 0 framing) 0 46))
+    (when (eq? framing 'chunked) (conn-step s '(parser-event on-chunk-header 49)))
     s))
 
 ;; expected : (U Nat 'chunked) . Piece -> ConnState
@@ -1223,7 +1241,7 @@
 ;; feed, which has returned and asked its handler.
 (define (ended-expecting)
   (let ((s (met (expecting 5 "100-continue") '((3 8)))))
-    (conn-step s '(parser-event on-message-complete))
+    (conn-step s '(parser-event on-message-complete 54))
     (conn-step s '(parser-result paused 54 54 #f #f))
     s))
 
@@ -1241,33 +1259,33 @@
    ;; The value's case is not the client's to get right, and an expectation
    ;; is a member of the field's list, which may run over two lines.
    (row 'E1 "head, on-headers-complete announcing a body, expecting 100-continue, HTTP/1.1 -> body: continue, disarm; no deadline until the 100"
-        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline))))
-        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0)
+        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline))))
-        (i (head-expecting "100-Continue") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+        (i (head-expecting "100-Continue") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline))))
         (i (state 'head 'deadline 'header 'target "/" 'host "x"
                   'fields '(("expect" . "foo, 100-continue")))
-           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline))))
         (i (state 'head 'deadline 'header 'target "/" 'host "x"
                   'fields '(("Expect" . "foo") ("Expect" . " 100-continue ")))
-           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+           `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline)))))
 
    ;; RFC 9110 §10.1.1: HTTP/1.0's is ignored, and so is one with no body to
    ;; wait for; another expectation is ignored, on the owner's word.
    (row 'E2 "head, on-headers-complete where 100-continue does not apply -> body: continue, disarm, arm body"
-        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 0 ,F-CONTENT-LENGTH 10 0)
+        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 0 ,F-CONTENT-LENGTH 10 0 46)
            '(body not-keep-alive ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
-        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 0 0)
+        (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 0 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
-        (i (head-expecting "200-ok") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+        (i (head-expecting "200-ok") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
-        (i (head-expecting "100-continues") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+        (i (head-expecting "100-continues") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
-        (i (head-expecting "") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0)
+        (i (head-expecting "") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
    (row 'E3 "body, handler-responded with a reader, expecting 100-continue -> body: write the 100, then the pieces kept, arm body"
@@ -1305,7 +1323,7 @@
            `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
                                         (read-stop) (arm-deadline write))))
         (let ((s (met (expecting 'chunked "100-continue") '((3 8)))))
-          (conn-step s '(parser-event on-message-complete))
+          (conn-step s '(parser-event on-message-complete 54))
           (conn-step s '(parser-result paused 54 54 #f #f))
           (i s `(handler-responded ,(whole-reader 4))
              `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
@@ -1369,19 +1387,20 @@
 ;; with its streaming reader reading.
 (define (trailing limits . fields)
   (let ((s (state 'head 'deadline 'header 'target "/" 'host "x" 'fields fields 'limits limits)))
-    (conn-step s `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0))
+    (head-complete! s 'chunked)
     (conn-step s '(parser-result need-input 49 49 #f #f))
     (conn-step s `(handler-responded ,streamer))
     s))
 
 ;; trailer : ConnState Nat Nat -> ConnState
 ;; The same, having met a trailer field whose name is `name` bytes and whose
-;; value is `value`.
+;; value is `value`, with no space between them: every span and event is at
+;; the start of `big`.
 (define (trailer s name value)
   (conn-step s `(parser-event on-header-field-data ,big 0 ,name))
-  (conn-step s '(parser-event on-header-field-complete))
+  (conn-step s '(parser-event on-header-field-complete 0))
   (conn-step s `(parser-event on-header-value-data ,big 0 ,value))
-  (conn-step s '(parser-event on-header-value-complete))
+  (conn-step s '(parser-event on-header-value-complete 0))
   s)
 
 ;; extended : Nat ... -> ConnState
@@ -1391,9 +1410,9 @@
   (let ((s (reading 'chunked streamer)))
     (for-each (lambda (n)
                 (conn-step s `(parser-event on-chunk-extension-name-data ,big 0 ,n))
-                (conn-step s '(parser-event on-chunk-extension-name-complete))
-                (conn-step s '(parser-event on-chunk-header))
-                (conn-step s '(parser-event on-chunk-complete)))
+                (conn-step s '(parser-event on-chunk-extension-name-complete 0))
+                (conn-step s '(parser-event on-chunk-header 0))
+                (conn-step s '(parser-event on-chunk-complete 0)))
               sizes)
     s))
 
@@ -1404,14 +1423,14 @@
    (row 'F1 "body, a trailer field within the four header limits -> body: continue, nothing kept"
         (i (trailing tight) `(parser-event on-header-field-data ,big 0 4)
            '(body #f ((reply-parser continue))))
-        (i (trailing tight) '(parser-event on-header-field-complete)
+        (i (trailing tight) '(parser-event on-header-field-complete 0)
            '(body #f ((reply-parser continue))))
         (let ((s (trailing tight)))
           (conn-step s `(parser-event on-header-field-data ,big 0 1))
-          (conn-step s '(parser-event on-header-field-complete))
+          (conn-step s '(parser-event on-header-field-complete 0))
           (i s `(parser-event on-header-value-data ,big 0 4)
              '(body #f ((reply-parser continue)))))
-        (i (trailer (trailing tight) 1 4) '(parser-event on-header-value-complete)
+        (i (trailer (trailing tight) 1 4) '(parser-event on-header-value-complete 0)
            '(body #f ((reply-parser continue)))))
 
    (row 'F2 "body, a trailer field past one of the four header limits -> body: fail, for the head's reason"
@@ -1419,12 +1438,12 @@
            '(body #f ((reply-parser (fail header-field-too-large)))))
         (let ((s (trailing tight)))
           (conn-step s `(parser-event on-header-field-data ,big 0 1))
-          (conn-step s '(parser-event on-header-field-complete))
+          (conn-step s '(parser-event on-header-field-complete 0))
           (i s `(parser-event on-header-value-data ,big 0 5)
              '(body #f ((reply-parser (fail header-value-too-large))))))
         (i (trailer (trailing tight) 4 4) `(parser-event on-header-field-data ,big 0 3)
            '(body #f ((reply-parser (fail headers-too-large)))))
-        (i (trailer (trailer (trailing tight) 1 1) 1 1) '(parser-event on-header-field-complete)
+        (i (trailer (trailer (trailing tight) 1 1) 1 1) '(parser-event on-header-field-complete 0)
            '(body #f ((reply-parser (fail too-many-headers))))))
 
    ;; The head holds 2 fields, 9 bytes, at the tight limits' edge; its
@@ -1434,7 +1453,7 @@
            '(body #f ((reply-parser continue))))
         (let ((s (trailer (trailing tight '("Ab" . "cd")) 4 4)))
           (conn-step s `(parser-event on-header-field-data ,big 0 1))
-          (i s '(parser-event on-header-field-complete)
+          (i s '(parser-event on-header-field-complete 0)
              '(body #f ((reply-parser continue))))))
 
    (row 'F4 "body, a body's chunk extensions within 16 KiB, all of them together -> body: continue"
@@ -1566,7 +1585,7 @@
 ;; One well-formed event of every kind, for the closed-set checks.
 (define samples
   (list `(bytes-arrived ,bv 0 4) '(eof) '(read-error ECONNRESET) '(write-completed 10)
-        '(shutdown-completed) '(closed) '(tick 0) '(parser-event on-message-begin)
+        '(shutdown-completed) '(closed) '(tick 0) '(parser-event on-message-begin 0)
         '(parser-result need-input 4 4 #f #f) `(handler-responded ,resp)
         `(handler-body-chunk ,bv 0 4) '(handler-body-end) '(handler-failed boom)
         '(body-credit 1) '(shutdown-requested)))

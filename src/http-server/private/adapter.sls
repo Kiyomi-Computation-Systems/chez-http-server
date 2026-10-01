@@ -10,7 +10,11 @@
 ;;; needs from it (0002 item 4): the five the parser's reset between messages
 ;;; would otherwise lose, and `upgrade`, llhttp's answer to whether the message
 ;;; upgrades, which is this message's only from on-headers-complete on
-;;; (chez-httparse v0.4.1, #47).
+;;; (chez-httparse v0.4.1, #47).  Every event callback also passes the
+;;; parser's position, `parser-stream-offset`, the bytes it has read, which
+;;; its runtime commits before calling it (byte-machine's contract): the core
+;;; measures by it what the parser reads and hands no span of (the padding
+;;; PR).
 ;;;
 ;;; The core's first action is its `reply-parser`, and that one is answered
 ;;; here, inside the callback (0002 item 3): continue, pause, or a failure
@@ -87,7 +91,8 @@
                                     (parser-field-ref p 'http-minor)
                                     (parser-field-ref p 'flags)
                                     (parser-field-ref p 'content-length)
-                                    (parser-field-ref p 'upgrade))))
+                                    (parser-field-ref p 'upgrade)
+                                    (parser-stream-offset p))))
                        (answer! ctx s actions))))
                   ((memq name conn-span-callbacks)
                    (lambda (p ctx bv from to)
@@ -96,7 +101,8 @@
                        (answer! ctx s actions))))
                   (else
                    (lambda (p ctx)
-                     (let-values (((s actions) (conn-parser-step (conn-context-state ctx) name)))
+                     (let-values (((s actions) (conn-parser-step (conn-context-state ctx) name
+                                                                 (parser-stream-offset p))))
                        (answer! ctx s actions)))))))
          conn-parser-callbacks))
 

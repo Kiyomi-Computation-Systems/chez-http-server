@@ -49,14 +49,17 @@
 ;;; callback's own arguments and nothing is allocated to carry them.  The
 ;;; `parser-event` payload has three shapes, one per way in:
 ;;;
-;;;   (parser-event name)                  an event callback
+;;;   (parser-event name at)               an event callback
 ;;;   (parser-event name bv from to)       a span callback
 ;;;   (parser-event on-headers-complete method http-major http-minor
-;;;                 flags content-length upgrade)
+;;;                 flags content-length upgrade at)
 ;;;
 ;;; and `conn-step` only unpacks it and calls the entry point, so the
 ;;; transitions live in one place.  Either way, the first action answering a
-;;; parser callback is always its `reply-parser`.
+;;; parser callback is always its `reply-parser`.  An event's `at` is the
+;;; parser's position, the bytes of the connection it has read before the
+;;; callback, which its runtime commits before calling it (byte-machine's
+;;; `parser-stream-offset`).
 ;;;
 ;;; THE HEAD IS KEPT AS SPANS (design §7.1).  From on-message-begin to
 ;;; on-headers-complete the core keeps the request-target and each header
@@ -1022,29 +1025,27 @@
   ;; payload of the wrong length is an assertion violation, from the entry
   ;; point's own check or from the call itself.
   (define (on-parser-event s name payload)
-    (cond
-     ((eq? name 'on-headers-complete)
-      (apply conn-headers-complete-step s payload))
-     ((null? payload) (conn-parser-step s name))
-     (else (apply conn-parser-step s name payload))))
+    (if (eq? name 'on-headers-complete)
+        (apply conn-headers-complete-step s payload)
+        (apply conn-parser-step s name payload)))
 
-  ;; conn-parser-step : ConnState Symbol -> (values ConnState (Listof Action))
+  ;; conn-parser-step : ConnState Symbol Nat -> (values ConnState (Listof Action))
   ;; conn-parser-step : ConnState Symbol Bytevector Nat Nat
   ;;                    -> (values ConnState (Listof Action))
-  ;; A parser callback, entered with the callback's own arguments: its name
-  ;; alone for an event callback, its name and span for a span callback.  The
-  ;; first action is always the callback's (reply-parser outcome).  A name
-  ;; outside conn-parser-callbacks, on-headers-complete (which enters through
-  ;; conn-headers-complete-step) or a span given to the wrong kind of callback
-  ;; is an assertion violation.
+  ;; A parser callback, entered with the callback's own arguments: an event
+  ;; callback's name and the parser's position, a span callback's name and
+  ;; span.  The first action is always the callback's (reply-parser
+  ;; outcome).  A name outside conn-parser-callbacks, on-headers-complete
+  ;; (which enters through conn-headers-complete-step), a callback given the
+  ;; other kind's arguments, or one given neither, is an assertion violation.
   (define conn-parser-step
     (case-lambda
-      ((s name)
+      ((s name at)
        (check-callback name #f)
-       (on-callback s name #f 0 0))
+       (on-callback s name #f 0 0 at))
       ((s name bv from to)
        (check-callback name #t)
-       (on-callback s name bv from to))))
+       (on-callback s name bv from to #f))))
 
   ;; check-callback : Symbol Boolean -> Void
   ;; Refuse a callback outside the closed set, or one given the wrong shape.
@@ -1070,7 +1071,7 @@
   ;; messages cannot start a second handler (design §4.4).  Every other
   ;; callback, and these outside their states, changes nothing and answers
   ;; continue: the parser always gets an answer.
-  (define (on-callback s name bv from to)
+  (define (on-callback s name bv from to at)
     (case name
       ((on-message-begin)
        (case (conn-phase s)
@@ -1308,13 +1309,14 @@
     (values s (list (list 'reply-parser (list 'fail reason)))))
 
   ;; conn-headers-complete-step :
-  ;;   ConnState Nat Nat Nat Nat Nat Nat -> (values ConnState (Listof Action))
-  ;;   method http-major http-minor flags content-length upgrade
+  ;;   ConnState Nat Nat Nat Nat Nat Nat Nat -> (values ConnState (Listof Action))
+  ;;   method http-major http-minor flags content-length upgrade at
   ;; on-headers-complete, entered with the six parser fields the adapter reads
   ;; inside the callback (0002 item 4): llhttp's method number, the version,
   ;; llhttp's flag bits, the content-length, and `upgrade`, 1 when the message
   ;; upgrades (chez-httparse v0.4.1 documents it as llhttp's
-  ;; `llhttp_get_upgrade`, #47).  Read there, content-length is the declared
+  ;; `llhttp_get_upgrade`, #47); and the parser's position, as every event
+  ;; callback's.  Read there, content-length is the declared
   ;; length, since it counts down as the body arrives, and the parser's reset
   ;; after each message zeroes it and the flags; `upgrade` is not reset, and is
   ;; this message's only from on-headers-complete on.  Nothing downstream
@@ -1347,7 +1349,8 @@
   ;; whether its client waits for `100 Continue`, an HTTP/1.1 request whose
   ;; Expect lists 100-continue: then no body deadline is armed until the 100
   ;; is written (M6.4).  The head's sizes start again for the trailers.
-  (define (conn-headers-complete-step s method http-major http-minor flags content-length upgrade)
+  (define (conn-headers-complete-step s method http-major http-minor flags content-length upgrade
+                                      at)
     (case (conn-phase s)
       ((head)
        (let* ((h (conn-head s))
