@@ -3492,3 +3492,33 @@ DECIDED on the owner's word (2026-09-30), by form, after the walkthrough: **two 
 - Top, `fix/padding-review`: the four rules (a versionless line, empty extensions, the first limit passed, an empty value's line end), with the docs and the review's records. 234 inserted (`src/` 92), 96 deleted; 1,407.
 
 NEXT: the two PRs, merged with #83 to #85, bottom up, on the owner's "do closing ritual". Then the PR for the split found, now with the run-then-error reason (plan §14's note); then the M6 exit.
+
+MERGED to main on 2026-10-01, on the owner's "Do closing ritual": **the padding PR and its review, as five stacked PRs**, bottom up. Each squash tree is the tested tip's, and each merge was pinned to its head's full SHA.
+- **#83, every parser event carrying the parser's position,** 59a5997, squashed as 777d36e (tree 2e5c8ca), whose parent is d52ab78. It merged first and kept its branch.
+- **#84, a value's leading whitespace and a chunk size's digits,** retargeted to main and rebased from #83's tip: c615744 became f434b5e (tree d8a6fab, the tested one's). It merged as eea26fc.
+- **#85, the request line's spaces and the empty lines, with the PR's records,** rebased from #84's old tip: f0950e2 became 418ca97 (tree 32ebd89). It merged as 7e43fb6.
+- **#86, the review's parts that change no rule,** rebased from f0950e2: b5c6b4f became 08e4312 (tree 3d0c193). It merged as f64f410.
+- **#87, the review's four rules, docs and records,** rebased from b5c6b4f: 83c98a5 became 6ab6c3b (tree 1f146f3). It merged as 17df6cc, whose parent is f64f410.
+- **CI changed during the ritual.**
+  - #83 to #85 as opened were the billing block, the `linux` job with 0 steps (36710798364, 36710802665, 36710805821).
+  - Between 2026-09-30T11:48Z and 2026-10-01T00:37Z the block lifted. The job now runs, but `actions/checkout` cannot clone the three private sibling submodules (chez-httparse, chez-libuv, uriparse: "Repository not found"), so no build or test runs.
+  - That failure hit #86 and #87 as opened (36797088983, 36797092945), every rebased tip (36797461697, 36797781000, 36797841231, 36797892375), and main's own run on 777d36e (36797428373). No PR touched `.gitmodules` or the workflow.
+  - DECIDED on the owner's word, by form, during the ritual: **continue on local evidence**, each rebased tree proved equal to the tested one and each red run shown to be this checkout failure; fix CI separately. Weighed: pausing after #83 until CI can check out, which needs a token or deploy key the owner adds as an Actions secret.
+- **Branches.** #87's `--delete-branch` merged it and deleted its remote branch, but left this checkout on the branch, as for #20, #22, #68, #70, #72, #73 and #82. The switch to main, the fast-forward and the five local deletions were by hand, and the four lower remote branches went in one `git push origin --delete`. No PR is open.
+
+`make test` green on main: forty-three suites, 1,407 expected passes.
+
+DONE and merged (777d36e, eea26fc, 7e43fb6, f64f410, 17df6cc; PRs #83 to #87): **the padding PR, what the parser reads and hands no span of held to limits.**
+- Before, a megabyte of each run was served 200. Now each is refused within the read that passes its limit:
+  - empty lines before a request line, past two (4 bytes), 400;
+  - spaces between the request line's parts, past one, 400;
+  - whitespace before a value, counted with it, 431 for the limit its bytes pass first;
+  - a chunk size's digits, past 16, 400;
+  - a chunk's extensions, every byte counted, 413.
+- Every event carries the parser's position, and every result the parser's own count.
+- The review fixed a split it had added: a versionless request line ended by a bare LF. It also fixed the empty extensions it had missed, and asked chez-httparse (#55) to document the offset it relies on.
+
+NEXT, by the owner's word (2026-09-30):
+- **The PR for the split found**, main's own limits cut off by the parser's error, now with the run-then-error reason. Its design goes by form on measurements.
+- **Then the M6 exit** (plan §14).
+- **Open:** CI's checkout of the private submodules, which needs the owner's token.
