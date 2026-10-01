@@ -3693,3 +3693,13 @@ MERGED to main on 2026-10-01, on the owner's "do closing ritual": **#92, the pin
 `make test` green on main at chez-httparse v0.4.5 and uriparse v0.6.2, with byte-machine v0.7.0 through both: forty-four suites, 1,433 expected passes, every pin ok.
 
 NEXT: the M6 exit (plan §14). Also under way, in a session of its own started on the owner's word: chez-httparse #55's missing row in decision 0008 (FOUND above).
+
+MERGED to main on 2026-10-01, on the owner's "do closing ritual": **#93, decision 0008's records for chez-httparse #55** (the FOUND above). 2a59fe5 was squashed as 44d30ee (tree 7c5e676, the tested tip's), whose parent is 2f685ae.
+- **What.** 0008 gains #55 in the Decision paragraph's list, a row after chez-httparse #50 (LANDED 2026-10-01 in v0.4.4), and a Consequences bullet for the landing, placed by date before byte-machine #145's filing. The bullet's count, all twenty-two filed asks landed, is the table's 23 rows less #145, which was filed after #55 landed.
+- **Rebased.** #92 merged while #93 was open and wrote byte-machine #145 into the same Decision sentence. So #93 was rebased onto 2f685ae, and the sentence keeps both, #55 before #145. The resolution was built two ways, which agreed byte for byte.
+- **CI.** Its run, 36934579840, passed on 2a59fe5.
+- **Branches.** Merged from its own worktree without `--delete-branch`, while the shared checkout held main. The branch was deleted by hand, local and remote, and the shared checkout's main was fast-forwarded behind the guard.
+
+`make test` green on main: forty-four suites, 1,433 expected passes, every pin ok.
+
+NEXT: the M6 exit (plan §14).
