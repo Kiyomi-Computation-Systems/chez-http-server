@@ -289,3 +289,24 @@ A result is read whole before it is answered, so one short of its fields is an a
 violation, as any wrong shape is. The parser's offset inside a callback was asked of
 chez-httparse's docs as its #55, and is documented there since v0.4.4 (2026-10-01), held
 over its corpus by `unit.stream-offset`.
+
+## Amendment (2026-10-01) — a parser-result carries one code and the open span
+
+The event reads `(parser-result status offset next code span)`. A result has an error or
+a pause, never both, so their codes share one field, `code`, which the status reads. `span`
+is the span the parser has open, `parser-active-span`; after an error it is the one the
+error cut off and never handed on. At an error of the parser's own, `offset` is the
+refused byte's position: the parser's count, less one where it took the byte before
+refusing it, an error whose position kind is `boundary` (byte-machine's
+`.reference/transition-and-cursor-semantics.md` §4). Over 11,273 errors, every byte of
+seven requests replaced and preceded by 22 values, that was the byte whose one-byte feed
+fails, at every one. A callback's failure, the core's own refusal, refuses no byte and keeps
+the count. The adapter builds the event, `parser-result-event`, and both shells hand it on,
+so its shape is made in one place.
+
+With them the core judges what the parser's error cut off (decision 0005's amendment of
+this day). Nothing is allocated for it: still five fields, and curl's GET costs 1,840 B a
+request.
+
+Decided on the owner's word, by form, for the cut-off-span PR. Weighed: a sixth field, the
+two codes kept apart, 16 B more a read (curl's GET 1,856 B).

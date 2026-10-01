@@ -3559,3 +3559,60 @@ MERGED to main on 2026-10-01, on the owner's "ci is green do closing ritual": **
 NEXT, by the owner's word (2026-09-30):
 - **The PR for the split found**, main's own limits cut off by the parser's error, now with the run-then-error reason. Its design goes by form on measurements.
 - **Then the M6 exit** (plan §14).
+
+THE CUT-OFF-SPAN PR (fix/cut-off-spans, cut from main at f89ad73), on the owner's word: "Lets do the next step: the PR for the remaining split, where a parse error cuts off a span past its limit, including the run-then-error reason."
+
+Measured on main first (2026-10-01, Darwin arm64, Chez 10.4.1, the fake shell, the default limits; every delivery size under 400 bytes, and above it sizes 1 to 80, every 97th and whole). Eleven of eighteen inputs split:
+- a 9,000-byte target, then a control byte: 414 at 111 of 174 sizes, 400 at 63; one of 8,193 bytes: 414 at 2 of 165;
+- a 9,000-byte field name, then a control byte: 431 at 111 of 174 as the first field, at 113 as the second, and at 111 as a trailer's, 400 at the rest; one of 8,193 bytes: 431 at 4 of 165;
+- a 1,000-byte name cut off past 16,000 bytes of fields: 431 (`headers-too-large`) at 107 of 256, 400 at 149;
+- a run past its limit and then the parser's error, 400 either way, its reason split: `GET`, three spaces and a control byte, the run's at 5 of 29 sizes; with `/abc` before the control byte, 10 of 33; two spaces and a 9,000-byte target, 172 of 174; eighteen zeros and a `g` as a chunk size, 4 of 85.
+- Not split: a value or a chunk's extensions past their limits and then a control byte (431, 413), each handed over before the error; seventeen zeros and a `g`, within the read's slack; spaces after a target; whitespace then CR and a control byte; empty lines.
+
+A fuzz (scratch `cut/fuzz.sps`): random request lines, fields, chunk sizes and trailers under random tight limits, one byte replaced or inserted, each run at every delivery size, each read at index 3 of a bytevector of its own. Of 40,000 inputs (two seeds, a head's fields and a body's trailers), 980 split: 326 by status (414 or 431 against 400: 174, 144 and 8 for a section), 654 by reason only (489 the request line's spaces, 165 a chunk size's digits).
+
+What an error cuts off. Seven requests, each byte replaced by and preceded by each of 22 byte values, fed whole: of 11,790 errors, a field name's span was open at 2,868, the method's at 1,665 (it has no limit), the target's at 1,156, none at 6,101. A value, an extension and the protocol are handed over before their errors. The parser says which span is open, `parser-active-span`, and an error leaves it named; it does not say where that span began (byte-machine's runtime keeps the mark private, and "a final partial fragment is forbidden outright" at an error). And an error's offset is not always the refused byte's: over 11,273 errors it is that byte's when the error's position kind is `byte` (9,132), and one past it when `boundary` (2,141), where the parser took the byte and then refused it (byte-machine's `.reference/transition-and-cursor-semantics.md` §4).
+
+Prototyped in a scratch tree: the shell passes the parser's open span and the refused byte's offset; at the parser's error the core judges the bytes the error cut off as a read's end would, so the first limit passed in byte order names the response; a field name starts where its line starts, which the event before it gives, and a target one byte after the method's space unless that byte is another space, read from the delivery the core holds. None of the eighteen and none of the 40,000 split. On 20,000 more (a third seed), each answer is main's at one-byte reads, where nothing is cut off. The corpus lanes under `CORPUS=full` print what main's print (trace 7, outcome 6, the libhtp lane 19, the ratchet 9, libhtp 11). Allocation is unchanged: curl's GET 1,840 B. A first cut took an error's offset as the refused byte's: it split none, but answered 37 of the 20,000 otherwise than main does a byte at a time, a tab the parser takes and then refuses counted as a target's byte or a space.
+
+DECIDED on the owner's word (2026-10-01), by two forms:
+- **A parser-result has five fields, `(parser-result status offset next code span)`**: one code, an error's or a pause's, since a result has at most one, and the span the parser has open; its offset, at an error, is the refused byte's. Built once, in the adapter, for both shells. Weighed: a sixth field, 16 B more a read (curl's GET 1,856 B).
+- **Ask and carry.** The owner asked first whether the change would make byte-machine a better product. Answered: yes, if a parse error records the span it abandoned and where its undelivered bytes begin, rather than the mark being exposed, which the runtime keeps private on purpose; free at runtime, no callback changed, so chez-httparse's llhttp conformance holds; any embedder that bounds a span or names a bad token needs it; byte-machine already documents the position kinds. So **byte-machine #145** was filed (2026-10-01), and the core places a cut-off span now, a workaround named in its source (decision 0008), whose line starts and space check, about twelve lines, go when it lands. Weighed: building only once #145 lands; the core alone, with no ask.
+
+What was built:
+- `(http-server private adapter)`: `parser-result-event`, the one place a feed's result becomes the core's event, for both shells: `(parser-result status offset next code span)`. The offset is the parser's count, and at an error of the parser's own the refused byte's position: the count less one where the error's position kind is `boundary`. The code is the error's or the pause's, and the span is `parser-active-span`. The libuv shell and the fake shell call it; each dropped its own builder.
+- `(http-server connection)`: at the parser's own error, with no refusal of the core's held, `cut-off-past-limit` judges what was cut off:
+  - a target's bytes it was not handed: from the read's start where a read's end handed the first ones; otherwise one byte past the method's space, unless that byte is another space, read from the delivery (`space-at?`), and then the spaces' 400 comes first;
+  - a field name's: from the later of its line's start (`conn-line`) and the read's start, judged by `first-past` against the name's limit and the section's. `conn-line` is set at on-url-complete for a versionless line, at on-version-complete two bytes on, at each value's end, and at each chunk's size line;
+  - otherwise the run still open, judged as at a read's end, every kind (`run-past-limit` lost its `error?`).
+  `target-past` states the target's limit once, on-url-data's check too. The line starts and the space check are decision 0008's workaround for byte-machine #145.
+- Docs: responses.org, one paragraph: the rule a request's bytes break first decides its answer, however they arrived.
+- Records: decisions 0002, 0005 and 0008; design §4.2's table and note, and §4.4's error row; plan §14's note; this ledger; m6-mutations.md.
+
+The checks:
+- `tests/test-connection-cut-off.sps`, new, 11: a target, at its limit and a byte past it, then a control byte; two spaces then such a target, or three then the byte; the tabs the parser takes before refusing them; a field name at its limit and a byte past, in each place a name begins (the first field, after a field, after a versionless request line, a trailer section's first, after a trailer); the section passed by a name within its own limit; eighteen digits and seventeen; each at every delivery size. Then the result as the adapter builds it from a real parser, a pause's code among them, and decision 0008's tripwire: byte-machine's error and active-span accessors are v0.6.1's until #145 lands.
+- `tests/test-connection-table.sps`, 319 (305): G12 to the new rule, with an instance within the limit; K1 to K4, twelve instances, and their count; T7's pause code in its new place.
+- `tests/test-connection-entry.sps`, 35: its short-result check renamed for the new fields.
+- `tests/test-serve.sps`, 11 (10): through the libuv shell, a target over the limit and then a control byte, sent in one write: 414.
+
+FOUND WHILE BUILDING:
+- **The suite's first trailer inputs never reached their trailers.** The limits it set refused the chunked head's own 17-byte `Transfer-Encoding` name first, at every size: the same trap as the fuzz's first trailer mode. Its name limit is now 17, so the head passes, and the names cut off are 17 and 18 bytes.
+- **No check held what the libuv shell hands the core.** The fake shell's suites pass whatever the real shell builds. test-serve's new check is red against main's sources and under X-S1, a shell that builds its own result with no span. The contract suite reddens under X-S1 too: its two shells' traces differ at the first read that ends inside a span.
+
+Measured on the finished tree (2026-10-01):
+- `make test` on Darwin arm64: forty-four suites, 1,433 expected passes, exit 0, every pin ok.
+- On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Linux 6.12.76-linuxkit aarch64, Chez 10.4.1): forty-four suites, 1,433 passes, exit 0. The shell, contract, clients, serve and cut-off suites gave 129, 68, 14, 11 and 11 in each of three runs.
+- The corpus lanes under `CORPUS=full` print what main's print: trace 7, outcome 6, the libhtp lane 19, the ratchet 9, libhtp 11.
+- None of the eighteen inputs splits. Of the fuzz's 40,000, none splits; of 20,000 more, on which main splits 495, every answer is main's at one-byte reads.
+- Allocation is unchanged: curl's GET 1,840 B, the JSON POST 2,624 and 2,432, ab -k's GET 2,112, a browser's GET 3,312, a parser 1,056.
+- Time, 20,000 keep-alive requests on the fake shell, eight runs each, interleaved with main's: curl's GET 4.95 to 5.10 µs against 4.80 to 4.95, a chunked POST 6.65 to 7.20 against 6.55 to 7.10, a browser's GET 9.30 to 9.70 against 9.15 to 10.20.
+- Red before green, and the mutants: m6-mutations.md, "The cut-off-span PR". Twenty-eight, none surviving; the padding PR's sixty-two run again, all killed, and three withdrawn.
+
+Size: 529 inserted lines of code and tests (`src/` 155, much of it comments), 73 deleted; over plan §1 rule 1's ~400.
+
+DECIDED on the owner's word (2026-10-01), by form, after the walkthrough: **two stacked PRs**, each proved green on its own before its commit.
+- Bottom, `refactor/parser-result-span` (dd21879): the five-field result, built once in the adapter, its span not yet read and its offset still the parser's count. It changes no rule. 107 inserted lines of code and tests, 31 deleted; `make test` 44 suites, 1,409 expected passes.
+- Top, `fix/cut-off-spans`: the rule, with its checks, docs and records: the refused byte's offset, the core's judgment of what the error cut off, and the runs judged at the error. 452 inserted (`src/` 134), 72 deleted, the bottom's suite header and builder rewritten among them; 44 suites, 1,433. The finished tree was set aside (16 files, sums and a tarball), the bottom cut in place from main by scripted edits, and the top restored from the set-aside with every sum matching.
+Weighed: three stacked PRs (the result; targets and runs; names and the records), each under the ~400 guide but one mechanism split across two; one PR.
+
+NEXT: the two PRs, merged bottom up on the owner's "do closing ritual". Then the M6 exit (plan §14). When byte-machine #145 lands and its release reaches chez-httparse and uriparse, their pins move together, the tripwire goes red, and the core's line starts and space check go.

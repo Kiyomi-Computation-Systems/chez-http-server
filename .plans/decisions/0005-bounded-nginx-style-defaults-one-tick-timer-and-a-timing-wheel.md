@@ -446,3 +446,30 @@ Also by form: a run past its limit, then a parse error, is answered 400 at every
 Its reason, though, is the run's or the parser's depending on where reads end. That goes
 with the PR after this one, with main's own span cut off by an error, since both need to
 know where a span the error cut off began (plan §14).
+
+## Amendment (2026-10-01) — what the parser's error cuts off
+
+A malformed byte ends the parse, and the span the parser was reading is abandoned, never
+handed on (chez-httparse `docs/api.org`: "an error abandons an open span rather than
+flushing it"). Only a target's and a field name's can be: a value, an extension and the
+protocol are handed on before their errors (11,790 errors, every byte of seven requests
+replaced and preceded by 22 values). So a target or a field name past its limit, then such
+a byte, was answered for the limit where a read ended between the two, and 400 where one
+read held both. On main a 9,000-byte target and then a control byte was 414 at 111 of 174
+delivery sizes and 400 at 63, and of 40,000 fuzzed malformed requests, 980 split: 326 by
+status, 654 by reason only, the run-then-error reasons the review above sent here.
+
+Now at the parser's error the core judges what it cut off as a read's end would have: the
+span's bytes it was not handed, up to the byte the parser refused, and then the run still
+open. The first limit passed, in the order of the bytes, names the response at every split,
+as it does when every read is one byte. None of the 40,000 splits; on 20,000 more, every
+answer is the one-byte reads'. The corpora's lanes print what they printed.
+
+Where a cut-off span began the parser does not say. Until byte-machine #145 lands (decision
+0008), the core places it: a field name where its line begins, which the event before it
+gives, and a target one byte after the method's space, unless that byte is another space,
+when the spaces passed their limit first.
+
+Decided on the owner's word, by form (2026-10-01), after the owner asked whether the change
+would make byte-machine a better product. Weighed: building only once #145 lands; the core
+alone, with no ask.
