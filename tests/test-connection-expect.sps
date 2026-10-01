@@ -33,6 +33,7 @@
 
 (define ok (make-response 200 #f '() #f))
 
+
 ;; run : Bytevector Nat Limits (Request -> Any) -> FakeShell
 ;; One connection reading `input` in `size`-byte deliveries.
 (define (run input size limits handler)
@@ -115,7 +116,8 @@
 ;; --- extensions: 16 KiB of names and values, over two chunks -----------------
 ;; extended : Nat Nat -> Bytevector
 ;; A chunked POST of "abc" and "de", each chunk carrying one extension `e`
-;; whose value is `n1` and `n2` bytes, and the GET behind it.
+;; whose value is `n1` and `n2` bytes, and the GET behind it.  Each line's
+;; extension counts `;e=` and its value: 3 + n bytes.
 (define (extended n1 n2)
   (post "1" chunked
         (string-append "3;e=" (make-string n1 #\v) "\r\nabc\r\n"
@@ -227,16 +229,17 @@
                 (every-size (trailed "T: 12345678\r\n") small streaming outcome))
 
     ;; --- chunk extensions ---------------------------------------------------------
-    ;; Two extensions of 1 + 8,191 bytes each: 16,384 together, the most.
+    ;; Two lines' extensions of 3 + 8,189 bytes each: 16,384 together, the
+    ;; most, with each `;` and `=`.
     (test-equal "a body's chunk extensions at 16 KiB, together over two chunks, sampled delivery sizes: served"
                 '((((call-handler (POST "/a")) (body "abcde") (end) (write 200)
                     (call-handler (GET "/b")) (end) (write 200))
                    idle #f))
-                (let ((input (extended 8191 8191)))
+                (let ((input (extended 8189 8189)))
                   (at-sizes (sampled input) input default-limits streaming outcome)))
     ;; A byte more, in the second chunk's: the first chunk's data was handed
     ;; over, then 413.
     (test-equal "a byte more, sampled delivery sizes: the first chunk's data, then 413 and the staged close"
                 '((((call-handler (POST "/a")) (body "abc") (write 413)) lingering chunk-extensions-too-large))
-                (let ((input (extended 8191 8192)))
+                (let ((input (extended 8189 8190)))
                   (at-sizes (sampled input) input default-limits streaming outcome)))))

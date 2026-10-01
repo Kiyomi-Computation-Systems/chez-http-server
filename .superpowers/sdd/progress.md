@@ -3389,7 +3389,7 @@ NEXT: the padding PR (the owner's word, by form, 2026-09-29: its own PR after M6
 
 THE PADDING PR (fix/padding-limits, cut from main at d52ab78), on the owner's "start the padding PR".
 
-Measured on main first (2026-09-30, Darwin arm64, the fake shell, the default limits, 16 KiB reads): the parser reads four runs of bytes it hands the core no span of, and a megabyte of each was answered 200: spaces or tabs before a field's value, in a head or a trailer section, an empty value's among them; zeros before a chunk size, a data chunk's or the last's; spaces past the one between the request line's parts; and empty lines, CR or LF, before a request line, at a connection's start or between requests. The strict parser refuses the rest (a folded line, spaces before a colon or after a chunk size or a version, a tab in the request line), and an extension's `;` and `=` are the only bytes of it left uncounted, at most 5 for 3 counted. Two of the four were found at this step: the ledger's M6.4 entry named the whitespace and the zeros.
+Measured on main first (2026-09-30, Darwin arm64, the fake shell, the default limits, 16 KiB reads): the parser reads four runs of bytes it hands the core no span of, and a megabyte of each was answered 200: spaces or tabs before a field's value, in a head or a trailer section, an empty value's among them; zeros before a chunk size, a data chunk's or the last's; spaces past the one between the request line's parts; and empty lines, CR or LF, before a request line, at a connection's start or between requests. The strict parser refuses the rest (a folded line, spaces before a colon or after a chunk size or a version, a tab in the request line), and an extension's `;` and `=` are the only bytes of it left uncounted, at most 5 for 3 counted (wrong for empty names and values, which the strict parser takes: the review below). Two of the four were found at this step: the ledger's M6.4 entry named the whitespace and the zeros.
 
 How the core can see them: inside every callback the parser's runtime says how many bytes it has read (byte-machine's committed offset, `parser-stream-offset`; chez-httparse's own test adapter reads it). At every delivery size an event callback sees the same number (45 of 45 sizes for a padded head, 95 of 95 for padded chunks), and a span's is its feed's first byte plus its end. Prototyped in a scratch tree, the adapter passing it with each event callback and the core measuring each run from where one piece ends to where the next begins, checked at the callbacks and at every read's end: one outcome at every delivery size sampled, 81 to 328 each; curl's GET 1,840 B a request, as on main; 4.55 µs a request against main's 4.45 to 4.60.
 
@@ -3422,8 +3422,8 @@ The checks:
 
 FOUND WHILE BUILDING:
 - **The first form's premise was wrong** (the second form, above).
-- **A request line with no version** (llhttp's "No HTTP version", sample.md#10): the run after the target first opened at every on-url-complete, so a line end met at a read's end counted as spaces, and the outcome lane split the fixture, 400 a byte at a time, 200 whole. The run opens only one byte past the target's end; a line end is two.
-- **A span the parser's error cuts off is never handed on** (chez-httparse: "an error abandons an open span"), so at the parser's error a run's bytes could hold it: only the whitespace is judged there, its value counting with it anyway. A run past its limit and then cut off by a malformed target or extension is 400 at every size, its reason the run's or the parser's by the split. The same cut already splits main's own limits: a 9,000-byte target then a control byte is 400 at 63 of 174 delivery sizes and 414 at 111, a 9,000-byte field name 400 at 61 and 431 at 113. Not this PR's; for the owner.
+- **A request line with no version** (llhttp's "No HTTP version", sample.md#10): the run after the target first opened at every on-url-complete, so a line end met at a read's end counted as spaces, and the outcome lane split the fixture, 400 a byte at a time, 200 whole. The run opens only one byte past the target's end; a line end is two (true of a CRLF only: a bare LF is one byte too, and the review below found the split it left).
+- **A span the parser's error cuts off is never handed on** (chez-httparse: "an error abandons an open span"), so at the parser's error a run's bytes could hold it: only the whitespace is judged there, its value counting with it anyway. A run past its limit and then cut off by a malformed target or chunk size is 400 at every size, its reason the run's or the parser's by the split (not an extension, whose name ends the size's run first: the review below). The same cut already splits main's own limits: a 9,000-byte target then a control byte is 400 at 63 of 174 delivery sizes and 414 at 111, a 9,000-byte field name 400 at 61 and 431 at 113. Not this PR's; for the owner.
 - **The fake shell hands every read as a slice of one bytevector**, indexed from the connection's first byte, so a delivery's base of 0 was right by accident: the first mutation run's survivor P-C. The flows hand each read in a bytevector of its own. P-D, the pending rest's base set anew, was equivalent, and its line went.
 
 Measured on the finished tree (2026-09-30, Darwin arm64):
@@ -3442,3 +3442,53 @@ Size: 933 inserted lines of code and tests (the new flows suite's 259 among them
 DECIDED on the owner's word (2026-09-30), by form, after the walkthrough: **three stacked PRs**, each green on its own, proved before its commit: every event callback carrying the parser's position, with decision 0002's amendment; the two runs planned, the whitespace before a value and a chunk size's digits, with the runs' machinery; the two found, the request line's spaces and the empty lines before it, with the PR's records. Weighed: two, the positions and the four rules; one. And **the split found, main's own limits cut off by the parser's error, gets its own PR next**, before the M6 exit: with the positions, the core can place a target or a field name the error cut off and judge it by its limit. Weighed: carried to M8.3; folded into this PR.
 
 NEXT: the three stacked PRs, merged bottom up on the owner's "do closing ritual". Then the PR for the split found, its design by form on measurements; then the M6 exit (plan §14).
+
+
+THE PADDING PR'S REVIEW (2026-09-30, PRs #83 to #85 open): a /code-review max on the owner's ask (ten finders, a verifier for each candidate, a sweep) found fifteen, and the owner asked for all of them fixed: "lets fix all, start with the ones that need choices". Each choice's options were built in scratch copies and measured before the forms (Darwin arm64, the fake shell, every delivery size).
+
+DECIDED on the owner's word (2026-09-30), by two forms, every option the recommended one:
+- **The spaces after a target are counted however it ends.** A request line with no version ended by a bare LF, which the strict parser takes, was refused 400 or served 200 depending on where reads ended. `GET /a\nHost: x\r\n\r\n` got 400 at 9 of its 18 delivery sizes; main served it 200 at all. The core counted from one byte past the target, taking that byte for a space, but a bare LF is one byte too.
+  - Now the run opens at every on-url-complete, a field or the head's end lets it go, and a read may end one byte past its limit: a versionless line's CR.
+  - On a generated corpus of 3,522 and 3,549 inputs, each at every size, the PR split 296 and 330 inputs (206 and 218 of them in what was written, all with a bare LF). Now 7 and 7 split, each by its reason only (the run-then-error class below).
+  - The one change in behaviour: a client that stops after one extra space waits for the header timeout instead of getting 400 at once.
+  - Weighed: checking that byte for a space (the same corpus numbers, but hand-built rows then need a delivery).
+- **A chunk's extensions count every byte, an empty one's too**: a byte at each name's and value's end, for its `;` or `=`.
+  - A megabyte of `;=` was served 200 in 92 ms of CPU, growing linearly (8 MB took 736 ms through the libuv shell), bounded only by the body deadline. Now it gets 413 within its second 16 KiB read, in about 2 ms.
+  - Weighed: every byte by position (+38 −30 lines, and a single large delivery parsed whole first); Go's 4 KiB a line alone (still served a megabyte spread over short lines).
+- **A 431 names the limit its bytes passed first** (`first-past`), the field's on a tie. Of 2,856 swept trailer inputs, 224 split by their 431's reason on main and 496 on the PR; none of 56,692 swept and fuzzed inputs splits now. Weighed: leaving it.
+- **An empty value's line end does not count.** 8,191 spaces and a CRLF were refused 431, where 8,191 spaces and a one-byte value were served. A malformed value at most 2 bytes past its limit, which the parser ends at a byte it then refuses, now gets its 400 instead of 431, at every size. Weighed: counting it, and saying so in the docs.
+- **A run past its limit, then a parse error, goes to the next PR**, with main's own cut-off span. It is 400 at every split, but its reason depends on the split: `GET` + 3 spaces + a control byte names the run at 5 of its 31 sizes and the parser at the rest. Both halves need to know where a span the error cut off began. Weighed: fixing it here.
+- **A parser-result carries the parser's own count**, `parser-result-stream-offset`, not one read's (decision 0002's amendment). The trace lane, which passes on only some results, had left the core's sum behind on 80 of its 141 reads. Weighed: spans carrying the position too (73 hand-built events to change); keeping the sum.
+- **chez-httparse #55 filed**: document what `parser-stream-offset` answers inside a callback (decision 0008). Weighed: recording the reliance only.
+
+Fixed without a choice:
+- Row F3's head is now 10 bytes, at the tight limits' edge, and the table's state builder refuses a setup step the core refuses (`setup!`).
+- G14 watches the four phase guards no check watched.
+- The entry suite's two "all fifteen" checks are fourteen now, with a count: on-headers-complete is refused whatever its arguments, so its instance could never fail.
+- A parser-result is read whole, once, before it is answered: a short one is an assertion violation again, as on main.
+- The stale comment on `conn-span-callbacks` is corrected.
+- The docs say 4 bytes of empty lines, name the fixed limits, and count every byte of the extensions.
+- Each run's limit is stated once (`run-limits`, `close-judged!`), and on-message-begin refuses through `refuse`.
+- `(decisive)` holds the action reducer that the body, Expect and padding suites each copied; `fake-shell-feed-input!` takes a delivery's offset; and `expecting` goes through `head-complete!`.
+
+Found while building:
+- **The two "all fifteen" checks** had the flaw, not one.
+- **No check named the tie**, both limits passed at one byte; the padding suite's row gained one.
+- **The clamp at 0 on an empty value's pad could change no outcome**: R-W3 survived. The pad goes below 0 only where the parser's error comes next. The clamp went.
+
+The checks: padding 19 (15), the table 305 (293), entry 35 (33). In the table, G9 and G10 sit at the new allowances, G12 names the section first, G13 lets a versionless line's run go at its first field, G14 holds a run open past a 408, F4 and F5 count each delimiter, and the count is fourteen. Expect 16 and originated 26: their inputs shrink by the delimiters.
+
+Measured on the finished tree (2026-09-30):
+- `make test` on Darwin arm64: forty-three suites, 1,407 expected passes, exit 0.
+- On Linux, in the same Docker image (698eba6; Linux 6.12.76-linuxkit aarch64, Chez 10.4.1): forty-three suites, 1,407 passes, exit 0. The shell, contract, clients and padding suites gave 129, 68, 14 and 19 in each of three runs.
+- Allocation is unchanged: curl's GET 1,840 B, the JSON POST 2,624 and 2,432, ab -k's GET 2,112, a browser's GET 3,312, a parser 1,056.
+- Red before green: on f0950e2, before any edit, the padding suite's six new and changed checks failed and thirteen passed.
+- Mutants: sixty-five on the reviewed tree, none survives (m6-mutations.md, "The padding PR's review"). Every new and changed check is mapped by name to a mutant that reddened it.
+
+Size: 471 inserted lines of code and tests (`src/` 182), 317 deleted; over plan §1 rule 1's ~400.
+
+DECIDED on the owner's word (2026-09-30), by form, after the walkthrough: **two stacked PRs on #85**, each proved green on its own before its commit. The finished tree was set aside (22 files, sums, a tarball), the bottom layer was cut in place from f0950e2, and the top layer was restored from the set-aside with every sum matching. Weighed: one PR; folding each fix into #83 to #85.
+- Bottom, `refactor/padding-review` (b5c6b4f): the parts that change no rule. The parser's own count, a result read whole, each run's limit stated once, `refuse` in on-message-begin, the table's `setup!` and F3, G14, the entry suite's fourteen and short result, `(decisive)`, the delivery offset, `expecting`, the adapter's #55 and the stale comment, decision 0002's amendment and the design's event table. 251 inserted lines of code and tests (`src/` 100), 235 deleted; `make test` 43 suites, 1,395 expected passes; allocation unchanged.
+- Top, `fix/padding-review`: the four rules (a versionless line, empty extensions, the first limit passed, an empty value's line end), with the docs and the review's records. 234 inserted (`src/` 92), 96 deleted; 1,407.
+
+NEXT: the two PRs, merged with #83 to #85, bottom up, on the owner's "do closing ritual". Then the PR for the split found, now with the run-then-error reason (plan §14's note); then the M6 exit.

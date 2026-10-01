@@ -37,7 +37,7 @@
 ;;; its seven for what a chunked body carries beside its data, its trailer
 ;;; fields held to the four header limits and its chunk extensions to 16 KiB
 ;;; (both decided on the owner's word, 2026-09-29).  And the padding PR's
-;;; thirteen for what the parser reads and hands no span of, each event at the
+;;; fourteen for what the parser reads and hands no span of, each event at the
 ;;; parser's position: the empty lines before a request line, the spaces
 ;;; between its parts, the whitespace before a field's value and a chunk
 ;;; size's digits, judged where they end and at a read's end (decided on the
@@ -1376,8 +1376,9 @@
 ;; parser delivers as header callbacks once the last chunk is read (the
 ;; ledger, M2), are held to the four header limits, as a head is, counted
 ;; afresh, so the head's fields leave the trailers theirs; none is kept.
-;; Its chunk extensions, their names' and values' bytes, all of a body's
-;; together, are held to 16 KiB, fixed, as hyper and Node hold theirs.  One
+;; Its chunk extensions, their names' and values' bytes and a byte as each
+;; ends, for the `;` or `=` before it, all of a body's together, are held to
+;; 16 KiB, fixed, as hyper and Node hold theirs.  One
 ;; past a limit is refused as a head's field is, `(reply-parser (fail
 ;; reason))`, and the parser's error that follows is answered with the
 ;; reason's status: a trailer's the head's 431, the extensions' 413, as a
@@ -1416,7 +1417,8 @@
 
 ;; extended : Nat ... -> ConnState
 ;; A chunked POST, its streaming reader reading, that met an extension name
-;; of each of `sizes` bytes, one a chunk.
+;; of each of `sizes` bytes, one a chunk: n + 1 bytes each, counted with the
+;; `;` its end stands for.
 (define (extended . sizes)
   (let ((s (reading 'chunked streamer)))
     (for-each (lambda (n)
@@ -1467,18 +1469,31 @@
           (i s '(parser-event on-header-field-complete 0)
              '(body #f ((reply-parser continue))))))
 
+   ;; A name's or a value's end counts a byte, for the delimiter before it.
    (row 'F4 "body, a body's chunk extensions within 16 KiB, all of them together -> body: continue"
         (i (extended) `(parser-event on-chunk-extension-name-data ,big 0 ,max-extensions)
            '(body #f ((reply-parser continue))))
-        (i (extended 8192) `(parser-event on-chunk-extension-value-data ,big 0 8192)
+        (i (extended 8192) `(parser-event on-chunk-extension-value-data ,big 0 8191)
+           '(body #f ((reply-parser continue))))
+        (i (after (extended) `(parser-event on-chunk-extension-name-data ,big 0 ,(- max-extensions 1)))
+           '(parser-event on-chunk-extension-name-complete 0)
+           '(body #f ((reply-parser continue))))
+        (i (after (extended) `(parser-event on-chunk-extension-value-data ,big 0 ,(- max-extensions 1)))
+           '(parser-event on-chunk-extension-value-complete 0)
            '(body #f ((reply-parser continue)))))
 
    (row 'F5 "body, a body's chunk extensions past 16 KiB, all of them together -> body: fail chunk-extensions-too-large"
         (i (extended) `(parser-event on-chunk-extension-name-data ,big 0 ,(+ max-extensions 1))
            '(body #f ((reply-parser (fail chunk-extensions-too-large)))))
-        (i (extended 8192) `(parser-event on-chunk-extension-value-data ,big 0 8193)
+        (i (extended 8192) `(parser-event on-chunk-extension-value-data ,big 0 8192)
            '(body #f ((reply-parser (fail chunk-extensions-too-large)))))
-        (i (extended 4096 4096 4096) `(parser-event on-chunk-extension-name-data ,big 0 4097)
+        (i (extended 4096 4096 4096) `(parser-event on-chunk-extension-name-data ,big 0 4094)
+           '(body #f ((reply-parser (fail chunk-extensions-too-large)))))
+        (i (after (extended) `(parser-event on-chunk-extension-name-data ,big 0 ,max-extensions))
+           '(parser-event on-chunk-extension-name-complete 0)
+           '(body #f ((reply-parser (fail chunk-extensions-too-large)))))
+        (i (after (extended) `(parser-event on-chunk-extension-value-data ,big 0 ,max-extensions))
+           '(parser-event on-chunk-extension-value-complete 0)
            '(body #f ((reply-parser (fail chunk-extensions-too-large))))))
 
    (row 'F6 "body, the parser's error for a trailer or the extensions refused -> responding 431 or 413, read-stop, close-after"
@@ -1548,10 +1563,13 @@
     (let-values (((s actions) (conn-step s `(handler-responded ,resp))))
       (after s `(write-completed ,(nbytes (assq 'write actions)))))))
 
-;; The request lines the rows read, one space and two between their parts.
+;; The request lines the rows read, one space and two between their parts,
+;; and with no version, ended by a bare LF or CRLF, a field after it.
 (define spaced (b "GET / HTTP/1.1"))
 (define method-spaced (b "GET  / HTTP/1.1"))
 (define target-spaced (b "GET /  HTTP/1.1"))
+(define versionless (b "GET /\nHost: x\r\n\r\n"))
+(define versionless-crlf (b "GET /\r\nHost: x\r\n\r\n"))
 
 ;; reading-chunks : -> ConnState
 ;; A chunked POST read by a streaming reader, which has met its first
@@ -1647,15 +1665,26 @@
 
    ;; A read's end within the run, within its limit: nothing; the reads here
    ;; are all the connection's, from its first byte.
+   ;; A read may end a byte past the target's space, where a request line
+   ;; with no version has its CR, and two past the whitespace before a
+   ;; value, an empty value's line end, without a refusal.
    (row 'G9 "a read's end inside a run within its limit -> the same: nothing"
         (i (state 'idle 'deadline 'idle) '(parser-result need-input 4 4 #f #f)
            '(idle #f ()))
         (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
            '(parser-result need-input 4 4 #f #f)
            '(head #f ()))
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3)
+                  `(parser-event on-url-data ,spaced 4 5) '(parser-event on-url-complete 6))
+           '(parser-result need-input 7 7 #f #f)
+           '(head #f ()))
         (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result need-input 5 5 #f #f)
+           '(head #f ()))
+        (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
+                  `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
+           '(parser-result need-input 7 7 #f #f)
            '(head #f ()))
         (i (reading-chunks) '(parser-result need-input 77 77 #f #f)
            '(body #f ())))
@@ -1668,12 +1697,12 @@
            `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write))))
         (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3)
                   `(parser-event on-url-data ,spaced 4 5) '(parser-event on-url-complete 6))
-           '(parser-result need-input 7 7 #f #f)
+           '(parser-result need-input 8 8 #f #f)
            `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write))))
         (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
-           '(parser-result need-input 7 7 #f #f)
-           `(responding header-value-too-large (,status-431 (read-stop) (arm-deadline write))))
+           '(parser-result need-input 9 9 #f #f)
+           `(responding headers-too-large (,status-431 (read-stop) (arm-deadline write))))
         (i (reading-chunks) '(parser-result need-input 78 78 #f #f)
            `(responding chunk-size-too-long (,status-400 (read-stop) (arm-deadline write)))))
 
@@ -1696,9 +1725,24 @@
         (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result error 9 9 invalid-header-token #f)
-           `(responding header-value-too-large (,status-431 (read-stop) (arm-deadline write))))
+           `(responding headers-too-large (,status-431 (read-stop) (arm-deadline write))))
         (i (reading-chunks) '(parser-result error 78 78 invalid-chunk-size #f)
            `(responding parser-error (,status-400 (read-stop) (arm-deadline write)))))
+
+   ;; The parser ends a target at a space, a bare LF or a CRLF, and the run
+   ;; after it opens at each; a request line with no version lets it go at
+   ;; its first field, so a read's end past the field's name judges nothing.
+   (row 'G13 "head, a request line with no version, its first field met -> head: the run after the target let go"
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3)
+                  `(parser-event on-url-data ,versionless 4 5) '(parser-event on-url-complete 6)
+                  `(parser-event on-header-field-data ,versionless 6 10))
+           '(parser-result need-input 10 10 #f #f)
+           '(head #f ()))
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3)
+                  `(parser-event on-url-data ,versionless-crlf 4 5) '(parser-event on-url-complete 7)
+                  `(parser-event on-header-field-data ,versionless-crlf 7 11))
+           '(parser-result need-input 11 11 #f #f)
+           '(head #f ())))
 
    ;; A run is judged at a read's end only in the phase it is read in: one
    ;; still open when a deadline's 408 moves the connection on is not, so a
@@ -1916,7 +1960,7 @@
       (test-eqv "M6.4: all 7 Expect rows have a test" 7 expects)
       (test-eqv "M6.4: the 100's accounting row has a test" 1 continues)
       (test-eqv "M6.4: all 7 trailer and extension rows have a test" 7 framings)
-      (test-eqv "the padding PR: all 13 padding rows have a test" 13 paddings))
+      (test-eqv "the padding PR: all 14 padding rows have a test" 14 paddings))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it: `notify-producer` since M6.3.

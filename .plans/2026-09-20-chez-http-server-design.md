@@ -390,6 +390,16 @@ Four facts about them that shape the core:
 > parser's error only the whitespace is judged, since a span the error cut off is never
 > handed on.
 
+> *Amended 2026-09-30, later (the padding PR's review), on the owner's word by form:*
+> a `parser-result` carries the parser's own count of the bytes it has taken
+> (`parser-result-stream-offset`), not one read's, and the core keeps it rather than a
+> sum (decision 0002's amendment). The parser ends a target at a space, a CRLF or a bare
+> LF without saying which, so the spaces after it are counted from each, and a request
+> line with no version lets them go at its first field or its head's end. A 431 names
+> the limit its bytes passed first; an empty value's line end does not count; and a
+> chunk's extensions count a byte for each `;` and `=`, so every byte of them counts
+> (decision 0005's amendment).
+
 ### 4.3 Connection states
 
 **Introduced here** — decision 0002 fixes the event and action vocabulary but names
@@ -1116,11 +1126,11 @@ Every status the server can originate, and who decides it:
 
 | Status | Origin | Closes? |
 |---|---|---|
-| `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26); more than two empty lines before a request line, more than one space between its parts, a chunk size of more than 16 hex digits (policy; the padding PR, since 2026-09-30) | yes |
+| `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26); more than two empty lines' 4 bytes before a request line, more than one space between its parts, a chunk size of more than 16 hex digits (policy; the padding PR, since 2026-09-30) | yes |
 | `408` | header or body-inactivity deadline (policy) | yes |
 | `413` | a body past `max-body-bytes`, or past a reader's own cap, `read-whole-body`'s 1 MiB by default (policy; decision 0013, since 2026-09-28) | yes |
 | `414` | request-target over `max-target-bytes` (policy) | yes |
-| `431` | header bytes or header count (policy); a value's bytes count the whitespace before it (the padding PR, since 2026-09-30) | yes |
+| `431` | header bytes or header count (policy); a value's bytes count the whitespace before it, and a refusal names the limit its bytes passed first (the padding PR and its review, since 2026-09-30) | yes |
 | `500` | handler raise | yes |
 | `501` | a transfer coding before a final `chunked`, which the server does not implement (RFC 9112 §6.1; since 2026-09-26) | yes |
 | `505` | the HTTP/2 preface (decision 0006 item 2; `Upgrade: h2c` only until its 2026-09-25 amendment) | yes |

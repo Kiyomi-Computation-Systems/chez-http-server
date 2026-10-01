@@ -397,3 +397,52 @@ at the callback that ends a run and, while it runs, at every read's end, so a ru
 refused within the read that passes its limit, whatever the split. At the parser's error
 only the whitespace is judged: a span the error cut off is never handed on, so its bytes
 would count as the run's.
+
+## Amendment (2026-09-30, later) — the padding PR's review
+
+A /code-review max of the padding PR found four places where the rules above did not hold
+at every split, or did not count what they said. Each was decided on the owner's word, by
+form (2026-09-30), after every option was measured in a scratch copy (Darwin arm64, the
+fake shell, every delivery size).
+
+- **A chunk's extensions count every byte, an empty one's too.** M6.4's 16 KiB counted
+  the bytes of names and values only. The strict parser takes empty ones, a size line of
+  `;=` or `;` over and over, so a megabyte of them was served 200 in about 92 ms of CPU.
+  The cost grew linearly, and only the body deadline bounded it. Now each name and each
+  value counts a byte as it ends, for the `;` or `=` before it. A quoted value's quotes
+  are in its span, so by a line's end every byte of its extensions has counted. A
+  megabyte of `;=` is refused 413 within its second 16 KiB read, in about 2 ms.
+  Weighed: every byte by position, a run from the `;` to the CR (the same answers, but
+  one large delivery parsed whole before the refusal); Go's 4 KiB a size line alone
+  (still served a megabyte spread over short lines, and split 400 from 413).
+- **A 431 names the limit its bytes passed first.** One stretch of bytes could pass both
+  a field's own limit and the section's, and which one the refusal named depended on
+  where the reads ended. 496 of 2,856 swept trailer inputs split that way, 224 of them
+  already on main. Now the reason is the limit passed at the earlier byte, and the
+  field's if both are passed at the same byte. None of 56,692 swept and fuzzed inputs
+  splits. Weighed: leaving it, since the status is 431 either way.
+- **An empty value's line end does not count.** The parser hands an empty value over
+  only after its CRLF, so the whitespace counted those 2 bytes too. 8,191 spaces and a
+  CRLF were refused where 8,191 spaces and a one-byte value were served. Now the line end
+  is left out, and at a read's end the whitespace is judged on its length less 2.
+  - Where the parser ends an empty value at a byte it then refuses, the 2 bytes are left
+    out too. Such a value at most 2 bytes past its limit gets the parser's 400, not 431,
+    the same at every split.
+  - Weighed: counting the line end, and saying so in the docs.
+- **The spaces after a target are counted however the target ends.** The parser ends a
+  target at a space, a CRLF or a bare LF, and does not say which. The core had counted
+  only from one byte past the target, taking that byte for a space. So a request line
+  with no version, ended by a bare LF, was refused 400 or served 200 depending on where
+  reads ended.
+  - Now the count opens however the target ends, and a field or the head's end lets it
+    go. A read may end one byte past its limit without a refusal: a versionless line's
+    CR.
+  - The only change in behaviour: a client that stops after one extra space now waits
+    for the header timeout instead of getting 400 at once.
+  - Weighed: checking that byte for a space (the same answers, but hand-built table rows
+    then need a delivery).
+
+Also by form: a run past its limit, then a parse error, is answered 400 at every split.
+Its reason, though, is the run's or the parser's depending on where reads end. That goes
+with the PR after this one, with main's own span cut off by an error, since both need to
+know where a span the error cut off began (plan §14).

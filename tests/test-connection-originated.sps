@@ -217,7 +217,7 @@
    ;; no piece: the extension comes before the chunk's data.
    (row "413: a body's chunk extensions one byte past 16 KiB"
         reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5;e="
-                                   (make-string 16384 #\v) "\r\nhello\r\n0\r\n\r\n" get))
+                                   (make-string 16382 #\v) "\r\nhello\r\n0\r\n\r\n" get))
         (kept 413 "Content Too Large" 'chunk-extensions-too-large (at epoch)))
    ;; 414 and 431: one past a limit.
    (row "414: a target one byte past max-target-bytes"
