@@ -3,33 +3,39 @@
 ;;; span of, through the fake shell's message loop.  The padding PR.
 ;;;
 ;;; With chez-httparse driving the core through the adapter, each event
-;;; callback carrying the parser's position.  Four runs of bytes the parser
-;;; reads outside the pieces it hands on are held to limits (decided on the
-;;; owner's word, 2026-09-30):
+;;; callback carrying the parser's position.  What the parser reads outside
+;;; the pieces it hands on is held to limits (decided on the owner's word,
+;;; 2026-09-30):
 ;;;   - the empty lines before a request line: two are skipped (RFC 9112
 ;;;     §2.2 asks for one, and llhttp's own fixture has two after a POST's
 ;;;     body), and more are refused, 400;
 ;;;   - the spaces between the request line's parts: one each (§3), and more
-;;;     are refused, 400;
+;;;     are refused, 400; a line with no version, ended by CRLF or a bare
+;;;     LF, has none;
 ;;;   - the spaces and tabs before a field's value: counted with the value,
-;;;     against its limit and the section's, 431, in a head and in a
-;;;     trailer section; an empty value's with its line end;
+;;;     against its limit and the section's, 431 for the one passed first,
+;;;     in a head and in a trailer section; an empty value's line end does
+;;;     not count;
 ;;;   - a chunk size's digits: 16 at most, zeros included (§7.1), and more
-;;;     are refused, 400.
+;;;     are refused, 400;
+;;;   - a chunk's extensions, each name and value a byte more for the `;` or
+;;;     `=` before it, so an empty one counts too: a body's 16 KiB, 413
+;;;     (decided by the owner on the PR's review, 2026-09-30).
 ;;;
 ;;; Each row runs at every delivery size, from a byte at a time to the whole
 ;;; input in one delivery, so one expected answer is also the outcome's
 ;;; independence from how the bytes were split (design §8.1's second
 ;;; property).  Each delivery is a bytevector of its own, the bytes at an
 ;;; offset in it, as a shell hands over a read: a run's bytes are counted
-;;; from where the parser is, not from where a delivery's bytes sit.  The megabyte runs, the ones main answered 200, run at a
+;;; from where the parser is, not from where a delivery's bytes sit.  The
+;;; megabyte runs, the ones main answered 200, run at a
 ;;; sample of sizes from 64 bytes, the shell's 16 KiB read among them: a
 ;;; byte at a time, a connection that did not refuse would pass the fake
 ;;; shell's cap of 100,000 dispatches.
 ;;;
 ;;; Oracles: RFC 9112 §2.2, §3, §5 and §7.1; the inputs' own bytes; the
-;;; limits each row sets; design §6.5's 400 and 431; decision 0011's staged
-;;; close.
+;;; limits each row sets; design §6.5's 400, 413 and 431; decision 0011's
+;;; staged close.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
         (fake-shell) (decisive))
@@ -37,6 +43,7 @@
 (define (b s) (string->utf8 s))
 
 (define ok (make-response 200 #f '() #f))
+
 
 ;; read! : Bytevector Nat Limits -> FakeShell
 ;; One connection reading `input` in `size`-byte deliveries while it reads,
@@ -114,6 +121,9 @@
   '((((call-handler (GET "/a")) (end) (write 200) (call-handler (GET "/b")) (end) (write 200))
      idle #f)))
 (define (refused-first status reason) (list (list (list (list 'write status)) 'lingering reason)))
+(define a-served '((((call-handler (GET "/a")) (end) (write 200)) idle #f)))
+;; An HTTP/0.9 request is served, and its connection then closes.
+(define one-served '((((call-handler (GET "/a")) (end) (write 200)) lingering not-keep-alive)))
 (define post-served
   '((((call-handler (POST "/a")) (body "abc") (end) (write 200)
       (call-handler (GET "/b")) (end) (write 200))
@@ -154,6 +164,15 @@
                 (refused-first 400 'request-line-spaces)
                 (sampled (b (string-append "GET" (spaces megabyte) "/a HTTP/1.1\r\nHost: x\r\n\r\n"))
                          default-limits))
+    ;; A request line with no version (HTTP/0.9) ends at the target, by CRLF
+    ;; or by a bare LF, which the strict parser takes too: there are no
+    ;; spaces to refuse, and it is served, then the connection closes.
+    (test-equal "a request line with no version, ended by CRLF or a bare LF, with a field or none, every delivery size: served"
+                (list one-served one-served one-served one-served)
+                (list (every-size (b "GET /a\r\nHost: x\r\n\r\n") default-limits)
+                      (every-size (b "GET /a\nHost: x\r\n\r\n") default-limits)
+                      (every-size (b "GET /a\r\n\r\n") default-limits)
+                      (every-size (b "GET /a\n\r\n") default-limits)))
 
     ;; --- the whitespace before a field's value -----------------------------------
     ;; Under `small`, 8 bytes of value: the whitespace and the value together.
@@ -165,13 +184,16 @@
     (test-equal "a byte of whitespace more, every delivery size: 431"
                 (refused-first 431 'header-value-too-large)
                 (every-size (field-get (string-append "X:" (spaces 8) "v")) small))
-    ;; An empty value is handed over after its line end, so its whitespace and
-    ;; line end count together: 6 spaces and CRLF are 8.
-    (test-equal "an empty value's whitespace and line end at the value's limit, and a byte more, every delivery size: served, then 431"
-                (list '((((call-handler (GET "/a")) (end) (write 200)) idle #f))
-                      (refused-first 431 'header-value-too-large))
-                (list (every-size (field-get (string-append "X:" (spaces 6))) small)
-                      (every-size (field-get (string-append "X:" (spaces 7))) small)))
+    ;; An empty value is handed over after its line end, which does not
+    ;; count: its whitespace alone is held to the value's 8, in a head and in
+    ;; a trailer section.
+    (test-equal "an empty value's whitespace at the value's limit, and a byte more, in a head and a trailer section, every delivery size: served, then 431"
+                (list a-served (refused-first 431 'header-value-too-large)
+                      post-served (post-refused "abc" 431 'header-value-too-large))
+                (list (every-size (field-get (string-append "X:" (spaces 8))) small)
+                      (every-size (field-get (string-append "X:" (spaces 9))) small)
+                      (every-size (chunked (string-append "3\r\nabc\r\n0\r\nT:" (spaces 8) "\r\n\r\n")) small)
+                      (every-size (chunked (string-append "3\r\nabc\r\n0\r\nT:" (spaces 9) "\r\n\r\n")) small)))
     ;; The section's 32: Host: x, 6; then 13 and 13 with their whitespace.
     (test-equal "the section at its limit with the whitespace counted, and a byte more, every delivery size: served, then 431"
                 (list '((((call-handler (GET "/a")) (end) (write 200)) idle #f))
@@ -180,6 +202,19 @@
                                   small)
                       (every-size (field-get (string-append "Abcde:" (spaces 7) "v\r\nFghijk:" (spaces 7) "v"))
                                   small)))
+    ;; Bytes past both a value's limit and the section's are refused for the
+    ;; one they passed first, whatever the split.  Host: x, 6, and a 20-byte
+    ;; name, 26: the 7th space passes the section's 32 before the value's 8
+    ;; is passed.  A 13-byte name, 19: the 9th space passes the value's 8,
+    ;; and the section is passed by the value's first byte.  An 18-byte
+    ;; name, 24: the value's first byte, its 9th with the spaces, passes
+    ;; both, and the value's limit is named.
+    (test-equal "whitespace and a value past both limits, the section's passed first, the value's, or both at one byte, every delivery size: 431 for the first, the value's on a tie"
+                (list (refused-first 431 'headers-too-large) (refused-first 431 'header-value-too-large)
+                      (refused-first 431 'header-value-too-large))
+                (list (every-size (field-get (string-append "Abcdefghijklmnopqrst:" (spaces 7) "abcdefgh")) small)
+                      (every-size (field-get (string-append "Abcdefghijklm:" (spaces 13) "v")) small)
+                      (every-size (field-get (string-append "Abcdefghijklmnopqr:" (spaces 8) "vv")) small)))
     (test-equal "a trailer's whitespace with its value at the limit, and a byte more, every delivery size: served, then 431"
                 (list post-served (post-refused "abc" 431 'header-value-too-large))
                 (list (every-size (chunked (string-append "3\r\nabc\r\n0\r\nT:" (spaces 7) "v\r\n\r\n")) small)
@@ -208,16 +243,37 @@
                 (post-refused "abc" 400 'chunk-size-too-long)
                 (sampled (chunked (string-append "3\r\nabc\r\n" (zeros megabyte) "\r\n\r\n")) default-limits))
 
+    ;; --- a chunk's extensions ------------------------------------------------------
+    ;; An extension's name and value each count a byte for the delimiter
+    ;; that ends it, so by its line's end every byte of it counts, an empty
+    ;; one's `;` and `=` too: a body's 16 KiB holds 8,191 `;=` and `;a`.
+    (test-equal "empty extensions at a body's 16 KiB, and a byte more, sampled delivery sizes: served, then 413"
+                (list post-served (post-refused #f 413 'chunk-extensions-too-large))
+                (list (sampled (chunked (string-append "3" (repeat ";=" 8191) ";a\r\nabc\r\n0\r\n\r\n"))
+                               default-limits)
+                      (sampled (chunked (string-append "3" (repeat ";=" 8191) ";ab\r\nabc\r\n0\r\n\r\n"))
+                               default-limits)))
+    (test-equal "a megabyte of empty extensions, `;=` or `;`, sampled delivery sizes: 413"
+                (list (post-refused #f 413 'chunk-extensions-too-large)
+                      (post-refused #f 413 'chunk-extensions-too-large))
+                (list (sampled (chunked (string-append "3" (repeat ";=" (div megabyte 2)) "\r\nabc\r\n0\r\n\r\n"))
+                               default-limits)
+                      (sampled (chunked (string-append "3" (repeat ";" megabyte) "x\r\nabc\r\n0\r\n\r\n"))
+                               default-limits)))
+
     ;; --- the work a run costs --------------------------------------------------------
     ;; In the shells' 16 KiB reads each run passes its limit inside the
     ;; first, and is refused at that read's end, so the parser is fed no
     ;; more: a megabyte of padding costs it one read.  The rest is read and
-    ;; dropped as the connection lingers (decision 0011).
-    (test-equal "a megabyte of each run, in 16 KiB reads: refused at the first read's end, the rest never parsed"
-                '(16384 16384 16384 16384 16384)
+    ;; dropped as the connection lingers (decision 0011).  Empty extensions
+    ;; begin after the head, and pass a body's 16 KiB inside the second
+    ;; read, refused at the callback that passes it.
+    (test-equal "a megabyte of each run, in 16 KiB reads: refused at the first read's end, the rest never parsed; empty extensions inside the second"
+                '(16384 16384 16384 16384 16384 32768)
                 (map (lambda (input) (fed-of input 16384))
                      (list (b (string-append (repeat "\r\n" (div megabyte 2)) get-a))
                            (b (string-append "GET" (spaces megabyte) "/a HTTP/1.1\r\nHost: x\r\n\r\n"))
                            (field-get (string-append "X:" (spaces megabyte) "v"))
                            (chunked (string-append "3\r\nabc\r\n0\r\nT:" (spaces megabyte) "t\r\n\r\n"))
-                           (chunked (string-append "3\r\nabc\r\n" (zeros megabyte) "\r\n\r\n")))))))
+                           (chunked (string-append "3\r\nabc\r\n" (zeros megabyte) "\r\n\r\n"))
+                           (chunked (string-append "3" (repeat ";=" (div megabyte 2)) "\r\nabc\r\n0\r\n\r\n")))))))

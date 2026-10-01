@@ -273,7 +273,8 @@
 ;;; header callbacks in `body`, once the last chunk is read, and are held to
 ;;; the four header limits, as a head's fields are, counted afresh: the
 ;;; head's fields leave the trailers their own, and none is kept.  Its chunk
-;;; extensions, the bytes of their names and values, all of a body's
+;;; extensions, the bytes of their names and values and a byte as each ends,
+;;; for the `;` or `=` before it (the padding PR's review), all of a body's
 ;;; together, are held to 16 KiB (`max-chunk-extension-bytes`), fixed, not a
 ;;; setting, as hyper holds a body's and RFC 9112 §7.1.1 advises a total for
 ;;; a request (Node holds each chunk's to 16 KiB instead).  One past
@@ -292,17 +293,24 @@
 ;;; refused as 'empty-lines; one space between the request line's parts,
 ;;; and more as 'request-line-spaces; a chunk size has 16 hex digits at
 ;;; most, zeros included, and more is refused as 'chunk-size-too-long: all
-;;; three answered 400.  The whitespace before a value counts with it,
-;;; against its limit and the section's, as the whitespace after it already
-;;; did, 431 past one; an empty value's counts its line end too, since the
-;;; parser hands it over after that.  A run is judged at the callback that
-;;; ends it and, while it runs, at every read's end, so it is refused within
-;;; the read that passes its limit, whatever the split (`run-past-limit`);
-;;; one refused at a read's end is answered as a callback's refusal is when
-;;; the parser's error comes back.  At the parser's error only the
-;;; whitespace is judged: a span the error cut off is never handed on, so
-;;; its bytes would count as the run's, and only a value's count with the
-;;; whitespace before it anyway.
+;;; three answered 400 (`run-limits`).  The whitespace before a value counts
+;;; with it, against its limit and the section's, as the whitespace after it
+;;; already did, 431 past one, named for the limit its bytes passed first
+;;; (`first-past`); an empty value's line end, which the parser reads before
+;;; it hands the value over, does not count.  A run is judged at the
+;;; callback that ends it and, while it runs, at every read's end, so it is
+;;; refused within the read that passes its limit, whatever the split
+;;; (`run-past-limit`); one refused at a read's end is answered as a
+;;; callback's refusal is when the parser's error comes back.  The parser
+;;; ends a target at a space, a CRLF or a bare LF, and does not say which,
+;;; so the spaces after it are counted from each, and a request line with no
+;;; version lets them go at its first field or its head's end.  At the
+;;; parser's error only the whitespace is judged: a span the error cut off
+;;; is never handed on, so its bytes would count as the run's, and only a
+;;; value's count with the whitespace before it anyway.  So a run past its
+;;; limit and then a parse error is answered 400 at every split, for the
+;;; run's reason or the parser's by the split: the PR after this one places
+;;; what an error cut off (the ledger).
 ;;;
 ;;; WHAT HAPPENS NEVER DEPENDS ON HOW THE BYTES WERE SPLIT INTO READS (design
 ;;; §8.1's second property).  The feed that completes a head can go on into
@@ -1143,9 +1151,7 @@
       ((on-url-data)
        (case (conn-phase s)
          ((head)
-          (let* ((spaces (close-run! s 'after-method (position s from)))
-                 (reason (run-refusal 'after-method spaces 0)))
-            (when spaces (open-run! s 'target (position s from)))
+          (let ((reason (close-judged! s 'after-method (position s from))))
             (if reason
                 (refuse s reason)
                 (let ((h (conn-head s)))
@@ -1157,14 +1163,14 @@
       ((on-url-complete)
        (case (conn-phase s)
          ((head)
-          (let* ((h (conn-head s))
-                 (end (and (eq? (conn-run s) 'target) (+ (conn-mark s) (head-size h)))))
+          (let ((h (conn-head s)))
             (head-target-set! h (take-piece! h))
-            ;; One space past the target's end: the spaces up to the protocol
-            ;; follow.  Two, its line end: a request line with no version.
-            (if (and end (= at (+ end 1)))
-                (open-run! s 'after-target at)
-                (conn-run-set! s #f)))
+            ;; The spaces after the target's one, up to the protocol's first
+            ;; bytes.  The parser ends a target at a space, a CRLF or a bare
+            ;; LF, and does not say which, so the run opens at each; a request
+            ;; line with no version lets it go at its first field or the
+            ;; head's end.
+            (open-run! s 'after-target at))
           (continue s))
          (else (continue s))))
       ((on-protocol-data)
@@ -1175,8 +1181,9 @@
          (else (continue s))))
       ((on-header-field-data)
        (case (conn-phase s)
-         ((head) (header-bytes s bv from to limits-max-header-field-bytes
-                               'header-field-too-large))
+         ((head)
+          (when (eq? (conn-run s) 'after-target) (conn-run-set! s #f))
+          (header-bytes s bv from to limits-max-header-field-bytes 'header-field-too-large))
          ((body) (trailer-bytes s from to limits-max-header-field-bytes
                                 'header-field-too-large))
          (else (continue s))))
@@ -1195,10 +1202,10 @@
       ((on-header-value-data)
        (case (conn-phase s)
          ((head)
-          (whitespace-counted! s from)
+          (whitespace-counted! s from to)
           (header-bytes s bv from to limits-max-header-value-bytes 'header-value-too-large))
          ((body)
-          (whitespace-counted! s from)
+          (whitespace-counted! s from to)
           (trailer-bytes s from to limits-max-header-value-bytes 'header-value-too-large))
          (else (continue s))))
       ((on-header-value-complete)
@@ -1220,6 +1227,13 @@
           (let ((reason (and (eq? name 'on-chunk-extension-name-data)
                              (close-judged! s 'digits (- (position s from) 1)))))
             (if reason (refuse s reason) (extension-bytes s from to))))
+         (else (continue s))))
+      ;; An extension's name stands for the `;` before it, and its value for
+      ;; the `=`: each counts a byte as it ends, so by its line's end every
+      ;; byte of a chunk's extensions has counted, an empty one's too.
+      ((on-chunk-extension-name-complete on-chunk-extension-value-complete)
+       (case (conn-phase s)
+         ((body) (extension-bytes s 0 1))
          (else (continue s))))
       ((on-chunk-header)
        (case (conn-phase s)
@@ -1353,14 +1367,27 @@
   ;; `n` more bytes of the name or value being read, whose size the head
   ;; holds already, added to the section's: the message is refused once the
   ;; name or value, a value with the whitespace before it, or the section,
-  ;; is past its limit.
+  ;; is past its limit, for the limit its bytes passed first (`first-past`).
   (define (field-bytes s n piece-limit piece-reason)
     (let ((h (conn-head s)) (limits (conn-limits s)))
       (head-total-set! h (fx+ (head-total h) n))
-      (cond ((fx>? (fx+ (head-size h) (head-pad h)) (piece-limit limits)) (refuse s piece-reason))
-            ((fx>? (head-total h) (limits-max-header-bytes limits))
-             (refuse s 'headers-too-large))
-            (else (continue s)))))
+      (let ((reason (first-past (fx+ (head-size h) (head-pad h)) (piece-limit limits) piece-reason
+                                (head-total h) (limits-max-header-bytes limits))))
+        (if reason (refuse s reason) (continue s)))))
+
+  ;; first-past : Integer Nat Symbol Integer Nat -> (U #f Symbol)
+  ;; Bytes just counted to a piece, a name, or a value with the whitespace
+  ;; before it, and to the section, the two counts now `piece` and `total`:
+  ;; the reason for the limit they passed first, if they passed one.  Each
+  ;; of the bytes added one to both counts, so the count further past its
+  ;; limit passed it at an earlier byte; past both at the same byte, the
+  ;; piece's.  The reason is the first byte's to pass a limit, whatever the
+  ;; split into reads.
+  (define (first-past piece piece-max piece-reason total total-max)
+    (let ((over (- piece piece-max)) (section-over (- total total-max)))
+      (cond ((and (> over 0) (>= over section-over)) piece-reason)
+            ((> section-over 0) 'headers-too-large)
+            (else #f))))
 
   ;; field-counted : ConnState -> (values ConnState (Listof Action))
   ;; One more field name complete, a head's or a trailer's: counted, and the
@@ -1414,12 +1441,13 @@
   ;; most bytes the run may have; the reason it is refused for past them,
   ;; answered 400; the phase it is read in; and how many bytes past them a
   ;; read may end without a refusal, ones that may end the run and that the
-  ;; parser reads with no callback: a chunk size's `;` or CR.  The whitespace before a value is
+  ;; parser reads with no callback: a chunk size's `;` or CR, a request
+  ;; line's CR where it has no version.  The whitespace before a value is
   ;; held to the value's and the section's limits (`whitespace-past-limit`).
   (define run-limits
     `((lines ,max-empty-line-bytes empty-lines idle 0)
       (after-method 1 request-line-spaces head 0)
-      (after-target 0 request-line-spaces head 0)
+      (after-target 0 request-line-spaces head 1)
       (digits ,max-size-digits chunk-size-too-long body 1)))
 
   ;; run-refusal : Symbol (U #f Integer) Nat -> (U #f Symbol)
@@ -1434,9 +1462,7 @@
   ;; parser's position `at`: `lines`, the empty lines before a request line;
   ;; `after-method` and `after-target`, the spaces after the method and
   ;; after the target's one; `whitespace`, before a field's value; `digits`,
-  ;; a chunk size's.  And `target`, the target itself, which the parser does
-  ;; hand on, counted by its own limit: open only so that its end is known,
-  ;; and never judged.  One is open at a time, and opening one lets the last
+  ;; a chunk size's.  One is open at a time, and opening one lets the last
   ;; go.
   (define (open-run! s kind at)
     (conn-mark-set! s at)
@@ -1461,17 +1487,27 @@
   ;; bounds index the delivery, and the parser read to its start before it.
   (define (position s i) (+ (conn-base s) i))
 
-  ;; whitespace-counted! : ConnState Nat -> Void
-  ;; A value's first bytes, at `from` in the delivery: the whitespace since
-  ;; its name's colon, the run they end, counted with the value, as its
-  ;; `pad`, and with the section.  An empty value is handed over after its
-  ;; line end, so its whitespace counts that too.
-  (define (whitespace-counted! s from)
+  ;; whitespace-counted! : ConnState Nat Nat -> Void
+  ;; A value's first bytes, bv[from, to) of the delivery: the whitespace
+  ;; since its name's colon, the run they end, counted with the value, as
+  ;; its `pad`, and with the section.  An empty value is handed over after
+  ;; its line end, which the run holds too and is not counted.
+  (define (whitespace-counted! s from to)
     (let ((n (close-run! s 'whitespace (position s from))))
       (when n
-        (let ((h (conn-head s)))
-          (head-pad-set! h n)
-          (head-total-set! h (+ (head-total h) n))))))
+        (let ((h (conn-head s)) (pad (if (fx=? from to) (- n line-end-bytes) n)))
+          (head-pad-set! h pad)
+          (head-total-set! h (+ (head-total h) pad))))))
+
+  ;; line-end-bytes : Nat
+  ;; An empty value's line end: CRLF, the only one the strict parser takes
+  ;; (llhttp's header_value_discard_ws and its _almost_done), which hands
+  ;; the value over at the byte after it.  At a read's end the whitespace
+  ;; run may hold as much of it, so it is judged on its length less this.
+  ;; Where the parser ends an empty value at a byte it then refuses, the
+  ;; whitespace is counted less this too, below 0 if it is shorter, and the
+  ;; parser's error, which comes next, answers it with 400.
+  (define line-end-bytes 2)
 
   ;; begin-head! : ConnState -> Void
   ;; idle -> head, for a request line's first byte: a fresh head and body,
@@ -1486,30 +1522,29 @@
   ;; run-past-limit : ConnState Boolean -> (U #f Symbol)
   ;; At a read's end, the reason to refuse the run still open, if it is
   ;; past its limit in the phase it is read in: its bytes run from its start
-  ;; to the parser's position, less the ones a read may end on (`run-limits`).
-  ;; The target's own run is never judged.  On the parser's error only the
-  ;; whitespace is judged: a span the error cut off is never handed on, so
-  ;; its bytes would count as the run's, and only a value's count with the
-  ;; whitespace before it anyway.
+  ;; to the parser's position, less the ones a read may end on (`run-limits`;
+  ;; the whitespace, an empty value's line end).  On the parser's error only
+  ;; the whitespace is judged: a span the error cut off is never handed on,
+  ;; so its bytes would count as the run's, and only a value's count with
+  ;; the whitespace before it anyway.
   (define (run-past-limit s error?)
     (let ((run (conn-run s)) (phase (conn-phase s)))
       (and run
            (let ((n (- (conn-parsed s) (conn-mark s))))
              (if (eq? run 'whitespace)
-                 (and (memq phase '(head body)) (whitespace-past-limit s n))
+                 (and (memq phase '(head body)) (whitespace-past-limit s (- n line-end-bytes)))
                  (let ((limit (assq run run-limits)))
-                   (and limit (not error?) (eq? phase (cadddr limit))
+                   (and (not error?) (eq? phase (cadddr limit))
                         (run-refusal run n (car (cddddr limit))))))))))
 
   ;; whitespace-past-limit : ConnState Integer -> (U #f Symbol)
   ;; `n` bytes of whitespace before a value, past the value's limit or,
-  ;; with the section's bytes so far, the section's: its reason.
+  ;; with the section's bytes so far, the section's: the reason for the one
+  ;; they passed first (`first-past`).
   (define (whitespace-past-limit s n)
     (let ((limits (conn-limits s)))
-      (cond ((> n (limits-max-header-value-bytes limits)) 'header-value-too-large)
-            ((> (+ (head-total (conn-head s)) n) (limits-max-header-bytes limits))
-             'headers-too-large)
-            (else #f))))
+      (first-past n (limits-max-header-value-bytes limits) 'header-value-too-large
+                  (+ (head-total (conn-head s)) n) (limits-max-header-bytes limits))))
 
   ;; refuse : ConnState Symbol -> (values ConnState (Listof Action))
   ;; A limit tripped inside a parser callback (design §6.3): tell the parser to

@@ -1249,6 +1249,12 @@ parts, more than two empty lines' 4 bytes, and a chunk size of more than 16 hex 
 each 400 (decision 0005's amendment of this day). Two empty lines, not the one first
 decided: llhttp's own fixture carries two after a POST's body.
 
+*Noted 2026-09-30, later (the padding PR's review):* a /code-review max found 15, and the
+owner asked for all fixed, seven choices by form (decision 0005's second amendment of
+this day). One goes to the next PR, before the M6 exit: a run past its limit, then a parse
+error, gets a reason that depends on the split, as main's own limits do when an error
+cuts off their span. Both need to know where a span the error cut off began.
+
 **M6 exit:** the brief's. 16 MiB each way against a slow peer, with memory bounded,
 read as the M4 exit read a connection: the server's heap, the client in a process of
 its own. libhtp's Expect and early-response files pass. `docs/handlers.org` gains
