@@ -373,6 +373,23 @@ Four facts about them that shape the core:
    `on-message-begin` and never before the first. It is the core's signal to roll the
    request accumulator, not a clock event.
 
+> *Amended 2026-09-30 (the padding PR), on the owner's word:* a fifth fact. **The parser
+> reads bytes it hands on in no span**: the empty lines before a request line, the spaces
+> between its parts, the spaces and tabs before a field's value, and a chunk size's
+> digits. A megabyte of each passed every limit, answered 200. Inside every callback,
+> byte-machine's runtime commits the parser's position, the bytes it has read
+> (`parser-stream-offset`), and at every delivery size an event sees the same one (45 of
+> 45 sizes for a padded head, 95 of 95 for padded chunks). So every event callback now
+> carries it: `(parser-event name at)`, and `on-headers-complete`'s payload gains it
+> after `upgrade`. A span's position is its delivery's: the core counts the bytes each
+> read's result took and knows where each delivery it feeds begins. A run is measured
+> from where one piece ends to where the next begins, judged at that callback and, while
+> it runs, at every read's end; the core's refusals are two empty lines' 4 bytes, one
+> space, and 16 hex digits, each 400, and the whitespace counts with its value, against
+> the value's limit and the section's (decision 0005's amendment of this day). At the
+> parser's error only the whitespace is judged, since a span the error cut off is never
+> handed on.
+
 ### 4.3 Connection states
 
 **Introduced here** — decision 0002 fixes the event and action vocabulary but names
@@ -1099,11 +1116,11 @@ Every status the server can originate, and who decides it:
 
 | Status | Origin | Closes? |
 |---|---|---|
-| `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26) | yes |
+| `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26); more than two empty lines before a request line, more than one space between its parts, a chunk size of more than 16 hex digits (policy; the padding PR, since 2026-09-30) | yes |
 | `408` | header or body-inactivity deadline (policy) | yes |
 | `413` | a body past `max-body-bytes`, or past a reader's own cap, `read-whole-body`'s 1 MiB by default (policy; decision 0013, since 2026-09-28) | yes |
 | `414` | request-target over `max-target-bytes` (policy) | yes |
-| `431` | header bytes or header count (policy) | yes |
+| `431` | header bytes or header count (policy); a value's bytes count the whitespace before it (the padding PR, since 2026-09-30) | yes |
 | `500` | handler raise | yes |
 | `501` | a transfer coding before a final `chunked`, which the server does not implement (RFC 9112 §6.1; since 2026-09-26) | yes |
 | `505` | the HTTP/2 preface (decision 0006 item 2; `Upgrade: h2c` only until its 2026-09-25 amendment) | yes |

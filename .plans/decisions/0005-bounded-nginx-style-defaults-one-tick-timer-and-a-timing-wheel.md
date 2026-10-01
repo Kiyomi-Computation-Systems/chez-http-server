@@ -357,3 +357,43 @@ these bytes.
   owner's word the same day gives them their own PR, after M6.4, its design by form on
   measurements. Go refuses a chunk size of more than 16 hex digits, and a size line over
   4 KiB; nginx a header line over 8 KiB.
+
+## Amendment (2026-09-30) — what the parser reads and hands no span of is bounded (the padding PR)
+
+Decided on the owner's word, by form (2026-09-30), on measurements of main (Darwin arm64,
+the fake shell, the default limits, 16 KiB reads). The parser reads four runs of bytes it
+hands the core in no span, and a megabyte of each was answered 200: spaces or tabs before
+a field's value, in a head or a trailer section; zeros before a chunk size; spaces past
+the one between the request line's parts; and empty lines before a request line. The
+last two were found at that step. Like M6.4's, the bound is on the work a client can make
+the server do: none of these bytes is kept, and none re-arms a deadline.
+
+- **The whitespace before a field's value counts with the value**, against
+  `max-header-value-bytes` and `max-header-bytes`, `431` past either, in a head and in a
+  trailer section, as the whitespace after it already did, inside the value's span. So a
+  field at an exact limit moves by the space after its colon. Every server researched but
+  Node counts it, in a head or a line budget. Weighed: every byte of each line, the peers'
+  way, which would move the limits by about 4 bytes a field.
+- **A chunk size has at most 16 hex digits, leading zeros included**, fixed, not a
+  setting; more is `400`, logged as `chunk-size-too-long`. Go and h2o hold it there;
+  h11 holds 20, Racket a size line to 8 KiB, and nginx, freenginx, hyper, Node and Warp
+  only overflow. Weighed: 20; Go's allowance for bytes that are not data.
+- **One space between the request line's parts**, as RFC 9112 §3's grammar has it;
+  more is `400`, logged as `request-line-spaces`. Go, hyper, h11 and Warp answer 400;
+  nginx, h2o and Racket count the spaces in their request line. Weighed: counted with the
+  target, `414`.
+- **Two empty lines, 4 bytes, before a request line**, at a connection's start or between
+  requests; more is `400`, logged as `empty-lines`. RFC 9112 §2.2 asks a server to ignore
+  at least one; freenginx (since 2024) and h2o skip one, Go 4 bytes after a POST, hyper
+  any number within its read buffer; nginx and Node any number, bounded only by a timer.
+  Decided first as one, then, on the owner's word by a second form, two: llhttp's own
+  fixture "CRLF between requests, implicit keep-alive" has a POST's body followed by two,
+  which one refused, and the trace lane holds the core to never changing what the parser
+  does. Weighed: two after a body only; one, the fixture a recorded exception.
+
+The core measures them by the parser's position, which every event callback now carries
+(design §4.2's amendment of this day): from where one piece ends to where the next begins,
+at the callback that ends a run and, while it runs, at every read's end, so a run is
+refused within the read that passes its limit, whatever the split. At the parser's error
+only the whitespace is judged: a span the error cut off is never handed on, so its bytes
+would count as the run's.

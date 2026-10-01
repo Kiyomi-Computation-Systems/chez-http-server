@@ -1239,6 +1239,16 @@ choices the owner made by form that day, and one found.
   hands the core no span of passes every limit, the spaces before a field's value and a
   chunk size's leading zeros, a megabyte of either accepted.
 
+*Noted 2026-09-30 (the padding PR):* built, its design decided by form on measurements of
+main and eight servers' source. Two more runs were found: spaces past the one between the
+request line's parts, and empty lines before a request line. Each event callback now
+carries the parser's position, and the core measures every run from where one piece ends
+to where the next begins. The whitespace before a value counts with it, against the
+value's limit and the section's, 431; more than one space between the request line's
+parts, more than two empty lines' 4 bytes, and a chunk size of more than 16 hex digits are
+each 400 (decision 0005's amendment of this day). Two empty lines, not the one first
+decided: llhttp's own fixture carries two after a POST's body.
+
 **M6 exit:** the brief's. 16 MiB each way against a slow peer, with memory bounded,
 read as the M4 exit read a connection: the server's heap, the client in a process of
 its own. libhtp's Expect and early-response files pass. `docs/handlers.org` gains

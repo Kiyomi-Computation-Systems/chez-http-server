@@ -37,8 +37,9 @@
 ;;; its seven for what a chunked body carries beside its data, its trailer
 ;;; fields held to the four header limits and its chunk extensions to 16 KiB
 ;;; (both decided on the owner's word, 2026-09-29).  And the padding PR's
-;;; eight for what the parser reads and hands no span of, each event at the
-;;; parser's position: the whitespace before a field's value and a chunk
+;;; twelve for what the parser reads and hands no span of, each event at the
+;;; parser's position: the empty lines before a request line, the spaces
+;;; between its parts, the whitespace before a field's value and a chunk
 ;;; size's digits, judged where they end and at a read's end (decided on the
 ;;; owner's word, 2026-09-30).
 ;;;
@@ -1512,10 +1513,13 @@
 
 ;; ---------------------------------------------------------------------------
 ;; The padding PR: what the parser reads and hands the core no span of is
-;; held to limits (decided on the owner's word, 2026-09-30).  Two runs of
-;; it: the spaces and tabs before a field's value, counted with the value
-;; against its limit and the section's; and a chunk size's digits, 16 at
-;; most, zeros included.  Every event carries the parser's position, and a run is
+;; held to limits (decided on the owner's word, 2026-09-30).  Four runs of
+;; it: empty lines before a request line, two skipped (RFC 9112 §2.2 asks
+;; for one; llhttp's own fixture carries two after a POST's body); the
+;; spaces between the request line's parts, one each (§3); the spaces and
+;; tabs before a field's value, counted with the value against its limit
+;; and the section's; and a chunk size's digits, 16 at most, zeros
+;; included.  Every event carries the parser's position, and a run is
 ;; measured from where one piece ends to where the next begins: at the
 ;; callback that ends it, and at a read's end while it runs, where only
 ;; the whitespace is judged on the parser's error, since a span the error
@@ -1528,6 +1532,21 @@
   (for-each (lambda (ev) (conn-step s ev)) events)
   s)
 
+;; served : Nat -> ConnState
+;; A GET that ended at the parser's position `end` and was answered: idle
+;; again, its response written.
+(define (served end)
+  (let ((s (after (state 'body 'deadline 'body 'request req)
+                  `(parser-event on-message-complete ,end)
+                  `(parser-result paused ,end ,end #f #f))))
+    (let-values (((s actions) (conn-step s `(handler-responded ,resp))))
+      (after s `(write-completed ,(nbytes (assq 'write actions)))))))
+
+;; The request lines the rows read, one space and two between their parts.
+(define spaced (b "GET / HTTP/1.1"))
+(define method-spaced (b "GET  / HTTP/1.1"))
+(define target-spaced (b "GET /  HTTP/1.1"))
+
 ;; reading-chunks : -> ConnState
 ;; A chunked POST read by a streaming reader, which has met its first
 ;; chunk: the chunk ends at 60, where the next size line begins.
@@ -1539,6 +1558,36 @@
 
 (define (padding-rows)
   (list
+   (row 'G1 "idle, on-message-begin after two empty lines or fewer -> head: continue, disarm, arm header"
+        (i (state 'idle 'deadline 'idle) '(parser-event on-message-begin 4)
+           '(head #f ((reply-parser continue) (disarm-deadline) (arm-deadline header))))
+        (i (served 27) '(parser-event on-message-begin 31)
+           '(head #f ((reply-parser continue) (disarm-deadline) (arm-deadline header)))))
+
+   (row 'G2 "idle, on-message-begin after more than two empty lines' 4 bytes -> head: fail empty-lines, disarm, arm header"
+        (i (state 'idle 'deadline 'idle) '(parser-event on-message-begin 5)
+           '(head #f ((reply-parser (fail empty-lines)) (disarm-deadline) (arm-deadline header))))
+        (i (served 27) '(parser-event on-message-begin 32)
+           '(head #f ((reply-parser (fail empty-lines)) (disarm-deadline) (arm-deadline header)))))
+
+   (row 'G3 "head, a target or a protocol one space past the part before it -> head: continue"
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
+           `(parser-event on-url-data ,spaced 4 5)
+           '(head #f ((reply-parser continue))))
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3)
+                  `(parser-event on-url-data ,spaced 4 5) '(parser-event on-url-complete 6))
+           `(parser-event on-protocol-data ,spaced 6 10)
+           '(head #f ((reply-parser continue)))))
+
+   (row 'G4 "head, a target or a protocol more than one space past the part before it -> head: fail request-line-spaces"
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
+           `(parser-event on-url-data ,method-spaced 5 6)
+           '(head #f ((reply-parser (fail request-line-spaces)))))
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3)
+                  `(parser-event on-url-data ,target-spaced 4 5) '(parser-event on-url-complete 6))
+           `(parser-event on-protocol-data ,target-spaced 7 11)
+           '(head #f ((reply-parser (fail request-line-spaces))))))
+
    ;; Under `tight`: a value of 4 bytes, 10 in a section.  The head holds
    ;; `Host: x`, 6 bytes with its space; a field `Ab` ends its name at 2,
    ;; its colon read by 3.
@@ -1593,6 +1642,11 @@
    ;; A read's end within the run, within its limit: nothing; the reads here
    ;; are all the connection's, from its first byte.
    (row 'G9 "a read's end inside a run within its limit -> the same: nothing"
+        (i (state 'idle 'deadline 'idle) '(parser-result need-input 4 4 #f #f)
+           '(idle #f ()))
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
+           '(parser-result need-input 4 4 #f #f)
+           '(head #f ()))
         (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result need-input 5 5 #f #f)
@@ -1600,7 +1654,16 @@
         (i (reading-chunks) '(parser-result need-input 28 28 #f #f)
            '(body #f ())))
 
-   (row 'G10 "head or body, a read's end inside a run past its limit -> responding: the run's status, read-stop, close-after"
+   (row 'G10 "idle, head or body, a read's end inside a run past its limit -> responding: the run's status, read-stop, close-after"
+        (i (state 'idle 'deadline 'idle) '(parser-result need-input 5 5 #f #f)
+           `(responding empty-lines (,status-400 (read-stop) (arm-deadline write))))
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
+           '(parser-result need-input 5 5 #f #f)
+           `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write))))
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3)
+                  `(parser-event on-url-data ,spaced 4 5) '(parser-event on-url-complete 6))
+           '(parser-result need-input 7 7 #f #f)
+           `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write))))
         (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result need-input 7 7 #f #f)
@@ -1621,6 +1684,9 @@
    ;; stands; the whitespace's is judged, since a value it runs into counts
    ;; with it.
    (row 'G12 "head or body, the parser's error at a read's end inside a run -> the parser's status, the whitespace's past its limits"
+        (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
+           '(parser-result error 9 9 invalid-url #f)
+           `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
         (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result error 9 9 invalid-header-token #f)
@@ -1824,7 +1890,7 @@
       (test-eqv "M6.4: all 7 Expect rows have a test" 7 expects)
       (test-eqv "M6.4: the 100's accounting row has a test" 1 continues)
       (test-eqv "M6.4: all 7 trailer and extension rows have a test" 7 framings)
-      (test-eqv "the padding PR: all 8 padding rows have a test" 8 paddings))
+      (test-eqv "the padding PR: all 12 padding rows have a test" 12 paddings))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it: `notify-producer` since M6.3.

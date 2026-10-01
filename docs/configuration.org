@@ -69,6 +69,9 @@ to the same four header limits, counted apart from the headers: over one,
 extensions may come to 16 KiB in all, a fixed limit: more gets ~413~. A chunk
 size may have 16 hex digits, leading zeros included: more gets ~400~.
 
+Before a request line the server skips up to two empty lines, and between its
+parts it takes one space each: more of either gets ~400~.
+
 When the server closes a connection after a response, it keeps reading, and
 throwing away, what the client still sends, until the client closes or
 ~CHEZ_HTTP_LINGER_TIMEOUT~ passes (see [[file:connections.org][connections.org]]).

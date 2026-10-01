@@ -42,6 +42,8 @@
       (invalid-target . 400)                 ; not a form RFC 9112 §3.2 allows
       (invalid-host . 400)                   ; RFC 9112 §3.2's Host rules
       (faulty-framing . 400)                 ; Transfer-Encoding below HTTP/1.1 (RFC 9112 §6.1)
+      (empty-lines . 400)                    ; past two empty lines before a request line (§2.2)
+      (request-line-spaces . 400)            ; past a space between request-line parts (§3)
       (chunk-size-too-long . 400)            ; a chunk size past 16 hex digits (§7.1)
       (header-timeout . 408)
       (body-timeout . 408)                   ; a body stalled past its deadline (M5.2)

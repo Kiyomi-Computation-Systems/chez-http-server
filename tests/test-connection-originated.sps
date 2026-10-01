@@ -39,9 +39,10 @@
 ;;; extensions past 16 KiB together, and a trailer field past the header
 ;;; limits, answered 431 as a head's is.  Both rows' requests arrive in the
 ;;; head's delivery, so what they meet waits for the handler's answer, and
-;;; reading stops where it is met.  The padding PR adds a 400 for what the
-;;; parser reads and hands no span of: a chunk size of more than 16 digits,
-;;; met in the head's delivery too.
+;;; reading stops where it is met.  The padding PR adds three 400s, for what
+;;; the parser reads and hands no span of: more than two empty lines before
+;;; a request line, more than one space between its parts, and a chunk size
+;;; of more than 16 digits, the last met in the head's delivery too.
 ;;;
 ;;; Oracles: design §6.5's table, and decision 0009 for the 301; RFC 9110
 ;;; §15's reason phrases, and RFC 6585 §5's for 431; decision 0010 item 6;
@@ -184,8 +185,15 @@
    (row "400: a parser error, a Transfer-Encoding with no chunked"
         answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: pigeons\r\n\r\n" get))
         (refused 400 "Bad Request" 'parser-error (at epoch)))
-   ;; What the parser reads and hands no span of (the padding PR): a chunk
-   ;; size of 17 digits, zeros included.
+   ;; What the parser reads and hands no span of (the padding PR): three
+   ;; empty lines before a request line, two spaces after its method, and a
+   ;; chunk size of 17 digits, zeros included.
+   (row "400: three empty lines before a request line"
+        answers (sent (string-append "\r\n\r\n\r\n" get get))
+        (refused 400 "Bad Request" 'empty-lines (at epoch)))
+   (row "400: two spaces after the method"
+        answers (sent (string-append "GET  / HTTP/1.1\r\nHost: x\r\n\r\n" get))
+        (refused 400 "Bad Request" 'request-line-spaces (at epoch)))
    (row "400: a chunk size of 17 digits"
         reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
                                    (make-string 16 #\0) "5\r\nhello\r\n0\r\n\r\n" get))

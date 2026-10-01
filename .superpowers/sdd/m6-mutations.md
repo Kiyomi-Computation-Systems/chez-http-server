@@ -888,3 +888,95 @@ suites, two at a time, each reddening only the checks it was cut for:
 | M6.4-R2 | `connection.sls` | the declared length checked after the 100, with the body met | connection-expect 1 — the declared length past the cap; connection-table 1 — E7 |
 
 Forty-two mutants in all; none survives.
+
+## The padding PR (fix/padding-limits, 2026-09-30)
+
+What the parser reads and hands the core no span of is held to limits: the whitespace
+before a value counts with it, 431; more than two empty lines before a request line,
+more than one space between its parts, and a chunk size of more than 16 hex digits, 400.
+Every event callback carries the parser's position, and the core measures each run by it.
+
+Red before green:
+- The entry suite, on the vocabulary step against main's core: an event callback without
+  the parser's position, and on-headers-complete without it, were accepted, two failures.
+  A span callback given a position in place of its span was refused there already (an
+  arity error), and is watched red by P-EA.
+- The table's padding rows on the vocabulary step, whose core reads no position: sixteen
+  instances failed, every refusal. The rows within a limit passed there, and are watched
+  red by the mutants that tighten a limit (P-G, P-H2, P-I2, P-OC, P-S, P-S2, P-S3, P-T,
+  P-U).
+- The flows suite against main's core and adapter: twelve of fifteen failed, the work a
+  run costs among them. The three main serves too are watched red by mutants.
+
+The first run, thirty-five mutants on the tree before its last changes, left two
+survivors, and both changed the tree:
+- **P-C**, a delivery's base never set: the fake shell hands every read as a slice of one
+  bytevector indexed from the connection's first byte, so a base of 0 was right by
+  accident. The flows now hand each read in a bytevector of its own, at index 3, as the
+  shells hand a read over.
+- **P-D**, the pending rest's base not set anew: equivalent. The rest a pause keeps is its
+  delivery's own bytes, from where the parser stopped, so its base is the delivery's; the
+  line was removed, and `feeding!` says why.
+
+Two more were weak, reddening only the table: P-AH, the empty lines judged at no read's
+end, and P-AE, the section judged before the value there. The flows gained the work a run
+costs, a megabyte of each fed to the parser one 16 KiB read, which P-AH now reddens; P-AE
+changes only which of two 431s a read's end names, and its row is its check.
+
+Forty-four mutants on the finished tree (1,388 expected passes) against all forty-three
+suites, four at a time: thirty-six, then eight for the checks the thirty-six left unred,
+the rows within a limit and the entry's shapes. Cutting the three layers found one more
+gap: nothing checked that a chunk size's digits are left to the parser's error, only the
+request line's, so G12 gained that instance, and P-Q2 reddens it (against the table and
+the flows). None survives, and every check this PR added or changed is reddened by at
+least one.
+
+| Mutant | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|
+| P-A | `adapter` | the adapter passes 0 for an event's position | clients 9, connection-allocation 5, connection-body 29, connection-deadlines 5, connection-expect 16, connection-head 50, connection-linger 9, connection-originated 22, connection-padding 12, connection-response 24, connection-retention 8, connection-stream 16, contract 1, libhtp-lane 14, message-loop 13, outcome-lane 3, ratchet 1, serve 3, shell 54, trace-lane 2, view 13 |
+| P-B | `adapter` | the adapter passes 0 for on-headers-complete's position | connection-body 12, connection-expect 8, connection-head 1, connection-originated 2, connection-padding 5, libhtp-lane 3, outcome-lane 1, ratchet 1, shell 1, trace-lane 1 |
+| P-C | `connection` | a delivery's base is not set as it is fed | connection-padding 12 |
+| P-C2 | `connection` | a delivery's base ignores where its bytes start | connection-body 26, connection-expect 15, connection-head 48, connection-padding 11, message-loop 10, outcome-lane 4, ratchet 1 |
+| P-E | `connection` | a read's bytes are not counted | connection-expect 2, connection-head 2, connection-padding 9, connection-table 7 |
+| P-F | `connection` | five bytes of empty lines pass | connection-padding 1, connection-table 3 |
+| P-G | `connection` | three bytes of empty lines are the most | connection-padding 1, connection-table 3, trace-lane 1 |
+| P-H | `connection` | two spaces after the method pass at the target | connection-originated 1, connection-padding 1, connection-table 1 |
+| P-H2 | `connection` | one space after the method is refused at the target | clients 9, connection-allocation 5, connection-body 29, connection-deadlines 5, connection-entry 6, connection-expect 16, connection-head 50, connection-linger 9, connection-originated 21, connection-padding 11, connection-response 24, connection-retention 8, connection-stream 16, connection-table 120, contract 1, libhtp-lane 14, message-loop 13, outcome-lane 3, ratchet 1, serve 3, shell 54, trace-lane 2, view 13 |
+| P-I | `connection` | a space after the target passes at the protocol | connection-padding 1, connection-table 1 |
+| P-I2 | `connection` | the protocol right after the target's space is refused | clients 9, connection-allocation 5, connection-body 29, connection-deadlines 5, connection-expect 16, connection-head 49, connection-linger 9, connection-originated 20, connection-padding 11, connection-response 24, connection-retention 8, connection-stream 16, connection-table 4, contract 1, libhtp-lane 14, message-loop 13, outcome-lane 3, ratchet 1, serve 2, shell 54, trace-lane 2, view 13 |
+| P-J | `connection` | the run after the target opens at a line end too | outcome-lane 2, ratchet 1 |
+| P-K | `connection` | the target's run is not opened, so its end is unknown | connection-padding 1, connection-table 2 |
+| P-L | `connection` | the whitespace is not added to the section | connection-expect 1, connection-head 1, connection-padding 1, connection-table 1 |
+| P-M | `connection` | the whitespace is not kept with the value | connection-expect 1, connection-head 1, connection-padding 4, connection-table 1 |
+| P-N | `connection` | a value's limit ignores its whitespace | connection-expect 1, connection-head 1, connection-padding 4, connection-table 1 |
+| P-O | `connection` | a head's value-complete keeps its whitespace for the next name | connection-expect 4, connection-table 2 |
+| P-O2 | `connection` | a trailer's value-complete keeps its whitespace for the next name | connection-table 1 |
+| P-P | `connection` | empty lines refused at a read's end are answered from idle | connection-table 1 |
+| P-Q | `connection` | the request line's and the digits' runs are judged at the parser's error too | connection-table 1 |
+| P-R | `connection` | the whitespace is not judged at the parser's error | connection-table 1 |
+| P-S | `connection` | no slack for the byte that ends a size's digits at a read's end | connection-padding 1, connection-table 1 |
+| P-S2 | `connection` | one space after the method is past its limit at a read's end | connection-body 26, connection-expect 15, connection-head 48, connection-padding 9, connection-table 1, message-loop 9, outcome-lane 4, ratchet 1 |
+| P-S3 | `connection` | whitespace bringing the section to its limit is past it at a read's end | connection-table 1 |
+| P-T | `connection` | on-chunk-header counts the size line's LF as a digit | connection-padding 1, connection-table 1 |
+| P-U | `connection` | an extension's first byte counts its `;` as a digit | connection-padding 1, connection-table 1 |
+| P-V | `connection` | on-chunk-complete opens no size line | connection-padding 3, connection-table 4 |
+| P-W | `connection` | a chunked head opens no size line | connection-originated 1, connection-padding 1, connection-table 1 |
+| P-X | `connection` | on-message-complete opens no empty-lines run | connection-padding 1, connection-table 1 |
+| P-Y | `connection` | on-message-begin judges no empty lines | connection-originated 1, connection-padding 2, connection-table 2 |
+| P-Z | `connection` | the empty-lines refusal at on-message-begin keeps no reason | connection-originated 1, connection-padding 2 |
+| P-AA | `connection` | a run is never closed | connection-body 26, connection-deadlines 1, connection-expect 15, connection-head 47, connection-originated 2, connection-padding 9, connection-table 1, libhtp-lane 1, message-loop 9, outcome-lane 4, ratchet 1, shell 2, trace-lane 2 |
+| P-AB | `connection` | a trailer opens no whitespace run | connection-expect 2, connection-padding 3, connection-table 1 |
+| P-AC | `connection` | a head's field opens no whitespace run | connection-head 2, connection-padding 5, connection-table 3 |
+| P-AD | `connection` | the method opens no run | connection-originated 1, connection-padding 3, connection-table 4 |
+| P-AE | `connection` | the section is judged before the value at a read's end | connection-table 2 |
+| P-AF | `decisions` | a chunk size's digits past 16 are refused 413 | connection-originated 1, connection-padding 2, connection-table 1 |
+| P-AG | `connection` | 17 digits pass at the callback | connection-originated 1, connection-padding 1, connection-table 4 |
+| P-AH | `connection` | a read's end in idle judges no empty lines | connection-padding 1, connection-table 1 |
+| P-AI | `connection` | no run is judged at a read's end | connection-padding 1, connection-table 7 |
+| P-EA | `connection` | an event entry takes a span callback's name | connection-entry 4 |
+| P-EB | `connection` | an event callback enters without its position | connection-entry 1 |
+| P-EC | `connection` | on-headers-complete enters without its position | connection-entry 1 |
+| P-OC | `connection` | the colon counts with the whitespace | connection-expect 4, connection-head 2, connection-padding 4, connection-table 7 |
+| P-Q2 | `connection` | a chunk size's digits judged at the parser's error | connection-table 1 (G12's digits instance) |
+
+Forty-five mutants for this PR; none survives.

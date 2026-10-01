@@ -57,7 +57,7 @@ request cannot be read safely.
 | Answer                                  | When                                                          |
 |-----------------------------------------+---------------------------------------------------------------|
 | ~301 Moved Permanently~                 | brackets or pipes in a GET or HEAD target ([[file:request-targets.org][request-targets.org]]) |
-| ~400 Bad Request~                       | a request, target or ~Host~ the server cannot accept, or a chunk size of more than 16 hex digits |
+| ~400 Bad Request~                       | a request, target or ~Host~ the server cannot accept, more than two empty lines before a request line or one space between its parts, or a chunk size of more than 16 hex digits |
 | ~408 Request Timeout~                   | the headers took longer than ~CHEZ_HTTP_READ_HEADER_TIMEOUT~, or the body paused longer than ~CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT~ |
 | ~413 Content Too Large~                 | a body over ~CHEZ_HTTP_MAX_BODY_BYTES~, or over a ~read-whole-body~ cap, or a chunked body's extensions over 16 KiB |
 | ~414 URI Too Long~                      | a target over ~CHEZ_HTTP_MAX_TARGET_BYTES~                    |
