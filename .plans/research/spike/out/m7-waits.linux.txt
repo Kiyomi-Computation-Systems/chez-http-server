@@ -1,0 +1,105 @@
+Linux 6.12.76-linuxkit aarch64
+=== the tree's scheduler, run 1
+Chez Scheme Version 10.4.1, tarm64le
+PART 1, a wait alone, 10000 coroutines
+  all at once, a coroutine that ends without waiting: 3756 B, 212 ns CPU, 211 ns real each (2 ms in all)
+  all at once, a coroutine that waits once, resumed by a call the drain makes: 7423 B, 1546 ns CPU, 1546 ns real each (15 ms in all)
+  one at a time, a coroutine that ends without waiting: 3980 B, 334 ns CPU, 334 ns real each (3 ms in all)
+  one at a time, a coroutine that waits once, resumed by a call the drain makes: 4403 B, 437 ns CPU, 437 ns real each (4 ms in all)
+PART 2, sleep, 10000 coroutines sleeping 1 ms at once
+  wheel: 7548 B, 4080 ns CPU, 26670 ns real each (266 ms in all)
+    libuv handles it adds, once all are armed: 0
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (2509 2511 2521 2544 2526 2555 2541 2511)
+  timer: 9488 B, 3895 ns CPU, 3895 ns real each (38 ms in all)
+    libuv handles it adds, once all are armed: 10000
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (119 128 131 129 109 127 131 131)
+  heap: 7455 B, 2274 ns CPU, 2415 ns real each (24 ms in all)
+    libuv handles it adds, once all are armed: 0
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (132 131 129 130 128 131 129 130)
+PART 3, resolve "localhost"
+  answers ("::1" "127.0.0.1")
+  100 in a row: 4222 B, 105259 ns CPU each; each took 106 to 285 us, median 124
+  100 at once: 10440 B, 72666 ns CPU each; 3431 us in all
+PART 4, a deadline of 50 ms around a wait no one ends in time
+  outcome (raised-after-0.1ms 552); the coroutine ended 1 time(s); late resumes counted 1
+PART 5, a wait whose resume the handler's own libuv callback calls, after it raises
+  uv-run raised: #t; uv-callback-error? #t
+  once the loop has run on, the coroutine has ended: #f
+=== the scheduler patched, run 1
+Chez Scheme Version 10.4.1, tarm64le
+PART 1, a wait alone, 10000 coroutines
+  all at once, a coroutine that ends without waiting: 374 B, 59 ns CPU, 59 ns real each (0 ms in all)
+  all at once, a coroutine that waits once, resumed by a call the drain makes: 4034 B, 1478 ns CPU, 1477 ns real each (14 ms in all)
+  one at a time, a coroutine that ends without waiting: 598 B, 280 ns CPU, 280 ns real each (2 ms in all)
+  one at a time, a coroutine that waits once, resumed by a call the drain makes: 989 B, 434 ns CPU, 434 ns real each (4 ms in all)
+PART 2, sleep, 10000 coroutines sleeping 1 ms at once
+  wheel: 4160 B, 3673 ns CPU, 26235 ns real each (262 ms in all)
+    libuv handles it adds, once all are armed: 0
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (2559 2524 2520 2556 2541 2545 2562 2516)
+  timer: 9446 B, 3646 ns CPU, 3646 ns real each (36 ms in all)
+    libuv handles it adds, once all are armed: 10000
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (123 130 129 128 131 129 122 126)
+  heap: 4067 B, 2168 ns CPU, 2366 ns real each (23 ms in all)
+    libuv handles it adds, once all are armed: 0
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (137 112 134 131 129 130 129 131)
+PART 3, resolve "localhost"
+  answers ("::1" "127.0.0.1")
+  100 in a row: 4221 B, 99610 ns CPU each; each took 113 to 246 us, median 120
+  100 at once: 10364 B, 78050 ns CPU each; 3697 us in all
+PART 4, a deadline of 50 ms around a wait no one ends in time
+  outcome (raised-after-0.1ms 549); the coroutine ended 1 time(s); late resumes counted 1
+PART 5, a wait whose resume the handler's own libuv callback calls, after it raises
+  uv-run raised: #t; uv-callback-error? #t
+  once the loop has run on, the coroutine has ended: #f
+=== the tree's scheduler, run 2
+Chez Scheme Version 10.4.1, tarm64le
+PART 1, a wait alone, 10000 coroutines
+  all at once, a coroutine that ends without waiting: 3756 B, 201 ns CPU, 201 ns real each (2 ms in all)
+  all at once, a coroutine that waits once, resumed by a call the drain makes: 7423 B, 1579 ns CPU, 1579 ns real each (15 ms in all)
+  one at a time, a coroutine that ends without waiting: 3980 B, 360 ns CPU, 360 ns real each (3 ms in all)
+  one at a time, a coroutine that waits once, resumed by a call the drain makes: 4403 B, 442 ns CPU, 442 ns real each (4 ms in all)
+PART 2, sleep, 10000 coroutines sleeping 1 ms at once
+  wheel: 7548 B, 3461 ns CPU, 25699 ns real each (256 ms in all)
+    libuv handles it adds, once all are armed: 0
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (2538 2556 2544 2548 2506 2512 2520 2517)
+  timer: 9494 B, 3762 ns CPU, 3762 ns real each (37 ms in all)
+    libuv handles it adds, once all are armed: 10000
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (132 131 129 128 110 130 130 128)
+  heap: 7455 B, 2227 ns CPU, 2429 ns real each (24 ms in all)
+    libuv handles it adds, once all are armed: 0
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (115 138 128 130 129 113 125 131)
+PART 3, resolve "localhost"
+  answers ("::1" "127.0.0.1")
+  100 in a row: 4222 B, 97697 ns CPU each; each took 99 to 231 us, median 118
+  100 at once: 10454 B, 74412 ns CPU each; 3403 us in all
+PART 4, a deadline of 50 ms around a wait no one ends in time
+  outcome (raised-after-0.1ms 557); the coroutine ended 1 time(s); late resumes counted 1
+PART 5, a wait whose resume the handler's own libuv callback calls, after it raises
+  uv-run raised: #t; uv-callback-error? #t
+  once the loop has run on, the coroutine has ended: #f
+=== the scheduler patched, run 2
+Chez Scheme Version 10.4.1, tarm64le
+PART 1, a wait alone, 10000 coroutines
+  all at once, a coroutine that ends without waiting: 374 B, 60 ns CPU, 60 ns real each (0 ms in all)
+  all at once, a coroutine that waits once, resumed by a call the drain makes: 4034 B, 1639 ns CPU, 1639 ns real each (16 ms in all)
+  one at a time, a coroutine that ends without waiting: 598 B, 260 ns CPU, 260 ns real each (2 ms in all)
+  one at a time, a coroutine that waits once, resumed by a call the drain makes: 989 B, 410 ns CPU, 410 ns real each (4 ms in all)
+PART 2, sleep, 10000 coroutines sleeping 1 ms at once
+  wheel: 4160 B, 3919 ns CPU, 26425 ns real each (264 ms in all)
+    libuv handles it adds, once all are armed: 0
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (2555 2545 2549 2524 2513 2525 2550 2513)
+  timer: 9440 B, 3633 ns CPU, 3633 ns real each (36 ms in all)
+    libuv handles it adds, once all are armed: 10000
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (130 116 134 128 130 128 131 129)
+  heap: 4067 B, 2234 ns CPU, 2462 ns real each (24 ms in all)
+    libuv handles it adds, once all are armed: 0
+    8 sleeps of 10 ms in a row, each took (0.1 ms): (136 127 131 122 102 136 128 130)
+PART 3, resolve "localhost"
+  answers ("::1" "127.0.0.1")
+  100 in a row: 4221 B, 102617 ns CPU each; each took 109 to 322 us, median 122
+  100 at once: 10355 B, 140326 ns CPU each; 5976 us in all
+PART 4, a deadline of 50 ms around a wait no one ends in time
+  outcome (raised-after-0.1ms 556); the coroutine ended 1 time(s); late resumes counted 1
+PART 5, a wait whose resume the handler's own libuv callback calls, after it raises
+  uv-run raised: #t; uv-callback-error? #t
+  once the loop has run on, the coroutine has ended: #f

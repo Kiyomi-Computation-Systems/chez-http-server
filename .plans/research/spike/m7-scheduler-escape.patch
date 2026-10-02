@@ -1,0 +1,19 @@
+--- scheduler.sls
++++ scheduler.sls
+@@ -229,9 +229,13 @@
+   ;; The coroutine's first run: its thunk, a raise caught on its own stack,
+   ;; then the jump to the drain's current continuation (R3).
+   (define (enter! s c)
+-    (guard (e (#t (coroutine-raised?-set! c #t)
+-                  (coroutine-value-set! c e)))
+-      (coroutine-value-set! c ((coroutine-thunk c))))
++    (with-exception-handler
++     (lambda (e)
++       (coroutine-raised?-set! c #t)
++       (coroutine-value-set! c e)
++       (coroutine-state-set! c 'ended)
++       ((scheduler-k s) 'ended))
++     (lambda () (coroutine-value-set! c ((coroutine-thunk c)))))
+     (coroutine-state-set! c 'ended)
+     ((scheduler-k s) 'ended))
+ 

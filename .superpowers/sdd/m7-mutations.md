@@ -242,3 +242,37 @@ By check, the third step's, the mutants that redden it:
 - shell, "its producer is called on a coroutine for each piece, yielding before each: the pieces in order": M7S-R, M7A-3, M7A-6, M7A-13;
 - body, "awaiting carries its thunk, and is neither a reader nor anything else": M7A-13;
 - body, "an awaiting is made of a procedure": M7A-12.
+
+## M7.2 — what a handler waits with (2026-10-02)
+
+Four steps (plan §14's M7.2 note, decision 0015), each proven on its own
+tree, the steps below it beneath it. Each step's mutants ran against every
+suite of that tree, three at a time, unless a row names its suite. Every
+mutant loaded (no `Exception` in any report).
+
+### The first step: the scheduler without `guard`
+
+Five mutants, each reddening the scheduler suite alone. Each of the four
+checks the step added is reddened by at least one. The plan's mutation, the
+`guard` put back, is M7G-1. M7.1's M7S-J ("the coroutine's guard gone")
+matches nothing once the `guard` is gone; M7G-4 is it, re-cut. M7G-5 edits
+the suite itself: the instrument the allocation checks read, made to read
+nothing, which the calibration reddens.
+
+| Mutant | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|
+| M7G-1 | `scheduler` | the `guard` back: a coroutine's raise caught by a guard inside the drain's one-shot continuation | scheduler 2 |
+| M7G-2 | `scheduler` | the handler jumps through the drain's continuation as it was when the coroutine was entered, not the one that resumed it | scheduler (raised, exit 2, 1 failed) |
+| M7G-3 | `scheduler` | the handler returns to the raise, not jumping to the drain | scheduler (raised, exit 2, 2 failed) |
+| M7G-4 | `scheduler` | no handler: a coroutine's raise leaves its stack (M7S-J re-cut) | scheduler (raised, exit 2, 2 failed) |
+| M7G-5 | the suite | the counter read as nothing: `bytes-each` answers 0 (the scheduler suite alone) | scheduler 1 |
+
+By check, the first step's, the mutants that redden it:
+- scheduler, "a coroutine that raises after a park: the raise comes to its end procedure, and the turns after it run on": M7G-2, M7G-3, M7G-4;
+- scheduler, "1,000 coroutines parked at once each keep a stack the counter sees": M7G-5;
+- scheduler, "a coroutine that ends by its value allocates no stack of its own": M7G-1;
+- scheduler, "a coroutine that ends by a raise allocates no stack of its own": M7G-1.
+
+M7.1's "a coroutine that raises: the raise comes to its end procedure, and
+the drain runs on", whose code the step rewrote, is reddened by M7G-3 and
+M7G-4.

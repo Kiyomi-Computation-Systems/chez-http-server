@@ -3897,3 +3897,56 @@ DONE and merged (72ac3fb, PR #95; 4bae222, PR #96; d41de14, PR #97): **M7.1.**
 - `awaiting` is not exported yet: the facade exports it with M7.2's verbs. The fake shell's path for a waiting handler is M7.3's, by the review's form.
 
 NEXT: M7.2 (plan §14), what a handler awaits. The waiting verbs are public API, so a decision record comes first, by form on measurements; the brief's exit needs `uv-getaddrinfo!`, and a resume cell is one-shot (R4). On a fresh branch cut from main after this commit, when the owner asks.
+
+
+M7.2: WHAT A HANDLER WAITS WITH, on the owner's "lets start M7.2". Four stacked steps, cut from main at f5532ee: feat/m7.2-scheduler, then feat/m7.2-await, feat/m7.2-timed-waits and feat/m7.2-resolve, each on the one before; 2026-10-02, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+
+MEASURED FIRST: `research/spike/m7-waits.sps` with `m7-waits.sh`, which runs it twice on the tree's scheduler and twice on it patched by `m7-scheduler-escape.patch`. Linux is Debian 12 in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6), Chez 10.4.1 `tarm64le`, with patch installed. Decision 0015's Context has the tables. In short, on the patched scheduler:
+- a sleep on one timer a loop, armed for the earliest of a binary heap: 4,067 B and 1,687 to 1,688 ns of CPU a sleep on Darwin, 2,168 to 2,234 on Linux, 10,000 sleeping at once; a 10 ms sleep took 11.0 ms on Darwin, 10.2 to 13.7 ms on Linux. On the deadlines' wheel it took 250.7 to 256.2 ms; on a libuv timer a sleep, 10.2 to 13.4 ms, for 5.3 KB more a sleep and 10,000 handles at once;
+- `uv-getaddrinfo!` of "localhost", awaited: `("::1" "127.0.0.1")`, 4,221 B a lookup, the medians 176 to 181 µs on Darwin and 120 to 122 µs on Linux;
+- a 50 ms deadline around a wait no one ended raised at 51.0 ms on Darwin and 54.9 to 55.6 ms on Linux; the resume that came later was counted, and woke nothing;
+- a wait whose resume the handler's own libuv callback was to call, that callback raising first: `uv-run` raised `&uv-callback-error`, and the coroutine never ended.
+
+FOUND while measuring: M7.1's scheduler allocates 3,756 B for each coroutine, even one that never waits, and 7,423 B for one that waits once, 10,000 at once; the spike's scheduler cost about 190 B (decision 0014). The `guard` in `enter!` sits inside the one-shot continuation the drain enters: in scratch probes on Darwin, `call/1cc` alone allocated 70 B a run, a `guard` alone 373 B, and a `guard` inside a `call/1cc` 3,596 B. An exception handler that jumps to the drain's continuation catches the same raises for 374 B, and 4,034 B for a coroutine that waits once. M7.2's first step makes it so.
+
+DECIDED on the owner's word (2026-10-02), by form: **"Server verbs and await (Recommended)" and "One timer, a heap (Recommended)"**; and, for the third question, after the owner's "i need to understand the tradeoffs better" (answered with the three cases in which a close can be seen while code waits, a reader's and a producer's), a form dismissed, and the owner's "Do any of our other test servers do 'It goes on'?" (answered from the surveys: Warp and Node go on; Go cancels the request's context, which only the waits that watch it heed, so the first form put it under "It raises at once" too strongly; hyper drops the handler's future; nginx's proxy closes the upstream request by default, `proxy_ignore_client_abort off`, read in nginx's documentation; Racket's server kills the handler's thread): **"It goes on (Recommended)".** Decision 0015: a handler waits with `await`, `sleep-ms`, `resolve` and `with-deadline`, which the facade exports with `awaiting`; a wait is one-shot, a late resume logged as `late-resume` (R4); sleeps and deadlines are timed to the millisecond by one libuv timer a loop over a binary heap; a reader's or a producer's wait goes on when its connection closes. Weighed: the server's verbs alone; anything libuv offers; the deadlines' wheel; a libuv timer a wait; a wait that raises at once on a close. Decision 0014 item 4 noted; plan §14's M7.2 note cuts M7.2 into four steps: the scheduler without `guard`; `await`; the timed waits; the shell's waits.
+
+DECIDED on the owner's word (2026-10-02), by form, after the plan-vs-landed walkthrough: **"Review, then 4 stacked PRs (Recommended)"**: a /code-review high of the uncommitted branch first, its findings fixed on the owner's word, then one PR a step, each proved green on its own tree before its commit. Weighed: the same with the heap a PR of its own (306 lines), and the four PRs with no review.
+
+M7.2's REVIEW (2026-10-02, on the owner's form): a /code-review high of the uncommitted branch, all four steps, found seven:
+1. an escape from `with-deadline`'s thunk by a continuation left the deadline in force: probed, a 50 ms sleep after the escape, outside the deadline, raised `&deadline-passed` at 5 ms;
+2. `resolve` raised chez-libuv's own EINVAL for a name over 255 octets, which libuv refuses at the call, not `&resolve-error`: probed with a name of 300 characters;
+3. `with-deadline` passed one value only: a thunk answering two raised "returned 2 values to single value return context";
+4. the shell suite's failed lookup asked the host's resolver about no-such-host.invalid, so it hung on the network: with no network in Docker it answered EAI_AGAIN; `a..b`, an empty label, answers EAI_NONAME at once with a network and without, and on Darwin;
+5. `late-resume` was logged with no word of which wait;
+6. the scheduler's header said a coroutine keeps its deadlines, where it keeps the wait it is parked on and a count;
+7. three lines of the shell over 100 characters.
+Measured for the form, on a coroutine (scratch `dw-cost.sps`, `catch-cost.sps`): a `with-deadline` held by a `dynamic-wind` that tells a park from an exit costs 672 B where the exception handler's costs 688 (1,250 B and 1,232 three deep), leaves the deadline on an escape and passes two values through; a one-shot escape around libuv's call costs 208 B a lookup, where a `guard` costs 3,663.
+
+DECIDED on the owner's word (2026-10-02), by form: **"Fix all seven (Recommended)"**. Weighed: the three bugs alone; all but the log line.
+
+FIXED as decided, before the first commit, each in the step it belongs to, with its check or its mutant (m7-mutations.md, "The review's fixes"):
+- the first and the third, in the third step: `with-deadline` is held by a `dynamic-wind`, whose after thunk a park runs too; it leaves the deadline once, unless the coroutine is suspending (the scheduler's `coroutine-suspending?`). The waits suite's checks: an escape from the thunk by a continuation takes the deadline out, and a wait after it is not cut short; every value the thunk returns comes back; a continuation that enters the thunk again and leaves it again ends the deadline once (M7T-26 to M7T-30);
+- the second, in the fourth step: the shell catches a name refused at the call, by libuv's EINVAL or by chez-libuv's own refusal, with a handler that jumps out on a one-shot continuation, and answers `invalid-name`, where it tested a name for emptiness and a NUL itself; the shell suite's check gains a name of 300 characters (M7L-15 to M7L-18);
+- the fourth, in the fourth step: the shell suite's failed lookup asks about `a..b`, and reads EAI_NONAME exactly;
+- the fifth, in the second step: a wait's cell keeps the verb that made it, and a late resume's log line names it, `late-resume await` or `late-resume resolve`; R4's checks read it (M7W-15);
+- the sixth and the seventh, in the third and the fourth steps: the scheduler's header; the shell's lines over 100 characters, and the waits' header, reflowed.
+Found while fixing: the first re-cuts of M7W-1 and M7W-4 left a parenthesis open, so they did not load; their reports were read for `Exception`, and they were cut again, the parentheses counted.
+
+M7.2 FIRST STEP: the scheduler without `guard` (feat/m7.2-scheduler).
+- `(http-server private scheduler)`: a coroutine's raise caught by an exception handler that jumps to the drain's current continuation, through `end!`, which the end by its value shares; no `guard` (decision 0015's Context).
+- The checks, in the scheduler suite: a coroutine that ends, by its value or by a raise, allocates no stack of its own, under 1,024 B where a parked one's stack is 3,515 B (design §5.2), 1,000 at once, the instrument calibrated by 1,000 parked at once; and a coroutine that raises after a park has its raise come to its end procedure, through the drain that resumed it.
+
+Measured on the step's tree (2026-10-02, Darwin arm64):
+- `make test` green: forty-five suites, 1,482 expected passes (1,478 + 4), every pin ok.
+- What the checks read, 1,000 coroutines at once (scratch `each.sps`): 368 B ending by its value, 544 B by a raise, 3,772 B parked; on main's scheduler, 3,756 B, 4,289 B and 7,161 B.
+- Its behavior unchanged, beside main's scheduler, in seven cases a check does not cover (scratch `edges.sps`): a raise after a park; an `after` thunk that raises as a raise unwinds, and as a value returns; `raise-continuable`; a `warning`; a handler inside the coroutine that raises; an error. Each ends the coroutine with the same raise.
+- A `guard` that handler code runs on a coroutine still costs a stack: 4,097 B for a coroutine that runs one, where one that ends at once costs 434 B (scratch `guard-inside.sps`); `with-exception-handler` 496 B, `dynamic-wind` 416 B. So M7.2's own code on a coroutine catches nothing with `guard`.
+
+Watched to fail (m7-mutations.md, M7.2's first step): five mutants on the step's tree, each reddening the scheduler suite alone; every check the step added is reddened by one.
+
+Records: decision 0015; plan §14's M7.2 note; decision 0014 item 4's note; design §5.2's note; the research README's line on `m7-waits.sps`, `m7-waits.sh` and `m7-scheduler-escape.patch`, and their runs.
+
+Size: 71 inserted lines of code and tests, 8 deleted.
+
+NEXT: the second step, `await`, stacked on this one.
