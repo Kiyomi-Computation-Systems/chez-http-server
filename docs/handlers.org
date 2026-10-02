@@ -161,6 +161,45 @@ bytevector, and the eof object when there is no more.
   collects it, which can be long after.
 - A reader's response can be streamed too.
 
+* Waiting
+
+A handler that has to wait, say for another request, answers ~(awaiting thunk)~
+instead. The server runs ~thunk~ on its own, and what ~thunk~ returns is the
+answer: a response or a reader. There it can wait with ~await~.
+
+#+begin_src scheme
+;; GET /wait waits until a POST arrives, then answers with the POST's body
+(define waiting '())
+
+(serve
+ (lambda (request)
+   (if (string=? (request-path request) "/wait")
+       (awaiting
+        (lambda ()
+          (make-response 200 #f '()
+                         (await (lambda (resume) (set! waiting (cons resume waiting)))))))
+       (read-whole-body
+        (lambda (body)
+          (for-each (lambda (resume) (resume body)) waiting)
+          (set! waiting '())
+          (make-response 200 #f '() (string->utf8 "woke them\n")))))))
+#+end_src
+
+- ~(await register)~ calls ~register~ with ~resume~, then waits until something
+  calls ~resume~, and gives back what ~resume~ was called with.
+- Call ~resume~ once. A second call wakes nothing, and the server logs
+  ~late-resume await~.
+- Only a handler that answered ~awaiting~ can wait, and so can the reader or
+  the producer it answers with. A wait anywhere else fails the handler: the
+  client gets ~500~, and the server logs ~handler-failed~.
+- While a handler waits, the server reads nothing more from its connection,
+  so the next request on it waits too. Other connections go on.
+- A waiting handler holds about 3.6 KB until its wait ends, even if its
+  client has gone: the server only notices a client leave when it reads or
+  writes.
+- Inside a handler that waits, ~guard~ costs about 3.7 KB each time it runs.
+  ~with-exception-handler~ costs next to nothing.
+
 * When the server will not start
 
 A malformed setting, such as ~CHEZ_HTTP_PORT=http~ or a ~CHEZ_HTTP_HOST~ that is not

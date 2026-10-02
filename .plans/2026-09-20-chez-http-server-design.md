@@ -968,6 +968,17 @@ resume cell; call a handler from inside `on-data`.
 > resume cells are M7.2's. `tests/test-scheduler.sps` checks R1, R2, R3 and R5 against
 > scripted turns, and the mutation log (m7-mutations.md) names each check's mutant.
 
+> *Noted 2026-10-02 (M7.2's second step; decision 0015):* R4 is built in
+> `(http-server private waits)`. `(await register)` hands `register` a one-shot
+> `resume`: its first call wakes the coroutine, and every later one is logged as
+> `late-resume`, with the verb it came for, and wakes nothing, not even the coroutine
+> waiting again on a wait of its own since. A wait asks the scheduler first whether
+> the coroutine running may park (`waiting-coroutine`, R1, R2 and R5's refusals, which
+> a park asks too), so a wait refused has run nothing. `tests/test-waits.sps` checks R4
+> against scripted turns, and design §5.3's third mutation, the one-shot check
+> removed, reddens both its rows (M7W-1 in m7-mutations.md). The loop's waits are kept
+> by its scheduler, made with the log of the first shell on the loop.
+
 ### 5.4 What was rejected, and by what
 
 Decision 0003 item 3, with the evidence:

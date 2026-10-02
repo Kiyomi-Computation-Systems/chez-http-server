@@ -3950,3 +3950,20 @@ Records: decision 0015; plan §14's M7.2 note; decision 0014 item 4's note; desi
 Size: 71 inserted lines of code and tests, 8 deleted.
 
 NEXT: the second step, `await`, stacked on this one.
+
+M7.2 SECOND STEP: `await` and R4 (feat/m7.2-await). The plan's note had the facade's exports, the shell's part and the docs as the fourth step, after the timed waits; built instead a verb at a time, each step one a handler can use: `await` here, `sleep-ms` and `with-deadline` next, `resolve` last.
+- `(http-server private waits)`: `(await register)`, a one-shot resume on the scheduler's park and wake (R4): a resume called while `register` runs ends the wait at once; every later one is logged as `late-resume`, with the verb it came for (the review's fifth), and wakes nothing. A wait asks first whether the coroutine running may park, so one refused has run nothing; a wait on a loop that keeps no waits is an assertion violation. Nothing in it catches with `guard`.
+- `(http-server private scheduler)`: `waiting-coroutine`, the refusals a park makes, now asked by a wait before it begins too; `coroutine-scheduler`; and the loop's waits, kept and never read (`scheduler-waits`).
+- `(http-server private shell)`: the loop's scheduler keeps the loop's waits, made with the log of the first shell on the loop.
+- The facade exports `awaiting` and `await`. `docs/handlers.org` gains "Waiting". `make check-imports` holds the waits out of the adapter, with the scheduler, the shell and serve (R5).
+- The checks: the waits suite, eight, against scripted turns, no libuv; in the shell suite, a handler that waits on `await`, parked, woken by another request's ordinary handler, both answered, the second resume logged; the serve suite's list of the facade's exports.
+
+Measured on the step's tree (2026-10-02, Darwin arm64): `make test` green, forty-six suites, 1,492 expected passes (1,482 + 10), every pin ok, the import audit's new rule among them.
+
+Watched to fail (m7-mutations.md, M7.2's second step, and the review's fixes): fifteen mutants on the step's tree, the review's M7W-15 and design §5.3's third among them (M7W-1, both R4 rows red); every check the step added is reddened by one; M7.1's R1, R2 and R5 mutants, which matched nothing once the refusals moved into `waiting-coroutine`, re-cut and red again. The import audit's new rule, watched red in a scratch copy with the adapter importing the waits, and passed by main's rule.
+
+Records: decision 0015's choices of the second step; design §5.3's note on R4; the scheduler's and the shell's headers; `docs/handlers.org`.
+
+Size: 402 inserted lines of code, tests and Makefile, 33 deleted.
+
+NEXT: the third step, `sleep-ms` and `with-deadline`, stacked on this one.

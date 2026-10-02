@@ -179,7 +179,12 @@
 ;;; event its call brings dispatched from the drain once it has ended: a
 ;;; streaming reader's piece is credited once the reader has taken it, so
 ;;; reading waits while it does (M6.2).  Every other reader and producer is
-;;; called in place, as in v1.
+;;; called in place, as in v1.  Code on those coroutines waits with
+;;; (http-server private waits)'s verbs (decision 0015; M7.2): the loop's
+;;; scheduler keeps the loop's waits, made with the log of the first shell
+;;; on the loop, which records a late resume as `late-resume` (R4).  A wait
+;;; goes on when its connection closes (0015 item 4): what it then answers
+;;; is dropped, and the connection makes no more calls.
 ;;;
 ;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
 ;;; chez-libuv catches whatever a callback raises, and raises it again from
@@ -213,7 +218,8 @@
           (http-server wheel)
           (only (http-server private scheduler)
                 make-scheduler scheduler-turn! scheduler-call! scheduler-spawn!
-                scheduler-phase scheduler-feed-begin! scheduler-feed-end!)
+                scheduler-phase scheduler-feed-begin! scheduler-feed-end! scheduler-waits)
+          (only (http-server private waits) make-waits)
           (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
           (http-server private adapter))
@@ -260,20 +266,27 @@
       ((loop handler limits clock log trace) (make-shell loop handler limits clock log trace #f))
       ((loop handler limits clock log trace on-credit?)
        (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
-                    (make-wheel (limits-tick-ms limits)) (loop-scheduler loop)
+                    (make-wheel (limits-tick-ms limits)) (loop-scheduler loop log)
                     (make-server-state 'listening 0 limits) #f #f #f #f #f #f #f))))
 
-  ;; loop-scheduler : UvLoop -> Scheduler
-  ;; The loop's scheduler, made the first time a shell on it asks: its poll
-  ;; is one uv-run of the loop.  Kept in an ephemeron table, so a loop let
-  ;; go takes its scheduler with it, though the scheduler's poll holds the
-  ;; loop.
+  ;; loop-scheduler : UvLoop [(Symbol (Listof Any) -> Any)] -> Scheduler
+  ;; The loop's scheduler, made the first time it is asked for: its poll is
+  ;; one uv-run of the loop.  Asked for with `log`, by a shell, it keeps the
+  ;; loop's waits, made with the first such log (A HANDLER THAT WAITS, the
+  ;; header).  Kept in an ephemeron table, so a loop let go takes its
+  ;; scheduler with it, though the scheduler's poll holds the loop.
   (define schedulers (make-ephemeron-eq-hashtable))
-  (define (loop-scheduler loop)
-    (or (hashtable-ref schedulers loop #f)
-        (let ((s (make-scheduler (lambda (mode) (uv-run loop mode)))))
-          (hashtable-set! schedulers loop s)
-          s)))
+  (define loop-scheduler
+    (case-lambda
+      ((loop)
+       (or (hashtable-ref schedulers loop #f)
+           (let ((s (make-scheduler (lambda (mode) (uv-run loop mode)))))
+             (hashtable-set! schedulers loop s)
+             s)))
+      ((loop log)
+       (let ((s (loop-scheduler loop)))
+         (unless (scheduler-waits s) (make-waits s log))
+         s))))
 
   ;; wall-clock : -> Nat — milliseconds since the epoch, UTC: a shell's clock.
   (define (wall-clock)
