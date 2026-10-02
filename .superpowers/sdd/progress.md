@@ -3776,3 +3776,16 @@ Size: `tests/` +259 −55, comments included; the spike's two files, 380 lines, 
 DECIDED on the owner's word (2026-10-02), by a second form, after the walkthrough: **one PR now.** Weighed: leaving it uncommitted for the owner to read first.
 
 NEXT: this PR, merged on the owner's "do closing ritual" once CI is green on its head. M6 is then complete. Then M7 (plan §14), when the owner asks.
+
+MERGED to main on 2026-10-02, on the owner's "do closing ritual": **#94, the M6 exit.** 0fccd2a was squashed as d9949f6 (tree 32758a9, the tested tip's), whose parent is 6b43a5a.
+- **CI.** Its run, 36997657028, passed on 0fccd2a: 1,439 expected passes in its log.
+- **Branches.** `--delete-branch` deleted the remote branch but left this checkout on it, so the switch to main, the fast-forward and the local deletion were done by hand.
+
+`make test` green on main: forty-four suites, 1,439 expected passes, every pin ok.
+
+DONE and merged (d9949f6, PR #94): **M6 COMPLETE.**
+- The brief's M6 exit is met. 16 MiB move each way against a slow peer, curl at 16 MiB/s in a process of its own, and the server's heap grows 32 to 83 KB. The bytes written and not completed stay within the high water and one piece's write. libhtp's Expect files pass, and its early-response file passes both ways: read, and answered at the head. `docs/handlers.org` covers bodies.
+- M6's slices, each merged: M6.1, how a handler reads a body (decision 0013; #69, #70); M6.2, the read side's credit (#71, #72); M6.3, a streamed response (#74 to #78); write batching (#79); M6.4, Expect, trailers and the exit's files (#80 to #82); the padding PR and its review (#83 to #87); the cut-off-span PR (#90, #91); the pin PR (#92); and this exit.
+- Upstream, every ask decision 0008 lists has landed; nothing is open.
+
+NEXT: M7 (plan §14), the scheduler and awaiting handlers, on a fresh branch cut from main after this commit, when the owner asks.
