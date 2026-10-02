@@ -917,6 +917,17 @@ collection). An idle keep-alive connection carries no coroutine at all.
 > coroutine record with its continuation; a coroutine that does not wait adds 189–195 B
 > to the gate's GET with the spike's scheduler, and `call/1cc` alone is 64 B.
 
+> *Noted 2026-10-02 (M7.2's first step; decision 0015's Context):* the scheduler M7.1
+> built caught a coroutine's raise with a `guard` around its thunk, inside the one-shot
+> continuation the drain enters, and Chez then gave every coroutine a stack of its own:
+> 3,756 B for one that ends without waiting, 10,000 at once, where the spike's
+> scheduler, with no `guard`, cost about 190 B. An exception handler that jumps to the
+> drain's continuation catches the same raises for 374 B
+> (`research/spike/m7-waits.sps`). A `guard` that handler code runs on a coroutine
+> costs the same stack, 4,097 B for a coroutine that runs one where one that ends at
+> once costs 434 B (scratch, Darwin arm64); `with-exception-handler` and `dynamic-wind`
+> cost no stack.
+
 ### 5.3 The invariants, as checks
 
 Decision 0003 item 2 adopts R1–R5 of the two-level proposal as checks, not comments:

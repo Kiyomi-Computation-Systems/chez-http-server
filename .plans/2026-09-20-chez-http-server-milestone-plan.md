@@ -1355,6 +1355,34 @@ A resume cell is one-shot, and a second fulfilment, such as a DNS answer after i
 timeout, is a recorded fault (R4).
 - **Mutation:** design §5.3's third, the one-shot check removed. Expect the R4 row red.
 
+*Noted 2026-10-02 (M7.2, decision 0015):* decided by form, measured first
+(`research/spike/m7-waits.*`). A handler waits with `await`, `sleep-ms`, `resolve` and
+`with-deadline`, which the facade exports with `awaiting`. Each wait is a one-shot
+resume (R4), and a late one is logged as `late-resume`. Sleeps and deadlines are timed
+to the millisecond by one libuv timer a loop, armed for the earliest of a binary heap. A
+reader's or a producer's wait goes on when its connection closes. Weighed: the server's
+verbs alone; the loop handed to a handler; the deadlines' wheel, on which a 10 ms sleep
+took 250 ms; a libuv timer a wait; and a wait that raises at once on a close. Found while
+measuring: M7.1's scheduler allocates 3,756 B a coroutine, because its `guard` sits
+inside the drain's one-shot continuation; an exception handler that jumps to the drain
+costs 374 B. So M7.2 is four steps, each a layer green on its own:
+1. the scheduler: a coroutine's raise caught by a handler that jumps to the drain, not
+   by a `guard`; the mutation puts the `guard` back, which the allocation check reddens;
+2. `await`, in `(http-server private waits)`: a one-shot resume on the scheduler's park
+   and wake, a late one recorded through the loop's log, which the libuv shell gives;
+   checked against scripted turns with no libuv, and on a real loop; the facade exports
+   it with `awaiting`; the mutation removes the one-shot check (design §5.3's third),
+   which R4's rows redden;
+3. `sleep-ms` and `with-deadline`: a binary heap, pure, and the loop's one timer for
+   it, which the libuv shell gives; their mutations are named when the step is written;
+4. `resolve`: the lookup through `uv-getaddrinfo!`, and its cancel, which the libuv
+   shell gives.
+
+Each of the last three is a verb a handler can use, exported and in
+`docs/handlers.org`, checked against scripted turns and on a real loop. (First planned
+as two steps of the waits alone, then the shell's part, the facade and the docs for all
+three; regrouped while building the second.)
+
 **M7.3 — three shells, one contract.** The contract test plays its scripts through the
 coroutine shell as well (brief item 5). A handler awaiting `uv-getaddrinfo!` inside a
 pipelined connection keeps the responses in order (the brief's exit).

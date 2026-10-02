@@ -226,12 +226,24 @@
          ((coroutine-on-end c) (if (coroutine-raised? c) 'raised 'returned) (coroutine-value c))))))
 
   ;; enter! : Scheduler Coroutine -> [does not return]
-  ;; The coroutine's first run: its thunk, a raise caught on its own stack,
-  ;; then the jump to the drain's current continuation (R3).
+  ;; The coroutine's first run: its thunk, then the jump to the drain's
+  ;; current continuation (R3).  A raise is caught on its own stack by a
+  ;; handler that makes the same jump, never returning to the raise.  Not a
+  ;; `guard`: inside the one-shot continuation the drain enters, Chez gave
+  ;; each coroutine a stack of its own for one, 3,756 B where this costs
+  ;; under 400 (M7.2's first step, decision 0015).
   (define (enter! s c)
-    (guard (e (#t (coroutine-raised?-set! c #t)
-                  (coroutine-value-set! c e)))
-      (coroutine-value-set! c ((coroutine-thunk c))))
+    (with-exception-handler
+     (lambda (e)
+       (coroutine-raised?-set! c #t)
+       (coroutine-value-set! c e)
+       (end! s c))
+     (lambda () (coroutine-value-set! c ((coroutine-thunk c)))))
+    (end! s c))
+
+  ;; end! : Scheduler Coroutine -> [does not return]
+  ;; The coroutine has ended: the jump to the drain's current continuation.
+  (define (end! s c)
     (coroutine-state-set! c 'ended)
     ((scheduler-k s) 'ended))
 

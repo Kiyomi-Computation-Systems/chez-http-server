@@ -34,9 +34,12 @@
 ;;;   - waking a coroutine that is not parked is an assertion violation;
 ;;;   - a turn answers the poll's answer, or #t while something is ready;
 ;;;   - a guard inside a coroutine catches a raise after a park, and what a
-;;;     coroutine parameterizes stays its own across a park.
+;;;     coroutine parameterizes stays its own across a park;
+;;;   - a coroutine that ends, by its value or by a raise, allocates no stack
+;;;     of its own (M7.2's first step: a `guard` around the thunk gave each
+;;;     one a stack).
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) make-parameter parameterize)
+        (only (chezscheme) make-parameter parameterize statistics sstats-bytes)
         (http-server private scheduler))
 
 ;; scripted : (Listof (Listof (-> Any))) -> (values (Symbol -> Boolean) (-> (Listof Symbol)))
@@ -87,6 +90,20 @@
 (define (ender note!)
   (lambda (kind v) (note! (list 'end kind (if (condition? v) 'condition v)))))
 
+;; bytes-each : Nat (-> Any) -> Nat
+;; The bytes each of `n` coroutines running `thunk` allocates, all spawned
+;; and then run by one turn's drain, after a warm-up of the same.
+(define (bytes-each n thunk)
+  (let-values (((poll! modes) (scripted '())))
+    (let ((s (make-scheduler poll!)))
+      (define (run!)
+        (do ((i 0 (+ i 1))) ((= i n)) (scheduler-spawn! s thunk (lambda (kind v) #f)))
+        (scheduler-turn! s))
+      (run!)
+      (let ((before (sstats-bytes (statistics))))
+        (run!)
+        (div (- (sstats-bytes (statistics)) before) n)))))
+
 (run-suite "scheduler"
   (lambda ()
     (let-values (((note! seen) (recorder))
@@ -134,6 +151,24 @@
           '(returned ((raised boom) next (end returned w)))
           (let ((r (refusal (lambda () (scheduler-drain! s) 'drained))))
             (list (car r) (seen))))))
+
+    ;; Its raise is caught by the drain that resumed it, not the one that
+    ;; first entered it, whose continuation the park used.
+    (let*-values (((note! seen) (recorder))
+                  ((parked) #f)
+                  ((poll! modes) (scripted (list (list (lambda () (coroutine-wake! parked 'go)))
+                                                 (list (lambda () (note! 'later)))))))
+      (let ((s (make-scheduler poll!)))
+        (scheduler-spawn! s
+          (lambda ()
+            (set! parked (current-coroutine))
+            (coroutine-park!)
+            (raise 'after-park))
+          (ender note!))
+        (test-equal "a coroutine that raises after a park: the raise comes to its end procedure, and the turns after it run on"
+          '((returned 2) ((end raised after-park) later))
+          (let ((taken (refusal (lambda () (turns! s 8)))))
+            (list taken (seen))))))
 
     (let*-values (((note! seen) (recorder))
                   ((parked) #f)
@@ -315,4 +350,20 @@
         (scheduler-spawn! s (lambda () (note! (list 'other (p)))) (lambda (kind v) #f))
         (turns! s 4)
         (test-equal "what a coroutine parameterizes stays its own across a park"
-          '((other outer) (callback outer) (resumed mine)) (seen))))))
+          '((other outer) (callback outer) (resumed mine)) (seen))))
+
+    ;; --- what a coroutine allocates --------------------------------------
+    ;; Design §5.2: a coroutine parked 4 calls deep holds 3,515 B, the stack
+    ;; its continuation keeps.  One that ends, by its value or by a raise,
+    ;; needs no stack of its own, and under 1,024 B it cannot have made one.
+    ;; Calibration: coroutines parked at once each keep a stack, and the
+    ;; counter sees it.
+    (let ((parked (bytes-each 1000 coroutine-park!)))
+      (test-eq "1,000 coroutines parked at once each keep a stack the counter sees"
+               'stacks (if (> parked 2048) 'stacks parked)))
+    (let ((ended (bytes-each 1000 (lambda () 'done))))
+      (test-eq "a coroutine that ends by its value allocates no stack of its own"
+               'stackless (if (< ended 1024) 'stackless ended)))
+    (let ((raised (bytes-each 1000 (lambda () (raise 'boom)))))
+      (test-eq "a coroutine that ends by a raise allocates no stack of its own"
+               'stackless (if (< raised 1024) 'stackless raised)))))

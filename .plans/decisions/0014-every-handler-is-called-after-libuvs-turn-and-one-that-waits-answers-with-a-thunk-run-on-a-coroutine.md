@@ -88,6 +88,7 @@ began, as the two-level proposal's sketch has it (research/async-two-level-corou
    `handler-failed` logged. *Amended 2026-10-02 (M7.1's review):* as first written,
    this item named R1's check alone.
 4. **The verbs a handler waits with are M7.2's**, decided there (plan §14).
+   *Noted 2026-10-02 (M7.2):* decision 0015 decides them.
 
 Weighed: every call into handler code on a coroutine after the turn, so any of it may
 wait, with no wrapper: about 190 B a call with a simple scheduler, a JSON POST read
