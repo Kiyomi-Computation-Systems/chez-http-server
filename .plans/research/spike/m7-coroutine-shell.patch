@@ -1,0 +1,143 @@
+--- a/src/http-server/private/shell.sls
++++ b/m7/coroutine-shell.sls
+@@ -151,6 +151,18 @@
+ ;;; the second is the last reading plus the loop's time since.  So a
+ ;;; response reads the shell's clock once a second at most.
+ ;;;
++;;; M7'S SPIKE, 2026-10-02: a prototype of the coroutine shell, made from
++;;; (http-server private shell) at 4a7748b by m7-coroutine-shell.patch.  A
++;;; handler is called on a coroutine of its own, spawned where the shell
++;;; called it in place and run from (m7 scheduler)'s drain, which hands its
++;;; answer to the core once it has its answer; the phase is 'in-parser
++;;; through a feed.  Switched to every call (`every!`), a reader's pieces
++;;; and end and a producer's calls are each called on a coroutine of their
++;;; own too, and the shell answers on credit (M6.2), a streaming reader's
++;;; piece credited once the reader has taken it.  A body that arrives
++;;; before its handler has answered is kept for the answer, as the core
++;;; keeps what the head's read brought: M7 has yet to row the wait.
++;;;
+ ;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
+ ;;; chez-libuv catches whatever a callback raises, and raises it again from
+ ;;; uv-run composed with `&uv-callback-error`.  A `&byte-machine-contract` in
+@@ -161,8 +173,9 @@
+ ;;; `&error`, so what keeps a poisoned parser fatal is that its arm comes
+ ;;; before the callback-error arm.  The run loop's own logging cannot take the
+ ;;; failure's place: a log that raises there is ignored.
+-(library (http-server private shell)
+-  (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run!
++(library (m7 coroutine-shell)
++  (export every!
++          make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run!
+           shell-connections shell-server shell-listener shell-timer shell-deadlines
+           connection? connection-state connection-tcp connection-violations
+           connection-deadline
+@@ -174,14 +187,20 @@
+           (byte-machine runtime)
+           (only (byte-machine private conditions) byte-machine-contract-condition?)
+           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
+-          (only (http-server body) body-reader-on-piece body-reader-on-end)
++          (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole?)
+           (only (http-server limits)
+                 limits-read-buffer-size limits-backlog limits-tick-ms limits-deadline-ms)
+           (http-server wheel)
+           (only (http-server server) make-server-state server-step server-phase)
+           (only (http-server serializer) date-line)
+-          (http-server private adapter))
++          (http-server private adapter)
++          (only (m7 scheduler) spawn! phase phase-set!))
+ 
++  ;; every! : -> Void — call a reader's pieces and end and a producer on
++  ;; coroutines too, and answer on credit, from now on.
++  (define every? #f)
++  (define (every!) (set! every? #t))
++
+   ;; make-shell :
+   ;;   UvLoop (Request -> Response) Limits (-> Nat) (Symbol (Listof Any) -> Any)
+   ;;   [(U #f (Connection Symbol Any -> Any)) [Boolean]] -> Shell
+@@ -525,21 +544,26 @@
+   ;; span an error abandoned.
+   (define (feed! c bv start end)
+     (connection-depth-set! c (fx+ (connection-depth c) 1))
+-    (let ((r (parser-feed! (connection-parser c) bv start end)))
++    (let* ((before (phase))
++           (r (begin (phase-set! 'in-parser)
++                     (parser-feed! (connection-parser c) bv start end))))
++      (phase-set! before)
+       (connection-depth-set! c (fx- (connection-depth c) 1))
+       (dispatch! c (parser-result-event r))))
+ 
+   ;; call-handler! : Connection Request -> Void
+-  ;; The handler's answer, and `credit` after it on a shell made on credit.
++  ;; The handler called on a coroutine of its own, from the scheduler's
++  ;; drain: its answer, and `credit` after it on a shell made on credit.
+   (define (call-handler! c request)
+-    (let* ((sh (connection-shell c))
+-           (answer (guard (e (#t (log! sh 'handler-failed (list e))
+-                                 (list 'handler-failed e)))
+-                     (let ((a ((shell-handler sh) request)))
+-                       (if (shell-on-credit? sh)
+-                           (list 'handler-responded a 'credit)
+-                           (list 'handler-responded a))))))
+-      (dispatch! c answer)))
++    (let ((sh (connection-shell c)))
++      (spawn!
++       (lambda ()
++         (dispatch! c (guard (e (#t (log! sh 'handler-failed (list e))
++                                    (list 'handler-failed e)))
++                        (let ((a ((shell-handler sh) request)))
++                          (if (or every? (shell-on-credit? sh))
++                              (list 'handler-responded a 'credit)
++                              (list 'handler-responded a)))))))))
+ 
+ ;; deliver-body! : Connection Bytevector Nat Nat -> Void
+   ;; Hand bv[start, end) to the reader the core is handing the body to; if
+@@ -548,9 +572,16 @@
+   (define (deliver-body! c bv start end)
+     (let ((r (conn-body-reader (connection-state c))))
+       (when r
+-        (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
+-                      (dispatch! c (list 'handler-failed e))))
+-          ((body-reader-on-piece r) bv start end)))))
++        (if every?
++            (spawn! (lambda ()
++                      (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
++                                    (dispatch! c (list 'handler-failed e))))
++                        ((body-reader-on-piece r) bv start end)
++                        (unless (body-reader-whole? r)
++                          (dispatch! c (list 'body-credit (- end start)))))))
++            (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
++                          (dispatch! c (list 'handler-failed e))))
++              ((body-reader-on-piece r) bv start end))))))
+ 
+   ;; deliver-body-end! : Connection -> Void
+   ;; The reader's end: its response as `handler-responded`, or, if it raises,
+@@ -558,9 +589,11 @@
+   (define (deliver-body-end! c)
+     (let ((r (conn-body-reader (connection-state c))))
+       (when r
+-        (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
+-                                   (list 'handler-failed e)))
+-                       (list 'handler-responded ((body-reader-on-end r))))))))
++        (let ((end (lambda ()
++                     (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
++                                                (list 'handler-failed e)))
++                                    (list 'handler-responded ((body-reader-on-end r))))))))
++          (if every? (spawn! end) (end))))))
+ 
+   ;; notify-producer! : Connection -> Void
+   ;; The producer the core writes a response's body from, called for its
+@@ -570,9 +603,11 @@
+   (define (notify-producer! c)
+     (let ((p (conn-producer (connection-state c))))
+       (when p
+-        (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
+-                                   (list 'handler-failed e)))
+-                       (producer-event (p)))))))
++        (let ((call (lambda ()
++                      (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
++                                                 (list 'handler-failed e)))
++                                     (producer-event (p)))))))
++          (if every? (spawn! call) (call))))))
+ 
+   ;; write! : Connection (Listof Segment) Nat -> Void
+   ;; A write of `nbytes`, the Date slot filled: held for the turn's one

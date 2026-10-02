@@ -1,0 +1,40 @@
+Linux 6.12.76-linuxkit aarch64
+10.4.1
+This is ApacheBench, Version 2.3 <$Revision: 1934973 $>
+round 1, 1 connection(s), default: 15556.39 req/s, 0.064 ms a request, 50000 complete, 0 failed
+round 1, 1 connection(s), once: 14901.78 req/s, 0.067 ms a request, 50000 complete, 0 failed
+round 1, 1 connection(s), coroutine: 15178.75 req/s, 0.066 ms a request, 50000 complete, 0 failed
+round 1, 1 connection(s), deferred: 15089.07 req/s, 0.066 ms a request, 50000 complete, 0 failed
+round 1, 1 connection(s), every: 15234.31 req/s, 0.066 ms a request, 50000 complete, 0 failed
+round 1, 1 connection(s), every-all: 15113.89 req/s, 0.066 ms a request, 50000 complete, 0 failed
+round 1, 32 connection(s), default: 64943.41 req/s, 0.493 ms a request, 50000 complete, 0 failed
+round 1, 32 connection(s), once: 64872.05 req/s, 0.493 ms a request, 50000 complete, 0 failed
+round 1, 32 connection(s), coroutine: 91585.99 req/s, 0.349 ms a request, 50000 complete, 0 failed
+round 1, 32 connection(s), deferred: 90918.02 req/s, 0.352 ms a request, 50000 complete, 0 failed
+round 1, 32 connection(s), every: 87140.81 req/s, 0.367 ms a request, 50000 complete, 0 failed
+round 1, 32 connection(s), every-all: 89356.56 req/s, 0.358 ms a request, 50000 complete, 0 failed
+round 2, 1 connection(s), once: 15355.63 req/s, 0.065 ms a request, 50000 complete, 0 failed
+round 2, 1 connection(s), coroutine: 15036.31 req/s, 0.067 ms a request, 50000 complete, 0 failed
+round 2, 1 connection(s), deferred: 15160.51 req/s, 0.066 ms a request, 50000 complete, 0 failed
+round 2, 1 connection(s), every: 15239.76 req/s, 0.066 ms a request, 50000 complete, 0 failed
+round 2, 1 connection(s), every-all: 15043.93 req/s, 0.066 ms a request, 50000 complete, 0 failed
+round 2, 1 connection(s), default: 14761.80 req/s, 0.068 ms a request, 50000 complete, 0 failed
+round 2, 32 connection(s), once: 65783.67 req/s, 0.486 ms a request, 50000 complete, 0 failed
+round 2, 32 connection(s), coroutine: 87698.68 req/s, 0.365 ms a request, 50000 complete, 0 failed
+round 2, 32 connection(s), deferred: 89758.71 req/s, 0.357 ms a request, 50000 complete, 0 failed
+round 2, 32 connection(s), every: 89769.02 req/s, 0.356 ms a request, 50000 complete, 0 failed
+round 2, 32 connection(s), every-all: 85663.52 req/s, 0.374 ms a request, 50000 complete, 0 failed
+round 2, 32 connection(s), default: 64574.20 req/s, 0.496 ms a request, 50000 complete, 0 failed
+round 3, 1 connection(s), coroutine: 14970.12 req/s, 0.067 ms a request, 50000 complete, 0 failed
+round 3, 1 connection(s), deferred: 15220.11 req/s, 0.066 ms a request, 50000 complete, 0 failed
+round 3, 1 connection(s), every: 14987.85 req/s, 0.067 ms a request, 50000 complete, 0 failed
+round 3, 1 connection(s), every-all: 15284.54 req/s, 0.065 ms a request, 50000 complete, 0 failed
+round 3, 1 connection(s), default: 15534.07 req/s, 0.064 ms a request, 50000 complete, 0 failed
+round 3, 1 connection(s), once: 15274.68 req/s, 0.065 ms a request, 50000 complete, 0 failed
+round 3, 32 connection(s), coroutine: 89163.12 req/s, 0.359 ms a request, 50000 complete, 0 failed
+round 3, 32 connection(s), deferred: 87435.36 req/s, 0.366 ms a request, 50000 complete, 0 failed
+round 3, 32 connection(s), every: 87484.32 req/s, 0.366 ms a request, 50000 complete, 0 failed
+round 3, 32 connection(s), every-all: 90392.54 req/s, 0.354 ms a request, 50000 complete, 0 failed
+round 3, 32 connection(s), default: 64998.21 req/s, 0.492 ms a request, 50000 complete, 0 failed
+round 3, 32 connection(s), once: 65554.08 req/s, 0.488 ms a request, 50000 complete, 0 failed
+exit=0

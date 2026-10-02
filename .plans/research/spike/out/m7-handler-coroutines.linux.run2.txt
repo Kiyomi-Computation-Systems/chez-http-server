@@ -1,0 +1,47 @@
+M7 handler coroutines: Chez Chez Scheme Version 10.4.1 tarm64le
+
+PART 1, per request through the parser, adapter and core
+  the gate's GET direct: 1840 B
+  the gate's GET coroutine: 2035 B
+  the gate's GET parked: 2269 B
+  the gate's GET direct: (2744 2526 2528 2521 2494 2510) ns, six rounds
+  the gate's GET coroutine: (2945 2824 2768 2792 2813 2786) ns, six rounds
+  the gate's GET parked: (2773 2772 2793 2763 2797 2782) ns, six rounds
+  ab -k's GET direct: 2112 B
+  ab -k's GET coroutine: 2307 B
+  ab -k's GET parked: 2547 B
+  ab -k's GET direct: (3184 3144 3212 3259 4358 3173) ns, six rounds
+  ab -k's GET coroutine: (3344 3364 3584 3349 3360 3441) ns, six rounds
+  ab -k's GET parked: (3508 3487 3468 3566 3517 3470) ns, six rounds
+
+PART 2, a parked handler's coroutine, the live heap per coroutine at 10000 parked
+  4 calls deep: 3515 B
+  16 calls deep: 3515 B
+  64 calls deep: 3879 B
+  4 calls deep, again: 3515 B
+  16 calls deep, again: 3515 B
+  64 calls deep, again: 3879 B
+
+PART 3, through the small shell, bytes per request
+  the gate's GET in-place: 2416 B
+  the gate's GET deferred: 2480 B
+  the gate's GET handler: 2595 B
+  the gate's GET every: 2611 B
+  the JSON POST, read-body in-place: 3280 B
+  the JSON POST, read-body deferred: 3344 B
+  the JSON POST, read-body handler: 3459 B
+  the JSON POST, read-body every: 3834 B
+  the JSON POST, read-whole-body in-place: 3472 B
+  the JSON POST, read-whole-body deferred: 3536 B
+  the JSON POST, read-whole-body handler: 3658 B
+  the JSON POST, read-whole-body every: 3994 B
+  the gate's GET, 8 pieces of 100 B in-place: 6752 B
+  the gate's GET, 8 pieces of 100 B deferred: 6816 B
+  the gate's GET, 8 pieces of 100 B handler: 6964 B
+  the gate's GET, 8 pieces of 100 B every: 8421 B
+
+PART 4, the floor, bytes per run
+  call/1cc alone: 64 B
+  a record made once, run to its end: 64 B
+  a record made once, parked once and woken: 193 B
+exit=0

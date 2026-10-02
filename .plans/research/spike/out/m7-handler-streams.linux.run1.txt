@@ -1,0 +1,76 @@
+Linux 6.12.76-linuxkit aarch64
+10.4.1
+curl 7.88.1 (aarch64-unknown-linux-gnu) libcurl/7.88.1 OpenSSL/3.0.20 zlib/1.2.13 brotli/1.0.9 zstd/1.5.4 libidn2/2.3.3 libpsl/0.21.2 (+libidn2/2.3.3) libssh2/1.10.0 nghttp2/1.52.0 librtmp/2.3 OpenLDAP/2.5.13
+round 1, default, upload 1: answered 16777216 0.023687 s 708287921 B/s
+round 1, default, upload 2: answered 16777216 0.008489 s 1976347744 B/s
+round 1, default, upload 3: answered 16777216 0.008182 s 2050503055 B/s
+round 1, default, download 1: 16777216 B in 0.009040 s 1855886725 B/s
+round 1, default, download 2: 16777216 B in 0.009019 s 1860208005 B/s
+round 1, default, download 3: 16777216 B in 0.008421 s 1992306851 B/s
+round 1, deferred, upload 1: answered 16777216 0.025138 s 667404566 B/s
+round 1, deferred, upload 2: answered 16777216 0.008823 s 1901531905 B/s
+round 1, deferred, upload 3: answered 16777216 0.008593 s 1952428255 B/s
+round 1, deferred, download 1: 16777216 B in 0.009291 s 1805749219 B/s
+round 1, deferred, download 2: 16777216 B in 0.008838 s 1898304593 B/s
+round 1, deferred, download 3: 16777216 B in 0.008503 s 1973093731 B/s
+round 1, every, upload 1: answered 16777216 0.026412 s 635211873 B/s
+round 1, every, upload 2: answered 16777216 0.010875 s 1542732505 B/s
+round 1, every, upload 3: answered 16777216 0.010015 s 1675208786 B/s
+round 1, every, download 1: 16777216 B in 0.010874 s 1542874379 B/s
+round 1, every, download 2: 16777216 B in 0.010414 s 1611025158 B/s
+round 1, every, download 3: 16777216 B in 0.010237 s 1638880140 B/s
+round 1, every-all, upload 1: answered 16777216 0.024278 s 691046049 B/s
+round 1, every-all, upload 2: answered 16777216 0.010210 s 1643214103 B/s
+round 1, every-all, upload 3: answered 16777216 0.009694 s 1730680420 B/s
+round 1, every-all, download 1: 16777216 B in 0.010796 s 1554021489 B/s
+round 1, every-all, download 2: 16777216 B in 0.010551 s 1590106719 B/s
+round 1, every-all, download 3: 16777216 B in 0.010437 s 1607474944 B/s
+round 2, deferred, upload 1: answered 16777216 0.023754 s 706290140 B/s
+round 2, deferred, upload 2: answered 16777216 0.008823 s 1901531905 B/s
+round 2, deferred, upload 3: answered 16777216 0.007967 s 2105838584 B/s
+round 2, deferred, download 1: 16777216 B in 0.008973 s 1869744344 B/s
+round 2, deferred, download 2: 16777216 B in 0.008824 s 1901316409 B/s
+round 2, deferred, download 3: 16777216 B in 0.008369 s 2004685864 B/s
+round 2, every, upload 1: answered 16777216 0.026812 s 625735342 B/s
+round 2, every, upload 2: answered 16777216 0.011485 s 1460793730 B/s
+round 2, every, upload 3: answered 16777216 0.010205 s 1644019206 B/s
+round 2, every, download 1: 16777216 B in 0.010555 s 1589504121 B/s
+round 2, every, download 2: 16777216 B in 0.010581 s 1585598336 B/s
+round 2, every, download 3: 16777216 B in 0.010623 s 1579329379 B/s
+round 2, every-all, upload 1: answered 16777216 0.027353 s 613359265 B/s
+round 2, every-all, upload 2: answered 16777216 0.011019 s 1522571558 B/s
+round 2, every-all, upload 3: answered 16777216 0.010660 s 1573847654 B/s
+round 2, every-all, download 1: 16777216 B in 0.011595 s 1446935403 B/s
+round 2, every-all, download 2: 16777216 B in 0.010739 s 1562269857 B/s
+round 2, every-all, download 3: 16777216 B in 0.010669 s 1572520011 B/s
+round 2, default, upload 1: answered 16777216 0.023887 s 702357600 B/s
+round 2, default, upload 2: answered 16777216 0.008666 s 1935981537 B/s
+round 2, default, upload 3: answered 16777216 0.008011 s 2094272375 B/s
+round 2, default, download 1: 16777216 B in 0.009205 s 1822619880 B/s
+round 2, default, download 2: 16777216 B in 0.008895 s 1886140078 B/s
+round 2, default, download 3: 16777216 B in 0.008613 s 1947894577 B/s
+round 3, every, upload 1: answered 16777216 0.026795 s 626132338 B/s
+round 3, every, upload 2: answered 16777216 0.011062 s 1516653046 B/s
+round 3, every, upload 3: answered 16777216 0.010014 s 1675376073 B/s
+round 3, every, download 1: 16777216 B in 0.010846 s 1546857458 B/s
+round 3, every, download 2: 16777216 B in 0.010302 s 1628539701 B/s
+round 3, every, download 3: 16777216 B in 0.010249 s 1636961264 B/s
+round 3, every-all, upload 1: answered 16777216 0.027650 s 606770922 B/s
+round 3, every-all, upload 2: answered 16777216 0.010810 s 1552008880 B/s
+round 3, every-all, upload 3: answered 16777216 0.009896 s 1695353274 B/s
+round 3, every-all, download 1: 16777216 B in 0.011426 s 1468336775 B/s
+round 3, every-all, download 2: 16777216 B in 0.010869 s 1543584138 B/s
+round 3, every-all, download 3: 16777216 B in 0.011009 s 1523954582 B/s
+round 3, default, upload 1: answered 16777216 0.023397 s 717066974 B/s
+round 3, default, upload 2: answered 16777216 0.008611 s 1948346998 B/s
+round 3, default, upload 3: answered 16777216 0.007842 s 2139405253 B/s
+round 3, default, download 1: 16777216 B in 0.009044 s 1855065900 B/s
+round 3, default, download 2: 16777216 B in 0.008787 s 1909322408 B/s
+round 3, default, download 3: 16777216 B in 0.008360 s 2006844019 B/s
+round 3, deferred, upload 1: answered 16777216 0.021242 s 789813388 B/s
+round 3, deferred, upload 2: answered 16777216 0.008342 s 2011174298 B/s
+round 3, deferred, upload 3: answered 16777216 0.007997 s 2097938727 B/s
+round 3, deferred, download 1: 16777216 B in 0.009019 s 1860208005 B/s
+round 3, deferred, download 2: 16777216 B in 0.008486 s 1977046429 B/s
+round 3, deferred, download 3: 16777216 B in 0.008422 s 1992070292 B/s
+exit=0

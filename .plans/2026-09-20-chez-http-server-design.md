@@ -880,6 +880,21 @@ A parked coroutine is resident only while parked: **3,449 B at 4 frames deep, 3,
 at 16, 5,635 B at 64** (two-level M3/A.3, 10,000 parked, measured after a full
 collection). An idle keep-alive connection carries no coroutine at all.
 
+> *Amended 2026-10-02 (M7.1; decision 0014):* how a handler comes to wait. Every
+> handler is called after libuv's turn, from the scheduler's drain: the shell queues
+> the call where it called the handler in place, and a handler that answers a response
+> or a reader is finished there, on no coroutine. A handler that waits answers
+> `(awaiting thunk)`; the thunk runs on a coroutine, and the reader or producer it
+> answers with is called on coroutines too, the reader on credit. A wait anywhere else
+> is refused (§5.3): R2's where no coroutine runs, R1's inside a libuv callback.
+> Measured by `research/spike/m7-handler-*` (Darwin arm64 and
+> Linux aarch64, Chez 10.4.1): the call made after the turn adds 64 B a request in the
+> spike's queue, and `ab -k` at 32 connections served 87,435–90,918 requests a second
+> on Linux where the call inside the read served 64,574–64,998; a handler parked 4 or
+> 16 calls deep holds 3,515 B, 64 deep 3,879 B, after a full collection, each a
+> coroutine record with its continuation; a coroutine that does not wait adds 189–195 B
+> to the gate's GET with the spike's scheduler, and `call/1cc` alone is 64 B.
+
 ### 5.3 The invariants, as checks
 
 Decision 0003 item 2 adopts R1–R5 of the two-level proposal as checks, not comments:
