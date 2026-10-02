@@ -54,13 +54,16 @@
 ;;; wake of a coroutine that is not parked, and a drain re-entered from a
 ;;; coroutine, are the caller's bugs, plain assertion violations.
 ;;;
-;;; A scheduler keeps its loop's WAITS, (http-server private waits)'s, which
-;;; it never reads: a waiting verb finds them through the coroutine running.
+;;; A scheduler keeps its loop's WAITS, (http-server private waits)'s, and a
+;;; coroutine what its waits keep of it, the wait it is parked on and how
+;;; many of its deadlines have passed: neither reads them, and a waiting
+;;; verb finds both through the coroutine running.
 (library (http-server private scheduler)
   (export make-scheduler scheduler? scheduler-ready?
           scheduler-spawn! scheduler-call! scheduler-drain! scheduler-turn!
           scheduler-waits scheduler-waits-set!
           coroutine? current-coroutine coroutine-scheduler waiting-coroutine
+          coroutine-waits coroutine-waits-set! coroutine-suspending?
           coroutine-park! coroutine-wake! coroutine-yield!
           scheduler-phase scheduler-feed-begin! scheduler-feed-end!
           &scheduler-invariant scheduler-invariant? scheduler-invariant-name)
@@ -95,14 +98,24 @@
 
   ;; coroutine? : Any -> Boolean
   ;; coroutine-scheduler : Coroutine -> Scheduler — the one that runs it
+  ;; coroutine-waits : Coroutine -> Any — what its waits keep of it, or #f
+  ;; coroutine-waits-set! : Coroutine Any -> Void
   ;; A coroutine is 'ready, 'running, 'parked or 'ended.  `k` is its
   ;; continuation while parked, `value` what a wake gave it, and then its
   ;; end: what it returned or raised.
   (define-record-type (coroutine make-coroutine coroutine?)
     (fields scheduler thunk on-end
-            (mutable state) (mutable k) (mutable value) (mutable raised?))
+            (mutable state) (mutable k) (mutable value) (mutable raised?)
+            (mutable waits))                ; what its waits keep of it, which it never reads
     (protocol (lambda (new)
-                (lambda (s thunk on-end) (new s thunk on-end 'ready #f #f #f)))))
+                (lambda (s thunk on-end) (new s thunk on-end 'ready #f #f #f #f)))))
+
+  ;; coroutine-suspending? : Coroutine -> Boolean
+  ;; Whether it is parking or yielding: what a `dynamic-wind` on its stack
+  ;; reads, as its after thunk runs, to tell a park from a leaving.  A park
+  ;; marks the coroutine before it jumps to the drain.
+  (define (coroutine-suspending? c)
+    (and (memq (coroutine-state c) '(parked yielded)) #t))
 
   ;; The process's phase, and the coroutine running, if one is.
   (define phase 'scheduling)

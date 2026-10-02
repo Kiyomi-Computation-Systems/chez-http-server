@@ -3967,3 +3967,27 @@ Records: decision 0015's choices of the second step; design §5.3's note on R4; 
 Size: 402 inserted lines of code, tests and Makefile, 33 deleted.
 
 NEXT: the third step, `sleep-ms` and `with-deadline`, stacked on this one.
+
+M7.2 THIRD STEP: `sleep-ms` and `with-deadline` (feat/m7.2-timed-waits).
+- `(http-server heap)`, pure: a binary min-heap of the times a loop's waits wake at, by time and then by the order put in, each entry keeping its place, so one leaves the middle in log time.
+- `(http-server private waits)`: `sleep-ms` and `with-deadline` over the heap, with the loop's clock and a timer of their own (`waits-clock!`), fired by `waits-fire!`, armed for the earliest and stopped when nothing is left. A deadline is in force until its thunk is left, once, by a return, a raise or a continuation, held by a `dynamic-wind` whose after thunk a park runs too (the review's first and third); a raise a handler outside continues does not leave it, and every value the thunk returns comes back; once passed, it ends the wait in progress, taking back a sleep, or the next one before anything is armed, and every later wait inside it. A wait it ends raises `&deadline-passed`, an `&error` of `(http-server awaiting)`; a resume after it is late (R4). A coroutine keeps what its deadlines need, the wait it is parked on and how many have passed (`coroutine-waits`, the scheduler's slot); the scheduler tells a park from a leaving (`coroutine-suspending?`).
+- `(http-server private shell)`: the loop's waits get the loop's clock, brought up to date as it is read, and a timer of their own, made when first started; like the tick timer it is closed by a shell that serves no more, when nothing is armed (`release-waits-timer!`), and made again by the next timed wait. `shell-waits-timed` reads how many are armed, for the checks.
+- The facade exports `sleep-ms`, `with-deadline`, `&deadline-passed` and `deadline-passed?`; `docs/handlers.org`'s "Waiting" gains them.
+- The checks: the heap suite, seven, its oracle a plain list, played against 5,000 steps from a fixed seed; the waits suite's seventeen more, on a clock it sets, four of them added after: the review's three, and the sleep due at its deadline's own time (the fourth step's FOUND); in the shell suite, a handler that holds the loop 30 ms, then sleeps 20 ms, sleeping 18 ms or more by the monotonic clock, and one whose deadline of 10 ms ends a sleep of a minute, answered at once, nothing left armed; and a sleep after a shell has served its last, the timer made again.
+
+FOUND WHILE BUILDING, each fixed with its check:
+- The timer of the waits, first left for the loop's teardown to close, reddened the shell suite's "and no handle is left on the loop": it is now closed as the tick timer is.
+- A coroutine's list of its deadlines in force, kept at first, was written and never read: taken out.
+- `make check-imports` greps text: two comments in pure libraries that named the private waits library reddened it, and were reworded.
+- The docs' first example of a deadline returned a response from an exception handler; the deadline's raise is not continuable, so its handler may not return. The example now uses `guard`.
+- Seven of the step's first thirty-six mutants survived, each a check too weak to see it, and each check was made stronger (m7-mutations.md).
+
+Measured on the step's tree (2026-10-02, Darwin arm64): `make test` green, forty-seven suites, 1,518 expected passes (1,492 + 26), every pin ok.
+
+Watched to fail (m7-mutations.md, M7.2's third step, and the review's fixes): forty mutants on the step's tree, M7H-13, M7T-25 and the review's M7T-26 to M7T-30 among them, and M7T-8 to M7T-10 withdrawn with the exception handler they cut; every check the step added is reddened by one.
+
+Records: decision 0015's choices of the third step; decision 0005's amendment, a second timer a loop; design §2's and §3.1's notes; the scheduler's and the shell's headers; `docs/handlers.org`.
+
+Size: 1,066 inserted lines of code and tests, 56 deleted.
+
+NEXT: the fourth step, `resolve`, stacked on this one.

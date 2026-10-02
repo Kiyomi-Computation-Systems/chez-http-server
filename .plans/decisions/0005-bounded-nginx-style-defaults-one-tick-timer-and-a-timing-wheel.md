@@ -481,3 +481,13 @@ ones a read's end handed on; a target that began in the read that failed has the
 before it judged first, as its first bytes would have. Over the 40,000 fuzzed requests at
 every delivery size, the error's offset and the core's own placement agreed at all 615,192
 targets and names cut off, and every answer is unchanged.
+
+## Amendment (2026-10-02) — a second timer a loop, for the waits (decision 0015, M7.2)
+
+The tick timer is no longer the only timer handle. A handler's sleeps and deadlines
+(`sleep-ms`, `with-deadline`) are timed to the millisecond by a second timer a loop, the
+waits', armed for the earliest of a binary heap of them (`(http-server heap)`). Like the
+tick timer it is stopped while nothing is armed, so an idle server still sleeps, and
+closed by a shell that serves no more. The connections' deadlines keep the wheel and its
+tick. Measured for decision 0015 (`research/spike/m7-waits.sps`): on the wheel's 250 ms
+tick, a 10 ms sleep took 250.7 to 256.2 ms; on the waits' timer, 10.2 to 13.7 ms.
