@@ -1311,6 +1311,33 @@ here:
 - **Mutations:** design §5.3's "call a handler from inside `on-data`", and its "swap
   `'once` and `'nowait`". R2's and R3's are named when the slice is written.
 
+*Noted 2026-10-02 (M7.1, decision 0014):* decided by form, measured first
+(`research/spike/m7-handler-*`). Nothing said how the server comes to know a handler
+waits, since v1 calls every handler inside libuv's read. Every handler is now called
+after libuv's turn, from the scheduler's drain, in place: a turn's requests are all read
+before their handlers answer, and `ab -k` at 32 connections on Linux served 87,435 to
+90,918 requests a second where today's shell serves 64,574 to 64,998 (Darwin 2 to 3 per
+cent more; within 4 per cent at one connection), for 64 B a request in the spike's queue.
+A handler that waits answers `(awaiting thunk)`, whose thunk runs on a coroutine, as do
+the reader and the producer it answers with. Weighed: every call into handler code on a
+coroutine, with no wrapper, which put the JSON POST read whole at 3,146 B, over the
+gate, with a simple scheduler, and streamed 16 MiB 20 to 25 per cent slower on Linux
+loopback; and handlers called inside the read, as in v1. So M7.1 is three steps, each a
+layer green on its own:
+1. the scheduler, `(http-server private scheduler)`: coroutines on one-shot
+   continuations, the turn with `poll!` injected, and the phase cell, with R1, R2, R3
+   and R5 checked against scripted turns, no libuv loaded; the mutations swap `'once`
+   and `'nowait`, let a coroutine return normally (R3), capture outside a coroutine
+   (R2), and wait inside a feed (R5);
+2. every handler after the turn: `serve`'s loop the scheduler's turn, the phase
+   `'in-uv-run` around `uv-run` and `'in-parser` through a feed, both shells calling a
+   handler from their drain's end, and the core's rows for an answer that comes after
+   it, reading stopped while a request whose body is still arriving waits on its
+   handler (the M6.2 note below); the mutation calls a handler from inside `on-data`;
+3. `awaiting`: the thunk on a coroutine, its reader on credit and its producer on
+   coroutines, a wait anywhere else refused, as R2's where no coroutine runs and R1's
+   inside a libuv callback, and a handler that waits there failing.
+
 **M7.2 — what a handler awaits, decided first.** The awaiting verbs a handler sees are
 public API, so a decision record comes first; the brief's exit needs `uv-getaddrinfo!`.
 A resume cell is one-shot, and a second fulfilment, such as a DNS answer after its
