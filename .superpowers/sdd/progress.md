@@ -4023,3 +4023,21 @@ M7.2 BUILT, the four steps proved each on its own tree, the review's fixes in (2
 Size, inserted and deleted lines of code, tests and the Makefile, each step against the one below it: the first 71 and 8; the second 402 and 33; the third 1,066 and 56; the fourth 312 and 44; the slice, against main, 1,767 and 57. `docs/handlers.org` and the README's status: 78 inserted lines and 1 deleted, against main.
 
 NEXT: the four stacked PRs, merged bottom up on the owner's "do closing ritual" once CI is green on each head. Then M7.3 (plan §14), three shells under one contract, when the owner asks.
+
+MERGED to main on 2026-10-02, on the owner's "do closing ritual": **M7.2, as four stacked PRs.**
+- **#98, the scheduler without `guard`,** as e9538d2. Its squash tree (bd8ee9a) is the tested tip's, 24a7e9c's, and its parent is f5532ee. It merged first and kept its branch, since #99 was based on it.
+- **#99, `await`,** as efb9d15. It was retargeted to main and rebased from #98's tip, 24a7e9c. The rebased tip, aadb393, has the tested tree (6337bcd, 154ebc8's), and so does the squash, whose parent is e9538d2.
+- **#100, `sleep-ms` and `with-deadline`,** as 7dd450e. It was retargeted to main and rebased from #99's tip before its rebase, 154ebc8. The rebased tip, d93f5e5, has the tested tree (0de2157, 45947d9's), and so does the squash, whose parent is efb9d15.
+- **#101, `resolve`,** as 25282fd. It was retargeted to main and rebased from #100's tip before its rebase, 45947d9. The rebased tip, c4d741c, has the tested tree (ee1d6e6, 8a5d9f9's), and so does the squash, whose parent is 7dd450e.
+- **CI.** Each merged on `linux` SUCCESS at its head: #98 on 24a7e9c (run 37061901217); #99 on aadb393 (run 37062456911); #100 on d93f5e5 (run 37062668021); #101 on c4d741c (run 37062856436). Each log holds its step's count: 1,482, 1,492, 1,518 and 1,524 expected passes.
+- **Branches.** All four deleted, local and remote, and refs pruned. No PR is open. #101's `--delete-branch` deleted its branch, local and remote, and this time switched this checkout to main and fast-forwarded it; the lower three were deleted by hand.
+
+`make test` green on main: forty-seven suites, 1,524 expected passes, every pin ok.
+
+DONE and merged (e9538d2, PR #98; efb9d15, PR #99; 7dd450e, PR #100; 25282fd, PR #101): **M7.2.**
+- A handler that answers `awaiting` waits with four verbs, which the facade exports with it (decision 0015): `await`, whose resume is one-shot, a late one logged as `late-resume` with its verb (R4); `sleep-ms` and `with-deadline`, timed to the millisecond by one libuv timer a loop over a binary heap, `(http-server heap)`; and `resolve`, through `uv-getaddrinfo!`, a name refused at the call answered `invalid-name`. A reader's or a producer's wait goes on when its connection closes.
+- A coroutine costs 374 B where M7.1's cost 3,756 B: its raise is caught by a handler that jumps to the drain, not by a `guard`. Through a real socket, a handler that answers `awaiting` and does not wait costs 2.1 KB less a request than on main, and an ordinary one what it did.
+- A /code-review high found seven, all fixed on the owner's word by form, three of them bugs. Seventy-six mutants on the finished tree, each reddening a check but M7L-11, a scope statement.
+- The fake shell's path for a waiting handler is M7.3's, with a scripted clock, timer and resolver for its waits (`waits-clock!` and `waits-resolver!` take them).
+
+NEXT: M7.3 (plan §14), three shells, one contract: the contract test plays its scripts through the coroutine shell as well (brief item 5), and a handler awaiting `uv-getaddrinfo!` inside a pipelined connection keeps the responses in order (the brief's exit). On a fresh branch cut from main after this commit, when the owner asks.
