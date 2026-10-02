@@ -3879,3 +3879,21 @@ Records: plan §14's built note; decision 0014's choices of the third step; the 
 Size: 292 inserted lines of code and tests, 32 deleted; the slice, 1,359 and 169.
 
 NEXT: the three stacked PRs, merged bottom up on the owner's "do closing ritual" once CI is green on each head. Then M7.2 (plan §14), what a handler awaits, its decision first, when the owner asks.
+
+
+MERGED to main on 2026-10-02, on the owner's "do closing ritual": **M7.1, as three stacked PRs.**
+- **#95, the scheduler,** as 72ac3fb. Its squash tree (d8426e0) is the tested tip's, 1f97bfb's, and its parent is 4a7748b. It merged first and kept its branch, since #96 was based on it.
+- **#96, every handler after the turn,** as 4bae222. It was retargeted to main and rebased from #95's tip, 1f97bfb. The rebased tip, 86ad663, has the tested tree (a58ec70, ed67eb4's), and so does the squash, whose parent is 72ac3fb.
+- **#97, `awaiting`,** as d41de14. It was retargeted to main and rebased from #96's tip before its rebase, ed67eb4. The rebased tip, 2db446a, has the tested tree (59f665b, 41702eb's), and so does the squash, whose parent is 4bae222.
+- **CI.** Each merged on `linux` SUCCESS at its head: #95 on 1f97bfb (run 37032989447); #96 on 86ad663 (run 37035025785); #97 on 2db446a (run 37035237184). Each log holds its step's count: 1,456, 1,463 and 1,478 expected passes.
+- **Branches.** All three deleted, local and remote, and refs pruned. No PR is open. #97's `--delete-branch` deleted its remote branch but left this checkout on it, so the switch to main, the fast-forward and the local deletions were done by hand.
+
+`make test` green on main: forty-five suites, 1,478 expected passes, every pin ok.
+
+DONE and merged (72ac3fb, PR #95; 4bae222, PR #96; d41de14, PR #97): **M7.1.**
+- Every handler is called after libuv's turn, from the scheduler's drain, in place (decision 0014). A handler that waits answers `(awaiting thunk)`: the thunk runs on a coroutine, and so do the reader and producer it answers with, until the next request's handler is called. The core waits for every answer as for a later event: a request whose body is still arriving waits in handling, reading stopped.
+- The scheduler, `(http-server private scheduler)`, one a loop, checks R1, R2, R3 and R5. R4's one-shot resume cells are M7.2's.
+- `serve` with `ab -k` at 32 connections on Linux served 83,242 to 92,187 requests a second, where main served 65,101 to 68,231. A lone connection is 1 to 8 per cent slower a round on Linux, and 2 per cent on Darwin.
+- `awaiting` is not exported yet: the facade exports it with M7.2's verbs. The fake shell's path for a waiting handler is M7.3's, by the review's form.
+
+NEXT: M7.2 (plan §14), what a handler awaits. The waiting verbs are public API, so a decision record comes first, by form on measurements; the brief's exit needs `uv-getaddrinfo!`, and a resume cell is one-shot (R4). On a fresh branch cut from main after this commit, when the owner asks.
