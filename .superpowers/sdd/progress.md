@@ -3858,3 +3858,24 @@ Records: design §4.4's and §5.3's notes; global-constraints' import rule; m7-m
 Size: 501 inserted lines of code, tests and the Makefile, 137 deleted.
 
 NEXT: the third step, `awaiting`, stacked on this one.
+
+
+M7.1 THIRD STEP: `awaiting` (feat/m7.1-awaiting).
+- `(http-server awaiting)`, pure, a record of a thunk (decision 0014 item 2). The facade does not export it until M7.2 brings verbs to wait with.
+- `(http-server private shell)`: a handler's `awaiting` thunk run on a coroutine, and its answer dispatched on credit; until the connection's next handler is called, each call into its reader and producer made on a coroutine too, one at a time, in order, the event each call brings dispatched once it has ended (`call-waiting!`).
+- The checks: in the shell suite, a handler that waits, parked until woken, nothing answered meanwhile, then its answer written; an ordinary handler that waits, a 500, R2's refusal logged; a waiting handler's reader taking each piece on a coroutine, in order, reading waiting on its credit while it takes one; its producer called on a coroutine for each piece; the next request's ordinary reader called in place. The record's own two checks in the body suite.
+
+Measured on the finished tree (2026-10-02, Darwin arm64):
+- `make test` green: forty-five suites, 1,478 expected passes (1,463 + 15), every pin ok, the import audit's new rule among them, 27.5 s.
+- The allocation suite, the same as on main: curl's GET 1,840 B; the JSON POST 2,624 B read whole and 2,432 B streamed; ab -k's GET 2,112 B.
+- `serve` beside main's (`research/spike/m7-serve-ab.sh`, `tests/serve-child.sps` on each tree; ab -k, 50,000 GETs, three rounds, the order alternating, nothing else running; `out/m7-serve-ab.{darwin,linux}.txt`): on Linux, 32 connections, 83,242 to 92,187 requests a second, where main serves 65,101 to 68,231; one connection, 14,247 to 15,052, where main serves 15,181 to 15,537. On Darwin, 32 connections, 32,974 to 34,940, where main serves 33,332 to 33,445; one connection, 11,831 to 11,891, where main serves 12,045 to 12,085. So the deferral's gain the spike measured holds with 32 connections on Linux, and the turn costs a lone connection 1 to 8 per cent a round on Linux and 2 per cent on Darwin. A first Linux run, made while a mutant ran beside it, served 71,709 to 84,692 at 32 connections, and was set aside.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree made with `COPYFILE_DISABLE=1`, curl 7.88.1 and ab 2.3 installed: `make test`, less its submodule and pin checks, forty-five suites, 1,478 expected passes, 31.3 s, the allocation figures the same; the shell, serve, scheduler and contract suites three runs more each, 148, 12, 17 and 68 passes each time.
+
+Watched to fail (m7-mutations.md, the third step): forty-nine mutants on the finished tree, the first step's twenty and the second step's seventeen again, and the third step's twelve. Every check M7.1 added or changed is reddened by at least one, and the same three survive.
+
+Records: plan §14's built note; decision 0014's choices of the third step; the research README's line on `m7-serve-ab.sh`, the script and its runs; m7-mutations.md.
+
+Size: 292 inserted lines of code and tests, 32 deleted; the slice, 1,359 and 169.
+
+NEXT: the three stacked PRs, merged bottom up on the owner's "do closing ritual" once CI is green on each head. Then M7.2 (plan §14), what a handler awaits, its decision first, when the owner asks.

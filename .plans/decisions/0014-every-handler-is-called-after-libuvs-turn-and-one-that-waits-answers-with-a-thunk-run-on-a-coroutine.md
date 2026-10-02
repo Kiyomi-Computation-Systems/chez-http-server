@@ -164,3 +164,11 @@ Each step's choices are under its name.
   `make check-imports` holds that none of them can reach the scheduler: the pure
   libraries import no private library, and the adapter neither the scheduler nor the
   shell or serve. The scheduler's own suite checks its R5 refusal.
+
+**`awaiting`** (the third step):
+
+- **`awaiting` is not exported yet.** The facade exports it with M7.2's verbs, so that
+  a handler has something to wait on when it can say it waits. Until then the shell's
+  path is checked through the scheduler's own park and wake.
+- **An answer of `awaiting` waits wherever it is given**: a thunk that answers another
+  waits again, and so does a reader's end that answers one.

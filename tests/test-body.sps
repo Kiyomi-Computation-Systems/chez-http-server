@@ -9,11 +9,14 @@
 ;;; procedure is called with it.  Past its cap, 1 MiB unless one is given,
 ;;; the core answers 413; the reader only carries the cap.
 ;;;
+;;; And (http-server awaiting): the answer of a handler that waits, a thunk
+;;; the server runs on a coroutine (decision 0014; M7.1).
+;;;
 ;;; Oracles: decision 0013 items 2 and 6, and decision 0005's
 ;;; `max-body-bytes` row, whose buffering helper takes 1 MiB, 1,048,576 B;
-;;; the bytes each check hands the reader.
+;;; the bytes each check hands the reader; decision 0014 item 2.
 (import (rnrs) (srfi :64) (testing)
-        (http-server body))
+        (http-server body) (http-server awaiting))
 
 (define (b s) (string->utf8 s))
 
@@ -87,4 +90,17 @@
                            (lambda () (read-whole-body (lambda (body) body) -1))
                            (lambda () (read-whole-body (lambda (body) body) 0))
                            (lambda () (read-whole-body (lambda (body) body) 1.5))
-                           (lambda () (read-whole-body (lambda (body) body) 'many)))))))
+                           (lambda () (read-whole-body (lambda (body) body) 'many)))))
+
+    ;; --- awaiting: the answer of a handler that waits (decision 0014) -----------
+    (let* ((thunk (lambda () 'answer)) (a (awaiting thunk)))
+      (test-equal "awaiting carries its thunk, and is neither a reader nor anything else"
+                  '(#t #t #f #f)
+                  (list (awaiting? a) (eq? (awaiting-thunk a) thunk)
+                        (awaiting? thunk) (body-reader? a))))
+    (test-equal "an awaiting is made of a procedure"
+                '(accepted refused refused)
+                (map verdict
+                     (list (lambda () (awaiting (lambda () #t)))
+                           (lambda () (awaiting 'thunk))
+                           (lambda () (awaiting #f)))))))

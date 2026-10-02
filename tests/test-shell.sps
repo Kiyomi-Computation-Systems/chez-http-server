@@ -17,6 +17,12 @@
 ;;;     and not at all once its connection has closed before the drain
 ;;;     reaches the call; and a loop let go with its shell is collected,
 ;;;     though its scheduler, kept for it, holds it;
+;;;   - a handler that waits answers `awaiting`: its thunk parks on a
+;;;     coroutine, nothing is answered while it waits, and once woken its
+;;;     answer is written; its reader takes each piece on a coroutine, in
+;;;     order, reading waiting while it takes one, and its producer is called
+;;;     on a coroutine for each piece; an ordinary handler that waits fails,
+;;;     500, the refusal logged as R2's (M7.1);
 ;;;   - three requests in one write are answered in order, reading the clock
 ;;;     fewer times than they are answered (decision 0010: once a second), and
 ;;;     no action but the parser's reply runs at parser depth (design §6.4,
@@ -125,7 +131,10 @@
         (only (generated httparse-message) httparse-message-machine)
         (only (httparse modes) httparse-message-type-value)
         (http-server private shell)
-        (only (http-server private scheduler) scheduler-phase current-coroutine)
+        (only (http-server private scheduler)
+              scheduler-phase current-coroutine coroutine-park! coroutine-wake! coroutine-yield!
+              scheduler-invariant? scheduler-invariant-name)
+        (only (http-server awaiting) awaiting)
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
               conn-outstanding conn-outstanding-bytes)
@@ -268,9 +277,18 @@
 ;; producer keeping in `head-first-seen`, at its first call, how many more
 ;; write requests chez-libuv holds than when the handler was called
 ;; (`head-first-requests`); and `/stream-raise` a piece, then raises.  And
-;; where a handler is called (decision 0014; M7.1): `/phase` answers the
-;; scheduler's phase it was called in and whether a coroutine ran it; and
-;; `/counted` counts its calls in `counted-calls`.
+;; where a handler is called, and handlers that wait (decision 0014; M7.1):
+;; `/phase` answers the scheduler's phase it was called in and whether a
+;; coroutine ran it; `/await` waits, its thunk parked in `parked` until the
+;; suite wakes it, then answers what it was woken with, the phase and
+;; whether a coroutine ran it; `/wait-plain` parks with no `awaiting`;
+;; `/await-read` waits and reads the body, yielding before it keeps each
+;; piece, and answers the pieces joined; `/await-held` waits and reads the
+;; body, its first piece parked in `parked` until the suite wakes it; and
+;; `/await-stream` waits and streams three texts, yielding before each; and
+;; `/read-phase` reads the body with an ordinary reader, and answers whether
+;; a coroutine ran any of its pieces; and `/counted` counts its calls in
+;; `counted-calls`.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -282,6 +300,7 @@
 (define (hold! ms)
   (let ((until (+ (monotonic-ms) ms)))
     (let spin () (when (< (monotonic-ms) until) (spin)))))
+(define parked #f)
 (define counted-calls 0)
 (define credit-pieces '())
 (define credit-held 0)
@@ -310,9 +329,51 @@
            (make-response 200 #f '() (make-bytevector wide-size 120)))
           ((bytevector=? target (b "/raise"))
            (raise (make-message-condition "the handler failed")))
+          ((bytevector=? target (b "/await"))
+           (awaiting
+            (lambda ()
+              (set! parked (current-coroutine))
+              (let ((v (coroutine-park!)))
+                (make-response 200 #f '()
+                               (string->utf8 (string-append (symbol->string v) " "
+                                                            (symbol->string (scheduler-phase))
+                                                            (if (current-coroutine) " coroutine" " none"))))))))
+          ((bytevector=? target (b "/wait-plain"))
+           (coroutine-park!)
+           (make-response 200 #f '() target))
+          ((bytevector=? target (b "/await-read"))
+           (awaiting
+            (lambda ()
+              (let ((pieces '()))
+                (read-body (lambda (bv start end)
+                             (coroutine-yield!)
+                             (set! pieces (cons (bytes-between bv start end) pieces)))
+                           (lambda ()
+                             (make-response 200 #f '()
+                                            (string->utf8 (apply string-append
+                                                                 (map utf8->string (reverse pieces)))))))))))
+          ((bytevector=? target (b "/await-held"))
+           (awaiting
+            (lambda ()
+              (let ((first? #t))
+                (read-body (lambda (bv start end)
+                             (when first?
+                               (set! first? #f)
+                               (set! parked (current-coroutine))
+                               (coroutine-park!)))
+                           (lambda () (make-response 200 #f '() target)))))))
+          ((bytevector=? target (b "/await-stream"))
+           (awaiting
+            (lambda ()
+              (let ((p (producer-of '("one " "two " "three"))))
+                (make-response 200 #f '() (lambda () (coroutine-yield!) (p)))))))
           ((bytevector=? target (b "/counted"))
            (set! counted-calls (+ counted-calls 1))
            (make-response 200 #f '() target))
+          ((bytevector=? target (b "/read-phase"))
+           (let ((seen 'none))
+             (read-body (lambda (bv start end) (when (current-coroutine) (set! seen 'coroutine)))
+                        (lambda () (make-response 200 #f '() (string->utf8 (symbol->string seen)))))))
           ((bytevector=? target (b "/phase"))
            (make-response 200 #f '()
                           (string->utf8 (string-append (symbol->string (scheduler-phase))
@@ -724,6 +785,72 @@
                (collect (collect-maximum-generation))
                (collect (collect-maximum-generation))
                (bwp-object? (car w))))
+
+    ;; A handler that waits (decision 0014): its thunk parks on a coroutine,
+    ;; and nothing is answered until the suite wakes it.
+    (set! parked #f)
+    (let ((cl (open-client! (b "GET /await HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a handler that waits answers awaiting: its thunk parks on a coroutine, and nothing is answered while it waits"
+                  '(satisfied 0 handling)
+                  (let ((waited (wait-for (lambda () (and parked #t)))))
+                    (run-loop-until loop (lambda () #f) 20)
+                    (list waited (collector-count (client-collector cl))
+                          (let ((c (newest))) (if (connection? c) (phase c) 'no-connection)))))
+      (when parked (coroutine-wake! parked 'woken))
+      (test-eq "once woken, its answer is written" 'satisfied
+               (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))
+      (test-equal "the thunk's answer, resumed in the drain, on its coroutine"
+                  '((200 "woken scheduling coroutine"))
+                  (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl))))
+      (client-send! cl (b "POST /read-phase HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello"))
+      (test-equal "the next request on the connection, its handler ordinary, has its reader called in place"
+                  '(satisfied "none")
+                  (list (wait-for (lambda () (= 2 (length (responses (client-bytes cl))))))
+                        (let ((rs (responses (client-bytes cl))))
+                          (if (= 2 (length rs)) (body (cadr rs)) 'no-response))))
+      (client-close! cl))
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /wait-plain HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of an ordinary handler that waits reads the stream's end" 'satisfied
+               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+      (test-equal "after a 500, the refusal logged as R2's, a wait on no coroutine"
+                  '((500) handler-failed r2)
+                  (list (map status (responses (client-bytes cl)))
+                        (first-logged)
+                        (let ((e (assq 'handler-failed logged)))
+                          (if (and e (pair? (cdr e)) (scheduler-invariant? (cadr e)))
+                              (scheduler-invariant-name (cadr e))
+                              'no-refusal))))
+      (client-close! cl))
+    (let ((cl (open-client! (b (string-append "POST /await-read HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                              "5\r\nhello\r\n1\r\n \r\n5\r\nworld\r\n0\r\n\r\n")))))
+      (test-eq "the client of a handler that waits and reads a body reads its response" 'satisfied
+               (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))
+      (test-equal "its reader takes each piece on a coroutine, in order, yielding before it keeps one"
+                  '((200 "hello world"))
+                  (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl))))
+      (client-close! cl))
+    (set! parked #f)
+    (let ((cl (open-client! (b "POST /await-held HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello"))))
+      (test-equal "its reader waits on a piece, and reading waits for it: the connection awaits its credit"
+                  '(satisfied awaiting-credit)
+                  (let ((waited (wait-for (lambda () (and parked #t)))))
+                    (client-send! cl (b " world"))
+                    (run-loop-until loop (lambda () #f) 20)
+                    (list waited (let ((c (newest))) (if (connection? c) (phase c) 'no-connection)))))
+      (when parked (coroutine-wake! parked 'go))
+      (test-eq "once it has taken the piece, the rest is read, and the response follows" 'satisfied
+               (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))
+      (test-equal "the reader's response" '((200 "/await-held"))
+                  (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl))))
+      (client-close! cl))
+    (let ((cl (open-client! (b "GET /await-stream HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of a handler that waits and streams reads its response" 'satisfied
+               (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))
+      (test-equal "its producer is called on a coroutine for each piece, yielding before each: the pieces in order"
+                  '((200 "one two three"))
+                  (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl))))
+      (client-close! cl))
 
     ;; Three requests in one write, the depth counter, and the clock.
     (set! clock-reads 0)
