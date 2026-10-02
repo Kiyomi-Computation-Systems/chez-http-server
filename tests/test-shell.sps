@@ -328,29 +328,12 @@
     (let spin () (when (< (monotonic-ms) until) (spin)))))
 (define parked #f)
 (define waker #f)
-;; spaced : (Listof String) -> String — the strings, a space between each.
-(define (spaced strings)
-  (if (null? strings)
-      ""
-      (fold-left (lambda (acc x) (string-append acc " " x)) (car strings) (cdr strings))))
-
 ;; reason-for : String -> String — the reason `resolve` raised with for
 ;; `host`, or "resolved".
 (define (reason-for host)
   (guard (e ((resolve-error? e) (symbol->string (resolve-error-reason e))))
     (resolve host)
     "resolved"))
-
-;; looked-up : String -> (U (Listof String) 'failed)
-;; What uv-getaddrinfo! itself answers for `host`, stream sockets alone,
-;; the suite's loop run until it has.
-(define (looked-up host)
-  (let ((answer #f))
-    (uv-getaddrinfo! loop host #f '((socktype . stream))
-                     (lambda (err results)
-                       (set! answer (if err 'failed (map uv-addrinfo-address results)))))
-    (wait-for (lambda () answer))
-    answer))
 
 ;; monotonic-us : -> Nat — the monotonic clock, in microseconds.
 (define (monotonic-us)
@@ -598,26 +581,6 @@
                  (+ at (bytevector-length bv)))
                0 bvs)
     out))
-
-;; bytes-between : Bytevector Nat Nat -> Bytevector
-(define (bytes-between bv from to)
-  (let ((out (make-bytevector (- to from))))
-    (bytevector-copy! bv from out 0 (- to from))
-    out))
-
-;; responses : Bytevector -> (Listof Response-Read)
-;; The whole responses at the front of `bv`, in order, each read by
-;; chez-httparse's response parser: the shortest prefix it reads as one
-;; complete message is the first, and what follows is read the same way.
-(define (responses bv)
-  (let next ((from 0) (acc '()))
-    (let grow ((to (+ from 1)))
-      (if (> to (bytevector-length bv))
-          (reverse acc)
-          (let ((r (read-response (bytes-between bv from to) #f #f)))
-            (if (eq? (list-ref r 4) 'complete)
-                (next to (cons r acc))
-                (grow (+ to 1))))))))
 
 ;; head-length : Bytevector -> Nat — the bytes up to and including the blank
 ;; line that ends a response's head, or all of them if there is none.
@@ -1948,7 +1911,7 @@
     ;; 255 octets; and one the resolver refuses itself, with a network or
     ;; without (measured on Darwin and on Linux in Docker, `--network none`
     ;; and not): EAI_NONAME.
-    (let* ((oracle (looked-up "localhost"))
+    (let* ((oracle (looked-up loop "localhost" cap))
            (cl (open-client! (b (string-append "GET /resolve HTTP/1.1\r\nHost: x\r\n\r\n"
                                                "GET /resolve-empty HTTP/1.1\r\nHost: x\r\n\r\n"
                                                "GET /resolve-nul HTTP/1.1\r\nHost: x\r\n\r\n"

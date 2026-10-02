@@ -1780,12 +1780,16 @@ instant, or at the instants out of order, fails its bytes check every time.
 script whose requests reach the handler plays to it, its handler answering `(awaiting
 thunk)` with the same handler's call, and its events are given to a fake made the same
 way. Since M7.3 the fake has the libuv shell's coroutine path: a scheduler of its own,
-drained once each outermost dispatch has ended. The three traces cannot be identical,
-as this section first had it: a waiting handler is answered on credit (decision 0014),
-and a waiting reader's end can be asked for before its first piece has run. The bytes
-each client reads can be, each Date's value aside. So, decided by form, each libuv
-shell's trace is held to a fake made the same way, and the coroutine shell's bytes to
-the direct shell's (plan §14's M7.3 note has the measurement).
+drained once each outermost dispatch has ended, and waits of its own whose clock, timer
+and resolver are the test's. The three traces cannot be identical, as this section first
+had it: a waiting handler is answered on credit (decision 0014), and a waiting reader's
+end can be asked for before its first piece has run. The bytes each client reads can
+be, each Date's value aside. So, decided by form, each libuv shell's trace is held to a
+fake made the same way, and the coroutine shell's bytes to the direct shell's (plan
+§14's M7.3 note has the measurement). Handler code that waits, with the server's verbs,
+marks in the libuv shell's events where each of its waits ended, and the replay ends
+the fake's wait there: its timer fired, or its lookup answered as the libuv shell's
+resolver answered.
 
 ### 8.5 The socket lane
 
