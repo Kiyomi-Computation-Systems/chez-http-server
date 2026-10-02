@@ -421,6 +421,67 @@ By check, the third step's, the mutants that redden it:
 The shell suite's "and no handle is left on the loop" is reddened by M7T-5,
 M7T-6, M7T-19, M7T-20 and M7T-24, a timer of the waits left armed or open.
 
+### The fourth step: `resolve`
+
+Fifteen mutants, against all forty-seven suites, three at a time: fourteen
+of the step's, and M7T-25, the third step's, for the check that step gained
+while the fourth was built (a sleep due at its deadline's own time, below).
+Each of the checks the step added is reddened by at least one. One survives,
+a scope statement.
+
+| Mutant | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|
+| M7L-1 | `waits` | resolve answers the whole answer, its reason before its addresses | shell 1, waits 2 |
+| M7L-2 | `waits` | a lookup that fails answers its no addresses, raising nothing | shell 1, waits 1 |
+| M7L-3 | `waits` | a lookup's error raised with a reason of its own, not the resolver's | shell 1, waits 1 |
+| M7L-4 | `waits` | a lookup a deadline ends is not cancelled | waits 1 |
+| M7L-5 | `waits` | resolve takes a name that is not a string | waits 1 |
+| M7L-6 | `waits` | resolve on waits with no resolver goes ahead | waits 1 |
+| M7L-7 | `shell` | the shell asks libuv about an empty name too | shell 1 |
+| M7L-8 | `shell` | the shell asks libuv about a name with a NUL too | shell 1 |
+| M7L-9 | `shell` | the shell's lookup asks for every kind of socket | shell 1 |
+| M7L-10 | `shell` | the shell answers a failed lookup with a reason of its own, not the errno's name | shell 1 |
+| M7L-11 | `shell` | the shell's cancel cancels nothing | none: survives (below) |
+| M7L-12 | the facade | the facade does not export resolve | serve 1 |
+| M7L-13 | `shell` | the shell gives the loop's waits no resolver | shell 1 |
+| M7L-14 | `waits` | a wait answered while it begins parks anyway (M7W-2 re-cut) | shell 3, waits 3 |
+| M7T-25 | `waits` | a sleep a deadline took back in the same advance wakes anyway | waits 1 |
+
+By check, the fourth step's, the mutants that redden it:
+- waits, "resolve parks until the lookup answers, and answers its addresses": M7L-1;
+- waits, "a lookup's failure raises &resolve-error, its reason the resolver's": M7L-2, M7L-3;
+- waits, "a lookup answered while it is asked: resolve answers at once, without parking": M7L-1, M7L-14;
+- waits, "R4: a deadline that ends a resolve cancels its lookup, and the lookup's answer after it is logged as late-resume": M7L-4;
+- waits, "resolve takes a string, and on waits with no resolver is an assertion violation, its own": M7L-5, M7L-6;
+- shell, "a handler that resolves localhost is answered the addresses uv-getaddrinfo! gives; one that resolves an empty name, or one with a NUL, invalid-name; one no resolver knows, its EAI_ error": M7L-1, M7L-2, M7L-3, M7L-7, M7L-8, M7L-9, M7L-10, M7L-13, M7L-14;
+- serve, "the facade exports the handler's names, the verbs it waits with, the server's start, and its errors": M7L-12;
+- and the third step's, waits, "a sleep due at its deadline's own time, the deadline armed first: the wait raises, and the sleep taken back wakes nothing and logs nothing": M7T-25.
+
+One survives, a scope statement:
+- **M7L-11, the shell's cancel cancelling nothing.** `uv-cancel!` takes a
+  lookup back only while it waits for a thread of libuv's pool, and no
+  check can make libuv hold one there on demand: the waits suite checks
+  that a deadline asks for the cancel (M7L-4), and the shell's is
+  chez-libuv's verb, called with the request it answered.
+
+### The layers, each on its own tree
+
+Each step's tree was then made afresh, main at f5532ee with the step's files,
+and those of the steps below it, laid in, and each step's mutants ran there
+against every suite, three at a time: the first's five, the second's
+fourteen, and the third's thirty-eight, M7H-13 and M7T-25 among them. On
+the finished tree, every mutant of the four steps ran again, seventy-one;
+ten of the first three steps' matched nothing there, the code they cut
+rewritten by a later step, and were re-cut against it: M7W-1, M7W-2, M7W-4,
+M7W-6, M7W-7, M7W-9, M7W-11, M7W-12, M7T-18 and M7T-22. Every mutant
+loaded, and every one reddened at least one check but M7L-11, the scope
+survivor above. Every check a step added is reddened by its own step's
+mutants on its own tree: four of four on the first, eleven of eleven on the
+second, twenty-three of twenty-three on the third, six of six on the fourth.
+So is the serve suite's list of the facade's exports, which the second,
+third and fourth steps each changed, its name the same (M7W-7, M7T-22,
+M7L-12).
+
 ### The review's fixes (2026-10-02)
 
 The /code-review high found seven, all fixed on the owner's word, each in the
@@ -436,15 +497,23 @@ their code away:
 | M7T-28 | third | `waits` | a thunk entered again and left again leaves its deadline again | waits 1 |
 | M7T-29 | third | `scheduler` | coroutine-suspending? answers #f, a park taken for a leaving | waits 9, shell 4 |
 | M7T-30 | third | `waits` | with-deadline answers one value of its thunk | waits 1 |
+| M7L-15 | fourth | `shell` | a refusal caught only as chez-libuv's own, not libuv's EINVAL | shell 1 |
+| M7L-16 | fourth | `shell` | a refusal caught only as libuv's EINVAL, not chez-libuv's own | shell 1 |
+| M7L-17 | fourth | `shell` | a refusal caught and answered nothing: the wait parks for good | shell 3 |
+| M7L-18 | fourth | `shell` | no refusal caught: the lookup raises what libuv raises | shell 1 |
 
 Re-cut: M7W-1 and M7W-4, for the cell that now keeps its verb (their first
 re-cuts left a parenthesis open, did not load, and were cut again, the
-parentheses counted; their reports grep clean of `Exception`).
-Withdrawn: M7T-8, M7T-9 and M7T-10, whose exception handler the
-`dynamic-wind` replaced (M7T-27 and M7T-26 cut what they cut).
+parentheses counted; their reports grep clean of `Exception`); M7L-9, for
+the lookup's call split across lines. Withdrawn: M7T-8, M7T-9 and M7T-10,
+whose exception handler the `dynamic-wind` replaced (M7T-27 and M7T-26 cut
+what they cut); M7L-7 and M7L-8, whose tests of a name, for emptiness and a
+NUL, the caught refusal replaced (M7L-15 and M7L-16 cut what they cut).
 
-Then every step's tree was made afresh, and each step's mutants ran on it,
-against every suite, three at a time: five on the first, fifteen on the
-second and forty on the third. Every mutant loaded, and every one reddened
-a check. Every check a step added is reddened by its own step's mutants on
-its own tree: four of four, eleven of eleven and twenty-six of twenty-six.
+Then every step's tree was made afresh again, and each step's mutants ran
+on it, against every suite, three at a time: five on the first, fifteen on
+the second, forty on the third, and on the finished tree all seventy-six
+again, the ten earlier re-cuts among them. Every mutant loaded, and every
+one reddened a check but M7L-11, the scope survivor. Every check a step
+added is reddened by its own step's mutants on its own tree: four of four,
+eleven of eleven, twenty-six of twenty-six and six of six.

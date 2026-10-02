@@ -185,9 +185,9 @@
 ;;; on the loop, which records a late resume as `late-resume` (R4), and
 ;;; given the loop's clock and a timer of their own for the sleeps and
 ;;; deadlines, one a loop, closed with the tick timer by a shell that serves
-;;; no more (loop-clock!).  A wait goes on when its connection
-;;; closes (0015 item 4): what it then answers is dropped, and the
-;;; connection makes no more calls.
+;;; no more (loop-clock!), and the loop's resolver (loop-resolver!).  A wait
+;;; goes on when its connection closes (0015 item 4): what it then answers
+;;; is dropped, and the connection makes no more calls.
 ;;;
 ;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
 ;;; chez-libuv catches whatever a callback raises, and raises it again from
@@ -210,7 +210,8 @@
           connection-close! connection-body-credit!
           wall-clock)
   (import (rnrs)
-          (only (chezscheme) current-time time-second time-nanosecond make-ephemeron-eq-hashtable)
+          (only (chezscheme) current-time time-second time-nanosecond make-ephemeron-eq-hashtable
+                call/1cc)
           (libuv)
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
@@ -223,7 +224,8 @@
           (only (http-server private scheduler)
                 make-scheduler scheduler-turn! scheduler-call! scheduler-spawn!
                 scheduler-phase scheduler-feed-begin! scheduler-feed-end! scheduler-waits)
-          (only (http-server private waits) make-waits waits-clock! waits-fire! waits-timed)
+          (only (http-server private waits)
+                make-waits waits-clock! waits-fire! waits-timed waits-resolver!)
           (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
           (http-server private adapter))
@@ -292,7 +294,10 @@
              s)))
       ((loop log)
        (let ((s (loop-scheduler loop)))
-         (unless (scheduler-waits s) (loop-clock! loop (make-waits s log)))
+         (unless (scheduler-waits s)
+           (let ((w (make-waits s log)))
+             (loop-clock! loop w)
+             (loop-resolver! loop w)))
          s))))
 
   ;; loop-clock! : UvLoop Waits -> Void
@@ -315,6 +320,51 @@
                       (uv-timer-start! (vector-ref kept 0) fire ms 0))
                     (lambda () (let ((timer (vector-ref kept 0)))
                                  (when timer (uv-timer-stop! timer)))))))
+
+  ;; loop-resolver! : UvLoop Waits -> Void
+  ;; Give the loop's waits the loop's resolver: a lookup through
+  ;; uv-getaddrinfo!, for stream sockets alone, so that each address a host
+  ;; has is answered once, as libuv renders it; a failure by its errno name,
+  ;; such as EAI_NONAME.  A name refused at the call (refused-name?) is
+  ;; answered `invalid-name` at once, so a lookup raises nothing of
+  ;; chez-libuv's on the coroutine that asks it.  The refusal is caught by a
+  ;; handler that jumps out on a one-shot continuation: on a coroutine, a
+  ;; `guard` would cost a stack of its own (design §5.2's note), 3,663 B a
+  ;; lookup where this costs 208.  The callback is the library's own, and
+  ;; only answers, which only wakes (R1).  A cancel is uv-cancel!'s, best
+  ;; effort: a lookup libuv has begun answers anyway.
+  (define (loop-resolver! loop w)
+    (waits-resolver! w
+                     (lambda (host answer!)
+                       (call/1cc
+                        (lambda (k)
+                          (with-exception-handler
+                           (lambda (e)
+                             (unless (refused-name? e) (raise-continuable e))
+                             (answer! 'invalid-name '())
+                             (k #f))
+                           (lambda ()
+                             (uv-getaddrinfo!
+                              loop host #f '((socktype . stream))
+                              (lambda (err results) (looked-up! answer! err results))))))))
+                     (lambda (request) (uv-cancel! request))))
+
+  ;; looked-up! :
+  ;;   ((U Symbol #f) (Listof String) -> Any) (U Condition #f) (Listof UvAddrinfo) -> Any
+  ;; A lookup's answer, through `answer!`: its error's errno name, such as
+  ;; EAI_NONAME, or its addresses as libuv renders them.
+  (define (looked-up! answer! err results)
+    (if err
+        (answer! (errno err) '())
+        (answer! #f (map uv-addrinfo-address results))))
+
+  ;; refused-name? : Any -> Boolean
+  ;; Whether uv-getaddrinfo! refused the name at the call: libuv's EINVAL,
+  ;; for a name empty or over 255 octets, or chez-libuv's own refusal, for
+  ;; one with a NUL in it.
+  (define (refused-name? e)
+    (or (uv-invalid-argument? e)
+        (and (uv-errno-error? e) (eq? (uv-errno-error-errno e) 'EINVAL))))
 
   ;; shell-waits-timed : Shell -> Nat — how many sleeps and deadlines the
   ;; waits of its loop have armed.

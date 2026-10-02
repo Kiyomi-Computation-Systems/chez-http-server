@@ -57,8 +57,20 @@
 ;;;     a wait after it is not cut short; every value the thunk returns comes
 ;;;     back; and a continuation that enters the thunk again, and leaves it
 ;;;     again, ends the deadline once, so a deadline after it still counts.
+;;;
+;;; The checks (the fourth step, `resolve`), the loop's resolver standing in
+;;; as a recorder of each lookup asked and each cancelled:
+;;;   - `resolve` parks until the lookup answers, and answers its addresses;
+;;;   - a lookup's failure raises `&resolve-error`, its reason the
+;;;     resolver's;
+;;;   - a lookup answered while it is asked: `resolve` answers at once,
+;;;     without parking;
+;;;   - R4's own example: a deadline that ends a `resolve` cancels its
+;;;     lookup, and the lookup's answer after it is logged as `late-resume`;
+;;;   - `resolve` takes a string, and on waits with no resolver is an
+;;;     assertion violation.
 (import (rnrs) (srfi :64) (testing)
-        (only (http-server awaiting) deadline-passed?)
+        (only (http-server awaiting) deadline-passed? resolve-error? resolve-error-reason)
         (http-server private scheduler)
         (http-server private waits))
 
@@ -572,4 +584,86 @@
         (let ((t (taken s 8)))
           (test-equal "a continuation that enters a deadline's thunk again and leaves it again ends the deadline once, and a deadline after it still counts"
             '((returned 3) (passed entered-again passed passed))
-            (list t (seen))))))))
+            (list t (seen))))))
+
+    ;; --- resolve ---------------------------------------------------------------
+    ;; Each check's resolver records each lookup asked, `(lookup host)`, and
+    ;; each cancel, `(cancel request)`, a request being the lookup's number;
+    ;; its batches answer a lookup through the procedure it was given.
+    (let* ((answers '()) (w #f))
+      (let*-values (((note! seen) (recorder))
+                    ((s logged) (waiting (list (list (lambda () ((car answers) #f '("::1" "127.0.0.1")))))))
+                    ((note-asked! asked) (recorder)))
+        (set! w (scheduler-waits s))
+        (waits-resolver! w
+                         (lambda (host answer!) (note-asked! (list 'lookup host)) (set! answers (cons answer! answers)) (length answers))
+                         (lambda (request) (note-asked! (list 'cancel request))))
+        (scheduler-spawn! s (lambda () (note! (resolve "localhost"))) (lambda (kind v) #f))
+        (let ((t (taken s 4)))
+          (test-equal "resolve parks until the lookup answers, and answers its addresses"
+            '((returned 2) (("::1" "127.0.0.1")) ((lookup "localhost")))
+            (list t (seen) (asked))))))
+
+    (let* ((answers '()) (w #f))
+      (let*-values (((note! seen) (recorder))
+                    ((s logged) (waiting (list (list (lambda () ((car answers) 'EAI_NONAME '()))))))
+                    ((note-asked! asked) (recorder)))
+        (set! w (scheduler-waits s))
+        (waits-resolver! w
+                         (lambda (host answer!) (set! answers (cons answer! answers)) (length answers))
+                         (lambda (request) (note-asked! (list 'cancel request))))
+        (scheduler-spawn! s
+          (lambda ()
+            (note! (guard (e ((resolve-error? e) (list 'refused (resolve-error-reason e))))
+                     (resolve "nowhere.invalid"))))
+          (lambda (kind v) #f))
+        (let ((t (taken s 4)))
+          (test-equal "a lookup's failure raises &resolve-error, its reason the resolver's"
+            '((returned 2) ((refused EAI_NONAME)))
+            (list t (seen))))))
+
+    (let*-values (((note! seen) (recorder))
+                  ((s logged) (waiting '())))
+      (waits-resolver! (scheduler-waits s)
+                       (lambda (host answer!) (answer! #f (list host)) #f)
+                       (lambda (request) (note! (list 'cancel request))))
+      (scheduler-spawn! s (lambda () (note! (resolve "127.0.0.1"))) (lambda (kind v) #f))
+      (scheduler-spawn! s (lambda () (note! 'next)) (lambda (kind v) #f))
+      (let ((t (taken s 4)))
+        (test-equal "a lookup answered while it is asked: resolve answers at once, without parking"
+          '((returned 1) (("127.0.0.1") next))
+          (list t (seen)))))
+
+    ;; R4's own example (plan §14's M7.2): a lookup's answer after its
+    ;; deadline wakes nothing, and is logged.
+    (let* ((clock (vector 0)) (answers '()) (w #f))
+      (let*-values (((note! seen) (recorder))
+                    ((s logged timer)
+                     (clocked (lambda () (vector-ref clock 0))
+                              (list (list (lambda () (vector-set! clock 0 5) (waits-fire! w)))
+                                    (list (lambda () ((car answers) #f '("192.0.2.1")))))))
+                    ((note-asked! asked) (recorder)))
+        (set! w (scheduler-waits s))
+        (waits-resolver! w
+                         (lambda (host answer!) (note-asked! (list 'lookup host)) (set! answers (cons answer! answers)) (length answers))
+                         (lambda (request) (note-asked! (list 'cancel request))))
+        (scheduler-spawn! s
+          (lambda () (note! (passed-or (lambda () (with-deadline 5 (lambda () (resolve "slow.example")))))))
+          (lambda (kind v) #f))
+        (let ((t (taken s 8)))
+          (test-equal "R4: a deadline that ends a resolve cancels its lookup, and the lookup's answer after it is logged as late-resume"
+            '((returned 2) (passed) ((lookup "slow.example") (cancel 1)) ((late-resume resolve)))
+            (list t (seen) (asked) (logged))))))
+
+    ;; A resolver that would answer at once, so that only resolve's own
+    ;; check refuses a name that is not a string; and waits with none.
+    (let*-values (((s logged) (waiting '()))
+                  ((bare bare-logged) (waiting '()))
+                  ((note! seen) (recorder)))
+      (waits-resolver! (scheduler-waits s) (lambda (host answer!) (answer! #f '("answered")) #f) (lambda (r) #f))
+      (scheduler-spawn! s (lambda () (note! (refused-by (lambda () (resolve 'localhost))))) (lambda (kind v) #f))
+      (scheduler-spawn! bare (lambda () (note! (refused-by (lambda () (resolve "localhost"))))) (lambda (kind v) #f))
+      (let* ((t (taken s 4)) (u (taken bare 4)))
+        (test-equal "resolve takes a string, and on waits with no resolver is an assertion violation, its own"
+          '((returned 1) (returned 1) ((assertion resolve) (assertion resolve)))
+          (list t u (seen)))))))

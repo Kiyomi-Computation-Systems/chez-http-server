@@ -22,14 +22,19 @@
 ;;;     answer is written; its reader takes each piece on a coroutine, in
 ;;;     order, reading waiting while it takes one, and its producer is called
 ;;;     on a coroutine for each piece; an ordinary handler that waits fails,
-;;;     500, the refusal logged as R2's (M7.1); a handler that waits on
-;;;     `await` is woken by another request's handler, and a second resume is
-;;;     logged as `late-resume` (R4; decision 0015, M7.2); a handler that
-;;;     holds the loop, then sleeps 20 ms, sleeps 18 ms or more by the
-;;;     monotonic clock, its sleep armed on the loop's clock brought up to
-;;;     date, and one whose deadline ends a sleep of a minute is answered at
-;;;     once, nothing left armed after either; and once a shell on the loop serves no more, which closes the
-;;;     timer of the loop's waits, a sleep makes another;
+;;;     500, the refusal logged as R2's (M7.1);
+;;;   - the verbs a handler waits with (decision 0015, M7.2): a handler that
+;;;     waits on `await` is woken by another request's handler, and a second
+;;;     resume is logged as `late-resume` (R4); a handler that holds the
+;;;     loop, then sleeps 20 ms, sleeps 18 ms or more by the monotonic clock,
+;;;     its sleep armed on the loop's clock brought up to date, and one whose
+;;;     deadline ends a sleep of a minute is answered at once, nothing left
+;;;     armed after either; once a shell on the loop serves no more, which
+;;;     closes the timer of the loop's waits, a sleep makes another; and a
+;;;     handler that resolves localhost is answered what uv-getaddrinfo!
+;;;     itself answers, one that resolves a name libuv refuses at the call,
+;;;     empty, with a NUL or too long, `invalid-name`, and one that resolves
+;;;     a name with an empty label `EAI_NONAME`;
 ;;;   - three requests in one write are answered in order, reading the clock
 ;;;     fewer times than they are answered (decision 0010: once a second), and
 ;;;     no action but the parser's reply runs at parser depth (design §6.4,
@@ -141,8 +146,8 @@
         (only (http-server private scheduler)
               scheduler-phase current-coroutine coroutine-park! coroutine-wake! coroutine-yield!
               scheduler-invariant? scheduler-invariant-name)
-        (only (http-server awaiting) awaiting deadline-passed?)
-        (only (http-server private waits) await sleep-ms with-deadline)
+        (only (http-server awaiting) awaiting deadline-passed? resolve-error? resolve-error-reason)
+        (only (http-server private waits) await sleep-ms with-deadline resolve)
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
               conn-outstanding conn-outstanding-bytes)
@@ -303,8 +308,13 @@
 ;; the loop 30 ms, then sleeps 20 ms, and answers how many microseconds of
 ;; the monotonic clock it slept, read with no update of the loop's own,
 ;; which the sleep must make itself;
-;; and `/deadline` sleeps a minute inside a deadline of 10 ms, and answers
-;; "passed" when the deadline's raise comes, or "slept".
+;; `/deadline` sleeps a minute inside a deadline of 10 ms, and answers
+;; "passed" when the deadline's raise comes, or "slept"; `/resolve` resolves
+;; "localhost" and answers the addresses, a space between each;
+;; `/resolve-empty` resolves "", `/resolve-nul` a name with a NUL in it,
+;; `/resolve-long` one of 300 characters, and `/resolve-unknown` "a..b",
+;; whose empty label the resolver refuses without asking a server, each
+;; answering the reason it raised with.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -318,6 +328,30 @@
     (let spin () (when (< (monotonic-ms) until) (spin)))))
 (define parked #f)
 (define waker #f)
+;; spaced : (Listof String) -> String — the strings, a space between each.
+(define (spaced strings)
+  (if (null? strings)
+      ""
+      (fold-left (lambda (acc x) (string-append acc " " x)) (car strings) (cdr strings))))
+
+;; reason-for : String -> String — the reason `resolve` raised with for
+;; `host`, or "resolved".
+(define (reason-for host)
+  (guard (e ((resolve-error? e) (symbol->string (resolve-error-reason e))))
+    (resolve host)
+    "resolved"))
+
+;; looked-up : String -> (U (Listof String) 'failed)
+;; What uv-getaddrinfo! itself answers for `host`, stream sockets alone,
+;; the suite's loop run until it has.
+(define (looked-up host)
+  (let ((answer #f))
+    (uv-getaddrinfo! loop host #f '((socktype . stream))
+                     (lambda (err results)
+                       (set! answer (if err 'failed (map uv-addrinfo-address results)))))
+    (wait-for (lambda () answer))
+    answer))
+
 ;; monotonic-us : -> Nat — the monotonic clock, in microseconds.
 (define (monotonic-us)
   (let ((t (current-time 'time-monotonic)))
@@ -377,6 +411,18 @@
                              (string->utf8
                               (guard (e ((deadline-passed? e) "passed"))
                                 (with-deadline 10 (lambda () (sleep-ms 60000) "slept"))))))))
+          ((bytevector=? target (b "/resolve"))
+           (awaiting
+            (lambda ()
+              (make-response 200 #f '() (string->utf8 (spaced (resolve "localhost")))))))
+          ((bytevector=? target (b "/resolve-empty"))
+           (awaiting (lambda () (make-response 200 #f '() (string->utf8 (reason-for ""))))))
+          ((bytevector=? target (b "/resolve-nul"))
+           (awaiting (lambda () (make-response 200 #f '() (string->utf8 (reason-for (string #\a #\nul #\b)))))))
+          ((bytevector=? target (b "/resolve-long"))
+           (awaiting (lambda () (make-response 200 #f '() (string->utf8 (reason-for (make-string 300 #\a)))))))
+          ((bytevector=? target (b "/resolve-unknown"))
+           (awaiting (lambda () (make-response 200 #f '() (string->utf8 (reason-for "a..b"))))))
           ((bytevector=? target (b "/wake"))
            (waker (b "woken by another"))
            (waker (b "again"))
@@ -1896,6 +1942,24 @@
         (client-close! (car p)))
       (shell-shutdown! waiter)
       (set! adopting shell))
+
+    ;; A lookup (decision 0015 item 1), against what uv-getaddrinfo! itself
+    ;; answers; names libuv refuses at the call, empty, with a NUL, or over
+    ;; 255 octets; and one the resolver refuses itself, with a network or
+    ;; without (measured on Darwin and on Linux in Docker, `--network none`
+    ;; and not): EAI_NONAME.
+    (let* ((oracle (looked-up "localhost"))
+           (cl (open-client! (b (string-append "GET /resolve HTTP/1.1\r\nHost: x\r\n\r\n"
+                                               "GET /resolve-empty HTTP/1.1\r\nHost: x\r\n\r\n"
+                                               "GET /resolve-nul HTTP/1.1\r\nHost: x\r\n\r\n"
+                                               "GET /resolve-long HTTP/1.1\r\nHost: x\r\n\r\n"
+                                               "GET /resolve-unknown HTTP/1.1\r\nHost: x\r\n\r\n")))))
+      (test-equal "a handler that resolves localhost is answered the addresses uv-getaddrinfo! gives; one that resolves a name libuv refuses at the call, empty, with a NUL or too long, invalid-name; one with an empty label, EAI_NONAME"
+                  (list 'satisfied (list 200 (if (pair? oracle) (spaced oracle) oracle))
+                        '(200 "invalid-name") '(200 "invalid-name") '(200 "invalid-name") '(200 "EAI_NONAME"))
+                  (cons (wait-for (lambda () (= 5 (length (responses (client-bytes cl))))))
+                        (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))))
+      (client-close! cl))
 
     ;; A shell that serves no more closes the timer of its loop's waits,
     ;; which have nothing armed (decision 0015 item 3): the next sleep on

@@ -3991,3 +3991,35 @@ Records: decision 0015's choices of the third step; decision 0005's amendment, a
 Size: 1,066 inserted lines of code and tests, 56 deleted.
 
 NEXT: the fourth step, `resolve`, stacked on this one.
+
+M7.2 FOURTH STEP: `resolve` (feat/m7.2-resolve).
+- `(http-server private waits)`: `(resolve host)`, a wait on the loop's resolver (`waits-resolver!`): the addresses, as strings, in the resolver's order, or `&resolve-error`, an `&error` of `(http-server awaiting)` whose reason is the resolver's error, with `host` among its irritants. A deadline that ends one cancels its lookup if it has not begun; its answer after is late (R4), plan §14's own example.
+- `(http-server private shell)`: the loop's resolver is `uv-getaddrinfo!`, stream sockets alone, so each address is answered once; a failure answered by its errno's name (EAI_...); a name refused at the call, empty, over 255 octets or with a NUL in it, answered `invalid-name` at once, the refusal caught by a handler that jumps out on a one-shot continuation (the review's second), so `resolve` raises `&resolve-error` for any name that does not resolve; a cancel, `uv-cancel!`.
+- The facade exports `resolve`, `&resolve-error`, `resolve-error?` and `resolve-error-reason`; `docs/handlers.org` gains them.
+- The checks: the waits suite's five more, its resolver scripted; in the shell suite, `localhost` answered what `uv-getaddrinfo!` itself answers, an empty name, one with a NUL and one of 300 characters `invalid-name`, and `a..b`, a name with an empty label, EAI_NONAME, which the resolver answers without asking the network (the review's fourth).
+
+FOUND WHILE BUILDING, each fixed with its check or its record:
+- A sleep due at its deadline's own time, the deadline armed first, comes out of one advance after it: the deadline ended the wait and took the sleep back, and then the sleep's own wake came, logged as a late resume. A sleep now wakes only if it has not been taken back. The third step's check and fix, carried into its layer (M7T-25).
+- An ordinary request through a real socket cost 117 to 130 B more on the branch than on main (scratch `await-alloc.sps`): bisected to the third step's `release-waits-timer!`, which read a table of the shell library's own. No changed line runs for a request, and Chez's optimizer output differed in that procedure alone (`expand/optimize-output`): the cost is closure conversion's. Each request's code reaches the procedure through calls Chez knows (`dispatch!`, `arm!`, `start-ticking!`, whose timer's callback calls `tick!`, then `server-dispatch!` and `release-timer!`), so the closures each request makes carried the table. Each shell now keeps the box of its loop's waits' timer, and the procedure reads nothing of the library's own; an ordinary request costs what main's does. Recorded in its comment; no check sees a shell's bytes a request (below).
+
+Measured on the step's tree, the finished one (2026-10-02, Darwin arm64): `make test` green, forty-seven suites, 1,524 expected passes (1,518 + 6), every pin ok. What the shell, the client and chez-libuv's Scheme side allocate together a request (scratch `await-alloc.sps`, a client on the shell's loop sending 10,000 keep-alive GETs one at a time, after 1,000; two rounds, the trees alternating, nothing else running):
+- an ordinary handler: 13,543 to 13,560 B, where main's (f5532ee) costs 13,542 to 13,577;
+- one that answers `awaiting` and does not wait: 15,734 to 15,736 B, where main's costs 17,865 to 17,885: the first step's 2.1 KB;
+- one that waits once on `await`, resumed as it registers: 15,845 to 15,855 B; resumed from the drain once it has parked: 16,166 to 16,172 B;
+- each 85 to 88 µs on either tree, the loop's round trip; 2.7 to 2.8 turns a request.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree made with `COPYFILE_DISABLE=1`, curl and ab installed: `make test`, less its submodule and pin checks, forty-seven suites, 1,524 expected passes. The same costs a request, two rounds: an ordinary handler 12,987 B, as main's; one that answers `awaiting` with no wait 15,361 B, where main's costs 17,411; one that waits once on `await`, resumed as it registers, 15,505 B, and resumed from the drain, 15,509 B; the branch 18.2 to 19.9 µs a request, main's 20.8 to 22.1, two turns each.
+
+Watched to fail (m7-mutations.md, M7.2's fourth step, and the review's fixes): sixteen mutants of the step's own, the review's M7L-15 to M7L-18 among them, and M7L-7 and M7L-8 withdrawn with the shell's own tests of a name, which they cut; each reddens a check but M7L-11, the scope survivor; every check the step added is reddened by one.
+
+Records: decision 0015's choices of the fourth step; plan §14's built note; the shell's header; `docs/handlers.org`; the README's status.
+
+Size: 312 inserted lines of code and tests, 44 deleted.
+
+M7.2 BUILT, the four steps proved each on its own tree, the review's fixes in (2026-10-02):
+- Each step's tree made afresh, main at f5532ee with the step's files and those of the steps below laid in, `make check-imports` and every suite run there: the first, forty-five suites and 1,482 expected passes; the second, forty-six and 1,492; the third, forty-seven and 1,518; the fourth, the finished tree, forty-seven and 1,524.
+- Each step's mutants on its own tree: five, fifteen and forty, and on the finished tree all seventy-six (m7-mutations.md, "The review's fixes"). Every mutant loads, and each reddens a check but M7L-11, the scope survivor; every check a step added is reddened by its own step's mutants on its own tree: four, eleven, twenty-six and six.
+
+Size, inserted and deleted lines of code, tests and the Makefile, each step against the one below it: the first 71 and 8; the second 402 and 33; the third 1,066 and 56; the fourth 312 and 44; the slice, against main, 1,767 and 57. `docs/handlers.org` and the README's status: 78 inserted lines and 1 deleted, against main.
+
+NEXT: the four stacked PRs, merged bottom up on the owner's "do closing ritual" once CI is green on each head. Then M7.3 (plan §14), three shells under one contract, when the owner asks.

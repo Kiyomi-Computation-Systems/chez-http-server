@@ -15,7 +15,10 @@ answering each connection's requests one at a time, and curl and ApacheBench
 get correct answers from it. Since M5 it also stops waiting for clients that
 stall. Since M6 a handler reads a request's body as it arrives and can stream
 its response, so a big upload or download is never held in memory whole.
-Still to come: handlers that wait (M7), and a graceful shutdown (M8). See
+Since M7.2 a handler can wait: for another request, a time, a deadline or a
+name's lookup (see [[file:docs/handlers.org][docs/handlers.org]]). Still to come: one
+contract test for all three shells, waiting ones included (M7.3), and a
+graceful shutdown (M8). See
 [[file:.plans/2026-09-19-chez-http-server-project-brief.md][the project brief]] for the milestone map.
 
 ** Quick start

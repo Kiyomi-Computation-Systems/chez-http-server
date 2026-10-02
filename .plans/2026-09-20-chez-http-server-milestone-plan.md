@@ -1383,6 +1383,20 @@ Each of the last three is a verb a handler can use, exported and in
 as two steps of the waits alone, then the shell's part, the facade and the docs for all
 three; regrouped while building the second.)
 
+*Built 2026-10-02 (M7.2):* the four steps, as above. What was chosen while building is
+decision 0015's section of that name: a coroutine's raise caught by a handler that
+jumps to the drain; a wait that asks first whether it may park; a deadline in force
+until its thunk is left, held by a `dynamic-wind`, every later wait inside it raising
+once it has passed; the timer of the waits closed as the tick timer is, its box kept by
+each shell; a name libuv refuses at the call answered `invalid-name`. A /code-review
+high found seven, all fixed on the owner's word by form, three of them bugs: an escape
+from `with-deadline`'s thunk left the deadline in force; a long name's EINVAL came out
+of `resolve` as chez-libuv's; `with-deadline` passed one value only. Design §5.3's third
+mutation, the one-shot check removed, reddens R4's two rows (M7W-1); the `guard` put
+back reddens the scheduler's allocation checks (M7G-1). Found while building: a sleep
+due at its deadline's own time was logged as a late resume, and a cold path's read of a
+library table cost every request 130 B, each fixed.
+
 **M7.3 — three shells, one contract.** The contract test plays its scripts through the
 coroutine shell as well (brief item 5). A handler awaiting `uv-getaddrinfo!` inside a
 pipelined connection keeps the responses in order (the brief's exit).
