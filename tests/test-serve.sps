@@ -169,10 +169,11 @@
 
     ;; --- what the facade exports ---
     (test-equal "the facade exports the handler's names, the verbs it waits with, the server's start, and its errors"
-                '(&deadline-passed &http-server-config-error &http-server-error await awaiting
-                  deadline-passed? http-server-config-error? http-server-error? make-response
+                '(&deadline-passed &http-server-config-error &http-server-error &resolve-error await
+                  awaiting deadline-passed? http-server-config-error? http-server-error? make-response
                   read-body read-whole-body request-header request-host request-method request-path
-                  request-query request? response? serve sleep-ms with-deadline)
+                  request-query request? resolve resolve-error-reason resolve-error? response? serve
+                  sleep-ms with-deadline)
                 (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
                            (library-exports '(http-server))))
 

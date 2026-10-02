@@ -31,30 +31,39 @@
 ;;; `coroutine-suspending?`.  A raise that a handler outside continues
 ;;; leaves nothing; a continuation that enters the thunk again does not put
 ;;; the deadline back.  Deadlines nest, and each passes on its own time.  A
-;;; wait a deadline ends has what it waited on taken back, a sleep's time;
-;;; anything that still comes for it is a late resume (R4).
+;;; wait a deadline ends has what it waited on taken back, a sleep's time,
+;;; or a lookup, cancelled if it has not begun; anything that still comes
+;;; for it is a late resume (R4).
+;;;
+;;; A LOOKUP (decision 0015 item 1): `(resolve host)` parks the coroutine
+;;; until the loop's resolver answers for `host`, through `uv-getaddrinfo!`
+;;; in the libuv shell: the addresses, as strings, in the resolver's order;
+;;; or, for a name that does not resolve, `&resolve-error`, whose reason
+;;; names why.
 ;;;
 ;;; THE LOOP'S WAITS are one a loop, kept by the loop's scheduler
 ;;; (`make-waits`), which a waiting verb finds through the coroutine
 ;;; running: the log a late resume is recorded in; and, given by the libuv
-;;; shell (`waits-clock!`), the loop's clock and a timer of their own.  The
+;;; shell, the loop's clock and a timer of their own (`waits-clock!`), and
+;;; its resolver (`waits-resolver!`).  The
 ;;; waits keep each sleep's time and each deadline in a heap, (http-server
 ;;; heap), with the timer armed for the earliest; each time it fires,
 ;;; `waits-fire!` ends what is due and arms it for the earliest left, or
 ;;; stops it when none is, so an idle loop sleeps (decision 0005).  A wait
 ;;; on a loop that keeps no waits, or a timed one on waits with no clock, is
-;;; an assertion violation.  What a coroutine's deadlines need of it, the
+;;; an assertion violation, and so is a lookup on waits with no resolver.
+;;; What a coroutine's deadlines need of it, the
 ;;; wait it is parked on and how many of its deadlines in force have passed,
 ;;; it keeps (`coroutine-waits`), from its first deadline on.
 ;;;
 ;;; Nothing here catches with `guard`: on a coroutine, a `guard` costs the
 ;;; coroutine a stack of its own (M7.2's first step, design §5.2's note).
 (library (http-server private waits)
-  (export make-waits waits? waits-clock! waits-fire! waits-timed
-          await sleep-ms with-deadline)
+  (export make-waits waits? waits-clock! waits-fire! waits-timed waits-resolver!
+          await sleep-ms with-deadline resolve)
   (import (rnrs)
           (http-server heap)
-          (only (http-server awaiting) make-deadline-passed)
+          (only (http-server awaiting) make-deadline-passed make-resolve-error)
           (only (http-server private scheduler)
                 waiting-coroutine coroutine-scheduler coroutine-park! coroutine-wake!
                 coroutine-waits coroutine-waits-set! coroutine-suspending?
@@ -68,11 +77,12 @@
   ;; waits? : Any -> Boolean
   (define-record-type (waits %make-waits waits?)
     (fields log heap
-            (mutable now) (mutable start) (mutable stop))   ; the loop's clock and timer, or #f
+            (mutable now) (mutable start) (mutable stop)   ; the loop's clock and timer, or #f
+            (mutable lookup) (mutable cancel))             ; its resolver, or #f
     (sealed #t))
 
   (define (make-waits s log!)
-    (let ((w (%make-waits log! (make-heap) #f #f #f)))
+    (let ((w (%make-waits log! (make-heap) #f #f #f #f #f)))
       (scheduler-waits-set! s w)
       w))
 
@@ -86,6 +96,17 @@
     (waits-start-set! w start!)
     (waits-stop-set! w stop!))
 
+  ;; waits-resolver! :
+  ;;   Waits (String ((U Symbol #f) (Listof String) -> Any) -> Any) (Any -> Any) -> Void
+  ;; The loop's resolver: `(lookup! host answer!)` begins a lookup of
+  ;; `host`, and answers what `cancel!` takes, or #f; the lookup answers once
+  ;; through `(answer! reason addresses)`, reason #f and the addresses, or the
+  ;; reason it failed and '(), then or later.  `(cancel! request)` cancels a
+  ;; lookup that has not begun, which then answers as it is cancelled.
+  (define (waits-resolver! w lookup! cancel!)
+    (waits-lookup-set! w lookup!)
+    (waits-cancel-set! w cancel!))
+
   ;; waits-timed : Waits -> Nat — how many sleeps and deadlines are armed.
   ;; At 0 the timer is stopped, or stops the next time it fires.
   (define (waits-timed w) (heap-count (waits-heap w)))
@@ -93,7 +114,7 @@
   ;; A cell is one wait: the verb that made it, the coroutine waiting, its
   ;; loop's waits, how far the wait has come, the value a resume gave while
   ;; `register` ran, and what it waits on that a deadline takes back, a
-  ;; sleep's entry in the heap, or #f.
+  ;; sleep's entry in the heap or a lookup's request, or #f.
   ;;   registering  `register` runs: a resume keeps its value, 'early
   ;;   parked       the coroutine has parked: a resume wakes it, 'resumed
   ;;   early, resumed  the wait is over: a resume is late (R4)
@@ -186,12 +207,14 @@
           (resume! cell passed-token)))))
 
   ;; take-back! : Cell -> Void — what the wait waits on, taken back: a
-  ;; sleep's time out of the heap.
+  ;; sleep's time out of the heap, or a lookup cancelled.
   (define (take-back! cell)
-    (let ((p (cell-pending cell)))
+    (let ((p (cell-pending cell)) (w (cell-waits cell)))
       (when p
         (cell-pending-set! cell #f)
-        (heap-remove! (waits-heap (cell-waits cell)) p))))
+        (if (heap-entry? p)
+            (heap-remove! (waits-heap w) p)
+            ((waits-cancel w) p)))))
 
   ;; wait! : Symbol Waits Coroutine (Cell -> Any) -> Any
   ;; One wait of `c`'s: `start!` called with its cell, then a park until it
@@ -241,6 +264,27 @@
                (let ((now ((waits-now w))))
                  (cell-pending-set! cell (arm-at! w now (+ now ms) cell))))))
     (values))
+
+  ;; resolve : String -> (Listof String)
+  ;; Park until the loop's resolver answers for `host`: its addresses, as
+  ;; strings, in the resolver's order.  A name that does not resolve raises
+  ;; `&resolve-error`, with the reason the resolver gave and `host`.
+  (define (resolve host)
+    (unless (string? host) (assertion-violation 'resolve "not a string" host))
+    (let* ((c (waiting-coroutine 'resolve))
+           (w (loop-waits 'resolve c)))
+      (unless (waits-lookup w) (assertion-violation 'resolve "the loop's waits keep no resolver" c))
+      (let ((r (wait! 'resolve w c
+                      (lambda (cell)
+                        (cell-pending-set! cell
+                          ((waits-lookup w) host
+                           (lambda (reason addresses) (resume! cell (cons reason addresses)))))))))
+        (if (car r)
+            (raise (condition (make-resolve-error (car r))
+                              (make-who-condition 'resolve)
+                              (make-message-condition "the name does not resolve")
+                              (make-irritants-condition (list host))))
+            (cdr r)))))
 
   ;; with-deadline : Nat (-> (Values Any ...)) -> (Values Any ...)
   ;; Every value `thunk` returns, called on the coroutine running; once

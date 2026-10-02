@@ -23,8 +23,9 @@
 ;;; server runs `thunk` on a coroutine of its own, and what it returns is the
 ;;; answer (decision 0014).  There it may wait with `await`, which hands a
 ;;; one-shot `resume` to whatever ends the wait, another handler's code
-;;; among them; with `sleep-ms`; and inside `with-deadline`, whose wait
-;;; raises &deadline-passed once its time has passed (decision 0015; see
+;;; among them; with `sleep-ms`; inside `with-deadline`, whose wait raises
+;;; &deadline-passed once its time has passed; and with `resolve`, which
+;;; looks a name up, or raises &resolve-error (decision 0015; see
 ;;; (http-server private waits)).  A malformed setting raises
 ;;; &http-server-config-error at startup (design §6.4).
 ;;;
@@ -40,8 +41,9 @@
     ;; what it answers
     make-response response? awaiting
     ;; what a handler that waits waits with, and what a wait raises
-    await sleep-ms with-deadline
+    await sleep-ms with-deadline resolve
     &deadline-passed deadline-passed?
+    &resolve-error resolve-error? resolve-error-reason
     ;; what a start raises
     &http-server-error http-server-error?
     &http-server-config-error http-server-config-error?)
@@ -49,8 +51,9 @@
           (only (http-server view) request-path request-query request-header request-host)
           (only (http-server body) read-body read-whole-body)
           (only (http-server response) make-response response?)
-          (only (http-server awaiting) awaiting &deadline-passed deadline-passed?)
-          (only (http-server private waits) await sleep-ms with-deadline)
+          (only (http-server awaiting) awaiting &deadline-passed deadline-passed?
+                &resolve-error resolve-error? resolve-error-reason)
+          (only (http-server private waits) await sleep-ms with-deadline resolve)
           (only (http-server private serve)
                 serve
                 &http-server-error http-server-error?

@@ -171,3 +171,15 @@ are under its name.
   armed, closed by a shell that serves no more, made again by the next timed wait. Each
   shell keeps the box the timer lives in: read from a table of the shell library's own,
   it made every request's closures carry the table, 130 B a request more.
+
+**`resolve`** (the fourth step):
+
+- **A lookup asks for stream sockets alone**, so each address is answered once.
+- **A name refused at the call is answered `invalid-name` at once**, so `resolve` raises
+  `&resolve-error` for any name that does not resolve: libuv's EINVAL, for a name empty
+  or over 255 octets, and chez-libuv's own refusal, for one with a NUL in it, are caught
+  by a handler that jumps out on a one-shot continuation, 208 B a lookup where a `guard`
+  costs 3,663. First the shell checked for empty names and NULs alone, and a long name's
+  EINVAL came out of `resolve` as chez-libuv's (M7.2's review). Anything else refused at
+  the call is raised as chez-libuv raises it.
+- **`&resolve-error` carries the host among its irritants**, beside its reason.

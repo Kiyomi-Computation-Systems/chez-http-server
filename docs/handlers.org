@@ -220,8 +220,20 @@ To wait for a time, or to stop waiting after one:
 
 - A ~resume~ called after its deadline wakes nothing, and the server logs
   ~late-resume await~, as for a second call.
-- Inside a handler that waits, ~guard~ costs about 3.7 KB each time it runs.
-  ~with-exception-handler~ costs next to nothing.
+
+To look up a host's addresses:
+
+- ~(resolve host)~ waits for the system's resolver and gives back the
+  addresses as strings: ~("::1" "127.0.0.1")~ for ~"localhost"~, about 0.2 ms.
+- A name that does not resolve raises ~&resolve-error~ (check with
+  ~resolve-error?~). ~(resolve-error-reason e)~ says why: ~EAI_NONAME~ for a
+  name no one knows, or ~invalid-name~ for one that cannot be asked about:
+  empty, too long, or with a NUL in it.
+- A lookup a deadline ends is cancelled if it has not begun. One already
+  under way still answers later, and the server logs ~late-resume resolve~.
+
+Inside a handler that waits, ~guard~ costs about 3.7 KB each time it runs.
+~with-exception-handler~ costs next to nothing.
 
 * When the server will not start
 

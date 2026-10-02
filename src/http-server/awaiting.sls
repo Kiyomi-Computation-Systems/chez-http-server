@@ -12,13 +12,15 @@
 ;;; handler has failed.
 ;;;
 ;;; What a wait raises is here too, so that a handler can catch it: once a
-;;; deadline has passed, a wait inside it raises `&deadline-passed`
-;;; (decision 0015; `with-deadline`, the private waits library's).
+;;; deadline has passed, a wait inside it raises `&deadline-passed`; and a
+;;; name that does not resolve raises `&resolve-error` (decision 0015;
+;;; `with-deadline` and `resolve`, the private waits library's).
 ;;;
 ;;; PURE: imports only (rnrs).
 (library (http-server awaiting)
   (export awaiting awaiting? awaiting-thunk
-          &deadline-passed make-deadline-passed deadline-passed?)
+          &deadline-passed make-deadline-passed deadline-passed?
+          &resolve-error make-resolve-error resolve-error? resolve-error-reason)
   (import (rnrs))
 
   ;; &deadline-passed : what a wait raises once a deadline it waits inside
@@ -27,6 +29,16 @@
   ;; deadline-passed? : Any -> Boolean
   (define-condition-type &deadline-passed &error
     make-deadline-passed deadline-passed?)
+
+  ;; &resolve-error : what `resolve` raises when a name does not resolve, an
+  ;; `&error`.  Its reason is the resolver's error, such as EAI_NONAME, or
+  ;; `invalid-name` for a name it cannot be asked about.
+  ;; make-resolve-error : Symbol -> ResolveError
+  ;; resolve-error? : Any -> Boolean
+  ;; resolve-error-reason : ResolveError -> Symbol
+  (define-condition-type &resolve-error &error
+    make-resolve-error resolve-error?
+    (reason resolve-error-reason))
 
   ;; awaiting : (-> Answer) -> Awaiting
   ;;   Answer = Response | BodyReader | Awaiting
