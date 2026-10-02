@@ -276,3 +276,76 @@ By check, the first step's, the mutants that redden it:
 M7.1's "a coroutine that raises: the raise comes to its end procedure, and
 the drain runs on", whose code the step rewrote, is reddened by M7G-3 and
 M7G-4.
+
+### The second step: `await` and R4
+
+Fourteen mutants, against all forty-six suites, the waits suite among them.
+The waits suite's checks were then made to take a raise out of their
+turns as their own failure, not the suite's (`taken`), and the first twelve
+ran again against it alone; their waits rows below are that run's, the
+other suites' the first run's. M7W-13 and M7W-14 ran last, against every
+suite. Each of the eleven checks the step added is reddened by
+at least one. The plan's mutation, design §5.3's third, the one-shot check
+removed, is M7W-1, and R4's two rows go red. The import audit's new rule
+has no mutant here: an import of the waits added to the adapter, in a
+scratch copy of `src/` and the Makefile, reddened `make check-imports`,
+and passed main's rule.
+
+| Mutant | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|
+| M7W-1 | `waits` | R4's one-shot check removed (design §5.3's third): every resume after `register` wakes the coroutine | waits 2, shell 1 |
+| M7W-2 | `waits` | a resume called while `register` runs is lost: the wait parks anyway | waits 2 |
+| M7W-3 | `waits` | a wait takes the coroutine running without asking whether it may park: `register` runs first | waits 1 |
+| M7W-4 | `waits` | a late resume is not logged | waits 2, shell 1 |
+| M7W-5 | `waits` | make-waits keeps no waits for the scheduler | waits 6, shell 2 |
+| M7W-6 | `shell` | the shell gives the loop's scheduler no waits | shell 2 |
+| M7W-7 | the facade | the facade does not export `await` | serve 1 |
+| M7W-8 | `scheduler` | a wait on no coroutine is not refused as R2: `waiting-coroutine` answers #f | scheduler 1, shell 1, waits 1 |
+| M7W-9 | `shell` | the shell's waits log nothing | shell 1 |
+| M7W-10 | `waits` | a resume wakes the coroutine with #t, not what it was given | waits 3, shell 1 |
+| M7W-11 | `waits` | a raise out of `register` is swallowed, and the wait parks | waits 1 |
+| M7W-12 | `waits` | a wait on a loop that keeps no waits goes ahead | waits 1 |
+| M7W-13 | `scheduler` | R1's check gone from `waiting-coroutine`: a park or a wait inside the poll is not refused as R1 (M7S-D1 re-cut) | scheduler 1, waits 1 |
+| M7W-14 | `scheduler` | R5's check gone from `waiting-coroutine`: a park or a wait inside a feed is not refused as R5 (M7S-E re-cut) | scheduler 1, waits 1 |
+
+By check, the second step's, the mutants that redden it:
+- waits, "a wait parks until its resume is called, from a callback, and answers what the resume was given": M7W-5, M7W-10;
+- waits, "a resume called while register runs: the wait answers at once, without parking": M7W-2, M7W-5;
+- waits, "R4: a resume called again is logged as late-resume, and wakes nothing, not even the coroutine waiting again": M7W-1, M7W-4, M7W-5, M7W-10;
+- waits, "R4: a resume called twice while register runs: the wait answers the first, and the second is logged": M7W-1, M7W-2, M7W-4, M7W-5;
+- waits, "one coroutine's resume, called by another, wakes it in the same drain": M7W-5, M7W-10;
+- waits, "a raise out of register comes out of the wait, and nothing parks": M7W-5, M7W-11;
+- waits, "a wait on no coroutine is refused as R2, in a callback as R1, in a feed as R5, each before register runs": M7W-3, M7W-8, M7W-13, M7W-14;
+- waits, "a wait on a loop that keeps no waits is an assertion violation": M7W-12;
+- shell, "a handler that waits on await parks, and nothing is answered while it waits": M7W-5, M7W-6;
+- shell, "another request's handler wakes it: both are answered, and the second resume is logged as late-resume": M7W-1, M7W-4, M7W-5, M7W-6, M7W-9, M7W-10;
+- serve, "the facade exports the handler's names, the verbs it waits with, the server's start, and its errors": M7W-7.
+
+The step moved the scheduler's refusals into `waiting-coroutine`, which a
+park still calls, so M7.1's M7S-C, M7S-D1 and M7S-E match nothing; M7W-8,
+M7W-13 and M7W-14 are them, re-cut, and redden M7.1's rows again: "R2: a
+park on no coroutine, in a call the drain makes and outside any turn, is
+refused as R2" (M7W-8); "R1: a callback that parks, and a drain inside a
+callback, are refused as R1" (M7W-13); "R5: a park inside a feed is refused
+as R5, and the phase is the drain's once the feed is over" (M7W-14).
+
+### The review's fixes (2026-10-02)
+
+The /code-review high found seven, all fixed on the owner's word, each in the
+step it belongs to (progress.md). New mutants for the fixes, specs re-cut
+where a fix moved the text they cut, and specs withdrawn where a fix took
+their code away:
+
+| Mutant | Step | Where | Change | Reddens on its step's tree (suite, failures) |
+|---|---|---|---|---|
+| M7W-15 | second | `waits` | a late resume logged with no verb | waits 2, shell 1 |
+
+Re-cut: M7W-1 and M7W-4, for the cell that now keeps its verb (their first
+re-cuts left a parenthesis open, did not load, and were cut again, the
+parentheses counted; their reports grep clean of `Exception`).
+
+Then every step's tree was made afresh, and each step's mutants ran on it,
+against every suite, three at a time: five on the first and fifteen on the
+second. Every mutant loaded, and every one reddened a check. Every check a
+step added is reddened by its own step's mutants on its own tree: four of
+four and eleven of eleven.

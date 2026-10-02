@@ -168,8 +168,8 @@
     (putenv "CHEZ_HTTP_HOST" unbound-host)
 
     ;; --- what the facade exports ---
-    (test-equal "the facade exports the handler's names, the server's start, and its errors"
-                '(&http-server-config-error &http-server-error http-server-config-error?
+    (test-equal "the facade exports the handler's names, the verbs it waits with, the server's start, and its errors"
+                '(&http-server-config-error &http-server-error await awaiting http-server-config-error?
                   http-server-error? make-response read-body read-whole-body request-header
                   request-host request-method request-path request-query request? response? serve)
                 (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))

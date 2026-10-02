@@ -135,3 +135,18 @@ are under its name.
   Beside M7.1's scheduler, it ends a coroutine the same way in seven cases no check
   covers, a raise inside an `after` thunk among them. A `guard` that handler code runs on
   a coroutine still costs the stack, and `docs/handlers.org` says so.
+
+**`await`** (the second step):
+
+- **A wait asks before it begins** whether the coroutine running may park (the
+  scheduler's `waiting-coroutine`, which a park asks too). One refused, as R1, R2 or R5,
+  has run nothing of its own, so no resume is left registered to wake nothing.
+- **A resume called while `register` runs ends the wait at once**, and the coroutine
+  does not park.
+- **A late resume's log line names the verb it came for**: `late-resume await`,
+  `late-resume resolve` (M7.2's review: at first it named nothing).
+- **The loop's waits log through the log of the first shell on the loop.** A loop's
+  scheduler, and its waits, are shared by every shell on it; `serve` runs one shell a
+  loop.
+- **The last three steps are a verb each**, exported and documented, where the plan's
+  first note had the waits first and the shell's part, the facade and the docs last.

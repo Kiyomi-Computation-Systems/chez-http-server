@@ -19,8 +19,13 @@
 ;;; `read-whole-body`; a response given instead is sent at once, and the
 ;;; connection closes after it (decision 0013; see (http-server body)).  The
 ;;; response is (http-server response)'s record, which the server frames
-;;; (decision 0010).  A malformed setting raises
-;;; &http-server-config-error at startup (design §6.4).
+;;; (decision 0010).  A handler that waits answers `(awaiting thunk)`: the
+;;; server runs `thunk` on a coroutine of its own, and what it returns is the
+;;; answer (decision 0014).  There it may wait with `await`, which hands a
+;;; one-shot `resume` to whatever ends the wait, another handler's code
+;;; among them (decision 0015; see (http-server private waits)).  A
+;;; malformed setting raises &http-server-config-error at startup (design
+;;; §6.4).
 ;;;
 ;;; Nothing here names a libuv handle or verb: the shell owns every one
 ;;; (decision 0003; tests/test-exports.sps).
@@ -32,7 +37,9 @@
     request? request-method request-path request-query request-header request-host
     read-body read-whole-body
     ;; what it answers
-    make-response response?
+    make-response response? awaiting
+    ;; what a handler that waits waits with
+    await
     ;; what a start raises
     &http-server-error http-server-error?
     &http-server-config-error http-server-config-error?)
@@ -40,6 +47,8 @@
           (only (http-server view) request-path request-query request-header request-host)
           (only (http-server body) read-body read-whole-body)
           (only (http-server response) make-response response?)
+          (only (http-server awaiting) awaiting)
+          (only (http-server private waits) await)
           (only (http-server private serve)
                 serve
                 &http-server-error http-server-error?

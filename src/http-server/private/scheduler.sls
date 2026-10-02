@@ -50,13 +50,18 @@
 ;;;       last, since the one that first entered it was used as it parked;
 ;;;   R5  a parser callback never waits: a park inside a feed is refused as
 ;;;       'r5.
-;;; R4, one-shot resume cells, is M7.2's.  A wake of a coroutine that is not
-;;; parked, and a drain re-entered from a coroutine, are the caller's bugs,
-;;; plain assertion violations.
+;;; R4, one-shot resume cells, is (http-server private waits)'s (M7.2).  A
+;;; wake of a coroutine that is not parked, and a drain re-entered from a
+;;; coroutine, are the caller's bugs, plain assertion violations.
+;;;
+;;; A scheduler keeps its loop's WAITS, (http-server private waits)'s, which
+;;; it never reads: a waiting verb finds them through the coroutine running.
 (library (http-server private scheduler)
   (export make-scheduler scheduler? scheduler-ready?
           scheduler-spawn! scheduler-call! scheduler-drain! scheduler-turn!
-          coroutine? current-coroutine coroutine-park! coroutine-wake! coroutine-yield!
+          scheduler-waits scheduler-waits-set!
+          coroutine? current-coroutine coroutine-scheduler waiting-coroutine
+          coroutine-park! coroutine-wake! coroutine-yield!
           scheduler-phase scheduler-feed-begin! scheduler-feed-end!
           &scheduler-invariant scheduler-invariant? scheduler-invariant-name)
   (import (rnrs) (only (chezscheme) call/1cc))
@@ -78,14 +83,18 @@
   ;; A scheduler whose turn polls with `poll!`, called with 'once or
   ;; 'nowait and answering whether work remains, as uv-run answers.
   ;; scheduler? : Any -> Boolean
+  ;; scheduler-waits : Scheduler -> Any — its loop's waits, or #f
+  ;; scheduler-waits-set! : Scheduler Any -> Void
   (define-record-type (scheduler make-scheduler scheduler?)
     (fields poll
             (mutable front) (mutable back)  ; ready: front in order, back reversed
             (mutable later)                 ; yielded, reversed: ready once the poll is over
-            (mutable k))                    ; the drain's continuation, while a coroutine runs
-    (protocol (lambda (new) (lambda (poll!) (new poll! '() '() '() #f)))))
+            (mutable k)                     ; the drain's continuation, while a coroutine runs
+            (mutable waits))                ; its loop's waits, which it never reads
+    (protocol (lambda (new) (lambda (poll!) (new poll! '() '() '() #f #f)))))
 
   ;; coroutine? : Any -> Boolean
+  ;; coroutine-scheduler : Coroutine -> Scheduler — the one that runs it
   ;; A coroutine is 'ready, 'running, 'parked or 'ended.  `k` is its
   ;; continuation while parked, `value` what a wake gave it, and then its
   ;; end: what it returned or raised.
@@ -174,13 +183,19 @@
     (suspend! 'coroutine-yield! 'yielded)
     (values))
 
-  ;; suspend! : Symbol Symbol -> Any — park, or yield, the coroutine running.
-  (define (suspend! who how)
+  ;; waiting-coroutine : Symbol -> Coroutine
+  ;; The coroutine running, where it may park: inside the poll a wait is
+  ;; refused as R1, inside a feed as R5, and on no coroutine as R2, each
+  ;; naming `who`.  A wait asks before it begins.
+  (define (waiting-coroutine who)
     (case phase
       ((in-uv-run) (refuse 'r1 who "a wait inside a libuv callback"))
       ((in-parser) (refuse 'r5 who "a wait inside a feed")))
-    (let ((c running))
-      (unless c (refuse 'r2 who "a wait on no coroutine"))
+    (or running (refuse 'r2 who "a wait on no coroutine")))
+
+  ;; suspend! : Symbol Symbol -> Any — park, or yield, the coroutine running.
+  (define (suspend! who how)
+    (let ((c (waiting-coroutine who)))
       (call/1cc
        (lambda (k)
          (coroutine-k-set! c k)

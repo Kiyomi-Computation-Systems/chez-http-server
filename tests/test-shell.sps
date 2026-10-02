@@ -22,7 +22,9 @@
 ;;;     answer is written; its reader takes each piece on a coroutine, in
 ;;;     order, reading waiting while it takes one, and its producer is called
 ;;;     on a coroutine for each piece; an ordinary handler that waits fails,
-;;;     500, the refusal logged as R2's (M7.1);
+;;;     500, the refusal logged as R2's (M7.1); a handler that waits on
+;;;     `await` is woken by another request's handler, and a second resume is
+;;;     logged as `late-resume` (R4; decision 0015, M7.2);
 ;;;   - three requests in one write are answered in order, reading the clock
 ;;;     fewer times than they are answered (decision 0010: once a second), and
 ;;;     no action but the parser's reply runs at parser depth (design §6.4,
@@ -135,6 +137,7 @@
               scheduler-phase current-coroutine coroutine-park! coroutine-wake! coroutine-yield!
               scheduler-invariant? scheduler-invariant-name)
         (only (http-server awaiting) awaiting)
+        (only (http-server private waits) await)
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
               conn-outstanding conn-outstanding-bytes)
@@ -288,7 +291,10 @@
 ;; `/await-stream` waits and streams three texts, yielding before each; and
 ;; `/read-phase` reads the body with an ordinary reader, and answers whether
 ;; a coroutine ran any of its pieces; and `/counted` counts its calls in
-;; `counted-calls`.
+;; `counted-calls`.  And handlers that wait with the verbs (decision 0015;
+;; M7.2): `/await-wake` waits on `await`, keeping its resume in `waker`,
+;; and answers what it was given; `/wake` calls `waker` twice, with
+;; "woken by another" and then "again", and answers "woke".
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -301,6 +307,7 @@
   (let ((until (+ (monotonic-ms) ms)))
     (let spin () (when (< (monotonic-ms) until) (spin)))))
 (define parked #f)
+(define waker #f)
 (define counted-calls 0)
 (define credit-pieces '())
 (define credit-held 0)
@@ -338,6 +345,14 @@
                                (string->utf8 (string-append (symbol->string v) " "
                                                             (symbol->string (scheduler-phase))
                                                             (if (current-coroutine) " coroutine" " none"))))))))
+          ((bytevector=? target (b "/await-wake"))
+           (awaiting
+            (lambda ()
+              (make-response 200 #f '() (await (lambda (resume) (set! waker resume)))))))
+          ((bytevector=? target (b "/wake"))
+           (waker (b "woken by another"))
+           (waker (b "again"))
+           (make-response 200 #f '() (b "woke")))
           ((bytevector=? target (b "/wait-plain"))
            (coroutine-park!)
            (make-response 200 #f '() target))
@@ -809,6 +824,27 @@
                         (let ((rs (responses (client-bytes cl))))
                           (if (= 2 (length rs)) (body (cadr rs)) 'no-response))))
       (client-close! cl))
+    ;; One request wakes another (decision 0015 item 1): `/await-wake` waits
+    ;; on `await`, and `/wake`, an ordinary handler on a connection of its
+    ;; own, calls its resume twice; the second is R4's, logged.
+    (set! waker #f)
+    (set! logged '())
+    (let ((waiting (open-client! (b "GET /await-wake HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a handler that waits on await parks, and nothing is answered while it waits"
+                  '(satisfied 0)
+                  (let ((waited (wait-for (lambda () (and waker #t)))))
+                    (run-loop-until loop (lambda () #f) 20)
+                    (list waited (collector-count (client-collector waiting)))))
+      (let ((waking (open-client! (b "GET /wake HTTP/1.1\r\nHost: x\r\n\r\n"))))
+        (test-equal "another request's handler wakes it: both are answered, and the second resume is logged as late-resume"
+                    '(satisfied ((200 "woken by another")) ((200 "woke")) ((late-resume await)))
+                    (list (wait-for (lambda () (and (= 1 (length (responses (client-bytes waiting))))
+                                                    (= 1 (length (responses (client-bytes waking)))))))
+                          (map (lambda (r) (list (status r) (body r))) (responses (client-bytes waiting)))
+                          (map (lambda (r) (list (status r) (body r))) (responses (client-bytes waking)))
+                          (filter (lambda (e) (eq? (car e) 'late-resume)) logged)))
+        (client-close! waking))
+      (client-close! waiting))
     (set! logged '())
     (let ((cl (open-client! (b "GET /wait-plain HTTP/1.1\r\nHost: x\r\n\r\n"))))
       (test-eq "the client of an ordinary handler that waits reads the stream's end" 'satisfied
