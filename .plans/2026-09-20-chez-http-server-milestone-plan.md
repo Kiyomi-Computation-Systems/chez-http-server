@@ -1282,6 +1282,21 @@ lands.
 *Noted 2026-09-28:* #35 landed in chez-libuv v0.7.1, which is pinned. A copy costs what
 one `memcpy` does, 0.02 to 0.1 ns a byte as measured at 1 and 4 MiB.
 
+*Noted 2026-10-02 (the M6 exit):* each item is met on the merged tree, with its check.
+- **16 MiB each way against a slow peer.** The clients suite has curl, a process of its
+  own, send 16 MiB to a reader and read 16 MiB from a producer, each at 16 MiB/s,
+  against a server started as `serve` starts one. Every byte arrives in order. The
+  server's heap, read after two full collections every 50 ms, grows by less than 1 MiB
+  (measured 32 to 83 KB). The bytes written and not completed back up past the low
+  water, and never pass the high water by more than a piece's write. The spike reads
+  the same with a Python peer at about 6 MB/s, beside 16 MiB held whole (design §7.5's
+  note). Added on the owner's word, by form: make test takes about 2 s more.
+- **libhtp's Expect and early-response files pass.** The Expect files have since M6.4.
+  The early-response file runs two ways, by the same form: read, as the M2 exit expected,
+  and answered 400 at the head, as its recorded origin answered it (design §8.2's note).
+- **`docs/handlers.org` covers bodies**, as it has since M6.1 and M6.3. The README's
+  status no longer lists them as still to come.
+
 ### M7 — the scheduler and awaiting handlers
 
 **M7.1 — the scheduler, and the phase cell** (decision 0003; design §5.2, §5.3). A

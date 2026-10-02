@@ -70,6 +70,8 @@ response:
 - ~read-body~ calls its first procedure with each piece of the body, the bytes
   ~bv[start, end)~, as the piece arrives. Once the body has ended it calls the
   second, which returns the response.
+- ~read-body~ never holds the body whole, so a body of any size streams
+  through: a 16 MiB upload added under 100 KB to the server's memory.
 - A piece shares memory with the read it arrived in. Copy what you keep.
 - A request with no body gets its end at once, so a handler can answer every
   request with a reader.

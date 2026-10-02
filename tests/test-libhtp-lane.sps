@@ -1,6 +1,8 @@
 #!r6rs
 ;;; The libhtp lane: our expectations for libhtp's pipelining and multi-packet
-;;; streams (design §8.2).  The M2 exit; its two Expect streams since M6.4.
+;;; streams (design §8.2).  The M2 exit; its two Expect streams since M6.4;
+;;; and since the M6 exit, libhtp's early-response stream answered at the
+;;; head too, as its recorded origin answered it.
 ;;;
 ;;; The scope is what the streams carry, not their names (the owner's word,
 ;;; 2026-09-25): every stream whose client packets hold two or more requests,
@@ -114,6 +116,8 @@
                 (test-equal (string-append name " meets its expectation")
                             (libhtp-expectation name) (libhtp-outcome name)))
               libhtp-expected-files)
+    (test-equal "35-early-response.t answered 400 at the head, as its recorded origin answered it: the head's packet alone brings the 400, and the body after it is dropped as the connection lingers"
+                early-response-expectation (early-response-outcomes))
     ;; The raise M3.2-T's fault gave the fake shell (2026-09-25), which the
     ;; ratchet met as an uncaught exception, exit 255.
     (test-equal "a stream whose run raises is a mismatch that says what it raised"
