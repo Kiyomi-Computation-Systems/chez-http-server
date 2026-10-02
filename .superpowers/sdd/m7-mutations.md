@@ -160,3 +160,85 @@ Two notes:
 - **M7B-11 is a fix found while building.** The loops' schedulers were first
   kept in a weak table, and a scheduler's poll holds its loop, so no loop was
   ever let go. The shell suite now checks that a loop let go is collected.
+
+### The third step: `awaiting` (feat/m7.1-awaiting), and the finished tree
+
+Forty-nine mutants on the finished tree: the first step's twenty and the
+second step's seventeen again, M7B-4 and M7R-1 cut for its `call-handler!`,
+and the third step's twelve. The numbers skip M7A-7, for which no mutant was
+run, and M7A-11 is M7S-C's edit, run again as the third step's. Every check
+M7.1 added or changed is reddened by at least one, as on its own step's
+tree, and the same three survive. The shell's suites now run on the
+scheduler, so the first step's mutants redden them too: M7S-A, with the
+modes swapped, four socket suites, whose waits, capped by iteration count,
+then spin through their caps where 'once blocked; M7S-B, M7S-N, M7S-Q and
+M7S-R the shell suite.
+
+| Mutant | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|
+| M7S-A | `scheduler` | the poll's modes swapped: 'once when something is ready, 'nowait when nothing is | clients 3, contract (raised, exit 2, 2 failed), scheduler 1, serve 1, shell (raised, exit 2, 10 failed) |
+| M7S-B | `scheduler` | R3: a coroutine's first run returns normally at its end, into the continuation that first entered it | scheduler (raised, exit 2, 1 failed), shell (raised, exit 2, 1 failed) |
+| M7S-C | `scheduler` | R2's check gone: a park on no coroutine is not refused | scheduler 1, shell 1 |
+| M7S-D1 | `scheduler` | R1's check gone from a park: a park inside the poll is not refused as R1 | scheduler 1 |
+| M7S-D2 | `scheduler` | R1's check gone from the drain: a drain inside the poll runs | scheduler 1 |
+| M7S-E | `scheduler` | R5's check gone: a park inside a feed is not refused | scheduler 1 |
+| M7S-F | `scheduler` | the drain stops at what was ready as it began | scheduler 1 |
+| M7S-G | `scheduler` | a coroutine's end procedure called on its own stack, before it jumps to the drain | scheduler 1 |
+| M7S-H | `scheduler` | a wake of a coroutine that is not parked is not refused | scheduler 1 |
+| M7S-I | `scheduler` | a coroutine spawned is entered at once, where it is spawned | scheduler (raised, exit 2, 2 failed) |
+| M7S-J | `scheduler` | the coroutine's guard gone: a raise leaves its stack | scheduler (raised, exit 2, 1 failed) |
+| M7S-K | `scheduler` | a feed's end leaves the phase 'in-parser | scheduler 2 |
+| M7S-L | `scheduler` | a turn answers only the poll's answer | scheduler 5 |
+| M7S-M | `scheduler` | a coroutine that yields runs again in the same drain | scheduler 2 |
+| M7S-N | `scheduler` | the coroutine running not cleared once it parks or ends | scheduler (raised, exit 2), shell (raised, exit 2, 20 failed) |
+| M7S-O | `scheduler` | the poll not in the phase 'in-uv-run | scheduler 3 |
+| M7S-P | `scheduler` | the ready queue run newest first | scheduler 2 |
+| M7S-Q | `scheduler` | a call run on a coroutine of its own | scheduler 2, shell 9 |
+| M7S-R | `scheduler` | a woken coroutine entered again from its start, not resumed where it parked | scheduler 6, shell (raised, exit 2, 18 failed) |
+| M7B-1 | `connection` | the core asks the handler of a request whose body is still arriving with reading on, as before M7.1 | connection-body 1, connection-expect 1, connection-table 18, shell 2 |
+| M7B-2 | `connection` | a reader's answer does not read again: the request stays in handling | clients 6, connection-body 22, connection-cut-off 3, connection-deadlines 1, connection-entry 1, connection-expect 13, connection-head 2, connection-originated 1, connection-padding 10, connection-table 66, contract 3, libhtp-lane 5, message-loop 2, outcome-lane 2, ratchet 1, shell 7 |
+| M7B-3 | `connection` | awaiting credit from handling stops reading and disarms again | connection-table 2 |
+| M7B-4 | `shell` | the libuv shell calls a handler from inside on-data, in place (design §5.3's mutation) | shell 3 |
+| M7B-6 | `shell` | the shell feeds the parser outside the phase 'in-parser | none: survives (below) |
+| M7B-7 | `fake-shell` | the fake shell calls a handler in place, inside its drain | none: survives (below) |
+| M7B-8 | `serve` | serve's loop runs uv-run alone, not the scheduler's turn | serve 1 |
+| M7B-9 | `shell` | a scheduler for each shell, not one for each loop | contract 3, shell 102 |
+| M7B-10 | `shell` | a shell's turn unguarded | shell 10 |
+| M7B-11 | `shell` | the loops' schedulers kept in a weak table: a loop let go is never collected | shell 1 |
+| M7B-12 | `shell` | the shell's timer never stopped (M5.3-L), against the check whose loop M7.1 now turns through the scheduler | shell 2 |
+| M7B-13 | `connection` | a piece of the body re-arms no body deadline: continue alone (row B3, whose start M7.1 moved to the head's feed) | connection-table 3, shell 1 |
+| M7B-14 | `connection` | a reader's answer reads again though its message has ended (the message loop's serial?, which M7.1 taught a wait from a message's end) | connection-body 1, connection-table 4, message-loop 1, shell 2 |
+| M7B-15 | `connection` | after a response, reading starts again before the parser is resumed (the message loop's serial?) | connection-table 2, message-loop 3 |
+| M7R-1 | `shell` | a handler called though its connection closed before the drain reached the call | shell 1 |
+| M7R-2 | `shell` | the turn's guard takes only a uv-run callback error as a callback's, not a raise out of the drain | shell 4 |
+| M7R-3 | `scheduler` | a feed's beginning leaves the phase as it was | scheduler 2 |
+| M7R-5 | `shell` | the shell's drain leaves the phase a raise out of a feed left | none: survives (below) |
+| M7A-1 | `shell` | a handler's awaiting thunk called in place, on no coroutine | shell 3 |
+| M7A-2 | `shell` | a waiting handler's reader handed its pieces in place | shell 3 |
+| M7A-3 | `shell` | a waiting handler's producer called in place | shell 2 |
+| M7A-4 | `shell` | a waiting connection's calls not made one at a time: each started at once | shell 1 |
+| M7A-5 | `shell` | a waiting handler's answer given with no word of credit | shell 1 |
+| M7A-6 | `shell` | a waiting connection's next call never started | shell 10 |
+| M7A-8 | `shell` | a connection keeps waiting past its waiting request: not reset at the next handler's call | shell 1 |
+| M7A-9 | `shell` | a waiting call's event never dispatched once it has ended | shell 13 |
+| M7A-10 | `scheduler` | a wait on no coroutine answers #f quietly, not refused | scheduler 1, shell 2 |
+| M7A-11 | `scheduler` | R2's check gone (M7S-C), against the shell suite | scheduler 1, shell 1 |
+| M7A-12 | `awaiting` | an awaiting made of anything | body 1 |
+| M7A-13 | `awaiting` | awaiting-thunk answers the record itself | body 1, shell 7 |
+
+By check, the third step's, the mutants that redden it:
+- shell, "a handler that waits answers awaiting: its thunk parks on a coroutine, and nothing is answered while it waits": M7S-N, M7B-9, M7A-1, M7A-13;
+- shell, "once woken, its answer is written": M7S-B, M7S-N, M7S-R, M7B-9, M7A-9;
+- shell, "the thunk's answer, resumed in the drain, on its coroutine": M7S-N, M7S-R, M7A-1, M7A-9, M7A-13;
+- shell, "the next request on the connection, its handler ordinary, has its reader called in place": M7S-N, M7S-Q, M7S-R, M7A-1, M7A-8, M7A-9, M7A-13;
+- shell, "the client of an ordinary handler that waits reads the stream's end": M7S-N, M7S-Q, M7A-10;
+- shell, "after a 500, the refusal logged as R2's, a wait on no coroutine": M7S-C, M7S-N, M7S-Q, M7B-4, M7A-10, M7A-11;
+- shell, "the client of a handler that waits and reads a body reads its response": M7S-N, M7S-R, M7B-14, M7A-6, M7A-9;
+- shell, "its reader takes each piece on a coroutine, in order, yielding before it keeps one": M7S-N, M7S-R, M7B-14, M7A-2, M7A-4, M7A-6, M7A-9, M7A-13;
+- shell, "its reader waits on a piece, and reading waits for it: the connection awaits its credit": M7A-2, M7A-5, M7A-6, M7A-9, M7A-13;
+- shell, "once it has taken the piece, the rest is read, and the response follows": M7A-6, M7A-9;
+- shell, "the reader's response": M7A-2, M7A-6, M7A-9, M7A-13;
+- shell, "the client of a handler that waits and streams reads its response": M7S-R, M7A-3, M7A-6;
+- shell, "its producer is called on a coroutine for each piece, yielding before each: the pieces in order": M7S-R, M7A-3, M7A-6, M7A-13;
+- body, "awaiting carries its thunk, and is neither a reader nor anything else": M7A-13;
+- body, "an awaiting is made of a procedure": M7A-12.

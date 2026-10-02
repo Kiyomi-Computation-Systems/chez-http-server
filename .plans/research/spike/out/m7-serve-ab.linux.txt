@@ -1,0 +1,13 @@
+Linux 6.12.76-linuxkit aarch64 in Docker's chez-libuv-valgrind:10.4.1 (698eba6), scheme 10.4.1, ab 2.3: the finished M7.1 tree, after its review, beside main at 4a7748b
+round 1, 1 connection(s), main: 15534.91 req/s, 50000 complete, 0 failed
+round 1, 1 connection(s), branch: 14246.65 req/s, 50000 complete, 0 failed
+round 1, 32 connection(s), main: 68230.70 req/s, 50000 complete, 0 failed
+round 1, 32 connection(s), branch: 89290.50 req/s, 50000 complete, 0 failed
+round 2, 1 connection(s), branch: 15051.83 req/s, 50000 complete, 0 failed
+round 2, 1 connection(s), main: 15181.41 req/s, 50000 complete, 0 failed
+round 2, 32 connection(s), branch: 83242.46 req/s, 50000 complete, 0 failed
+round 2, 32 connection(s), main: 65100.78 req/s, 50000 complete, 0 failed
+round 3, 1 connection(s), main: 15536.57 req/s, 50000 complete, 0 failed
+round 3, 1 connection(s), branch: 14979.85 req/s, 50000 complete, 0 failed
+round 3, 32 connection(s), main: 66414.73 req/s, 50000 complete, 0 failed
+round 3, 32 connection(s), branch: 92187.48 req/s, 50000 complete, 0 failed

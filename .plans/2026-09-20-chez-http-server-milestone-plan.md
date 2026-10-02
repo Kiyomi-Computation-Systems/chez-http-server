@@ -1338,6 +1338,17 @@ layer green on its own:
    coroutines, a wait anywhere else refused, as R2's where no coroutine runs and R1's
    inside a libuv callback, and a handler that waits there failing.
 
+*Built 2026-10-02 (M7.1):* the three steps, as above. What was chosen while building is
+decision 0014's section of that name: one scheduler a loop; a drain that runs until
+nothing is ready; `serve`'s own loop checked in a process of its own; a raise out of the
+drain taken by the turn's guard as a callback's; a handler whose connection has closed
+before the drain not called; R5 held by `make check-imports` as well, since no check can
+see the phase a feed runs in; `awaiting` exported with M7.2's verbs, not before. "Call a
+handler from inside `on-data`" reddens the shell suite's check of where a handler is
+called; R2's mutant (a park on no coroutine refused no more) and R3's (a coroutine's
+first run returning normally, into the continuation that first entered it) redden their
+checks in `tests/test-scheduler.sps`.
+
 **M7.2 — what a handler awaits, decided first.** The awaiting verbs a handler sees are
 public API, so a decision record comes first; the brief's exit needs `uv-getaddrinfo!`.
 A resume cell is one-shot, and a second fulfilment, such as a DNS answer after its

@@ -1,0 +1,13 @@
+Darwin 25.6.0 arm64, chez 10.4.1, ab 2.3: the finished M7.1 tree, after its review, beside main at 4a7748b
+round 1, 1 connection(s), main: 12045.05 req/s, 50000 complete, 0 failed
+round 1, 1 connection(s), branch: 11858.25 req/s, 50000 complete, 0 failed
+round 1, 32 connection(s), main: 33444.88 req/s, 50000 complete, 0 failed
+round 1, 32 connection(s), branch: 32973.96 req/s, 50000 complete, 0 failed
+round 2, 1 connection(s), branch: 11891.46 req/s, 50000 complete, 0 failed
+round 2, 1 connection(s), main: 12084.84 req/s, 50000 complete, 0 failed
+round 2, 32 connection(s), branch: 34694.80 req/s, 50000 complete, 0 failed
+round 2, 32 connection(s), main: 33338.13 req/s, 50000 complete, 0 failed
+round 3, 1 connection(s), main: 12070.01 req/s, 50000 complete, 0 failed
+round 3, 1 connection(s), branch: 11831.47 req/s, 50000 complete, 0 failed
+round 3, 32 connection(s), main: 33332.13 req/s, 50000 complete, 0 failed
+round 3, 32 connection(s), branch: 34939.53 req/s, 50000 complete, 0 failed

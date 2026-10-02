@@ -30,7 +30,10 @@
 ;;;   call-handler    the handler called after libuv's turn, from the
 ;;;                   scheduler's drain (decision 0014): its answer, a
 ;;;                   response or a reader, as `handler-responded`, or, if
-;;;                   the handler raises, `handler-failed`, logged
+;;;                   the handler raises, `handler-failed`, logged; or, if
+;;;                   it answers `awaiting`, its thunk run on a coroutine
+;;;                   and the thunk's answer as `handler-responded`, on
+;;;                   credit (A HANDLER THAT WAITS, below)
 ;;;   deliver-body    the piece to the reader the core is handing the body to
 ;;;                   (conn-body-reader; decision 0013), or, if it raises,
 ;;;                   `handler-failed`, logged; with no reader, nothing
@@ -165,6 +168,19 @@
 ;;; no guard.  A handler whose connection has closed before the drain
 ;;; reaches its call is not called.
 ;;;
+;;; A HANDLER THAT WAITS (decision 0014; M7.1) answers `(awaiting thunk)`,
+;;; (http-server awaiting)'s.  The thunk runs on a coroutine of its own, so
+;;; it may wait, and what it returns is the answer, dispatched on credit,
+;;; once it has ended, from the drain: a response or a reader, or awaiting
+;;; again, which waits again; a raise is `handler-failed`, logged.  Until
+;;; the next request's handler is called, the connection's calls into the
+;;; handler's code, its reader's pieces and end and its producer, are each
+;;; made on a coroutine too, one at a time, in order (call-waiting!), each
+;;; event its call brings dispatched from the drain once it has ended: a
+;;; streaming reader's piece is credited once the reader has taken it, so
+;;; reading waits while it does (M6.2).  Every other reader and producer is
+;;; called in place, as in v1.
+;;;
 ;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
 ;;; chez-libuv catches whatever a callback raises, and raises it again from
 ;;; uv-run composed with `&uv-callback-error`; a raise out of the drain, a
@@ -190,12 +206,13 @@
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
-          (only (http-server body) body-reader-on-piece body-reader-on-end)
+          (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole?)
+          (only (http-server awaiting) awaiting? awaiting-thunk)
           (only (http-server limits)
                 limits-read-buffer-size limits-backlog limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server private scheduler)
-                make-scheduler scheduler-turn! scheduler-call!
+                make-scheduler scheduler-turn! scheduler-call! scheduler-spawn!
                 scheduler-phase scheduler-feed-begin! scheduler-feed-end!)
           (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
@@ -287,7 +304,10 @@
             (mutable held)                    ; the writes held: their byte counts, newest first
             (mutable chunk) (mutable chunk-end) ; the last chunk they fill, or #f, and where they end in it
             (mutable chunks)                  ; the chunks before it, as spans, newest first
-            (mutable producer-called?)))      ; whether the drain has called a producer yet
+            (mutable producer-called?)        ; whether the drain has called a producer yet
+            (mutable waits?)                  ; whether the request's handler answered awaiting
+            (mutable calls)                   ; its calls on coroutines to make, in order
+            (mutable calling?)))              ; whether one of them runs
 
   ;; connection-state : Connection -> ConnState — the core's state.
   (define (connection-state c) (conn-context-state (connection-ctx c)))
@@ -430,7 +450,7 @@
   ;; option has already failed, which reading will report.  A start that
   ;; raises goes on to shell-adopt!, which closes the handle.
   (define (serve! sh tcp)
-    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f)))
+    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f)))
       (connection-entry-set! c (make-wheel-entry c))
       (connection-ctx-set! c (make-conn-context
                               (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
@@ -571,51 +591,115 @@
   ;; (decision 0014): its answer, and `credit` after it on a shell made on
   ;; credit, dispatched there, the turn's guard taking a raise out of the
   ;; dispatch as a callback's (shell-turn!).  A connection that has closed
-  ;; before the drain reaches the call has its handler called no more.
+  ;; before the drain reaches the call has its handler called no more, as a
+  ;; waiting connection's calls are not made (next-call!).
   (define (call-handler! c request)
     (let ((sh (connection-shell c)))
+      (connection-waits?-set! c #f)
       (scheduler-call! (shell-scheduler sh)
         (lambda ()
           (unless (connection-closing? c)
-            (dispatch! c (guard (e (#t (log! sh 'handler-failed (list e))
+            (let ((event (guard (e (#t (log! sh 'handler-failed (list e))
                                        (list 'handler-failed e)))
-                           (let ((a ((shell-handler sh) request)))
-                             (if (shell-on-credit? sh)
-                                 (list 'handler-responded a 'credit)
-                                 (list 'handler-responded a))))))))))
+                           (answered c ((shell-handler sh) request) #t))))
+              (when event (dispatch! c event))))))))
 
-;; deliver-body! : Connection Bytevector Nat Nat -> Void
+  ;; answered : Connection Any Boolean -> (U Event #f)
+  ;; The event an answer brings, the handler's or, not `handler?`, a
+  ;; reader's at its end: `(handler-responded answer)`, and `credit` after
+  ;; the handler's on a shell made on credit or once the handler waits, for
+  ;; the reader it may be (M6.2); or, for `awaiting`, none yet: its thunk is
+  ;; called on a coroutine (call-waiting!), and its answer answered so in
+  ;; turn.
+  (define (answered c a handler?)
+    (cond
+     ((awaiting? a)
+      (connection-waits?-set! c #t)
+      (call-waiting! c (awaiting-thunk a) (lambda (v) (answered c v handler?)))
+      #f)
+     ((and handler? (or (connection-waits? c) (shell-on-credit? (connection-shell c))))
+      (list 'handler-responded a 'credit))
+     (else (list 'handler-responded a))))
+
+  ;; call-waiting! : Connection (-> Any) (Any -> (U Event #f)) -> Void
+  ;; Call `thunk` on a coroutine, after the connection's calls before it:
+  ;; once it has ended, the event `->event` makes of its value is
+  ;; dispatched, from the drain, or `handler-failed`, logged, if either
+  ;; raised; then the next call starts.  A connection closing makes no more.
+  ;; A raise out of the dispatch goes to the turn's guard (shell-turn!),
+  ;; having closed the connection, whose calls then matter no more.
+  (define (call-waiting! c thunk ->event)
+    (connection-calls-set! c (append (connection-calls c) (list (cons thunk ->event))))
+    (unless (connection-calling? c) (next-call! c)))
+
+  ;; next-call! : Connection -> Void — start the oldest call waiting, if any.
+  (define (next-call! c)
+    (let ((calls (connection-calls c)))
+      (cond
+       ((or (null? calls) (connection-closing? c))
+        (connection-calls-set! c '())
+        (connection-calling?-set! c #f))
+       (else
+        (let ((call (car calls)) (sh (connection-shell c)))
+          (connection-calls-set! c (cdr calls))
+          (connection-calling?-set! c #t)
+          (scheduler-spawn! (shell-scheduler sh) (car call)
+            (lambda (kind v)
+              (let ((event (guard (e (#t (log! sh 'handler-failed (list e))
+                                         (list 'handler-failed e)))
+                             (if (eq? kind 'raised)
+                                 (raise v)
+                                 ((cdr call) v)))))
+                (when (and event (not (connection-closing? c)))
+                  (dispatch! c event)))
+              (next-call! c))))))))
+
+  ;; deliver-body! : Connection Bytevector Nat Nat -> Void
   ;; Hand bv[start, end) to the reader the core is handing the body to; if
   ;; the reader raises, `handler-failed`, logged.  With no reader, nothing:
-  ;; the core let it go after this piece was asked for.
+  ;; the core let it go after this piece was asked for.  The reader of a
+  ;; handler that waits takes it on a coroutine (call-waiting!), and a
+  ;; streaming one is then credited with it, `(body-credit n)`.
   (define (deliver-body! c bv start end)
     (let ((r (conn-body-reader (connection-state c))))
       (when r
-        (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
-                      (dispatch! c (list 'handler-failed e))))
-          ((body-reader-on-piece r) bv start end)))))
+        (if (connection-waits? c)
+            (call-waiting! c (lambda () ((body-reader-on-piece r) bv start end))
+                           (lambda (v) (and (not (body-reader-whole? r))
+                                            (list 'body-credit (- end start)))))
+            (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
+                          (dispatch! c (list 'handler-failed e))))
+              ((body-reader-on-piece r) bv start end))))))
 
   ;; deliver-body-end! : Connection -> Void
-  ;; The reader's end: its response as `handler-responded`, or, if it raises,
-  ;; `handler-failed`, logged.
+  ;; The reader's end: its response as `handler-responded` (answered), or,
+  ;; if it raises, `handler-failed`, logged; on a coroutine for a handler
+  ;; that waits (call-waiting!).
   (define (deliver-body-end! c)
     (let ((r (conn-body-reader (connection-state c))))
       (when r
-        (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
-                                   (list 'handler-failed e)))
-                       (list 'handler-responded ((body-reader-on-end r))))))))
+        (if (connection-waits? c)
+            (call-waiting! c (body-reader-on-end r) (lambda (v) (answered c v #f)))
+            (let ((event (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
+                                       (list 'handler-failed e)))
+                           (answered c ((body-reader-on-end r)) #f))))
+              (when event (dispatch! c event)))))))
 
   ;; notify-producer! : Connection -> Void
   ;; The producer the core writes a response's body from, called for its
   ;; next piece: its answer as `handler-body-chunk` or `handler-body-end`,
   ;; or, if it raises or answers neither, `handler-failed`, logged.  With no
   ;; producer, nothing: the core let it go after the piece was asked for.
+  ;; The producer of a handler that waits is called on a coroutine
+  ;; (call-waiting!).
   (define (notify-producer! c)
     (let ((p (conn-producer (connection-state c))))
       (when p
-        (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
-                                   (list 'handler-failed e)))
-                       (producer-event (p)))))))
+        (if (connection-waits? c)
+            (call-waiting! c p producer-event)
+            (dispatch! c (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
+                                       (list 'handler-failed e)))
+                           (producer-event (p))))))))
 
   ;; write! : Connection (Listof Segment) Nat -> Void
   ;; A write of `nbytes`, the Date slot filled: held for the turn's one
