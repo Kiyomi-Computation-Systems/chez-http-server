@@ -1776,6 +1776,17 @@ where the trace sees the write, which the shell calls once the clock is up to da
 script holds its second request into the next second, so a fake dated at the event's
 instant, or at the instants out of order, fails its bytes check every time.
 
+*Noted 2026-10-02 (M7.3):* the third shell is the libuv shell whose handler waits. Every
+script whose requests reach the handler plays to it, its handler answering `(awaiting
+thunk)` with the same handler's call, and its events are given to a fake made the same
+way. Since M7.3 the fake has the libuv shell's coroutine path: a scheduler of its own,
+drained once each outermost dispatch has ended. The three traces cannot be identical,
+as this section first had it: a waiting handler is answered on credit (decision 0014),
+and a waiting reader's end can be asked for before its first piece has run. The bytes
+each client reads can be, each Date's value aside. So, decided by form, each libuv
+shell's trace is held to a fake made the same way, and the coroutine shell's bytes to
+the direct shell's (plan §14's M7.3 note has the measurement).
+
 ### 8.5 The socket lane
 
 chez-libuv's own shape, which its `tests/test-echo.sps` is the template for: bind

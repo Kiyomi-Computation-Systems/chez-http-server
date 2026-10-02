@@ -517,3 +517,89 @@ again, the ten earlier re-cuts among them. Every mutant loaded, and every
 one reddened a check but M7L-11, the scope survivor. Every check a step
 added is reddened by its own step's mutants on its own tree: four of four,
 eleven of eleven, twenty-six of twenty-six and six of six.
+
+## M7.3 — three shells, one contract (2026-10-02)
+
+Two steps (plan §14's M7.3 note), each proven on its own tree: the first,
+main at bc570a4 with its files laid in; the second, the finished tree.
+M7.3 changes tests alone, so its mutants cut the fake shell (`fake-shell`,
+M7F) and the contract suite itself (M7C), and, for the checks that hold the
+libuv shell's coroutine path, that path and the scheduler (M7.1's M7A,
+re-run, and M7C-4). Each step's mutants ran against every suite of its
+tree, three at a time. Every mutant loaded (no `Exception` in any report).
+
+The plan's mutation, "the coroutine shell resumes a later request's handler
+first", cannot be made in v1, measured first (progress.md, M7.3): no later
+request's handler exists while one waits, since the core reads no request
+past one whose handler has not answered (decision 0004). Decided by form,
+the order row's is the shell answering a waiting handler before its thunk
+has ended; the order row is the second step's.
+
+### The first step: the fake's coroutine path, and every script through the coroutine shell
+
+Red before green: the coroutine pass, played before the fake had its
+coroutine path, failed 32 checks (120 passed), the fake answering
+`awaiting` as a response, which the core answers 500.
+
+| Mutant | Where | Change | Reddens on the step's tree (suite, failures) |
+|---|---|---|---|
+| M7A-5 | `shell` | a waiting handler's answer given with no word of credit (the libuv shell; M7.1's, rerun) | contract 34, shell 1 |
+| M7A-6 | `shell` | a waiting connection's next call never started (the libuv shell; M7.1's, re-cut) | contract 43, shell 12 |
+| M7A-9 | `shell` | a waiting call's event never dispatched once it has ended (the libuv shell; M7.1's, re-cut) | contract 90, shell 17 |
+| M7C-1 | the suite | the replay gives the fake every credit in the libuv shell's events, a waiting handler's shell's own among them | contract 3 |
+| M7C-2 | the suite | the suite credits every shell's readers, not only a shell's made on credit | none: survives |
+| M7C-3 | the suite | the coroutine shell's handler does not wait: `waiting` answers the handler itself | contract 16 |
+| M7C-4 | `scheduler` | a coroutine's value dropped: its end is handed #f (the scheduler, shared by both shells) | contract 18, scheduler 7, shell 10, waits 7 |
+| M7F-1 | `fake-shell` | a waiting handler's thunk called in place, on no coroutine (the fake) | none: survives |
+| M7F-2 | `fake-shell` | a waiting handler's answer given with no word of credit (the fake) | contract 17 |
+| M7F-3 | `fake-shell` | a waiting handler's reader handed its pieces in place (the fake) | contract 5 |
+| M7F-4 | `fake-shell` | a waiting reader's piece credited with nothing once taken (the fake) | contract 4 |
+| M7F-5 | `fake-shell` | a waiting handler's reader handed its end in place (the fake) | contract 7 |
+| M7F-6 | `fake-shell` | a waiting handler's producer called in place (the fake) | none: survives |
+| M7F-7 | `fake-shell` | a waiting connection's calls not made one at a time: each started at once (the fake) | none: survives |
+| M7F-8 | `fake-shell` | a waiting connection's next call never started (the fake) | contract 20 |
+| M7F-9 | `fake-shell` | a connection keeps waiting past its waiting request: not reset at the next handler's call (the fake) | none: survives |
+| M7F-10 | `fake-shell` | the fake calls a handler in place, inside its drain (M7B-7, re-cut) | none: survives |
+| M7F-11 | `fake-shell` | a waiting call's event never dispatched once it has ended (the fake) | contract 36 |
+| M7F-12 | `fake-shell` | the fake's scheduler never drained | connection-body 28, connection-cut-off 3, connection-deadlines 4, connection-expect 16, connection-head 16, connection-linger 9, connection-originated 6, connection-padding 14, connection-response 23, connection-stream 16, contract 74, libhtp-lane 15, message-loop 12, outcome-lane 3, ratchet 1, view 13 |
+| M7F-13 | `fake-shell` | a reader's end that answers awaiting, on an ordinary handler's connection, not waited on (the fake) | none: survives |
+| M7F-17 | `fake-shell` | a waiting call's answer dispatched though its connection has closed (the fake) | none: survives |
+| M7F-18 | `fake-shell` | a waiting connection's next call made though it has closed (the fake) | none: survives |
+
+Survivors on the step's tree: M7C-2, M7F-1, M7F-6, M7F-7, M7F-9, M7F-13,
+M7F-17 and M7F-18. Nothing on this tree waits: its coroutine pass wraps
+handlers that answer at once, so no call parks, no request on a connection
+is ordinary beside one that waits, and no reader's end answers `awaiting`
+on an ordinary handler's connection. The second step's handler code that
+waits is where each is to show. M7F-10, M7.1's M7B-7 re-cut, a scope
+statement: the core asks for a handler last in every drain it runs, so a
+fake that calls its handler in place, inside its drain, makes the same
+trace as one that calls it after.
+
+By check: every check the step added or changed is reddened by its
+mutants on its tree, 91 of 91: the coroutine pass's 90 and the suite's
+last check, which counts one more shell. By kind:
+- through the coroutine shell, the libuv shell read what the client sent,
+  then its end alone, and closed (18): M7A-5, M7A-6, M7A-9, M7C-4;
+- the client read the bytes the fake shell wrote (18): M7A-6, M7A-9,
+  M7F-2, M7F-3, M7F-4, M7F-5, M7F-8, M7F-11, M7F-12, each by three at least;
+- the two shells' traces are identical (18): those, M7A-5 and M7C-1, each
+  by three at least;
+- the client read what the direct shell's client read, Dates aside (18):
+  M7A-5, M7A-6, M7A-9, M7C-4;
+- its handler answered on credit where the direct shell's answered with
+  none (18): M7A-5, M7A-6, M7A-9, M7C-3, M7C-4;
+- the suite's last check: M7A-6, M7A-9.
+
+The review's fixes in this step (progress.md): the fake's close checks,
+whose row is the second step's, which has the waits (M7F-17, M7F-18
+survive here); and the coroutine pass held to the coroutine path: M7C-3,
+which survived before the fix, reddens the new checks of 16 scripts, the two
+others' handlers failing in both shells. Re-cut for the fixes: M7F-8 and
+M7F-11, whose text the close checks moved. Re-cut before the review: M7C-1
+and M7C-2, for the suite's credit, given since to a shell made on credit
+alone; M7A-6 and M7A-9, M7.1's, whose text M7.2 rewrote.
+
+The step's tree made afresh, main at bc570a4 with its two test files laid
+in, cut from the finished tree by taking the second step's parts out, and
+run whole: forty-seven suites, 1,614 expected passes, every pin ok.

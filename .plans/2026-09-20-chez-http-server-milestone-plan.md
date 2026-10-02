@@ -1403,6 +1403,29 @@ pipelined connection keeps the responses in order (the brief's exit).
 - **Mutation:** the coroutine shell resumes a later request's handler first. Expect the
   order row red.
 
+*Noted 2026-10-02 (M7.3):* measured first, two of this note's premises do not hold in
+v1. The core reads no request past one whose handler has not answered (decision 0004).
+On a pipelined `/resolve` and `/after`, through the libuv shell with handlers that
+answer `awaiting`, reading stops at `/resolve`'s end, and `/after`'s handler is called
+once `/resolve`'s response is written and its write has completed. So no later handler
+exists while one waits, and the mutation above cannot be made: a waiting connection's
+newest call started first, and the scheduler's ready queue run newest first, each left
+the responses in order. Decided by form, "Answered at once": the order row's mutation
+is the coroutine shell answering a waiting handler before its thunk has ended, with
+which `/resolve` is answered 500 and `/after` never. Nor can the three shells' traces
+be identical (design §8.4). Over the contract's 21 scripts, the coroutine shell's
+trace was the direct shell's in 3. In 15 it was the same but for the credit a waiting
+handler is answered on (decision 0014). In 1 a waiting reader's end was asked for
+before its first piece had run, and in 2 the ticks came at other times. The bytes each
+client read were the same in all 21, each Date's value aside. Decided by form, "Bytes
+across all three": each libuv shell's trace is held to a fake made the same way, and
+the coroutine shell's bytes to the direct shell's. M7.3 is two steps, each a layer
+green on its own:
+1. the fake shell's coroutine path, as the libuv shell's, and every script played
+   through the coroutine shell too;
+2. the fake's waits, scripted; handler code that waits, played to the direct shell;
+   and the order row, the brief's exit.
+
 **M7 exit:** the brief's. Each of R1–R5 has a mutation that goes red. The budget spike
 run again shows an idle connection's heap unchanged: an idle connection carries no
 coroutine.
