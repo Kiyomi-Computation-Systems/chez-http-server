@@ -28,11 +28,22 @@
 ;;;   - chez-libuv's live handles, and the counters of its dev build: with
 ;;;     every client gone, the listener is the one handle left but the timer
 ;;;     the shell keeps for its next deadline (M5.3), and after the shutdown
-;;;     none is.
+;;;     none is;
+;;;   - the M6 exit's 16 MiB each way (plan §14): every byte, checked a piece
+;;;     at a time against its piece's letter; the server's heap, read after
+;;;     two full collections as the M4 exit read a connection's (its budget
+;;;     spike), the client in a process of its own; and the bytes a
+;;;     connection has written and not yet seen completed, against decision
+;;;     0005's water marks.
 (import (rnrs) (srfi :64) (testing)
+        (only (chezscheme) collect collect-maximum-generation bytes-allocated)
         (libuv) (uv-testing) (shell-testing)
         (http-server)
-        (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-timer)
+        (only (http-server limits) default-limits limits-read-buffer-size
+              limits-write-high-water limits-write-low-water)
+        (only (http-server connection) conn-outstanding-bytes)
+        (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-timer
+              connection-state)
         (only (http-server private serve) start-server)
         (rename (only (libuv private native) live-counts) (live-counts debug-live-counts))
         (producers))
@@ -40,7 +51,8 @@
 (define (b s) (string->utf8 s))
 
 ;; The cap on every wait.  All of this suite's clients together take about
-;; 700 iterations (2026-09-27, Darwin arm64).
+;; 700 iterations (2026-09-27, Darwin arm64), and each 16 MiB run, the M6
+;; exit's, 324 to 1,021 more (2026-10-02, Darwin arm64 and Linux aarch64).
 (define cap 20000)
 
 ;; env : (Pair String String) ... -> (String -> (U String #f))
@@ -55,57 +67,159 @@
 ;; reading a POST's body first: a response given instead of a reader to a
 ;; request whose head announces a body closes the connection (decision 0013).
 ;; `/stream` is answered with a producer of three pieces (M6.3;
-;; tests/producers.sls).
+;; tests/producers.sls), and `/sixteen` moves the M6 exit's 16 MiB (below).
 (define (handler r)
-  (let ((answer (make-response 200 #f '()
-                               (if (string=? (request-path r) "/stream")
-                                   (producer-of '("one " "two " "three"))
-                                   (b (string-append (request-path r) " " (or (request-query r) "-") "\n"))))))
-    (if (eq? (request-method r) 'POST)
-        (read-body (lambda (bv start end) #t) (lambda () answer))
-        answer)))
+  (if (string=? (request-path r) "/sixteen")
+      (sixteen r)
+      (let ((answer (make-response 200 #f '()
+                                   (if (string=? (request-path r) "/stream")
+                                       (producer-of '("one " "two " "three"))
+                                       (b (string-append (request-path r) " " (or (request-query r) "-") "\n"))))))
+        (if (eq? (request-method r) 'POST)
+            (read-body (lambda (bv start end) #t) (lambda () answer))
+            answer))))
+
+;; --- 16 MiB each way (the M6 exit) ---
+;;
+;; The 16 MiB are 1,024 pieces of 16 KiB, the k-th filled with the k-th
+;; letter (mod 26) from `a`, as sized-producer makes them.
+(define sixteen-size 16384)
+(define sixteen-count 1024)
+
+;; make-checker : -> (Pair (Bytevector Nat Nat -> Void) (-> (List Nat Nat)))
+;; What the 16 MiB are handed to as they arrive, keeping none of them: a
+;; procedure taking each run of them, bv[start, end), and one answering the
+;; bytes taken and how many of them were not their piece's letter.
+(define (make-checker)
+  (let ((taken 0) (wrong 0))
+    (cons (lambda (bv start end)
+            (let check ((i start))
+              (when (< i end)
+                ;; bv[i, stop) is the rest of the k-th piece, or the run's end.
+                (let* ((at (+ taken (- i start)))
+                       (k (div at sixteen-size))
+                       (stop (min end (+ i (- (* (+ k 1) sixteen-size) at))))
+                       (letter (+ 97 (mod k 26))))
+                  (let scan ((j i))
+                    (cond ((= j stop) (check stop))
+                          ((fx=? (bytevector-u8-ref bv j) letter) (scan (+ j 1)))
+                          (else (set! wrong (+ wrong 1)) (scan (+ j 1))))))))
+            (set! taken (+ taken (- end start))))
+          (lambda () (list taken wrong)))))
+
+;; The largest piece the server's reader was handed.
+(define sixteen-largest 0)
+
+;; sixteen : Request -> (U Response BodyReader)
+;; A GET is answered with the 16 MiB, streamed a piece at a time; any other
+;; request's body is read as it arrives, checked and kept nowhere, and
+;; answered with the bytes taken and the bytes wrong.
+(define (sixteen r)
+  (if (eq? (request-method r) 'GET)
+      (make-response 200 #f '() (sized-producer sixteen-count sixteen-size))
+      (let ((checker (make-checker)))
+        (set! sixteen-largest 0)
+        (read-body (lambda (bv start end)
+                     (set! sixteen-largest (max sixteen-largest (- end start)))
+                     ((car checker) bv start end))
+                   (lambda ()
+                     (let ((took ((cdr checker))))
+                       (make-response 200 #f '()
+                                      (b (string-append (number->string (car took)) " "
+                                                        (number->string (cadr took)) "\n")))))))))
 
 ;; A client run as a child: its process, the pipe its standard output is
-;; read through, what it wrote, its exit, as (status signal), and whether its
-;; output has ended.
+;; read through, the pipe the suite writes its standard input through or
+;; #f, what it wrote, its exit, as (status signal), and whether its output
+;; has ended.
 (define-record-type child
-  (fields process pipe out (mutable exit) (mutable ended?)))
+  (fields process pipe in out (mutable exit) (mutable ended?)))
 
-;; spawn : UvLoop String (Listof String) -> Child
-;; Start `file` with `args` on `loop`, its standard input empty, its standard
-;; output read into the child's collector, its standard error the suite's.
-;; A child that cannot be started raises, its name on standard error.
-(define (spawn loop file args)
-  (let ((pipe (make-uv-pipe loop)) (out (make-byte-collector)) (c #f))
-    (let ((process
-           (guard (e (#t (uv-close! pipe)
-                         (let ((p (current-error-port)))
-                           (put-string p (string-append "clients: cannot start " file
-                                                        "; it is a test tool, see tests/test-clients.sps\n"))
-                           (flush-output-port p))
-                         (raise e)))
-             (uv-spawn! loop file (cons file args)
-                        (list (cons 'stdio (list 'ignore (list 'pipe pipe 'from-child) '(inherit-fd . 2))))
-                        (lambda (status signal) (child-exit-set! c (list status signal)))))))
-      (set! c (make-child process pipe out #f #f))
-      (uv-read-start! pipe
-                      (lambda (bv start end) (collect-span! out bv start end))
-                      (lambda () (child-ended?-set! c #t))
-                      (lambda (e) (child-ended?-set! c #t)))
-      c)))
+;; spawn : UvLoop String (Listof String) [(U (UvPipe -> Any) #f) (U (Bytevector Nat Nat -> Any) #f)] -> Child
+;; Start `file` with `args` on `loop`, its standard input empty, or a pipe
+;; handed to `give` once the child has started, for the suite to write; its
+;; standard output read into the child's collector, or handed to `take` a
+;; read at a time and not kept; its standard error the suite's.  A child
+;; that cannot be started raises, its name on standard error.
+(define spawn
+  (case-lambda
+    ((loop file args) (spawn loop file args #f #f))
+    ((loop file args give take)
+     (let ((pipe (make-uv-pipe loop)) (in (and give (make-uv-pipe loop))) (out (make-byte-collector)) (c #f))
+       (let ((process
+              (guard (e (#t (uv-close! pipe)
+                            (when in (uv-close! in))
+                            (let ((p (current-error-port)))
+                              (put-string p (string-append "clients: cannot start " file
+                                                           "; it is a test tool, see tests/test-clients.sps\n"))
+                              (flush-output-port p))
+                            (raise e)))
+                (uv-spawn! loop file (cons file args)
+                           (list (cons 'stdio (list (if in (list 'pipe in 'to-child) 'ignore)
+                                                    (list 'pipe pipe 'from-child) '(inherit-fd . 2))))
+                           (lambda (status signal) (child-exit-set! c (list status signal)))))))
+         (set! c (make-child process pipe in out #f #f))
+         (uv-read-start! pipe
+                         (or take (lambda (bv start end) (collect-span! out bv start end)))
+                         (lambda () (child-ended?-set! c #t))
+                         (lambda (e) (child-ended?-set! c #t)))
+         (when give (give in))
+         c)))))
 
-;; run : UvLoop Shell String (Listof String) -> (List Symbol (List Nat Any) String)
+;; run : UvLoop Shell String (Listof String) [(U Procedure #f) (U Procedure #f) (-> Any) Nat]
+;;       -> (List Symbol (List Nat Any) String)
 ;; Run a client to its end while the server serves: how the wait ended, the
 ;; client's exit, and what it wrote.  One still running at the cap is killed.
-(define (run loop sh file args)
-  (let* ((c (spawn loop file args))
-         (outcome (run-shell-until loop sh (lambda () (and (child-exit c) (child-ended? c))) cap)))
-    (unless (child-exit c)
-      (uv-process-kill! (child-process c) 'sigkill)
-      (run-shell-until loop sh (lambda () (child-exit c)) cap))
-    (uv-close! (child-process c))
-    (when (uv-handle-open? (child-pipe c)) (uv-close! (child-pipe c)))
-    (list outcome (child-exit c) (utf8->string (collector-bytes (child-out c))))))
+;; `give` and `take` are spawn's; `watch` is called before each look at
+;; whether the client has ended, and `steps` caps the wait.
+(define run
+  (case-lambda
+    ((loop sh file args) (run loop sh file args #f #f (lambda () #f) cap))
+    ((loop sh file args give take watch steps)
+     (let* ((c (spawn loop file args give take))
+            (outcome (run-shell-until loop sh (lambda () (watch) (and (child-exit c) (child-ended? c))) steps)))
+       (unless (child-exit c)
+         (uv-process-kill! (child-process c) 'sigkill)
+         (run-shell-until loop sh (lambda () (child-exit c)) cap))
+       (uv-close! (child-process c))
+       (for-each (lambda (p) (when (and p (uv-handle-open? p)) (uv-close! p)))
+                 (list (child-pipe c) (child-in c)))
+       (list outcome (child-exit c) (utf8->string (collector-bytes (child-out c))))))))
+
+;; heap : -> Nat — the bytes the server's heap holds after two full
+;; collections, as the M4 exit read a connection's (its budget spike).
+(define (heap)
+  (collect (collect-maximum-generation))
+  (collect (collect-maximum-generation))
+  (bytes-allocated))
+
+;; make-watch : UvLoop Shell Nat -> (Pair (-> Void) (-> (List Nat Nat Nat)))
+;; A watch for run, and what it saw: the heap, read every `every-ms` by the
+;; loop's clock, and the bytes each connection has written and not yet seen
+;; completed, read at every look, which chez-libuv holds outside the heap
+;; (design §7.3).  It answers the most heap read, how many readings, and the
+;; most bytes outstanding.
+(define (make-watch loop sh every-ms)
+  (let ((most-heap 0) (readings 0) (most-out 0) (next 0))
+    (cons (lambda ()
+            (for-each (lambda (c)
+                        (set! most-out (max most-out (conn-outstanding-bytes (connection-state c)))))
+                      (shell-connections sh))
+            (when (>= (uv-now loop) next)
+              (set! most-heap (max most-heap (heap)))
+              (set! readings (+ readings 1))
+              (set! next (+ (uv-now loop) every-ms))))
+          (lambda () (list most-heap readings most-out)))))
+
+;; feed! : UvPipe -> Void
+;; Write the 16 MiB to `in` a piece at a time, each once the one before it
+;; is written, so one piece at a time is held, then close it.
+(define (feed! in)
+  (let next ((k 0))
+    (if (= k sixteen-count)
+        (uv-close! in)
+        (uv-write! in (make-bytevector sixteen-size (+ 97 (mod k 26)))
+                   (lambda (err) (if err (uv-close! in) (next (+ k 1))))))))
 
 ;; require-client! : UvLoop Shell String String -> Void
 ;; Run `file` with `flag`, which prints its version, before any check: a
@@ -213,6 +327,52 @@
                   (list 'satisfied '(0 #f) "one two three200 1 13\n/b -\n200 1 5\n")
                   (run loop sh "curl" (list "-sS" "--http1.0" "-H" "Connection: keep-alive" "-w" curl-out
                                             (url "/stream") (url "/b"))))
+
+      ;; --- 16 MiB each way, against a slow peer (the M6 exit) ---
+      ;; curl sends 16 MiB, chunked from its standard input, which the suite
+      ;; writes a piece at a time, then reads 16 MiB streamed back, each at
+      ;; 16 MiB/s (--limit-rate), so curl is the slow end.  The server reads
+      ;; the body as it arrives and keeps none of it, and streams the answer
+      ;; from a producer of 16 KiB pieces; the suite takes curl's output a
+      ;; read at a time and keeps none of it either.  As each moves, the
+      ;; heap is read every 50 ms: five readings or more span 200 ms of it
+      ;; at least.  Measured on 2026-10-02, curl took 14 to 21 readings to
+      ;; move the 16 MiB at the limit, and two or three unlimited (Darwin
+      ;; arm64 and Linux aarch64).  The bound, 1 MiB, is a sixteenth of
+      ;; what moves; what grew was 32 to 83 KB (the ledger's M6 exit).
+      (let* ((watch (make-watch loop sh 50))
+             (before (heap))
+             (r (run loop sh "curl" (list "-sS" "-f" "--limit-rate" "16M" "-T" "-" (url "/sixteen"))
+                     feed! #f (car watch) cap))
+             (saw ((cdr watch))))
+        (test-equal "curl: 16 MiB sent at 16 MiB/s arrive in order, no read handing the reader more than the read buffer"
+                    (list 'satisfied '(0 #f) "16777216 0\n" #t)
+                    (list (car r) (cadr r) (caddr r)
+                          (<= 1 sixteen-largest (limits-read-buffer-size default-limits))))
+        (test-equal "and the server's heap, read throughout, grew by less than 1 MiB as they came in"
+                    '(#t #t)
+                    (list (>= (cadr saw) 5) (< (- (car saw) before) (* 1024 1024)))))
+      ;; Streamed to it, the answer's writes back up behind curl: each piece
+      ;; is a write of 16,392 bytes, its size line `4000` CRLF, the piece and
+      ;; CRLF, and the producer is asked only while the bytes outstanding are
+      ;; at or below the high water (decision 0005; M6.3).
+      (let* ((checker (make-checker))
+             (watch (make-watch loop sh 50))
+             (before (heap))
+             (r (run loop sh "curl" (list "-sS" "-f" "--limit-rate" "16M" (url "/sixteen"))
+                     #f (car checker) (car watch) cap))
+             (saw ((cdr watch)))
+             (high (limits-write-high-water default-limits))
+             (low (limits-write-low-water default-limits)))
+        (test-equal "curl: 16 MiB streamed to it, read at 16 MiB/s, arrive in order"
+                    (list 'satisfied '(0 #f) '(16777216 0))
+                    (list (car r) (cadr r) ((cdr checker))))
+        (test-equal "and the bytes written and not yet completed backed up past the low water, and never passed the high water by more than a piece's write"
+                    '(#t #t)
+                    (list (> (caddr saw) low) (<= (caddr saw) (+ high sixteen-size 8))))
+        (test-equal "and the server's heap, read throughout, grew by less than 1 MiB as they went out"
+                    '(#t #t)
+                    (list (>= (cadr saw) 5) (< (- (car saw) before) (* 1024 1024)))))
 
       ;; --- ab ---
       (test-equal "ab: 200 requests, 8 at a time, each on a connection of its own, every one answered"

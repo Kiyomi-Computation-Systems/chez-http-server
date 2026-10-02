@@ -3703,3 +3703,76 @@ MERGED to main on 2026-10-01, on the owner's "do closing ritual": **#93, decisio
 `make test` green on main: forty-four suites, 1,433 expected passes, every pin ok.
 
 NEXT: the M6 exit (plan §14).
+
+M6 EXIT (plan §14), on the owner's word: "lets close out M6". Branch feat/m6-exit, cut from main at 6b43a5a; 2026-10-02, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. Mutation log: m6-mutations.md, "The M6 exit".
+
+Gathered before the first test, from the brief's M6 and plan §14:
+- the brief's exit: 16 MiB each way against a slow peer with bounded memory; libhtp's Expect and early-response files pass;
+- plan §14: the memory read as the M4 exit read a connection, the server's heap, the client in a process of its own; `docs/handlers.org` gains bodies.
+
+Met before this branch, each with its check:
+- libhtp's Expect files, `05-expect.t` and `99-expect-100.t`, pass since M6.4, delivered with CRLF: the ratchet's fourteen libhtp streams;
+- `docs/handlers.org` covers bodies: "Reading the body" since M6.1, "Streaming a response" since M6.3, the 100 since M6.4;
+- the brief's M6 scope: credit-based delivery (`body-credit`, M6.2), streaming responses with `notify-producer` (M6.3), and `100 Continue` written when the handler pulls the body (M6.4). Its "four read-stop conditions and the single read-start predicate" came from the research's parse-ahead prototype (`research/async-sans-io-state-machine.md` §5). Decision 0004 made pipelining serial, so design §4.4's rows stop reading at a message's end, at a credit wait (M6.2) and at a response given instead of a reader, and start it again when a response is written or a credit covers what was handed.
+
+Missing:
+- 16 MiB each way, read or checked. The bounds were checked at 1 MiB, streamed to a client that reads nothing, and at 64 KiB, an upload on credit, each with the client on the server's own loop;
+- `35-early-response.t` passed with a handler that reads the body, as the M2 exit expected, and is the suites' only HTTP/1.0 body read. Its recorded origin answered 400 before the body, which a handler can since M6.1, and nothing ran it so;
+- the README's status still listed request bodies as still to come.
+
+MEASURED, before the form: `research/spike/m6-exit-sixteen.sps` and `m6-exit-peer.py`, two runs on each platform. A server is started as `serve` starts one. A Python peer, in a process of its own, holds one keep-alive connection to it, sends it 16 MiB as a POST's body, which `read-body` checks and keeps none of, then reads 16 MiB streamed back in 16 KiB pieces, 16,384 B at a time with 2 ms between. The server's heap is read every 50 ms after two full collections, and the peer reads its resident memory from outside.
+
+| Each way, two runs | Darwin arm64 | Linux aarch64, in Docker |
+|---|---|---|
+| the upload: time; heap at most | 2.644 and 2.635 s; +61,392 and +34,328 B | 3.110 and 3.106 s; +95,104 and +74,808 B |
+| the upload: resident memory | +16 and +32 KiB | +68 and +80 KiB |
+| the download: time; heap at most | 2.605 and 2.616 s; +24,152 and +688 B | 3.181 and 3.122 s; +688 and +688 B |
+| the download: written and not completed, at most | 262,272 B, in 16 write requests at most | 262,272 B, in 14 and 16 |
+| the download: resident memory at most, then after | +1,808 then +384 KiB; +2,464 then +384 | +3,400 then −1,960 KiB; +2,376 then +128 |
+| held whole: the body read by `read-whole-body`, its cap raised to 32 MiB | heap +16,847,304 and +16,863,648 B; resident +33,200 KiB | heap +16,854,384 and +16,830,496 B; resident +26,924 and +23,712 KiB |
+| held whole: the answer as one bytevector | a write block of 16,777,298 B; resident +16,432 and +9,952 KiB | 16,777,298 B; resident +32,948 and +33,188 KiB |
+
+Every byte arrived in order each way, and every piece handed the reader was 16,384 B or less. The producer was called 1,025 times, a piece each and its end. 262,272 B is the high water and one piece's write, 16,392 B: its size line, `4000` CRLF, the piece and CRLF. Linux is Debian 12 in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6), Chez 10.4.1 `tarm64le`, libuv 1.44.2, Python 3.11.2; Darwin's Python is 3.14.5.
+
+A prototype of the check, curl at 16 MiB/s in the clients suite: 19 checks pass, and the suite took 2.85 to 2.87 s, where main's takes 0.84 to 0.88 (Darwin). Four of the mutants below each reddened their check. On Linux it took 2.63 to 2.81 s.
+
+DECIDED on the owner's word (2026-10-02), by one form:
+- **`35-early-response.t` runs both ways.** Its expectation stays, its handler reading the body. A second run answers 400 at the head, as its recorded origin did. Weighed: the early answer only, which drops the suites' one HTTP/1.0 body read; leaving it as the M2 exit wrote it.
+- **The 16 MiB transfers are checks in `make test`**, curl at 16 MiB/s in the clients suite, about 2 s more. Weighed: the spike's readings alone.
+
+BUILT:
+- `tests/test-clients.sps`, 19 checks (main's 14). Against the suite's server, curl, a process of its own, sends 16 MiB chunked from its standard input, which the suite writes a 16 KiB piece at a time, to `/sixteen`, whose reader checks every byte and keeps none. It then reads 16 MiB from `/sixteen`'s producer, 1,024 pieces of 16 KiB, which the suite checks as curl hands them over and keeps none of. Each runs at 16 MiB/s (`--limit-rate`). Five checks:
+  - the upload arrives in order, no read handing the reader more than the read buffer;
+  - the server's heap, read every 50 ms after two full collections, five readings or more, grew by less than 1 MiB as it came in;
+  - the download arrives in order;
+  - the bytes written and not yet completed backed up past the low water, and never passed the high water by more than a piece's write;
+  - the server's heap grew by less than 1 MiB as it went out, read the same way.
+  The suite's `spawn` and `run` take a pipe for the child's standard input, a procedure that takes its output, a watch and a cap. Its other checks call them as before.
+- `tests/libhtp-lane.sls` and `tests/test-libhtp-lane.sps`, 20 checks (19). `35-early-response.t` is run again, its handler answering 400 at once. After the head's packet alone, the connection has asked the handler, written the 400 and lingers, close-after `not-keep-alive`. After the whole stream and its eof, it is closed, and no reader was handed the body. The lane's own run goes through `run-stream`.
+- The README's status: since M6, a handler reads a body as it arrives and can stream its response. `docs/handlers.org`: `read-body` never holds a body whole, a 16 MiB upload adding under 100 KB to the server's memory.
+- `.plans/research/spike/m6-exit-sixteen.sps` and `m6-exit-peer.py`, new, with four runs in `out/`.
+- Records: plan §14's M6 exit note; design §7.5's and §8.2's notes; the research README; m6-mutations.md.
+
+Measured on the finished tree, the clients suite printing what its checks read:
+- Darwin, three runs: the upload's heap +80,520 to +82,800 B and the download's +56,248 to +62,592, in 21 readings each, the bytes outstanding 262,272 at most, the largest piece 16,384. The suite took 2.80 to 2.82 s, main's 0.75;
+- Linux, eight runs: the upload's heap +31,968 to +53,448 B in 21 readings, the download's +38,648 to +52,424 in 14 to 21, the bytes outstanding 229,488 to 262,272 as read after each turn. The suite took 2.37 to 2.49 s, main's 0.69 to 0.80;
+- curl unlimited: two or three readings each way on both, where curl at the limit took 14 to 21. So the readings check is five, not the ten the prototype had: the download took 14 on Linux.
+
+Watched to fail (m6-mutations.md, "The M6 exit"): nine mutants of the code, M6X-A to M6X-I, each against all forty-four suites, and three calibrations of the checks. None survives, and none failed to load. By check:
+- the upload's arrival by M6X-F, the read buffer at chez-libuv's default;
+- the upload's heap by M6X-B and M6X-C, the body kept by the core or by the shell, and its readings half by C-fast, curl unlimited;
+- the download's arrival by M6X-I, a piece's size line a byte short;
+- the bytes outstanding by M6X-A, high water ignored, and M6X-E, a write reported completed as it is sent;
+- the download's heap by M6X-D, the shell keeping its writes, and C-fast;
+- the lane's early run by M6X-G, the handler not asked at the head, and C-read, its handler reading.
+M6X-B and M6X-C redden the clients suite alone: before the exit, no check read the heap while a body came in. M6X-H, a write sent before those held, reddens the shell suite alone, since a 16 KiB piece is never held.
+
+`make test`: forty-four suites, 1,439 expected passes (1,433 + 6), every pin ok, 27.8 s.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Debian 12, Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree made with `COPYFILE_DISABLE=1`, curl 7.88.1 and ab 2.3 installed: forty-four suites, 1,439 expected passes, 30.1 s. The clients suite passed its 19 and the libhtp lane its 20 in each of three runs more.
+
+Size: `tests/` +259 −55, comments included; the spike's two files, 380 lines, and their four runs; the README and `docs/handlers.org` +6 −2; the records, `.plans/` +47 −1 and `.superpowers/` +59 before this entry.
+
+DECIDED on the owner's word (2026-10-02), by a second form, after the walkthrough: **one PR now.** Weighed: leaving it uncommitted for the owner to read first.
+
+NEXT: this PR, merged on the owner's "do closing ritual" once CI is green on its head. M6 is then complete. Then M7 (plan §14), when the owner asks.

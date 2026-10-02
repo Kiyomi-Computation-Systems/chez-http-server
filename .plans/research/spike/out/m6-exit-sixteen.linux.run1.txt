@@ -1,0 +1,20 @@
+Chez Chez Scheme Version 10.4.1 (tarm64le), libuv 1.44.2; the listener on 127.0.0.1:45047; the peer's piece 16384 B, its pause 2 ms
+ready: satisfied, ready; connections 1
+up: satisfied
+  peer: up 200 16777216/0/16384 3.110 rss 33020 33088 33088
+  heap: 23129736 B idle before, at most 23224840 B in 47 readings (+95104), 23205344 B idle after
+  written and not completed: at most 0 B; write requests live: at most 1
+down: satisfied
+  peer: down 200 chunked 16777216 0 3.181 rss 33088 36488 31128
+  heap: 23204584 B idle before, at most 23205272 B in 48 readings (+688), 23148224 B idle after
+  written and not completed: at most 262272 B; write requests live: at most 14; the producer called 1025 times
+up-whole: satisfied
+  peer: up-whole 200 16777216/0 3.135 rss 31128 58052 49780
+  heap: 23147448 B idle before, at most 40001832 B in 48 readings (+16854384), 23218176 B idle after
+  written and not completed: at most 0 B; write requests live: at most 1
+down-whole: satisfied
+  peer: down-whole 200 length 16777216 0 3.095 rss 33204 66152 33204
+  heap: 23217424 B idle before, at most 23218112 B in 47 readings (+688), 23141936 B idle after
+  written and not completed: at most 16777298 B; write requests live: at most 1
+peer exit (0 #f); logged (listening)
+exit=0

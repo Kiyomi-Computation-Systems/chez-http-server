@@ -1,7 +1,9 @@
 #!r6rs
 ;;; (libhtp-lane) — our expectations for libhtp's pipelining and multi-packet
 ;;; streams, and for its two Expect streams, and the run they are held to
-;;; (design §8.2).  The M2 exit; the Expect streams since M6.4.
+;;; (design §8.2).  The M2 exit; the Expect streams since M6.4; and since the
+;;; M6 exit, 35-early-response.t run a second time, its handler answering at
+;;; the head, as its recorded origin did (below).
 ;;;
 ;;; A stream's client chunks (`>>>`) are its packets.  Each is delivered to one
 ;;; fake connection as one `bytes-arrived`, while the connection reads, with
@@ -27,7 +29,8 @@
 ;;; decisions before the lane first ran, each with its reason beside it.
 (library (libhtp-lane)
   (export libhtp-expected-files libhtp-expectation libhtp-packets crlf-files
-          libhtp-outcome libhtp-mismatch)
+          libhtp-outcome libhtp-mismatch
+          early-response-expectation early-response-outcomes)
   (import (rnrs)
           (libhtp-corpus) (fake-shell)
           (http-server connection) (http-server response) (http-server request)
@@ -144,7 +147,8 @@
      (cons "27-request-trailer-raw.t" chunked-post)
      ;; An HTTP/1.0 POST whose 12-byte body is the second packet.  The origin
      ;; recorded here answered 400 before the body; ours, its handler reading
-     ;; the body, answers when the message ends, and closes.
+     ;; the body, answers when the message ends, and closes.  Answered at the
+     ;; head, as the origin did, it is run again (early-response-outcomes).
      (cons "35-early-response.t"
            '(((call-handler (POST "/" 1 0 (("Content-Length" . "12")
                                            ("Content-Type" . "application/x-www-form-urlencoded")
@@ -251,17 +255,53 @@
   ;; What one fake connection did with the stream `name`'s client packets, one
   ;; delivery each, then the client's eof if it still reads.
   (define (libhtp-outcome name)
-    (let ((sh (make-fake-connection corpus-limits (handler-for name))))
+    (run-stream (handler-for name) (libhtp-packets name) #t))
+
+  ;; run-stream : (Request -> (U Response BodyReader)) (Listof Bytevector) Boolean -> Outcome
+  ;; What one fake connection whose handler is `handler` did with `packets`,
+  ;; one delivery each, then, if `eof?`, the client's eof if it still reads.
+  (define (run-stream handler packets eof?)
+    (let ((sh (make-fake-connection corpus-limits handler)))
       (for-each (lambda (bv) (fake-shell-feed-input! sh bv (bytevector-length bv)))
-                (libhtp-packets name))
+                packets)
       (fake-shell-settle! sh)
-      (when (fake-shell-reading? sh)
+      (when (and eof? (fake-shell-reading? sh))
         (fake-shell-deliver! sh '(eof))
         (fake-shell-settle! sh))
       (let ((s (fake-shell-conn-state sh)))
         (list (decisive (fake-shell-actions sh))
               (conn-phase s) (conn-close-after s)
               (fake-shell-violations sh)))))
+
+  ;; --- 35-early-response.t, answered at the head ----------------------------
+  ;;
+  ;; The lane's handler reads 35's body, the suites' one HTTP/1.0 body read,
+  ;; so its expectation stays.  Its recorded origin answered the POST 400
+  ;; before the body, as a handler can since M6.1, with a response instead
+  ;; of a reader (decision 0013 item 4), and the M6 exit runs it so too, on
+  ;; the owner's word, by form (2026-10-02).  The head's packet alone brings
+  ;; the 400, and with it the staged close HTTP/1.0 gets: the connection
+  ;; lingers, reading and dropping what the client still sends, the body
+  ;; among it, so no reader is handed it, and the client's close ends it
+  ;; (decision 0011).
+
+  ;; early-response-expectation : (List Outcome Outcome)
+  ;; After the head's packet alone, and after the whole stream and its eof.
+  (define early-response-expectation
+    (let ((asked '(call-handler (POST "/" 1 0 (("Content-Length" . "12")
+                                               ("Content-Type" . "application/x-www-form-urlencoded")
+                                               ("User-Agent" . "Mozilla"))))))
+      (list (list (list asked '(write 400)) 'lingering 'not-keep-alive '())
+            (list (list asked '(write 400) '(close not-keep-alive)) 'closed 'not-keep-alive '()))))
+
+  ;; early-response-outcomes : -> (List Outcome Outcome)
+  ;; 35's head's packet alone, then the whole stream and its eof, each on a
+  ;; fresh connection whose handler answers 400 at once, reading nothing.
+  (define (early-response-outcomes)
+    (let ((packets (libhtp-packets "35-early-response.t"))
+          (at-once (lambda (request) (make-response 400 #f '() #f))))
+      (list (run-stream at-once (list (car packets)) #f)
+            (run-stream at-once packets #t))))
 
   ;; decisive : (Listof Action) -> (Listof Datum)
   ;; The outcome lane's decisive actions, rendered, with the bodies: each run

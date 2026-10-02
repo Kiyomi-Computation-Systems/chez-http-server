@@ -1244,3 +1244,62 @@ Three notes:
 | X-C4 | `connection` | a pause's code is read from the span's place | connection-table 3 |
 | X-R1 | `connection` | at the parser's error only the whitespace run is judged, as before | connection-cut-off 1, connection-table 2 |
 | X-R2 | `connection` | a run is judged with no slack | connection-cut-off 1, connection-padding 2, connection-table 2, outcome-lane 2, ratchet 1 |
+
+## The M6 exit (feat/m6-exit, 2026-10-02)
+
+The exit adds checks and changes no code under `src/`. The clients suite has curl send
+16 MiB to a streaming reader and read 16 MiB from a producer, each at 16 MiB/s, and
+holds what arrives, the server's heap, read every 50 ms after two full collections, and
+the bytes written and not yet completed (`tests/test-clients.sps`). The libhtp lane runs
+`35-early-response.t` a second time, its handler answering 400 at the head, as the
+recorded origin answered it (`tests/test-libhtp-lane.sps`). Both were decided on the
+owner's word, by form (the ledger).
+
+The code they check was already in place, so each check was watched red by a mutant of
+the code, or by a calibration of the check where its half guards against a vacuous pass.
+By name:
+- "16 MiB sent at 16 MiB/s arrive in order, no read handing the reader more than the read
+  buffer": M6X-F, and M6X-G;
+- "the server's heap, read throughout, grew by less than 1 MiB as they came in": M6X-B
+  and M6X-C, and its readings half by C-fast;
+- "16 MiB streamed to it, read at 16 MiB/s, arrive in order": M6X-I, and C-short;
+- "the bytes written and not yet completed backed up past the low water, and never passed
+  the high water by more than a piece's write": its upper half by M6X-A, its lower by M6X-E,
+  and both by C-short;
+- "the server's heap, read throughout, grew by less than 1 MiB as they went out": M6X-D,
+  and its readings half by C-fast;
+- the lane's "35-early-response.t answered 400 at the head": M6X-G, and C-read.
+
+The suites' helpers changed shape: the clients suite's `spawn` and `run` take a pipe
+for the child's standard input, a procedure that takes its output, a watch and a cap,
+and the lane's `libhtp-outcome` runs through `run-stream`. The checks that call them as
+before are unchanged, and pass.
+
+| Mutant | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|
+| M6X-A | `connection` | high water ignored: a producer is asked whatever the bytes outstanding, up to its 64 writes | clients 1, connection-stream 4, connection-table 8, shell 2 |
+| M6X-B | `connection` | the core keeps every piece it hands a streaming reader | clients 1 |
+| M6X-C | `shell` | the libuv shell keeps every read it hands the core | clients 1 |
+| M6X-D | `shell` | the libuv shell keeps every write's segments after it is sent | clients 1, shell 1 |
+| M6X-E | `shell` | the libuv shell reports a write completed as it is sent, not when libuv completes it | clients 1, contract 3, shell 6 |
+| M6X-F | `shell` | the libuv shell starts reading with chez-libuv's default buffer, 64 KiB, not the limit's | clients 1, shell 6 |
+| M6X-G | `connection` | a request whose head announces a body is never asked of the handler at the head, as before M6.1 | clients 8, connection-allocation 1, connection-body 28, connection-cut-off 3, connection-entry 5, connection-expect 15, connection-head 2, connection-originated 3, connection-padding 9, connection-retention 2, connection-stream 2, connection-table 49, contract 9, libhtp-lane 8, message-loop 4, outcome-lane 3, ratchet 1, shell 16, trace-lane (raised, exit 2) |
+| M6X-H | `shell` | the libuv shell sends a write before the writes it holds, not after | shell 1 |
+| M6X-I | `serializer` | a chunked piece's size line counts a byte short | clients 5, connection-allocation 1, connection-stream 11, connection-table 5, serializer 7, shell 9 |
+| C-fast | the clients suite | curl unlimited, so neither 16 MiB run is slow: two or three heap readings | clients 2 |
+| C-short | the clients suite | a stream of three pieces, 48 KiB, under the low water | clients 3 |
+| C-read | the lane | the early run's handler reads the body, as the lane's own run does | libhtp-lane 1 |
+
+Each mutant ran against all forty-four suites, and none failed to load: every report's
+red suites are failures, or, for M6X-G's trace lane, a raise.
+
+Two notes:
+- **M6X-B and M6X-C redden the clients suite alone.** Each keeps the whole body in the
+  heap, as the core's pieces or the shell's reads, and before the exit no check read the
+  heap while a body came in. M6X-D, which keeps the shell's writes, reddens the shell
+  suite's retention check besides, which collects while a 4 MiB write is outstanding and
+  finds the response's body held.
+- **M6X-H reddens the shell suite alone.** The exit's checks do not see it, since a 16 KiB
+  piece is never held (write batching holds a write under 4,096 bytes), and a stream's
+  head is sent before its producer is first called. M6X-I, a piece's framing a byte short,
+  is the content mutant they see.

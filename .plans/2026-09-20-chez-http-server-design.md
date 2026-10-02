@@ -1490,6 +1490,29 @@ passes the connection through the parser's user-context argument.
 > loop's own. The shell's one timer, a `uv_timer_t` of 152 B outside the heap, is the
 > server's, not a connection's. The runs are `out/m5-exit-budget.run{1,2}.txt`.
 
+> *Measured 2026-10-02 (the M6 exit; Darwin arm64, and Linux 6.12.76-linuxkit aarch64 in
+> Docker, Chez 10.4.1):* a connection moving a body costs what this budget and the
+> write water marks say, however long the body. `research/spike/m6-exit-sixteen.sps`
+> starts a server as `serve` does, and a peer in a process of its own,
+> `m6-exit-peer.py`, sends it 16 MiB as a POST's body, which `read-body` checks and
+> keeps none of, then reads 16 MiB streamed back in 16 KiB pieces. It moves each in
+> 2.6 to 3.2 s, a piece at a time with a pause between, so it is the slow end. Read
+> every 50 ms after two full collections, the server's heap grew by at most 34 to
+> 95 KB as the body came in, and by 0.7 to 24 KB as the answer went out. Outside the
+> heap:
+>
+> - the read buffer is this table's;
+> - the bytes written and not completed came to 262,272 at most, the high water and
+>   one piece's write (§7.3's note of 2026-09-28), in 16 write requests or fewer.
+>
+> The server's resident memory, read by the peer, stayed within 80 KiB of where it
+> started as the body came in, and rose 1,808 to 3,400 KiB as the answer went out,
+> falling back after. Held whole instead, the 16 MiB read 16.8 MB more heap (by
+> `read-whole-body`, its cap raised to 32 MiB) or a write block of 16,777,298 B (as
+> one bytevector), and the resident memory rose 9,952 to 33,200 KiB. The runs are
+> `out/m6-exit-sixteen.run{1,2}.txt`, and `out/m6-exit-sixteen.linux.run{1,2}.txt`.
+> `tests/test-clients.sps` holds the bounds, with curl at 16 MiB/s each way.
+
 Per request, allocation:
 
 | Prototype | Bytes/request |
@@ -1610,6 +1633,14 @@ suite checks both. As delivered, each carries a request split across packets, so
 lane's scope, what the streams carry, takes them in. 99's handler refuses `PUT
 /forbidden` at the head, as its recorded origin did: the lane's first handler that reads
 nothing. The ratchet has fourteen libhtp streams passing.
+
+*Noted 2026-10-02 (the M6 exit):* `35-early-response.t` runs two ways, decided on the
+owner's word, by form. Its expectation since the M2 exit stays, its handler reading the
+body: the suites' one HTTP/1.0 body read. And it is run again answered 400 at the head,
+as its recorded origin answered it: the head's packet alone brings the 400 and the
+staged close HTTP/1.0 gets, and the body sent after it is read and dropped as the
+connection lingers, so no reader is handed it (`tests/test-libhtp-lane.sps`). The
+ratchet is unchanged.
 
 ### 8.3 Connection-semantics tables
 
