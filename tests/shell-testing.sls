@@ -14,9 +14,9 @@
 (library (shell-testing)
   (export open-client client? client-tcp client-collector client-connected client-end
           client-read! client-send! client-shut! client-bytes client-close!
-          err->symbol run-shell-until run-until-drained)
+          err->symbol run-shell-until run-loop-until run-until-drained)
   (import (rnrs) (libuv) (uv-testing)
-          (only (http-server private shell) shell-run!))
+          (only (http-server private shell) shell-turn! loop-turn!))
 
   ;; err->symbol : (U #f Condition) -> Symbol
   ;; A callback's error as a symbol no failure path confuses with success:
@@ -82,12 +82,27 @@
   ;; run-shell-until : UvLoop Shell (-> Boolean) Nat -> Symbol
   ;; Step `sh`'s run loop on `loop`, which logs a callback's error and runs
   ;; on, a 1 ms ticker keeping the loop awake, until `pred` holds or `cap`
-  ;; steps have been taken: 'satisfied or 'iterations-exhausted.  The ticker
-  ;; is closed after, and its close drained, also when the run loop raises,
-  ;; as it does a byte-machine contract condition (design §6.4): the raise
-  ;; goes on, and a failure to close the ticker then is dropped, so it cannot
-  ;; take the raise's place (as chez-libuv's run-until/ticking does).
+  ;; steps have been taken: 'satisfied or 'iterations-exhausted.  A step is a
+  ;; turn of the loop's scheduler (shell-turn!), which calls the handlers
+  ;; the last one asked for, then runs the loop once (decision 0014).  The
+  ;; ticker is closed after, and its close drained, also when the run loop
+  ;; raises, as it does a byte-machine contract condition (design §6.4): the
+  ;; raise goes on, and a failure to close the ticker then is dropped, so it
+  ;; cannot take the raise's place (as chez-libuv's run-until/ticking does).
   (define (run-shell-until loop sh pred cap)
+    (ticking-until loop (lambda () (shell-turn! sh)) pred cap))
+
+  ;; run-loop-until : UvLoop (-> Boolean) Nat -> Symbol
+  ;; The same with no shell's guard: each step a turn of the loop's
+  ;; scheduler (loop-turn!), so a callback's raise comes out as uv-run
+  ;; raises it, as chez-libuv's run-until/ticking lets it.
+  (define (run-loop-until loop pred cap)
+    (ticking-until loop (lambda () (loop-turn! loop)) pred cap))
+
+  ;; ticking-until : UvLoop (-> Any) (-> Boolean) Nat -> Symbol
+  ;; `step!` until `pred` holds or `cap` steps have been taken, a 1 ms
+  ;; ticker keeping the loop awake, closed after, as run-shell-until says.
+  (define (ticking-until loop step! pred cap)
     (let ((ticker (make-uv-timer loop)))
       (uv-timer-start! ticker (lambda (t) #f) 1 1)
       (let ((outcome (guard (e (#t (guard (cleanup (#t #f)) (disarm! loop ticker))
@@ -95,7 +110,7 @@
                        (let step ((i 0))
                          (cond ((pred) 'satisfied)
                                ((= i cap) 'iterations-exhausted)
-                               (else (shell-run! sh 'once) (step (+ i 1))))))))
+                               (else (step!) (step (+ i 1))))))))
         (disarm! loop ticker)
         outcome)))
 

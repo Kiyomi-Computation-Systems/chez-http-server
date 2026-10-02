@@ -23,12 +23,14 @@
 ;;; `reply-parser`, which the adapter answers without reaching the queue.
 ;;;
 ;;; THE ACTIONS, performed:
-;;;   feed-parser     parser-feed!, counted in the depth, then its result as
-;;;                   `parser-result`
+;;;   feed-parser     parser-feed!, counted in the depth and in the phase
+;;;                   'in-parser (the scheduler's, below), then its result
+;;;                   as `parser-result`
 ;;;   resume-parser   parser-resume!
-;;;   call-handler    the handler's answer, a response or a reader, as
-;;;                   `handler-responded`, or, if the handler raises,
-;;;                   `handler-failed`, logged
+;;;   call-handler    the handler called after libuv's turn, from the
+;;;                   scheduler's drain (decision 0014): its answer, a
+;;;                   response or a reader, as `handler-responded`, or, if
+;;;                   the handler raises, `handler-failed`, logged
 ;;;   deliver-body    the piece to the reader the core is handing the body to
 ;;;                   (conn-body-reader; decision 0013), or, if it raises,
 ;;;                   `handler-failed`, logged; with no reader, nothing
@@ -151,9 +153,22 @@
 ;;; the second is the last reading plus the loop's time since.  So a
 ;;; response reads the shell's clock once a second at most.
 ;;;
+;;; THE SCHEDULER (decisions 0003 and 0014; design §5.2; M7.1).  Each loop
+;;; has one, (http-server private scheduler)'s, made by the first shell on
+;;; it and shared by every shell on it: its turn is its drain and then one
+;;; uv-run of the loop, the poll.  A connection's handler is called from
+;;; that drain, after libuv's turn: a turn's requests are all read before
+;;; any is answered, and no handler runs inside a libuv callback.  A run
+;;; loop turns it, `shell-turn!`, which guards the turn as the run loop
+;;; guards a run (below), taking whatever the drain raises, where no
+;;; chez-libuv catches it, as a callback's raise; `loop-turn!` turns it with
+;;; no guard.  A handler whose connection has closed before the drain
+;;; reaches its call is not called.
+;;;
 ;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
 ;;; chez-libuv catches whatever a callback raises, and raises it again from
-;;; uv-run composed with `&uv-callback-error`.  A `&byte-machine-contract` in
+;;; uv-run composed with `&uv-callback-error`; a raise out of the drain, a
+;;; handler call's dispatch, is taken as one.  A `&byte-machine-contract` in
 ;;; it is a bug that has poisoned a parser: logged, the table reconciled, and
 ;;; raised again.  Any other callback error is logged, the table reconciled,
 ;;; and the loop runs on.  `&byte-machine-contract` derives from `&condition`,
@@ -162,14 +177,15 @@
 ;;; before the callback-error arm.  The run loop's own logging cannot take the
 ;;; failure's place: a log that raises there is ignored.
 (library (http-server private shell)
-  (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run!
+  (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run! shell-turn!
+          loop-turn!
           shell-connections shell-server shell-listener shell-timer shell-deadlines
           connection? connection-state connection-tcp connection-violations
           connection-deadline
           connection-close! connection-body-credit!
           wall-clock)
   (import (rnrs)
-          (only (chezscheme) current-time time-second time-nanosecond)
+          (only (chezscheme) current-time time-second time-nanosecond make-ephemeron-eq-hashtable)
           (libuv)
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
@@ -178,6 +194,9 @@
           (only (http-server limits)
                 limits-read-buffer-size limits-backlog limits-tick-ms limits-deadline-ms)
           (http-server wheel)
+          (only (http-server private scheduler)
+                make-scheduler scheduler-turn! scheduler-call!
+                scheduler-phase scheduler-feed-begin! scheduler-feed-end!)
           (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
           (http-server private adapter))
@@ -211,7 +230,7 @@
   ;; The limits' tick-ms is its wheel's bucket, and one below 1 is an
   ;; assertion violation (make-wheel's).
   (define-record-type (shell %make-shell shell?)
-    (fields loop handler limits clock log trace on-credit? table wheel
+    (fields loop handler limits clock log trace on-credit? table wheel scheduler
             (mutable server)
             (mutable listener)
             (mutable timer) (mutable ticking?)  ; the timer, and whether it runs
@@ -224,8 +243,20 @@
       ((loop handler limits clock log trace) (make-shell loop handler limits clock log trace #f))
       ((loop handler limits clock log trace on-credit?)
        (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
-                    (make-wheel (limits-tick-ms limits))
+                    (make-wheel (limits-tick-ms limits)) (loop-scheduler loop)
                     (make-server-state 'listening 0 limits) #f #f #f #f #f #f #f))))
+
+  ;; loop-scheduler : UvLoop -> Scheduler
+  ;; The loop's scheduler, made the first time a shell on it asks: its poll
+  ;; is one uv-run of the loop.  Kept in an ephemeron table, so a loop let
+  ;; go takes its scheduler with it, though the scheduler's poll holds the
+  ;; loop.
+  (define schedulers (make-ephemeron-eq-hashtable))
+  (define (loop-scheduler loop)
+    (or (hashtable-ref schedulers loop #f)
+        (let ((s (make-scheduler (lambda (mode) (uv-run loop mode)))))
+          (hashtable-set! schedulers loop s)
+          s)))
 
   ;; wall-clock : -> Nat — milliseconds since the epoch, UTC: a shell's clock.
   (define (wall-clock)
@@ -459,10 +490,11 @@
   ;; (flush!), until nothing is queued or held: a write that fails at the
   ;; call queues what its failure dispatches.  A drain starts having called
   ;; no producer (run!'s `notify-producer`).  A raise abandons the dispatch
-  ;; it came from: the depth is restored, and what is still queued or held
-  ;; is dropped.
+  ;; it came from: the depth is restored, the scheduler's phase too, which a
+  ;; feed the raise came out of left 'in-parser (feed!), and what is still
+  ;; queued or held is dropped.
   (define (drain! c)
-    (let ((before (connection-depth c)))
+    (let ((before (connection-depth c)) (phase (scheduler-phase)))
       (dynamic-wind
        (lambda ()
          (connection-depth-set! c (fx+ before 1))
@@ -474,6 +506,7 @@
                    ((pair? (connection-held c)) (flush! c) (loop))))))
        (lambda ()
          (connection-depth-set! c before)
+         (scheduler-feed-end! phase)
          (connection-front-set! c '())
          (connection-back-set! c '())
          (drop-held! c)))))
@@ -519,27 +552,37 @@
   ;; --- the executors ------------------------------------------------------------
 
   ;; feed! : Connection Bytevector Nat Nat -> Void
-  ;; Feed the parser bv[start, end), counting the feed in the depth, then
-  ;; dispatch its result as the adapter builds it: the status, where the
-  ;; parser is, where to resume, the code of its error or its pause, and the
-  ;; span an error abandoned.
+  ;; Feed the parser bv[start, end), counting the feed in the depth, and in
+  ;; the scheduler's phase 'in-parser (R5), then dispatch its result as the
+  ;; adapter builds it: the status, where the parser is, where to resume, the
+  ;; code of its error or its pause, and the span an error abandoned.  The
+  ;; phase is set and left with no closure, so a feed allocates nothing for
+  ;; it; a raise out of the feed leaves it to the drain (drain!).
   (define (feed! c bv start end)
     (connection-depth-set! c (fx+ (connection-depth c) 1))
-    (let ((r (parser-feed! (connection-parser c) bv start end)))
+    (let* ((phase (scheduler-feed-begin!))
+           (r (parser-feed! (connection-parser c) bv start end)))
+      (scheduler-feed-end! phase)
       (connection-depth-set! c (fx- (connection-depth c) 1))
       (dispatch! c (parser-result-event r))))
 
   ;; call-handler! : Connection Request -> Void
-  ;; The handler's answer, and `credit` after it on a shell made on credit.
+  ;; The handler called from the scheduler's drain, after libuv's turn
+  ;; (decision 0014): its answer, and `credit` after it on a shell made on
+  ;; credit, dispatched there, the turn's guard taking a raise out of the
+  ;; dispatch as a callback's (shell-turn!).  A connection that has closed
+  ;; before the drain reaches the call has its handler called no more.
   (define (call-handler! c request)
-    (let* ((sh (connection-shell c))
-           (answer (guard (e (#t (log! sh 'handler-failed (list e))
-                                 (list 'handler-failed e)))
-                     (let ((a ((shell-handler sh) request)))
-                       (if (shell-on-credit? sh)
-                           (list 'handler-responded a 'credit)
-                           (list 'handler-responded a))))))
-      (dispatch! c answer)))
+    (let ((sh (connection-shell c)))
+      (scheduler-call! (shell-scheduler sh)
+        (lambda ()
+          (unless (connection-closing? c)
+            (dispatch! c (guard (e (#t (log! sh 'handler-failed (list e))
+                                       (list 'handler-failed e)))
+                           (let ((a ((shell-handler sh) request)))
+                             (if (shell-on-credit? sh)
+                                 (list 'handler-responded a 'credit)
+                                 (list 'handler-responded a))))))))))
 
 ;; deliver-body! : Connection Bytevector Nat Nat -> Void
   ;; Hand bv[start, end) to the reader the core is handing the body to; if
@@ -839,20 +882,47 @@
 
   ;; --- the run loop --------------------------------------------------------------
 
+  ;; shell-turn! : Shell -> Boolean
+  ;; One turn of the loop's scheduler, under the run loop's guard: the
+  ;; handlers called since the last, then one uv-run, 'once, or 'nowait
+  ;; while something is ready.  Whether work remains, or #t after a
+  ;; callback's error, logged.  Whatever the drain raises, where no
+  ;; chez-libuv catches it, is taken as a callback's raise: its dispatch
+  ;; has closed its connection, and what the drain had still to run runs
+  ;; at the next turn.  A run loop turns it until it answers #f.
+  (define (shell-turn! sh)
+    (run-guarded sh (lambda () (scheduler-turn! (shell-scheduler sh))) (lambda (e) #t)))
+
+  ;; loop-turn! : UvLoop -> Boolean
+  ;; One turn of `loop`'s scheduler with no guard: what remains, as the
+  ;; turn answers.  A raise from a callback comes out as uv-run raises it.
+  (define (loop-turn! loop)
+    (scheduler-turn! (loop-scheduler loop)))
+
   ;; shell-run! : Shell Symbol -> Boolean
-  ;; One uv-run of the shell's loop in `mode`: whether work remains, as uv-run
-  ;; answers, or #t after a callback's error, logged, so the caller runs
-  ;; again.  A byte-machine contract condition is raised again.
+  ;; One uv-run of the shell's loop in `mode`, with no scheduler: whether
+  ;; work remains, as uv-run answers, or #t after a callback's error,
+  ;; logged, so the caller runs again.  A byte-machine contract condition is
+  ;; raised again.  A handler is called only from a turn's drain
+  ;; (shell-turn!), so a loop run by this alone calls none.
   (define (shell-run! sh mode)
+    (run-guarded sh (lambda () (uv-run (shell-loop sh) mode)) uv-callback-error?))
+
+  ;; run-guarded : Shell (-> Any) (Any -> Boolean) -> Any
+  ;; What `thunk`, a run of the loop, answers, under the run loop's guard:
+  ;; a byte-machine contract condition is logged, the table reconciled, and
+  ;; raised again; a raise `callback?` takes as a callback's is logged, the
+  ;; table reconciled, and #t answered, so the caller runs again.
+  (define (run-guarded sh thunk callback?)
     (guard (e ((byte-machine-contract-condition? e)
                (log-quietly! sh 'contract-violation (list e))
                (reconcile! sh)
                (raise e))
-              ((uv-callback-error? e)
+              ((callback? e)
                (log-quietly! sh 'callback-error (list e))
                (reconcile! sh)
                #t))
-      (uv-run (shell-loop sh) mode)))
+      (thunk)))
 
   ;; log-quietly! : Shell Symbol (Listof Any) -> Void
   ;; Log from the run loop, which is already handling a failure: a raise from

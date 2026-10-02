@@ -43,7 +43,7 @@
           (only (chezscheme) getenv display-condition)
           (libuv)
           (only (http-server limits) limits-from-environment address-from-environment)
-          (only (http-server private shell) make-shell shell-listen! shell-run! wall-clock))
+          (only (http-server private shell) make-shell shell-listen! shell-turn! wall-clock))
 
   ;; &http-server-error : the condition type of the server's own errors.
   ;; http-server-error? : Any -> Boolean
@@ -68,7 +68,7 @@
         (lambda (loop)
           (let ((sh (start-server loop handler lookup log-line)))
             (let run ()
-              (when (shell-run! sh 'default) (run)))))))))
+              (when (shell-turn! sh) (run)))))))))
 
   ;; start-server : UvLoop (Request -> Response) (String -> (U String #f))
   ;;                (Symbol (Listof Any) -> Any) -> Shell

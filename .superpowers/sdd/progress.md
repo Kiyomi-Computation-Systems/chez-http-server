@@ -3840,3 +3840,21 @@ Records: decision 0014, 0003's note, plan §14's M7.1 note, design §5.2's note,
 Size: 566 inserted lines of code and tests, none deleted.
 
 NEXT: the second step, every handler after the turn, stacked on this one.
+
+
+M7.1 SECOND STEP: every handler after the turn (feat/m7.1-after-the-turn).
+- `(http-server connection)`: the rows for an answer that comes after the drain that asks for it (decision 0014 item 1). A request whose body is still arriving waits on its handler in `handling`, reading stopped and nothing armed, and its reader's answer reads again with the body deadline (`read-on`; design §4.4's note). The table's rows that answered in `body` now answer in `handling`, and B3 starts in the head's feed: B2, B3, B4, B6, B11, B15, B19, C3, S4, E3, E5, E6 and E7.
+- `(http-server private shell)`: each handler call queued on its loop's scheduler, one a loop, shared by every shell on it and kept for the loop in an ephemeron table, so a loop let go takes it along. The drain makes the call, unless its connection has closed meanwhile, and dispatches its answer there. `shell-turn!` turns the scheduler under one guard, which takes whatever the drain raises as a callback's; `loop-turn!` turns it unguarded, for the suites. Each feed is made in 'in-parser. `serve`'s loop is the turn.
+- `(fake-shell)`: a handler called once the outermost drain has ended.
+- `make check-imports`: the pure libraries import no private library, and the adapter neither the scheduler nor the shell or serve (R5).
+- The checks: in the shell suite, a handler called after libuv's turn, from the drain, on no coroutine (`/phase`); a handler whose connection closed before the drain reached its call not called; a loop let go collected with its scheduler; a raise out of an answer's dispatch logged as a callback's, the connection closed. In the serve suite, `serve` run in a process of its own (`tests/serve-child.sps`). The message loop's `serial?` tells a wait on the handler from a message's end by the paused result before it; the body suite counts a read-stop per message and one as a request waits on its handler; the shell suite's waits turn the scheduler (`run-loop-until`).
+
+Every suite green on this step's own tree, the first step's with this one's files laid in, run as `make test` runs them, and `make check-imports` ok with its new rule: forty-five suites, 1,463 expected passes (1,456 + 7), exit 0.
+
+Watched to fail (m7-mutations.md, the second step): seventeen mutants on that tree, and every check the step added or changed reddened by at least one, the changed ones, the timer's check, row B3 and the message loop's `serial?`, by mutants of their own (M7B-12 to M7B-15). The plan's "call a handler from inside `on-data`" is M7B-4, reddening the `/phase` check. Three survive, each a scope statement: M7B-6, the shell feeding the parser outside `'in-parser`, and M7R-5, its drain not setting the phase back after a raise out of a feed, since nothing a feed runs can wait, and a feed raises only when the parser breaks its contract; and M7B-7, the fake shell calling a handler in place, since `call-handler` ends every drain the core runs today: M7.3's waiting scripts are where it shows.
+
+Records: design §4.4's and §5.3's notes; global-constraints' import rule; m7-mutations.md.
+
+Size: 501 inserted lines of code, tests and the Makefile, 137 deleted.
+
+NEXT: the third step, `awaiting`, stacked on this one.

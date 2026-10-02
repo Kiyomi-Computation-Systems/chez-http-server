@@ -12,6 +12,11 @@
 ;;; The checks:
 ;;;   - a GET is answered, its Date from the shell's clock, and the connection
 ;;;     stays open;
+;;;   - a handler is called after libuv's turn, from the scheduler's drain, on
+;;;     no coroutine, never inside a libuv callback (decision 0014; M7.1),
+;;;     and not at all once its connection has closed before the drain
+;;;     reaches the call; and a loop let go with its shell is collected,
+;;;     though its scheduler, kept for it, holds it;
 ;;;   - three requests in one write are answered in order, reading the clock
 ;;;     fewer times than they are answered (decision 0010: once a second), and
 ;;;     no action but the parser's reply runs at parser depth (design §6.4,
@@ -53,6 +58,9 @@
 ;;;   - a connection whose callback raises is closed, and so is one whose
 ;;;     adoption fails, leaving no deadline armed; one whose callback raises
 ;;;     once a write is held sends nothing, and its close is its last event;
+;;;     and one whose handler's answer raises as it is dispatched, in the
+;;;     drain after libuv's turn, is closed, the raise logged as a callback's
+;;;     (M7.1);
 ;;;   - the run loop drops a connection whose handle closed behind the shell,
 ;;;     taking it out of the wheel, and runs on;
 ;;;   - the server's own listener (design §4.6; M4.3) serves a client; refuses
@@ -117,6 +125,7 @@
         (only (generated httparse-message) httparse-message-machine)
         (only (httparse modes) httparse-message-type-value)
         (http-server private shell)
+        (only (http-server private scheduler) scheduler-phase current-coroutine)
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
               conn-outstanding conn-outstanding-bytes)
@@ -166,6 +175,7 @@
 (define traced '())
 (define traps '())
 (define closing-at #f)
+(define closing-on #f)
 (define holding-at #f)
 (define watching-stream #f)
 (define stream-most 0)
@@ -181,6 +191,9 @@
     ((tick) (time! (list (if (connection? c) 'tick 'fire) c (cadr datum)))))
   (when (and closing-at (connection? c) (eq? kind 'action) (equal? datum closing-at))
     (set! closing-at #f)
+    (connection-close! c))
+  (when (and closing-on (connection? c) (eq? kind 'action) (eq? (car datum) closing-on))
+    (set! closing-on #f)
     (connection-close! c))
   (when (and holding-at (connection? c) (eq? kind 'action) (equal? datum holding-at))
     (set! holding-at #f)
@@ -254,7 +267,10 @@
 ;; turn; `/pieces` streams three texts; `/head-first` two, its
 ;; producer keeping in `head-first-seen`, at its first call, how many more
 ;; write requests chez-libuv holds than when the handler was called
-;; (`head-first-requests`); and `/stream-raise` a piece, then raises.
+;; (`head-first-requests`); and `/stream-raise` a piece, then raises.  And
+;; where a handler is called (decision 0014; M7.1): `/phase` answers the
+;; scheduler's phase it was called in and whether a coroutine ran it; and
+;; `/counted` counts its calls in `counted-calls`.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -266,6 +282,7 @@
 (define (hold! ms)
   (let ((until (+ (monotonic-ms) ms)))
     (let spin () (when (< (monotonic-ms) until) (spin)))))
+(define counted-calls 0)
 (define credit-pieces '())
 (define credit-held 0)
 (define credit-most 0)
@@ -293,6 +310,13 @@
            (make-response 200 #f '() (make-bytevector wide-size 120)))
           ((bytevector=? target (b "/raise"))
            (raise (make-message-condition "the handler failed")))
+          ((bytevector=? target (b "/counted"))
+           (set! counted-calls (+ counted-calls 1))
+           (make-response 200 #f '() target))
+          ((bytevector=? target (b "/phase"))
+           (make-response 200 #f '()
+                          (string->utf8 (string-append (symbol->string (scheduler-phase))
+                                                       (if (current-coroutine) " coroutine" " none")))))
           ((bytevector=? target (b "/echo"))
            (read-whole-body (lambda (body) (make-response 200 #f '() body))))
           ((bytevector=? target (b "/early")) (make-response 200 #f '() target))
@@ -462,7 +486,9 @@
     (if f (cdr f) 'absent)))
 
 ;; wait-for : (-> Boolean) -> Symbol — 'satisfied, or 'iterations-exhausted.
-(define (wait-for pred) (run-until/ticking loop pred cap))
+;; Each step a turn of the loop's scheduler, which calls the handlers asked
+;; for since the last (decision 0014), and runs the loop once.
+(define (wait-for pred) (run-loop-until loop pred cap))
 
 ;; the newest connection the listener adopted, or 'none.
 (define (newest) (if (pair? adopted) (car adopted) 'none))
@@ -661,6 +687,44 @@
                         '(no-connection #f))))
       (client-close! cl))
 
+    ;; Where a handler is called (decision 0014): from the scheduler's drain,
+    ;; after libuv's turn, on no coroutine, its phase 'scheduling, never a
+    ;; callback's 'in-uv-run.
+    (let ((cl (open-client! (b "GET /phase HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "a client reads the response of a handler that names where it was called" 'satisfied
+               (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))
+      (test-equal "a handler is called after libuv's turn, from the scheduler's drain, on no coroutine"
+                  '("scheduling none")
+                  (map body (responses (client-bytes cl))))
+      (client-close! cl))
+
+    ;; A connection closed between the turn that asked for its handler and
+    ;; the drain that would call it: the handler is not called, as a
+    ;; waiting connection's calls are not made once it is closing.  The
+    ;; trace closes it as the core's `call-handler` runs, in the read's drain.
+    (set! counted-calls 0)
+    (set! closing-on 'call-handler)
+    (let ((cl (open-client! (b "GET /counted HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a handler whose connection closed before the drain reached its call is not called: its client reads the stream's end and nothing else"
+                  '(satisfied 0 0)
+                  (list (wait-for (lambda () (not (eq? (client-end cl) 'open))))
+                        (collector-count (client-collector cl))
+                        counted-calls))
+      (set! closing-on #f)
+      (client-close! cl))
+
+    ;; The loop's scheduler is kept for the loop, in an ephemeron table: a
+    ;; loop let go, with its shell, is collected, though the scheduler's poll
+    ;; holds the loop.
+    (test-eq "a loop let go with its shell is collected, its scheduler with it" #t
+             (let ((w (let* ((l (make-uv-loop))
+                             (sh (make-shell l handler default-limits clock log! trace!)))
+                        (uv-loop-teardown! l)
+                        (weak-cons l '()))))
+               (collect (collect-maximum-generation))
+               (collect (collect-maximum-generation))
+               (bwp-object? (car w))))
+
     ;; Three requests in one write, the depth counter, and the clock.
     (set! clock-reads 0)
     (let ((cl (open-client! (b (string-append "GET /1 HTTP/1.1\r\nHost: x\r\n\r\n"
@@ -824,7 +888,7 @@
                (wait-for (lambda () (>= (stream-calls) 16))))
       (set! small-send-buffer #f)
       ;; Some turns of the loop, for the kernel to take what it will.
-      (run-until/ticking loop (lambda () #f) 200)
+      (run-loop-until loop (lambda () #f) 200)
       (let ((c (adopted-since before)))
         (test-equal "while it reads nothing, its writes wait, the bytes outstanding never past the high water by more than a piece's write"
                     '(outstanding #t)
@@ -870,7 +934,7 @@
                (wait-for (lambda () (>= (rows-calls) 63))))
       (set! small-send-buffer #f)
       ;; Some turns of the loop, for the kernel to take what it will.
-      (run-until/ticking loop (lambda () #f) 200)
+      (run-loop-until loop (lambda () #f) 200)
       (let ((c (adopted-since before)))
         (test-equal "while it reads nothing, its writes wait, never more than 64 of them outstanding"
                     '(outstanding #t)
@@ -1145,6 +1209,23 @@
                     (list (collector-count (client-collector cl)) (closed-and-gone? shell c)
                           (first-logged)
                           (and c (pair? (events c)) (car (reverse (events c)))))))
+      (client-close! cl))
+
+    ;; A bug once the handler has answered, in the drain after libuv's turn
+    ;; (decision 0014): the dispatch of its answer raises, and the connection
+    ;; is closed as a callback's raise closes it, the raise logged as a
+    ;; callback's, and the run loop runs on.
+    (set! logged '())
+    (let* ((before (newest))
+           (cl (open-client! (b "GET /trap HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (trap! 'event 'handler-responded)
+      (test-eq "when the dispatch of a handler's answer raises, its client reads the stream's end" 'satisfied
+               (run-shell shell (lambda () (eq? (client-end cl) 'eof))))
+      (let ((c (adopted-since before)))
+        (test-equal "with no response, the connection closed and gone, the raise logged as a callback's"
+                    '(0 #t callback-error)
+                    (list (collector-count (client-collector cl)) (closed-and-gone? shell c)
+                          (first-logged))))
       (client-close! cl))
 
     ;; An adoption that fails closes the connection.
@@ -1478,7 +1559,7 @@
         (test-equal "its wheel empty, the timer stops, firing once more at most, and the shell keeps it"
                     '(#t #t)
                     (let* ((before (firings))
-                           (ran (run-until/ticking loop (lambda () #f) 50)))
+                           (ran (run-loop-until loop (lambda () #f) 50)))
                       (list (<= (- (firings) before) 1)
                             (and timer (uv-timer? timer) (eq? (shell-timer quick) timer)))))
 
