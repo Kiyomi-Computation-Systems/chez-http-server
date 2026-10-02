@@ -56,8 +56,11 @@
 ;;;
 ;;;   feed-parser     parser-feed!, then the result as `parser-result`
 ;;;   resume-parser   parser-resume!
-;;;   call-handler    the handler's answer, a response or a reader, as
-;;;                   `handler-responded`, or `handler-failed` if it raises
+;;;   call-handler    the handler called once the outermost dispatch's drain
+;;;                   has ended, as the libuv shell calls it after libuv's
+;;;                   turn (decision 0014; M7.1): its answer, a response or
+;;;                   a reader, as `handler-responded`, or `handler-failed`
+;;;                   if it raises
 ;;;   deliver-body    the piece to the reader the core is handing the body to
 ;;;                   (conn-body-reader), or `handler-failed` if it raises;
 ;;;                   with no reader, nothing (M6.1, decision 0013)
@@ -134,16 +137,17 @@
             trace
             (mutable wheel) (mutable entry)   ; a connection's deadline; #f for a stub's
             (mutable dated)                   ; instants its next writes are dated at, in order
-            (mutable credit?))                ; whether it answers on credit (M6.2)
+            (mutable credit?)                 ; whether it answers on credit (M6.2)
+            (mutable calls))                  ; the handler calls to make once the drain ends, reversed
     (protocol (lambda (new)
                 (case-lambda
                   ((step state0 now0)
-                   (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f #f #f '() #f))
+                   (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f #f #f '() #f '()))
                   ((step state0 now0 perform)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f #f #f '() #f))
+                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f #f #f '() #f '()))
                   ((step state0 now0 perform trace)
                    (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace #f #f '()
-                        #f))))))
+                        #f '()))))))
 
   ;; trace! : FakeShell Symbol Any -> Void
   (define (trace! s kind datum)
@@ -177,7 +181,9 @@
   ;; fake-shell-deliver! : FakeShell Event -> (Listof Action)
   ;; Dispatch one event: trace it, step it, thread the state, record the
   ;; event, queue the actions, and drain the queue unless a drain or a feed is
-  ;; under way.  Returns this event's actions.
+  ;; under way.  Once the outermost drain has ended, make the handler calls
+  ;; it queued, in order (call-handler, above), each answer a dispatch of
+  ;; its own.  Returns this event's actions.
   (define (fake-shell-deliver! s event)
     (fake-shell-dispatches-set! s (+ (fake-shell-dispatches s) 1))
     (when (> (fake-shell-dispatches s) dispatch-cap)
@@ -190,8 +196,21 @@
        (fake-shell-state-set! s state*)
        (fake-shell-events-rev-set! s (cons event (fake-shell-events-rev s)))
        (enqueue! s actions)
-       (when (= (fake-shell-depth s) 0) (drain! s))
+       (when (= (fake-shell-depth s) 0)
+         (drain! s)
+         (make-calls! s))
        actions)))
+
+  ;; make-calls! : FakeShell -> Void
+  ;; The handler calls queued, oldest first, until none is: a call's answer
+  ;; may queue another.
+  (define (make-calls! s)
+    (let ((calls (fake-shell-calls s)))
+      (unless (null? calls)
+        (let ((oldest (list-ref calls (- (length calls) 1))))
+          (fake-shell-calls-set! s (remq oldest calls))
+          (oldest)
+          (make-calls! s)))))
 
   ;; enqueue! : FakeShell (Listof Action) -> Void — behind what is queued.
   (define (enqueue! s actions)
@@ -341,11 +360,16 @@
       ((feed-parser) (feed! s (cadr a) (caddr a) (cadddr a)))
       ((resume-parser) (parser-resume! (fake-shell-parser s)))
       ((call-handler)
-       (let ((answer (guard (e (#t (list 'handler-failed e)))
-                       (list 'handler-responded (handler (cadr a))))))
-         (fake-shell-deliver! s (if (and (fake-shell-credit? s) (eq? (car answer) 'handler-responded))
-                                    (append answer '(credit))
-                                    answer))))
+       (let ((request (cadr a)))
+         (fake-shell-calls-set!
+          s (cons (lambda ()
+                    (let ((answer (guard (e (#t (list 'handler-failed e)))
+                                    (list 'handler-responded (handler request)))))
+                      (fake-shell-deliver! s (if (and (fake-shell-credit? s)
+                                                      (eq? (car answer) 'handler-responded))
+                                                 (append answer '(credit))
+                                                 answer))))
+                  (fake-shell-calls s)))))
       ((deliver-body)
        (let ((r (conn-body-reader (fake-shell-conn-state s))))
          (when r

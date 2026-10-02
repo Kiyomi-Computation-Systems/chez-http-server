@@ -76,10 +76,18 @@
     ((write) (list 'write (written-status a)))
     (else a)))
 
+;; traces : EqHashtable FakeShell -> (Listof (Pair Symbol Datum))
+;; Each connection's trace, newest first: every event dispatched and every
+;; action run, in order, as `(event . e)` and `(action . a)`.
+(define traces (make-eq-hashtable))
+
+;; trace-of : FakeShell -> (Listof (Pair Symbol Datum)) — in order.
+(define (trace-of sh) (reverse (hashtable-ref traces sh '())))
+
 ;; connection : Limits [(Request -> Response)] -> (values FakeShell (-> (Listof Pending)))
 ;; A fake connection whose handler is `answer` (by default, `resp` to every
 ;; request), and a thunk giving the pending input the core held each time
-;; the handler ran, in order.
+;; the handler ran, in order.  Its trace is kept (trace-of).
 (define connection
   (case-lambda
     ((limits) (connection limits (lambda (request) resp)))
@@ -90,7 +98,9 @@
                  limits
                  (lambda (request)
                    (set! seen (cons (conn-pending (fake-shell-conn-state cell)) seen))
-                   (answer request)))))
+                   (answer request))
+                 (lambda (kind datum)
+                   (hashtable-update! traces cell (lambda (t) (cons (cons kind datum) t)) '())))))
        (set! cell sh)
        (values sh (lambda () (reverse seen)))))))
 
@@ -155,25 +165,36 @@
 ;; serial? : FakeShell -> Boolean
 ;; One message at a time: from each message's end, where reading stops, to
 ;; the resume after its response, no feed-parser and no read-start; and one
-;; handler asked from one resume to the next.  A response that closes the
-;; connection has no resume: its staged close begins with the shutdown
+;; handler asked from one resume to the next.  A message's end is the
+;; read-stop after a paused `parser-result`.  Any other read-stop is a
+;; request waiting on its handler with its body still to come, which stops
+;; reading until the handler's reader answers and reading starts again
+;; (decision 0014; M7.1): nothing is fed meanwhile.  A response that closes
+;; the connection has no resume: its staged close begins with the shutdown
 ;; (M3.5), after which the socket is read again, to drop what arrives, but
 ;; nothing is fed, handled or resumed.  (The handler of a request whose head
 ;; announces a body is asked once the head is in, and its body read after:
 ;; decision 0013.)
 (define (serial? sh)
-  (let loop ((as (fake-shell-actions sh)) (stopped #f) (asked #f))
-    (cond ((null? as) #t)
+  (let loop ((t (trace-of sh)) (paused #f) (stopped #f) (asked #f))
+    (cond ((null? t) #t)
+          ((eq? (caar t) 'event)
+           (let ((e (cdar t)))
+             (loop (cdr t)
+                   (or (and (eq? (car e) 'parser-result) (eq? (cadr e) 'paused)) paused)
+                   stopped asked)))
           (else
-           (let ((kind (car (car as))))
+           (let ((kind (car (cdar t))))
              (case kind
-               ((read-stop) (loop (cdr as) (or stopped #t) asked))
-               ((call-handler) (and (not asked) (loop (cdr as) stopped #t)))
-               ((resume-parser) (and (not (eq? stopped 'closed)) (loop (cdr as) #f #f)))
-               ((feed-parser) (and (not stopped) (loop (cdr as) stopped asked)))
-               ((read-start) (and (not (eq? stopped #t)) (loop (cdr as) stopped asked)))
-               ((shutdown) (loop (cdr as) 'closed asked))
-               (else (loop (cdr as) stopped asked))))))))
+               ((read-stop) (loop (cdr t) #f (or stopped (if paused 'ended 'waiting)) asked))
+               ((call-handler) (and (not asked) (loop (cdr t) paused stopped #t)))
+               ((resume-parser) (and (not (eq? stopped 'closed)) (loop (cdr t) #f #f #f)))
+               ((feed-parser) (and (not stopped) (loop (cdr t) paused stopped asked)))
+               ((read-start)
+                (and (not (eq? stopped 'ended))
+                     (loop (cdr t) paused (if (eq? stopped 'waiting) #f stopped) asked)))
+               ((shutdown) (loop (cdr t) paused 'closed asked))
+               (else (loop (cdr t) paused stopped asked))))))))
 
 (run-suite "message-loop"
   (lambda ()

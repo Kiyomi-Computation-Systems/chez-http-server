@@ -44,7 +44,12 @@
 ;;; owner's word, 2026-09-30).  And the cut-off-span PR's four for what the
 ;;; parser's error cuts off, a target or a field name it never hands on,
 ;;; judged at the error as a read's end would have judged it (decided on the
-;;; owner's word, 2026-10-01).
+;;; owner's word, 2026-10-01).  And M7.1's, from decision 0014 and plan §14's
+;;; note of M6.2: a handler answers after the drain that asks it, so a
+;;; request whose body is still arriving waits on its handler in handling,
+;;; reading stopped and nothing armed, and its reader's answer reads again,
+;;; with the body deadline; the rows B2 to B19, C3, S4 and E3 to E7 that
+;;; answer in that wait say so.
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -641,6 +646,10 @@
 ;; pieces, and an error or a cap passed.  The states are reached by steps,
 ;; from a head being read: a POST (llhttp's method 3) whose head announces its
 ;; body, as on-headers-complete's flags and content-length say.
+;; M7.1 (decision 0014): the answer comes after the drain that asks for it,
+;; so a request asked about with its body still to come waits on its handler
+;; in handling, reading stopped and nothing armed (plan §14's note of M6.2),
+;; and a reader's answer reads again, with the body deadline.
 
 ;; announced : (U Nat 'chunked) [Limits] -> ConnState
 ;; A POST whose head, just complete, announced a body of `n` bytes by
@@ -672,14 +681,15 @@
 
 ;; asked : (U Nat 'chunked) . Piece -> ConnState
 ;; A POST that met `pieces` in the feed that completed its head, which has
-;; returned and asked its handler.
+;; returned and asked its handler: in handling, its body still to come.
 (define (asked framing . pieces)
   (let ((s (met (announced framing) pieces)))
     (conn-step s '(parser-result need-input 49 49 #f #f))
     s))
 
 ;; reading : (U Nat 'chunked) BodyReader -> ConnState
-;; The same, with no piece met, its handler having answered with `reader`.
+;; The same, with no piece met, its handler having answered with `reader`:
+;; in body, reading again.
 (define (reading framing reader)
   (let ((s (asked framing)))
     (conn-step s `(handler-responded ,reader))
@@ -731,19 +741,19 @@
            `(parser-event on-headers-complete 3 1 1 ,F-CHUNKED 0 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
-   (row 'B2 "body or handling, the feed that completed the head returns -> the same: call-handler"
+   (row 'B2 "body or handling, the feed that completed the head returns -> handling: read-stop, disarm, call-handler; or the body ended in it, call-handler"
         (i (announced 10) '(parser-result need-input 49 49 #f #f)
-           '(body #f ((call-handler POST))))
+           '(handling #f ((read-stop) (disarm-deadline) (call-handler POST))))
         (i (ended 5 '(3 8)) '(parser-result paused 54 54 #f #f)
            '(handling #f ((call-handler POST)))))
 
-   (row 'B3 "body, on-body-data before the handler answers -> body: continue, arm body, the piece kept"
-        (i (asked 10) `(parser-event on-body-data ,bv 3 8)
+   (row 'B3 "body, on-body-data in the head's feed, before the handler is asked -> body: continue, arm body, the piece kept"
+        (i (announced 10) `(parser-event on-body-data ,bv 3 8)
            '(body #f ((reply-parser continue) (arm-deadline body)))))
 
-   (row 'B4 "body, handler-responded with a streaming reader -> body: the pieces kept, handed over in order"
+   (row 'B4 "handling, the body still to come, handler-responded with a streaming reader -> body: the pieces kept, handed over in order, then read-start, arm body"
         (i (asked 10 '(3 5) '(5 8)) `(handler-responded ,streamer)
-           `(body #f ((deliver-body ,bv 3 5) (deliver-body ,bv 5 8)))))
+           `(body #f ((deliver-body ,bv 3 5) (deliver-body ,bv 5 8) (read-start) (arm-deadline body)))))
 
    (row 'B5 "handling, the message ended in the head's feed, handler-responded with a streaming reader -> handling: the pieces kept, then deliver-body-end"
         (let ((s (ended 5 '(3 8))))
@@ -751,9 +761,9 @@
           (i s `(handler-responded ,streamer)
              `(handling #f ((deliver-body ,bv 3 8) (deliver-body-end))))))
 
-   (row 'B6 "body, handler-responded with a whole reader -> body: the pieces kept, buffered"
+   (row 'B6 "handling, the body still to come, handler-responded with a whole reader -> body: the pieces kept buffered, read-start, arm body"
         (i (asked 10 '(3 8)) `(handler-responded ,(whole-reader))
-           '(body #f ())))
+           '(body #f ((read-start) (arm-deadline body)))))
 
    (row 'B7 "body, on-body-data, a whole reader reading -> body: continue, arm body, the piece buffered"
         (i (reading 10 (whole-reader)) `(parser-event on-body-data ,bv 3 8)
@@ -779,10 +789,11 @@
                               (arm-deadline write))))))
 
    ;; Item 4: sent at once, and the connection closes after it, whether the
-   ;; body is still arriving or came whole with the head.
-   (row 'B11 "body or handling, handler-responded with a response to a request that announced a body -> responding, close-after unread-body"
+   ;; body is still arriving or came whole with the head.  Either way the
+   ;; request waited on its handler with reading stopped (M7.1).
+   (row 'B11 "handling, handler-responded with a response to a request that announced a body -> responding, close-after unread-body"
         (i (asked 10) `(handler-responded ,resp)
-           `(responding unread-body (,answered-closing (read-stop) (arm-deadline write))))
+           `(responding unread-body (,answered-closing (arm-deadline write))))
         (let ((s (ended 5 '(3 8))))
           (conn-step s '(parser-result paused 54 54 #f #f))
           (i s `(handler-responded ,resp)
@@ -817,11 +828,11 @@
 
    ;; A reader's cap, passed before it reads: the declared length, or the
    ;; pieces met before it answered.
-   (row 'B15 "body, handler-responded with a reader whose cap the body passes -> responding 413, read-stop, close-after"
+   (row 'B15 "handling, handler-responded with a reader whose cap the body passes -> responding 413, close-after"
         (i (asked 10) `(handler-responded ,(whole-reader 5))
-           `(responding body-too-large (,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write))))
+           `(responding body-too-large (,(status-write 413 "Content Too Large") (arm-deadline write))))
         (i (asked 'chunked '(3 8)) `(handler-responded ,(whole-reader 4))
-           `(responding body-too-large (,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write)))))
+           `(responding body-too-large (,(status-write 413 "Content Too Large") (arm-deadline write)))))
 
    ;; What the feed that completed the head met in the body before the
    ;; handler was asked waits for its answer (design §8.1's second property).
@@ -847,9 +858,9 @@
         (i (erred 'chunked '(3 8)) `(handler-responded ,resp)
            `(responding unread-body (,answered-closing (arm-deadline write)))))
 
-   (row 'B19 "body, handler-failed -> responding 500, read-stop, close-after"
+   (row 'B19 "handling or body, handler-failed -> responding 500, close-after; read-stop from body, where a reader reads"
         (i (asked 10) '(handler-failed boom)
-           `(responding handler-failed (,(status-write 500 "Internal Server Error") (read-stop) (arm-deadline write))))
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write))))
         (i (reading 10 streamer) '(handler-failed boom)
            `(responding handler-failed (,(status-write 500 "Internal Server Error") (read-stop) (arm-deadline write)))))))
 
@@ -912,11 +923,11 @@
         (i (on-credit 10) '(parser-result need-input 60 60 #f #f)
            '(body #f ())))
 
-   (row 'C3 "body, handler-responded with a reader on credit -> the pieces kept handed over, then awaiting-credit: read-stop, disarm"
+   (row 'C3 "handling, the body still to come, handler-responded with a reader on credit -> the pieces kept handed over, then awaiting-credit, reading stopped already; or none kept, body: read-start, arm body"
         (i (asked 10 '(3 5) '(5 8)) `(handler-responded ,streamer credit)
-           `(awaiting-credit #f ((deliver-body ,bv 3 5) (deliver-body ,bv 5 8) (read-stop) (disarm-deadline))))
+           `(awaiting-credit #f ((deliver-body ,bv 3 5) (deliver-body ,bv 5 8))))
         (i (asked 10) `(handler-responded ,streamer credit)
-           '(body #f ())))
+           '(body #f ((read-start) (arm-deadline body)))))
 
    (row 'C4 "awaiting-credit, body-credit for all it was handed -> body: read-start, arm body"
         (i (withheld 10 '(3 5) '(5 8)) '(body-credit 5)
@@ -1080,12 +1091,12 @@
 
    ;; Decision 0013 item 4: a response given instead of a reader closes the
    ;; connection after it, the body unread, a streamed one too.
-   (row 'S4 "body, handler-responded with a producer instead of a reader -> responding, close-after unread-body: the head, read-stop, arm write, notify-producer"
+   (row 'S4 "handling, handler-responded with a producer instead of a reader -> responding, close-after unread-body: the head, arm write, notify-producer"
         (i (asked 10) `(handler-responded ,streamed-resp)
            `(responding unread-body
                         (,(written "HTTP/1.1 200 OK\r\n" 'date
                                    "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n")
-                         (read-stop) (arm-deadline write) (notify-producer))
+                         (arm-deadline write) (notify-producer))
                         #t)))
 
    (row 'S5 "responding, handler-body-chunk asked for, at or below high water -> responding: write the piece, arm write, notify-producer"
@@ -1304,13 +1315,14 @@
         (i (head-expecting "") `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
-   (row 'E3 "body, handler-responded with a reader, expecting 100-continue -> body: write the 100, then the pieces kept, arm body"
+   (row 'E3 "handling, the body still to come, handler-responded with a reader, expecting 100-continue -> body: write the 100, then the pieces kept, read-start, arm body"
         (i (expected 10) `(handler-responded ,streamer)
-           `(body #f (,continue-write (arm-deadline body))))
+           `(body #f (,continue-write (read-start) (arm-deadline body))))
         (i (expected 10 '(3 5) '(5 8)) `(handler-responded ,streamer)
-           `(body #f (,continue-write (deliver-body ,bv 3 5) (deliver-body ,bv 5 8) (arm-deadline body))))
+           `(body #f (,continue-write (deliver-body ,bv 3 5) (deliver-body ,bv 5 8)
+                                      (read-start) (arm-deadline body))))
         (i (expected 10 '(3 8)) `(handler-responded ,(whole-reader))
-           `(body #f (,continue-write (arm-deadline body)))))
+           `(body #f (,continue-write (read-start) (arm-deadline body)))))
 
    ;; The 100 though the whole body is in: had it come in a later read, the
    ;; 100 would have gone first, and the outcome is the same either way.
@@ -1320,16 +1332,15 @@
         (i (ended-expecting) `(handler-responded ,(whole-reader))
            `(handling #f (,continue-write (deliver-body ,(b " / HT") 0 5) (deliver-body-end)))))
 
-   (row 'E5 "body, handler-responded with a reader on credit -> write the 100, the pieces kept, then awaiting-credit: read-stop, disarm"
+   (row 'E5 "handling, handler-responded with a reader on credit -> write the 100, the pieces kept, then awaiting-credit, reading stopped already"
         (i (expected 10 '(3 5) '(5 8)) `(handler-responded ,streamer credit)
-           `(awaiting-credit #f (,continue-write (deliver-body ,bv 3 5) (deliver-body ,bv 5 8)
-                                                 (read-stop) (disarm-deadline)))))
+           `(awaiting-credit #f (,continue-write (deliver-body ,bv 3 5) (deliver-body ,bv 5 8)))))
 
    ;; What the head's feed met waits for the answer, and the 100 still goes
    ;; first, as it would have had the body come in a later read: an error
    ;; kept, or a body met past the reader's own cap, in body or, the body
    ;; ended, in handling (M6.4's review).
-   (row 'E6 "handling or body, an error kept or a body met past the reader's cap, handler-responded with a reader -> responding: the 100, the pieces, then the status"
+   (row 'E6 "handling, an error kept or a body met past the reader's cap, handler-responded with a reader -> responding: the 100, the pieces, then the status"
         (let ((s (met (expecting 'chunked "100-continue") '((3 8)))))
           (conn-step s '(parser-result error 60 60 invalid-chunk-size #f))
           (i s `(handler-responded ,streamer)
@@ -1337,7 +1348,7 @@
                                         ,(status-write 400 "Bad Request") (arm-deadline write)))))
         (i (expected 'chunked '(3 8)) `(handler-responded ,(whole-reader 4))
            `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
-                                        (read-stop) (arm-deadline write))))
+                                        (arm-deadline write))))
         (let ((s (met (expecting 'chunked "100-continue") '((3 8)))))
           (conn-step s '(parser-event on-message-complete 54))
           (conn-step s '(parser-result paused 54 54 #f #f))
@@ -1345,13 +1356,13 @@
              `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
                                           (arm-deadline write))))))
 
-   (row 'E7 "body, a response instead of a reader, a reader whose cap the declared length passes, or handler-failed -> responding: the final status, no 100"
+   (row 'E7 "handling, a response instead of a reader, a reader whose cap the declared length passes, or handler-failed -> responding: the final status, no 100"
         (i (expected 10) `(handler-responded ,resp)
-           `(responding unread-body (,answered-closing (read-stop) (arm-deadline write))))
+           `(responding unread-body (,answered-closing (arm-deadline write))))
         (i (expected 10) `(handler-responded ,(whole-reader 5))
-           `(responding body-too-large (,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write))))
+           `(responding body-too-large (,(status-write 413 "Content Too Large") (arm-deadline write))))
         (i (expected 10) '(handler-failed boom)
-           `(responding handler-failed (,(status-write 500 "Internal Server Error") (read-stop) (arm-deadline write)))))))
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)))))))
 
 ;; The 100 is a write like any other, outstanding until it completes (M3.3's
 ;; accounting, which these rows are run through): in a state that reads, or

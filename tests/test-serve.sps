@@ -8,7 +8,11 @@
 ;;; with it on a loop of the suite's own, through environments it makes, and
 ;;; runs its clients on that loop, every wait capped by an iteration count
 ;;; (design §8.5).  A start that fails raises before any loop runs, so those
-;;; checks call `serve` itself.
+;;; checks call `serve` itself.  And `serve`'s own loop, the scheduler's turns
+;;; that call each handler after libuv's (decision 0014; M7.1), runs in a
+;;; process of its own, tests/serve-child.sps, started with the Chez the
+;;; environment's CHEZ names, as `make` runs it, or `chez`: the suite reads
+;;; the port it logs, and a client on the suite's loop asks it for a page.
 ;;;
 ;;; Oracles:
 ;;;   - decision 0012: where the server listens, and what a handler reads;
@@ -25,7 +29,7 @@
 ;;;     happens, written to standard output.  A condition's text is Chez's
 ;;;     `display-condition`'s, as Chez 10.4.1 prints it.
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) library-exports with-output-to-string putenv)
+        (only (chezscheme) library-exports with-output-to-string putenv getenv)
         (libuv) (uv-testing) (shell-testing) (response-reader)
         (http-server)
         (only (http-server private shell) shell-connections shell-listener shell-shutdown!)
@@ -85,6 +89,79 @@
     (run-shell-until loop sh (lambda () (null? (shell-connections sh))) cap)
     (let ((r (read-response (client-bytes cl) #f #t)))
       (list (car r) (cadddr r) (list-ref r 4)))))
+
+;; served-by-a-child : -> (List Symbol (U (List Nat String Symbol) #f))
+;; Start tests/serve-child.sps as a process of its own, its standard output
+;; read on a loop of the suite's, until it logs where it listens, whatever
+;; it writes before that line; then a
+;; client asks it for a page, reading until it closes the stream.  How the
+;; waits ended, the first that did not end 'satisfied, and the response,
+;; by chez-httparse's response parser, or #f if none was read; the child is
+;; killed after.
+(define (served-by-a-child)
+  (let* ((loop (make-uv-loop))
+         (pipe (make-uv-pipe loop))
+         (out (make-byte-collector))
+         (exit-status #f)
+         (chez (or (getenv "CHEZ") "chez"))
+         (process (uv-spawn! loop chez (list chez "--program" "tests/serve-child.sps")
+                             (list (cons 'stdio (list 'ignore (list 'pipe pipe 'from-child)
+                                                      '(inherit-fd . 2))))
+                             (lambda (status signal) (set! exit-status (list status signal))))))
+    (uv-read-start! pipe (lambda (bv start end) (collect-span! out bv start end))
+                    (lambda () #f) (lambda (e) #f))
+    (let* ((port (lambda () (listening-port (utf8->string (collector-bytes out)))))
+           (listening (run-loop-until loop (lambda () (and (port) #t)) cap))
+           (cl (and (port)
+                    (open-client loop (port) (b "GET / HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n") #t)))
+           (answered (if cl (run-loop-until loop (lambda () (not (eq? (client-end cl) 'open))) cap) 'no-port))
+           (response (and cl (pair? (responses-of (client-bytes cl)))
+                          (let ((r (read-response (client-bytes cl) #f #t)))
+                            (list (car r) (cadddr r) (list-ref r 4))))))
+      (when cl (client-close! cl))
+      (uv-process-kill! process 'sigkill)
+      (run-loop-until loop (lambda () exit-status) cap)
+      (uv-close! process)
+      (uv-close! pipe)
+      (run-until-drained loop cap)
+      (uv-loop-teardown! loop)
+      (list (if (eq? listening 'satisfied) answered listening) response))))
+
+;; listening-port : String -> (U Nat #f)
+;; The port the line `listening HOST PORT` names, among the whole lines of
+;; `text`, or #f until one has come.
+(define (listening-port text)
+  (let loop ((rest text))
+    (let ((end (string-index rest #\newline)))
+      (and end
+           (let ((line (substring rest 0 end)))
+             (if (and (>= (string-length line) 10) (string=? (substring line 0 10) "listening "))
+                 (string->number (last-word line))
+                 (loop (substring rest (+ end 1) (string-length rest)))))))))
+
+;; string-index : String Char -> (U Nat #f)
+(define (string-index s c)
+  (let loop ((i 0))
+    (cond ((= i (string-length s)) #f)
+          ((char=? (string-ref s i) c) i)
+          (else (loop (+ i 1))))))
+
+;; last-word : String -> String — after the last space.
+(define (last-word s)
+  (let loop ((i (string-length s)))
+    (cond ((= i 0) s)
+          ((char=? (string-ref s (- i 1)) #\space) (substring s i (string-length s)))
+          (else (loop (- i 1))))))
+
+;; responses-of : Bytevector -> (Listof Any) — whether a response's head has
+;; arrived: a list with one element once the bytes hold a blank line.
+(define (responses-of bv)
+  (let loop ((i 0))
+    (cond ((> (+ i 4) (bytevector-length bv)) '())
+          ((and (= (bytevector-u8-ref bv i) 13) (= (bytevector-u8-ref bv (+ i 1)) 10)
+                (= (bytevector-u8-ref bv (+ i 2)) 13) (= (bytevector-u8-ref bv (+ i 3)) 10))
+           '(head))
+          (else (loop (+ i 1))))))
 
 (run-suite "serve"
   (lambda ()
@@ -159,6 +236,11 @@
                     (run-until-drained loop cap)
                     (list outcome (uv-loop-live-handles loop))))
       (uv-loop-teardown! loop))
+
+    ;; --- serve's own loop, in a process of its own ---
+    (test-equal "serve, run as a program of its own, answers a request, calling its handler after libuv's turn"
+                '(satisfied (200 "served" complete))
+                (served-by-a-child))
 
     ;; --- the log ---
     (test-equal "the log writes a line for each thing: what happened, then each detail"

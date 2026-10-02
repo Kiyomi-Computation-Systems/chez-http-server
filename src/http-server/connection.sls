@@ -225,6 +225,15 @@
 ;;; consequences).  A whole reader's pieces are the core's to copy, so it
 ;;; never owes credit.
 ;;;
+;;; A HANDLER ANSWERS AFTER THE DRAIN THAT ASKS IT (M7.1; decision 0014).
+;;; The shells call a handler once their drain has ended, the libuv shell
+;;; after libuv's turn, so its answer is a later event, never one of the
+;;; drain that emitted `call-handler`.  A request whose body is still
+;;; arriving when its handler is asked waits on it in handling, as one whose
+;;; body has ended does: reading stops, and the body deadline with it, since
+;;; the server is the one waiting, and the handler's reader reads again
+;;; (`read-on`), with the body deadline, or waits for its credit.
+;;;
 ;;; A BODY OF UNKNOWN LENGTH IS WRITTEN A PIECE AT A TIME (M6.3; decision
 ;;; 0013 item 8).  A response whose body is a producer, a procedure the
 ;;; server calls for each piece, is written as its head, framed chunked to
@@ -1826,21 +1835,46 @@
   ;; body -> awaiting-credit: the reader has been handed pieces it has not
   ;; credited, so reading stops, and the body deadline with it, since the
   ;; server is the one waiting (M6.2; plan §14's note of 2026-09-27).
+  ;; handling -> awaiting-credit: the same, with reading stopped and
+  ;; nothing armed already, as the request waited on its handler (M7.1).
   (define (await-credit s)
-    (conn-phase-set! s 'awaiting-credit)
-    (conn-deadline-set! s #f)
-    (values s '((read-stop) (disarm-deadline))))
+    (let ((handling? (eq? (conn-phase s) 'handling)))
+      (conn-phase-set! s 'awaiting-credit)
+      (conn-deadline-set! s #f)
+      (values s (if handling? '() '((read-stop) (disarm-deadline))))))
 
   ;; ask-handler : ConnState -> (values ConnState (Listof Action))
   ;; `(call-handler request)`, once, for a request whose head announced a
-  ;; body; nothing otherwise.
+  ;; body; nothing otherwise.  The answer comes after the drain that asks
+  ;; for it (decision 0014), so a request whose body is still arriving
+  ;; waits on its handler in handling: reading stops, and the body deadline
+  ;; with it, until the answer, since the server is the one waiting (M7.1;
+  ;; plan §14's note of M6.2).  One whose body has ended is in handling
+  ;; already.
   (define (ask-handler s)
     (let ((bd (conn-body s)))
-      (if (eq? (body-answer bd) 'call)
-          (begin
-            (body-answer-set! bd 'asked)
-            (values s (list (list 'call-handler (conn-request s)))))
-          (values s '()))))
+      (cond
+       ((not (eq? (body-answer bd) 'call)) (values s '()))
+       ((eq? (conn-phase s) 'body)
+        (body-answer-set! bd 'asked)
+        (conn-phase-set! s 'handling)
+        (conn-deadline-set! s #f)
+        (values s (list '(read-stop) '(disarm-deadline) (list 'call-handler (conn-request s)))))
+       (else
+        (body-answer-set! bd 'asked)
+        (values s (list (list 'call-handler (conn-request s))))))))
+
+  ;; read-on : ConnState (Listof Action) -> (values ConnState (Listof Action))
+  ;; `actions`, and then, for a request that waited on its handler in
+  ;; handling with its body still to come, reading again: back in body,
+  ;; reading started and the body deadline armed (M7.1).
+  (define (read-on s actions)
+    (cond
+     ((eq? (conn-phase s) 'handling)
+      (conn-phase-set! s 'body)
+      (conn-deadline-set! s 'body)
+      (values s (append actions '((read-start) (arm-deadline body)))))
+     (else (values s actions))))
 
   ;; answer-error : ConnState (List Symbol Any) -> (values ConnState (Listof Action))
   ;; The status for what the feed that completed the head met in the body:
@@ -1893,8 +1927,8 @@
   ;; (`read-with`), and a client that waits for the 100 is sent it first
   ;; (M6.4), whatever reading brings, a 413 for a body met past the cap
   ;; among it, since the 100 would have gone first had that body come later:
-  ;; the body deadline is armed with it, if the connection still reads, and
-  ;; does not wait for the reader's credit.
+  ;; the body deadline is armed after it, as reading starts again, and does
+  ;; not wait for the reader's credit.
   (define (accept-reader s r credit?)
     (let ((bd (conn-body s)))
       (cond
@@ -1905,10 +1939,7 @@
         (let ((w (let-values (((segments bytes) (serialize-continue)))
                    (count-write! s segments bytes))))
           (let-values (((s actions) (read-with s r credit?)))
-            (cond ((eq? (conn-phase s) 'body)
-                   (conn-deadline-set! s 'body)
-                   (values s (cons w (append actions '((arm-deadline body))))))
-                  (else (values s (cons w actions)))))))
+            (values s (cons w actions)))))
        (else (read-with s r credit?)))))
 
   ;; read-with : ConnState BodyReader Boolean -> (values ConnState (Listof Action))
@@ -1918,7 +1949,8 @@
   ;; a whole one; then an error kept for the answer is answered, or once the
   ;; message has ended, the reader is handed its end, or a streaming reader
   ;; on credit owes for those pieces, and reading waits for its credit
-  ;; (M6.2).
+  ;; (M6.2), or else reading starts again for the rest of the body
+  ;; (`read-on`).
   (define (read-with s r credit?)
     (let ((bd (conn-body s)))
       (if (over? (body-reader-max-bytes r) (body-count bd))
@@ -1937,7 +1969,7 @@
               (buffer-start! bd)
               (for-each (lambda (a) (buffer-add! bd (cadr a) (caddr a) (cadddr a)))
                         held)
-              (if (body-complete? bd) (hand-over-whole s) (values s '())))
+              (if (body-complete? bd) (hand-over-whole s) (read-on s '())))
              ((body-complete? bd)
               (body-answer-set! bd 'ending)
               (values s (append held '((deliver-body-end)))))
@@ -1945,7 +1977,7 @@
               (body-answer-set! bd 'stream)
               (for-each (lambda (a) (owe! bd (fx- (cadddr a) (caddr a)))) held)
               (if (fxzero? (body-owed bd))
-                  (values s held)
+                  (read-on s held)
                   (let-values (((s waiting) (await-credit s)))
                     (values s (append held waiting))))))))))
 

@@ -106,7 +106,12 @@ check-pins: ## Verify each submodule sits at its pinned commit (fingerprint chec
 # Nothing under src/ imports a (libuv private ...) library either: the shell
 # uses chez-libuv's public verbs, and a private reach is a workaround, carried
 # only until its upstream ask lands (decision 0008), as chez-libuv #28's was.
-check-imports: ## Assert pure libraries import no (libuv)/(chezscheme), and src/ no test or chez-libuv private library
+# And no code a parser feed runs, the adapter's bindings and the pure
+# libraries they step, can reach the scheduler: a parser callback never
+# waits (design §5.3, R5; M7.1), and here nothing it can reach could.  The
+# pure libraries import no private library at all, and the adapter neither
+# the scheduler nor the shell or serve, which turn it (M7.1's review).
+check-imports: ## Assert pure libraries import no (libuv)/(chezscheme)/private library, and src/ no test or chez-libuv private library
 	@hits=$$(grep -REn '\((chezscheme|libuv)( |\))' src/http-server src/http-server.sls --include='*.sls' 2>/dev/null | grep -v '/private/' || true); \
 	if [ -n "$$hits" ]; then \
 	  echo "IMPURE IMPORT outside src/http-server/private/:" >&2; echo "$$hits" >&2; exit 1; \
@@ -119,7 +124,12 @@ check-imports: ## Assert pure libraries import no (libuv)/(chezscheme), and src/
 	if [ -n "$$private" ]; then \
 	  echo "CHEZ-LIBUV PRIVATE IMPORT in a shipped library:" >&2; echo "$$private" >&2; exit 1; \
 	fi; \
-	echo "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, the facade's included; no test library and no chez-libuv private library in src/"
+	feed=$$( (grep -En '\(http-server private ' src/http-server/*.sls; \
+	         grep -En '\(http-server private (scheduler|shell|serve)\)' src/http-server/private/adapter.sls) 2>/dev/null || true); \
+	if [ -n "$$feed" ]; then \
+	  echo "PRIVATE IMPORT in code a parser feed runs, which could reach the scheduler (R5):" >&2; echo "$$feed" >&2; exit 1; \
+	fi; \
+	echo "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, the facade's included; no test library and no chez-libuv private library in src/; no private library in the pure ones, and no scheduler, shell or serve in the adapter"
 
 # One procedure closes every handle: handle-close!, the one use of uv-close!
 # in src/ (design §5.3 and §7.6, decision 0003).  chez-libuv keeps the

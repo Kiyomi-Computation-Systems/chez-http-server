@@ -774,6 +774,28 @@ Termination and error rows:
 > size; `tests/test-shell.sps` a client that waits for the 100 on a socket, and one
 > refused at once; `tests/test-clients.sps` curl's.
 
+> *Amended 2026-10-02 (M7.1; decision 0014; plan §14's note of M6.2):* the handler
+> answers after the drain that asks it, never in it, so the core waits for every answer
+> as for a later event. A request whose body is still arriving when its handler is asked
+> waits on it in `handling`, as one whose body has ended does: reading stops and the
+> body deadline with it, since the server is the one waiting, and nothing is armed, as
+> §4.3's table has `handling`. The handler's reader reads again. The rows, beside
+> M6.1's, M6.2's and M6.4's, which they amend where the answer came in `body`:
+>
+> | State | Event | State' | Actions |
+> |---|---|---|---|
+> | `body` | `parser-result` of the feed that completed the head, the body still to come | `handling` | `read-stop`, `disarm-deadline`, `call-handler` |
+> | `handling`, the body still to come | `handler-responded`, a reader, nothing owed | `body` | the pieces kept, as `deliver-body`, or into a whole reader's buffer; the 100 first when the client waits for it; then `read-start`, `arm-deadline body` |
+> | `handling`, the body still to come | `handler-responded`, a reader on credit, pieces kept for it | `awaiting-credit` | the pieces kept, as `deliver-body`, after the 100 when the client waits for it; reading stopped already, nothing armed |
+> | `handling` | `handler-responded`, a response, or a reader whose cap the body passes; `handler-failed` | `responding` | the status's `write`, `arm-deadline write`; no `read-stop`, reading stopped already |
+>
+> So no read arrives while a handler has not answered, and a pipelined request behind
+> one waits in the kernel, as decision 0004's pause has it. In v1's shells, which called
+> a handler in place, a reader's answer came while the connection still read, in `body`.
+> `tests/test-connection-table.sps` holds the rows, B2, B3, B4, B6, B11, B15, B19, C3,
+> S4, E3, E5, E6 and E7 as amended; `tests/test-message-loop.sps` tells this stop from a
+> message's end by the paused result before it.
+
 The hand-off row is the one that needs both channels checked. A CONNECT tunnel,
 `Connection: upgrade` and a 101 arrive as `status = 'paused` with
 `parser-result-pause` code `paused-upgrade`; the h2c preface `PRI * HTTP/2.0` arrives
@@ -920,6 +942,20 @@ is single-threaded (§7.4).
 "callbacks landed" batches and never load libuv. Each invariant gets a mutation that
 turns a named test red: swap `'once`/`'nowait`; remove the one-shot check in the
 resume cell; call a handler from inside `on-data`.
+
+> *Noted 2026-10-02 (M7.1; decision 0014's section "Chosen while building"):* built as
+> `(http-server private scheduler)`, one a loop, shared by every shell on it. A drain
+> runs until nothing is ready, and only a coroutine that yields waits for the poll.
+> Spawning only enqueues, so a callback may make a coroutine ready: R1 is checked where a
+> coroutine is entered, resumed, parks or yields, and where a drain is made. Each
+> refusal is an `&scheduler-invariant`, an `&assertion`, naming its invariant. The phase
+> and the coroutine running are the process's, since v1 is one thread. The shell feeds
+> the parser in `'in-parser`, set and left with no closure, though nothing a feed runs
+> can wait, which `make check-imports` holds: the pure libraries import no private
+> library, and the adapter neither the scheduler nor the shell or serve. A raise out of
+> a turn's drain is a callback's to the turn's guard (`shell-turn!`). R4's
+> resume cells are M7.2's. `tests/test-scheduler.sps` checks R1, R2, R3 and R5 against
+> scripted turns, and the mutation log (m7-mutations.md) names each check's mutant.
 
 ### 5.4 What was rejected, and by what
 

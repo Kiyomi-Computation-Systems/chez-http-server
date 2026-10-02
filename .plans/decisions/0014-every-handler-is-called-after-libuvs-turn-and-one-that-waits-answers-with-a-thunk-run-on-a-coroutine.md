@@ -132,3 +132,35 @@ Each step's choices are under its name.
 - **The phase, and the coroutine running, are the process's**, not a scheduler's: v1
   is one thread (design §7.4), one turn runs at a time, and a waiting verb has no
   scheduler to name.
+
+**Every handler after the turn** (the second step):
+
+- **One scheduler a loop, not a shell.** The first shell on a loop makes it, and every
+  shell on that loop shares it, so any turn drains every shell's calls. `serve` runs one
+  shell a loop. The socket suites run several on one loop, and with a scheduler each, a
+  turn of one shell's never called another's handlers. Weighed: a scheduler for each
+  shell, built first and taken out.
+- **A raise out of the drain is a callback's.** chez-libuv catches what a callback
+  raises, and the run loop logs it and runs on. A handler's answer is dispatched in the
+  drain, where nothing would catch it, so the turn's guard (`shell-turn!`) takes
+  whatever the drain raises the same way: logged as `callback-error`, the connection
+  closed by its dispatch, and what the drain had still to run run at the next turn.
+  First built as a guard around each call, which cost 317 B a request and logged a
+  contract fault twice; one guard a turn since M7.1's review.
+- **A handler whose connection has closed is not called.** A connection closed between
+  the turn that asked for its handler and the drain that would call it has its handler
+  called no more, as a waiting connection's calls are not made once it is closing
+  (M7.1's review).
+- **`serve`'s own loop gained a check.** It is now the scheduler's turn, and nothing
+  ran `serve` itself, so a loop that never drained the handler calls went unseen. The
+  serve suite now runs `serve` in a process of its own, `tests/serve-child.sps`.
+- **R5's phase cannot be seen.** The shell feeds the parser in the phase `'in-parser`,
+  as design §5.3 has it, set and left with no closure (`scheduler-feed-begin!`,
+  `scheduler-feed-end!`; a closure and a `dynamic-wind` cost 135 B a read before M7.1's
+  review), its drain setting it back after a raise out of a feed. But nothing a feed
+  runs, the adapter's bindings and the pure core, can wait, so no check sees the phase
+  set, nor the drain setting it back: a feed raises only when the parser breaks its
+  contract, and a turn sets the phase back itself once its poll is over.
+  `make check-imports` holds that none of them can reach the scheduler: the pure
+  libraries import no private library, and the adapter neither the scheduler nor the
+  shell or serve. The scheduler's own suite checks its R5 refusal.
