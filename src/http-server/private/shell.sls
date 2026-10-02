@@ -182,9 +182,12 @@
 ;;; called in place, as in v1.  Code on those coroutines waits with
 ;;; (http-server private waits)'s verbs (decision 0015; M7.2): the loop's
 ;;; scheduler keeps the loop's waits, made with the log of the first shell
-;;; on the loop, which records a late resume as `late-resume` (R4).  A wait
-;;; goes on when its connection closes (0015 item 4): what it then answers
-;;; is dropped, and the connection makes no more calls.
+;;; on the loop, which records a late resume as `late-resume` (R4), and
+;;; given the loop's clock and a timer of their own for the sleeps and
+;;; deadlines, one a loop, closed with the tick timer by a shell that serves
+;;; no more (loop-clock!).  A wait goes on when its connection
+;;; closes (0015 item 4): what it then answers is dropped, and the
+;;; connection makes no more calls.
 ;;;
 ;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
 ;;; chez-libuv catches whatever a callback raises, and raises it again from
@@ -201,6 +204,7 @@
   (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run! shell-turn!
           loop-turn!
           shell-connections shell-server shell-listener shell-timer shell-deadlines
+          shell-waits-timed
           connection? connection-state connection-tcp connection-violations
           connection-deadline
           connection-close! connection-body-credit!
@@ -219,7 +223,7 @@
           (only (http-server private scheduler)
                 make-scheduler scheduler-turn! scheduler-call! scheduler-spawn!
                 scheduler-phase scheduler-feed-begin! scheduler-feed-end! scheduler-waits)
-          (only (http-server private waits) make-waits)
+          (only (http-server private waits) make-waits waits-clock! waits-fire! waits-timed)
           (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
           (http-server private adapter))
@@ -254,6 +258,7 @@
   ;; assertion violation (make-wheel's).
   (define-record-type (shell %make-shell shell?)
     (fields loop handler limits clock log trace on-credit? table wheel scheduler
+            waits-kept                         ; the box of its loop's waits' timer (loop-clock!)
             (mutable server)
             (mutable listener)
             (mutable timer) (mutable ticking?)  ; the timer, and whether it runs
@@ -265,9 +270,11 @@
       ((loop handler limits clock log) (make-shell loop handler limits clock log #f #f))
       ((loop handler limits clock log trace) (make-shell loop handler limits clock log trace #f))
       ((loop handler limits clock log trace on-credit?)
-       (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
-                    (make-wheel (limits-tick-ms limits)) (loop-scheduler loop log)
-                    (make-server-state 'listening 0 limits) #f #f #f #f #f #f #f))))
+       (let* ((s (loop-scheduler loop log))
+              (kept (hashtable-ref waits-timers loop #f)))
+         (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
+                      (make-wheel (limits-tick-ms limits)) s kept
+                      (make-server-state 'listening 0 limits) #f #f #f #f #f #f #f)))))
 
   ;; loop-scheduler : UvLoop [(Symbol (Listof Any) -> Any)] -> Scheduler
   ;; The loop's scheduler, made the first time it is asked for: its poll is
@@ -285,8 +292,33 @@
              s)))
       ((loop log)
        (let ((s (loop-scheduler loop)))
-         (unless (scheduler-waits s) (make-waits s log))
+         (unless (scheduler-waits s) (loop-clock! loop (make-waits s log)))
          s))))
+
+  ;; loop-clock! : UvLoop Waits -> Void
+  ;; Give the loop's waits the loop's clock, brought up to date each time it
+  ;; is read, as the shell's deadlines are (DEADLINES, the header), and a
+  ;; timer of their own, made the first time it is started, whose callback
+  ;; fires them.  Like the tick timer, it is stopped while they have nothing
+  ;; armed, so an idle loop sleeps, and closed by a shell on the loop that
+  ;; serves no more (release-waits-timer!).  It is kept in `waits-timers`,
+  ;; the loop's, as `#(timer)`, or `#(#f)` while it has none.
+  (define waits-timers (make-ephemeron-eq-hashtable))
+  (define (loop-clock! loop w)
+    (let ((kept (vector #f))
+          (fire (lambda (t) (waits-fire! w))))
+      (hashtable-set! waits-timers loop kept)
+      (waits-clock! w
+                    (lambda () (uv-update-time! loop) (uv-now loop))
+                    (lambda (ms)
+                      (unless (vector-ref kept 0) (vector-set! kept 0 (make-uv-timer loop)))
+                      (uv-timer-start! (vector-ref kept 0) fire ms 0))
+                    (lambda () (let ((timer (vector-ref kept 0)))
+                                 (when timer (uv-timer-stop! timer)))))))
+
+  ;; shell-waits-timed : Shell -> Nat — how many sleeps and deadlines the
+  ;; waits of its loop have armed.
+  (define (shell-waits-timed sh) (waits-timed (scheduler-waits (shell-scheduler sh))))
 
   ;; wall-clock : -> Nat — milliseconds since the epoch, UTC: a shell's clock.
   (define (wall-clock)
@@ -901,15 +933,34 @@
 
   ;; release-timer! : Shell -> Void
   ;; Close the timer once the shell has stopped listening and no connection
-  ;; is left: a shell that serves no more holds none.
+  ;; is left: a shell that serves no more holds none.  The timer of its
+  ;; loop's waits goes with it, once they have nothing armed.
   (define (release-timer! sh)
-    (let ((timer (shell-timer sh)))
-      (when (and timer
-                 (fxzero? (hashtable-size (shell-table sh)))
-                 (not (eq? (server-phase (shell-server sh)) 'listening)))
-        (shell-timer-set! sh #f)
-        (shell-ticking?-set! sh #f)
-        (handle-close! sh timer))))
+    (when (and (fxzero? (hashtable-size (shell-table sh)))
+               (not (eq? (server-phase (shell-server sh)) 'listening)))
+      (let ((timer (shell-timer sh)))
+        (when timer
+          (shell-timer-set! sh #f)
+          (shell-ticking?-set! sh #f)
+          (handle-close! sh timer)))
+      (release-waits-timer! sh)))
+
+  ;; release-waits-timer! : Shell -> Void
+  ;; Close the timer of its loop's waits, if it has one and they have
+  ;; nothing armed: a shell that serves no more leaves no timer of theirs
+  ;; behind either.  The next timed wait makes another (loop-clock!).  The
+  ;; shell keeps the timer's box, so that this reads nothing of the
+  ;; library's own but what the shell holds: the code each request runs
+  ;; reaches it through calls Chez knows, by the deadlines' timer (arm!,
+  ;; start-ticking!, tick!, server-dispatch!), and a table of the library's
+  ;; read here made Chez's closures for each request carry it, 130 B a
+  ;; request more (M7.2).
+  (define (release-waits-timer! sh)
+    (let ((kept (shell-waits-kept sh)))
+      (when (and (vector-ref kept 0) (fxzero? (shell-waits-timed sh)))
+        (let ((timer (vector-ref kept 0)))
+          (vector-set! kept 0 #f)
+          (handle-close! sh timer)))))
 
   ;; connection-close! : Connection -> Void — close the connection's handle.
   (define (connection-close! c)

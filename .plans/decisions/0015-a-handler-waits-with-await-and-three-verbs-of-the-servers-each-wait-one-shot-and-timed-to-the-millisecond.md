@@ -150,3 +150,24 @@ are under its name.
   loop.
 - **The last three steps are a verb each**, exported and documented, where the plan's
   first note had the waits first and the shell's part, the facade and the docs last.
+
+**`sleep-ms` and `with-deadline`** (the third step):
+
+- **A deadline is in force from its start until its thunk is left, once**: by a return,
+  a raise or a continuation. A `dynamic-wind` holds it, whose after thunk a park runs
+  too, and tells a park from a leaving by the scheduler's `coroutine-suspending?`. A
+  raise that a handler outside continues leaves nothing, and a continuation that enters
+  the thunk again does not put the deadline back. Every value the thunk returns comes
+  back. First held by an exception handler, which a continuation escaping the thunk
+  passed by, leaving the deadline in force, and which passed one value only (M7.2's
+  review); the `dynamic-wind` costs 672 B where the handler cost 688.
+- **Once passed, a deadline makes every wait inside it raise at once**, so a handler
+  that catches the first raise and waits again inside it is not waiting past its time.
+- **`&deadline-passed` is an `&error`, raised with `raise`**, which a handler may not
+  return from; the docs catch it with `guard`.
+- **A sleep and a deadline due at the same time end in the order they were armed**, and
+  a sleep a deadline took back in the same advance of the timer wakes nothing.
+- **The timer of the waits is closed as the tick timer is**: stopped while nothing is
+  armed, closed by a shell that serves no more, made again by the next timed wait. Each
+  shell keeps the box the timer lives in: read from a table of the shell library's own,
+  it made every request's closures carry the table, 130 B a request more.

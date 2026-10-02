@@ -108,6 +108,12 @@ wheel keyed by `(deadline div tick-ms)` and dispatches `(tick now)` only to
 connections in expired buckets. One tick timer per loop is the only timer handle, and
 it stops when the wheel empties. Every limit is overridable from the environment.
 
+> *Noted 2026-10-02 (M7.2; decision 0015, and 0005's amendment of that day):* a second
+> timer per loop now times a handler's sleeps and deadlines to the millisecond, armed
+> for the earliest of a binary heap of them, `(http-server heap)`; like the tick timer,
+> it stops while nothing is armed and closes with a shell that serves no more. Neither
+> is a connection's: a connection still holds no timer handle (§7.5).
+
 > *Noted 2026-09-27 (M5.1; decision 0005's amendment of that day):* `(http-server wheel)`
 > fires by each deadline, not by its bucket. An advance to `now` fires exactly the
 > deadlines at or before `now`; the bucket says only where to look, so a deadline later in
@@ -195,6 +201,12 @@ project's own pure libraries. `(libuv ...)` and `(chezscheme)` appear only under
 | `(http-server private shell)` | to come | `(libuv)`, `(chezscheme)` | M4 |
 | `(http-server private scheduler)` | to come | `(chezscheme)` | M7 |
 | `(http-server)` | to come | own + `private` | M4 |
+
+> *Noted 2026-10-02 (M7.2; decision 0015):* three libraries have arrived that the table
+> does not name. `(http-server awaiting)`, pure (M7.1, decision 0014), holds a waiting
+> handler's answer and what a wait raises. `(http-server heap)`, pure, holds the times
+> a loop's waits wake at. `(http-server private waits)` holds what a handler waits
+> with, over the scheduler.
 
 Decision 0001's consequence list names every row above except one. **Introduced
 here:** `(http-server serializer)`, M3's response writer. It is pure — it turns a

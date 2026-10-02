@@ -24,7 +24,12 @@
 ;;;     on a coroutine for each piece; an ordinary handler that waits fails,
 ;;;     500, the refusal logged as R2's (M7.1); a handler that waits on
 ;;;     `await` is woken by another request's handler, and a second resume is
-;;;     logged as `late-resume` (R4; decision 0015, M7.2);
+;;;     logged as `late-resume` (R4; decision 0015, M7.2); a handler that
+;;;     holds the loop, then sleeps 20 ms, sleeps 18 ms or more by the
+;;;     monotonic clock, its sleep armed on the loop's clock brought up to
+;;;     date, and one whose deadline ends a sleep of a minute is answered at
+;;;     once, nothing left armed after either; and once a shell on the loop serves no more, which closes the
+;;;     timer of the loop's waits, a sleep makes another;
 ;;;   - three requests in one write are answered in order, reading the clock
 ;;;     fewer times than they are answered (decision 0010: once a second), and
 ;;;     no action but the parser's reply runs at parser depth (design §6.4,
@@ -136,8 +141,8 @@
         (only (http-server private scheduler)
               scheduler-phase current-coroutine coroutine-park! coroutine-wake! coroutine-yield!
               scheduler-invariant? scheduler-invariant-name)
-        (only (http-server awaiting) awaiting)
-        (only (http-server private waits) await)
+        (only (http-server awaiting) awaiting deadline-passed?)
+        (only (http-server private waits) await sleep-ms with-deadline)
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
               conn-outstanding conn-outstanding-bytes)
@@ -294,7 +299,12 @@
 ;; `counted-calls`.  And handlers that wait with the verbs (decision 0015;
 ;; M7.2): `/await-wake` waits on `await`, keeping its resume in `waker`,
 ;; and answers what it was given; `/wake` calls `waker` twice, with
-;; "woken by another" and then "again", and answers "woke".
+;; "woken by another" and then "again", and answers "woke"; `/sleep` holds
+;; the loop 30 ms, then sleeps 20 ms, and answers how many microseconds of
+;; the monotonic clock it slept, read with no update of the loop's own,
+;; which the sleep must make itself;
+;; and `/deadline` sleeps a minute inside a deadline of 10 ms, and answers
+;; "passed" when the deadline's raise comes, or "slept".
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -308,6 +318,10 @@
     (let spin () (when (< (monotonic-ms) until) (spin)))))
 (define parked #f)
 (define waker #f)
+;; monotonic-us : -> Nat — the monotonic clock, in microseconds.
+(define (monotonic-us)
+  (let ((t (current-time 'time-monotonic)))
+    (+ (* 1000000 (time-second t)) (div (time-nanosecond t) 1000))))
 (define counted-calls 0)
 (define credit-pieces '())
 (define credit-held 0)
@@ -349,6 +363,20 @@
            (awaiting
             (lambda ()
               (make-response 200 #f '() (await (lambda (resume) (set! waker resume)))))))
+          ((bytevector=? target (b "/sleep"))
+           (awaiting
+            (lambda ()
+              (hold! 30)
+              (let ((before (monotonic-us)))
+                (sleep-ms 20)
+                (make-response 200 #f '() (string->utf8 (number->string (- (monotonic-us) before))))))))
+          ((bytevector=? target (b "/deadline"))
+           (awaiting
+            (lambda ()
+              (make-response 200 #f '()
+                             (string->utf8
+                              (guard (e ((deadline-passed? e) "passed"))
+                                (with-deadline 10 (lambda () (sleep-ms 60000) "slept"))))))))
           ((bytevector=? target (b "/wake"))
            (waker (b "woken by another"))
            (waker (b "again"))
@@ -845,6 +873,25 @@
                           (filter (lambda (e) (eq? (car e) 'late-resume)) logged)))
         (client-close! waking))
       (client-close! waiting))
+    ;; The timed waits (decision 0015 item 3): the loop's waits have their
+    ;; own timer, and nothing is left armed once each wait is over.  A sleep
+    ;; of 20 ms is armed on the loop's clock, which counts whole
+    ;; milliseconds and may trail the monotonic clock by one: by that clock
+    ;; it lasts 18 ms at least.  Armed on the loop's clock as the hold left
+    ;; it, 30 ms behind, it would end at once.
+    (let ((cl (open-client! (b "GET /sleep HTTP/1.1\r\nHost: x\r\n\r\nGET /deadline HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a handler that holds the loop 30 ms, then sleeps 20 ms, sleeps 18 ms or more by the monotonic clock; one whose deadline of 10 ms ends a sleep of a minute is answered passed; nothing is left armed"
+                  '(satisfied (200 at-least-18-ms) (200 "passed") 0)
+                  (list (wait-for (lambda () (= 2 (length (responses (client-bytes cl))))))
+                        (let ((rs (responses (client-bytes cl))))
+                          (if (pair? rs)
+                              (let ((n (string->number (body (car rs)))))
+                                (list (status (car rs)) (if (and n (>= n 18000)) 'at-least-18-ms n)))
+                              'no-response))
+                        (let ((rs (responses (client-bytes cl))))
+                          (if (= 2 (length rs)) (list (status (cadr rs)) (body (cadr rs))) 'no-response))
+                        (shell-waits-timed shell)))
+      (client-close! cl))
     (set! logged '())
     (let ((cl (open-client! (b "GET /wait-plain HTTP/1.1\r\nHost: x\r\n\r\n"))))
       (test-eq "the client of an ordinary handler that waits reads the stream's end" 'satisfied
@@ -1849,6 +1896,18 @@
         (client-close! (car p)))
       (shell-shutdown! waiter)
       (set! adopting shell))
+
+    ;; A shell that serves no more closes the timer of its loop's waits,
+    ;; which have nothing armed (decision 0015 item 3): the next sleep on
+    ;; the loop makes another.
+    (let ((cl (open-client! (b "GET /sleep HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "after a shell on the loop serves no more, closing the timer of the loop's waits, a handler that sleeps is answered: the timer is made again"
+                  '(satisfied 200)
+                  (list (wait-for (lambda () (= 1 (length (responses (client-bytes cl))))))
+                        (let ((rs (responses (client-bytes cl))))
+                          (if (pair? rs) (status (car rs)) 'no-response))))
+      (client-close! cl)
+      (wait-for (lambda () (null? (shell-connections shell)))))
 
     ;; The end.  The suite's own shell, shut down with no connection left,
     ;; closes the timer it kept.

@@ -329,6 +329,98 @@ refused as R2" (M7W-8); "R1: a callback that parks, and a drain inside a
 callback, are refused as R1" (M7W-13); "R5: a park inside a feed is refused
 as R5, and the phase is the drain's once the feed is over" (M7W-14).
 
+### The third step: `sleep-ms` and `with-deadline`
+
+Thirty-six mutants first, against all forty-seven suites, three at a time:
+none reddened a suite but the heap's, the waits', the shell's and the
+serve suite. Seven survived, each a check too weak to see its mutant, and
+each check was made stronger:
+- M7H-4: the model run of 5,000 steps never built a removal that leaves
+  the last entry below a later parent, and the sift-downs after one mend
+  it; a check builds one, and buries the entry under two more.
+- M7H-6: the collection check took out only entries whose slot the next
+  one filled; it now takes out the heap's only entry, and removes its last.
+- M7H-9: another heap's entry was removed from an empty heap, which raises
+  anyway; it is now removed from a heap with entries at its place.
+- M7T-14 and M7T-17: with the clock at 0, the heap's own check refused -1;
+  at 10, -1 makes a time the heap takes, and the check reads which verb
+  refused.
+- M7T-15: a wait with no clock fails anyway, applying #f; the check reads
+  which verb refused.
+- M7T-21: the check read the loop's clock itself, bringing it up to date
+  for the sleep; it now reads the monotonic clock.
+Then all thirty-six again, and M7H-13, against the heap, waits and shell
+suites; the rows below are that run's, and the serve suite's the first's.
+Every check the step added is reddened by at least one.
+
+| Mutant | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|
+| M7H-1 | `heap` | ties broken newest first | heap 2, waits 1 |
+| M7H-2 | `heap` | an entry put in never moves up past its parent | heap 3, waits 1 |
+| M7H-3 | `heap` | moving down always takes the left child, not the earlier of the two | heap 3 |
+| M7H-4 | `heap` | a removal from the middle never moves the last entry up | heap 1 |
+| M7H-5 | `heap` | an entry taken out keeps its place | heap (raised, exit 2, 1 failed) |
+| M7H-6 | `heap` | the slot an entry leaves is not cleared | heap 1 |
+| M7H-7 | `heap` | an advance takes out only the entries before now | heap 4, waits 9 |
+| M7H-8 | `heap` | an insert takes any time | heap 1 |
+| M7H-9 | `heap` | another heap's entry is taken out | heap 1 |
+| M7H-10 | `heap` | the earliest read from the last slot, not the first | heap 1, waits 1 |
+| M7H-11 | `heap` | the vector grown with half its entries copied | heap 1 |
+| M7H-12 | `heap` | an advance takes any now | heap 1 |
+| M7H-13 | `heap` | an empty heap's earliest read from its first slot | heap 2, waits 10, shell 2 |
+| M7T-1 | `waits` | the waits' timer, firing, takes out what is due a millisecond later too | waits 1 |
+| M7T-2 | `waits` | the waits' timer not armed again for what is left | waits 4 |
+| M7T-3 | `waits` | the waits' timer not stopped once nothing is left | waits 7, shell 3 |
+| M7T-4 | `waits` | the waits' timer armed again for every entry put in, not only a new earliest | waits 6, shell 2 |
+| M7T-5 | `waits` | a passed deadline leaves the sleep it ended armed | waits 5, shell 2 |
+| M7T-6 | `waits` | a passed deadline does not end the wait in progress | waits 6, shell 4 |
+| M7T-7 | `waits` | a passed deadline not counted | waits 2 |
+| M7T-8 | `waits` | a thunk that returns leaves its deadline in force | waits 2 |
+| M7T-9 | `waits` | a raise out of the thunk leaves its deadline in force | waits 4 |
+| M7T-10 | `waits` | a raise a handler outside continues ends the deadline | waits 1 |
+| M7T-11 | `waits` | a wait after a deadline has passed begins anyway | waits 2 |
+| M7T-12 | `waits` | a wait a deadline ends answers its token, not a raise | waits 6, shell 1 |
+| M7T-13 | `waits` | with-deadline takes the coroutine running without asking whether it may park | waits 1 |
+| M7T-14 | `waits` | sleep-ms takes any number | waits 1 |
+| M7T-15 | `waits` | a timed wait on waits with no clock goes ahead | waits 1 |
+| M7T-16 | `waits` | a passed deadline wakes the coroutine itself, its wait left parked (R4 bypassed) | waits 1 |
+| M7T-17 | `waits` | with-deadline takes any number | waits 1 |
+| M7T-18 | `shell` | the shell's waits get no clock | shell 2 |
+| M7T-19 | `shell` | the waits' timer, firing, fires nothing | shell 5 |
+| M7T-20 | `shell` | a shell that serves no more leaves the timer of its loop's waits | shell 1 |
+| M7T-21 | `shell` | the waits' clock read with no update | shell 1 |
+| M7T-22 | the facade | the facade does not export sleep-ms | serve 1 |
+| M7T-23 | `shell` | a closed timer of the waits is kept, and started again | shell 1 |
+| M7T-24 | `waits` | the waits' timer armed for a new earliest's time, not its delay | waits 1, shell 5 |
+
+By check, the third step's, the mutants that redden it:
+- heap, "an advance takes out exactly the entries at or before now, the earliest first, equal times in the order they were put in": M7H-1, M7H-2, M7H-3, M7H-7;
+- heap, "5,000 steps of inserts, removals and advances take out what the list model takes out": M7H-1, M7H-2, M7H-3, M7H-5, M7H-7, M7H-10, M7H-11, M7H-13;
+- heap, "a removal takes out that entry alone; removing it again, or one an advance took, does nothing": M7H-7;
+- heap, "a removal from the middle moves the last entry up past a later parent, so an advance still finds it": M7H-2, M7H-3, M7H-4;
+- heap, "an empty heap has no earliest time and a count of 0": M7H-13;
+- heap, "a time or a now that is not a whole number of milliseconds, or another heap's entry, is an assertion violation": M7H-8, M7H-9, M7H-12;
+- heap, "a heap holds nothing of an entry it has taken out, by an advance or a removal, and holds one still in": M7H-6, M7H-7;
+- waits, "a sleep parks until the timer fires at or after its time; the timer armed for it, again for what is left, and stopped once none is left": M7H-7, M7H-13, M7T-1, M7T-2, M7T-3;
+- waits, "sleeps wake in the order of their times, equal times in the order they slept, the timer armed for the earliest": M7H-1, M7H-2, M7H-7, M7H-10, M7H-13, M7T-2, M7T-3, M7T-4;
+- waits, "sleep-ms and with-deadline take a whole number of milliseconds, refused by them before anything is armed": M7T-14, M7T-17;
+- waits, "a timed wait on a loop whose waits keep no clock is an assertion violation, the verb's": M7T-15;
+- waits, "the wait in progress when a deadline passes raises &deadline-passed, and its sleep is taken out of the timer's keeping": M7H-7, M7H-13, M7T-3, M7T-4, M7T-5, M7T-6, M7T-12;
+- waits, "a deadline that passes while its coroutine is not parked makes its next wait raise at once, before anything is armed": M7H-7, M7H-13, M7T-3, M7T-7, M7T-11;
+- waits, "with-deadline answers what its thunk returns, and its deadline is taken out when the thunk returns or raises": M7H-13, M7T-8, M7T-9;
+- waits, "once a deadline has passed, every later wait inside it raises at once, and a wait after it does not": M7H-7, M7H-13, M7T-3, M7T-4, M7T-5, M7T-6, M7T-7, M7T-8, M7T-11, M7T-12, M7T-24;
+- waits, "deadlines nest: the inner one passing first raises through it alone, and the outer one, passing later, raises at the wait then": M7H-7, M7H-13, M7T-2, M7T-3, M7T-4, M7T-5, M7T-6, M7T-9, M7T-12;
+- waits, "an outer deadline passing inside an inner one raises out through both, and takes the inner one out": M7H-7, M7H-13, M7T-2, M7T-4, M7T-5, M7T-6, M7T-9, M7T-12;
+- waits, "R4: a resume after a deadline ended its wait is logged as late-resume": M7H-7, M7T-6, M7T-12, M7T-16;
+- waits, "with-deadline is refused as a wait is, on no coroutine as R2, in a feed as R5, in a callback as R1, its thunk not run and nothing armed": M7T-13;
+- waits, "a raise that a handler outside continues leaves the deadline in force": M7T-3, M7T-4, M7T-5, M7T-6, M7T-9, M7T-10, M7T-12;
+- shell, "a handler that holds the loop 30 ms, then sleeps 20 ms, sleeps 18 ms or more by the monotonic clock; one whose deadline of 10 ms ends a sleep of a minute is answered passed; nothing is left armed": M7H-13, M7T-3, M7T-4, M7T-5, M7T-6, M7T-12, M7T-18, M7T-19, M7T-21, M7T-24;
+- shell, "after a shell on the loop serves no more, closing the timer of the loop's waits, a handler that sleeps is answered: the timer is made again": M7H-13, M7T-3, M7T-18, M7T-19, M7T-23, M7T-24;
+- serve, "the facade exports the handler's names, the verbs it waits with, the server's start, and its errors": M7T-22.
+
+The shell suite's "and no handle is left on the loop" is reddened by M7T-5,
+M7T-6, M7T-19, M7T-20 and M7T-24, a timer of the waits left armed or open.
+
 ### The review's fixes (2026-10-02)
 
 The /code-review high found seven, all fixed on the owner's word, each in the
@@ -339,13 +431,20 @@ their code away:
 | Mutant | Step | Where | Change | Reddens on its step's tree (suite, failures) |
 |---|---|---|---|---|
 | M7W-15 | second | `waits` | a late resume logged with no verb | waits 2, shell 1 |
+| M7T-26 | third | `waits` | a deadline left on a park too: the after thunk asks nothing of the coroutine | waits 9, shell 4 |
+| M7T-27 | third | `waits` | a deadline never left: the after thunk does nothing | waits 6 |
+| M7T-28 | third | `waits` | a thunk entered again and left again leaves its deadline again | waits 1 |
+| M7T-29 | third | `scheduler` | coroutine-suspending? answers #f, a park taken for a leaving | waits 9, shell 4 |
+| M7T-30 | third | `waits` | with-deadline answers one value of its thunk | waits 1 |
 
 Re-cut: M7W-1 and M7W-4, for the cell that now keeps its verb (their first
 re-cuts left a parenthesis open, did not load, and were cut again, the
 parentheses counted; their reports grep clean of `Exception`).
+Withdrawn: M7T-8, M7T-9 and M7T-10, whose exception handler the
+`dynamic-wind` replaced (M7T-27 and M7T-26 cut what they cut).
 
 Then every step's tree was made afresh, and each step's mutants ran on it,
-against every suite, three at a time: five on the first and fifteen on the
-second. Every mutant loaded, and every one reddened a check. Every check a
-step added is reddened by its own step's mutants on its own tree: four of
-four and eleven of eleven.
+against every suite, three at a time: five on the first, fifteen on the
+second and forty on the third. Every mutant loaded, and every one reddened
+a check. Every check a step added is reddened by its own step's mutants on
+its own tree: four of four, eleven of eleven and twenty-six of twenty-six.

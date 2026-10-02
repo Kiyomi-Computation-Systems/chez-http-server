@@ -197,6 +197,29 @@ answer: a response or a reader. There it can wait with ~await~.
 - A waiting handler holds about 3.6 KB until its wait ends, even if its
   client has gone: the server only notices a client leave when it reads or
   writes.
+
+To wait for a time, or to stop waiting after one:
+
+- ~(sleep-ms n)~ waits ~n~ milliseconds: a 10 ms sleep took 10 to 14 ms.
+- ~(with-deadline ms thunk)~ runs ~thunk~ and gives back what it returns. Once
+  ~ms~ milliseconds have passed, the wait ~thunk~ is in raises
+  ~&deadline-passed~, and so does every wait inside it after that.
+  ~deadline-passed?~ tells you it was the deadline. Code that is not waiting
+  is never cut short.
+
+#+begin_src scheme
+;; answer 504 if no POST comes within 30 seconds
+(awaiting
+ (lambda ()
+   (guard (e ((deadline-passed? e) (make-response 504 #f '() #f)))
+     (with-deadline 30000
+       (lambda ()
+         (make-response 200 #f '()
+                        (await (lambda (resume) (set! waiting (cons resume waiting))))))))))
+#+end_src
+
+- A ~resume~ called after its deadline wakes nothing, and the server logs
+  ~late-resume await~, as for a second call.
 - Inside a handler that waits, ~guard~ costs about 3.7 KB each time it runs.
   ~with-exception-handler~ costs next to nothing.
 
