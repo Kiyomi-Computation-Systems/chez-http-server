@@ -32,6 +32,7 @@ with the port it got: ~listening 127.0.0.1 8080~.
 | ~CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT~ | 60 s      | longest gap between body reads           |
 | ~CHEZ_HTTP_LINGER_TIMEOUT~          | 30 s      | how long a close waits for the client    |
 | ~CHEZ_HTTP_WRITE_TIMEOUT~           | 60 s      | time for each write to complete          |
+| ~CHEZ_HTTP_DRAIN_TIMEOUT~           | 10 s      | time a shutdown gives connections to end |
 | ~CHEZ_HTTP_TICK_MS~                 | 250 ms    | how often deadlines are checked          |
 | ~CHEZ_HTTP_MAX_HEADER_BYTES~        | 16384     | all header names and values together     |
 | ~CHEZ_HTTP_MAX_HEADER_COUNT~        | 100       | number of header fields                  |
@@ -47,8 +48,9 @@ with the port it got: ~listening 127.0.0.1 8080~.
 | ~CHEZ_HTTP_WRITE_HIGH_WATER~        | 262144    | bytes unsent before a stream waits       |
 | ~CHEZ_HTTP_WRITE_LOW_WATER~         | 65536     | bytes unsent when it goes on again       |
 
-The server acts on the five timeouts: what happens to a client that runs past
-one is in [[file:connections.org][connections.org]].
+The server acts on the six timeouts: what happens to a client that runs past
+one, and to the connections still open at a shutdown, is in
+[[file:connections.org][connections.org]].
 
 ~CHEZ_HTTP_TICK_MS~ is the one duration given in *milliseconds*: its default,
 250 ms, has no whole-second spelling. It must be from 1 to 1000. The server

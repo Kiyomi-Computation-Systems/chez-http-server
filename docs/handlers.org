@@ -13,9 +13,13 @@ back the response it returns.
 #+end_src
 
 ~serve~ listens on ~127.0.0.1:8080~ unless ~CHEZ_HTTP_HOST~ and ~CHEZ_HTTP_PORT~ say
-otherwise (see [[file:configuration.org][configuration.org]]), and runs until the server stops. It writes one
-line to standard output for each thing that happens, starting with
-~listening 127.0.0.1 8080~.
+otherwise (see [[file:configuration.org][configuration.org]]), and runs until the process gets
+~SIGTERM~ or ~SIGINT~ (Ctrl-C). Then it finishes the requests in flight and
+returns ([[file:connections.org][connections.org]]). It writes one line to standard output for each
+thing that happens, starting with ~listening 127.0.0.1 8080~.
+
+Once ~serve~ has returned, Ctrl-C ends the process at once, so in a REPL it
+ends Chez too.
 
 * Reading the request
 

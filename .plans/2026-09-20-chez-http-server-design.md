@@ -913,6 +913,12 @@ ask for nothing.
   holds: a connection whose handler waits arms no deadline (§4.3), so a wheel left
   empty would never tell the server its deadline had come (measured on main: one tick in
   200 ms with a handler waiting).
+- **SIGTERM and SIGINT** (decided on the owner's word, 2026-10-03) reach the server
+  through a signal handle each, which `serve` asks for and the shell closes once it
+  serves no more. `serve` returns when the server has stopped, whatever waits are still
+  armed: the loop's teardown closes their timers and cancels the lookups not yet begun,
+  and waits for one already running (M8.1's review). On Windows libuv delivers no
+  SIGTERM, so Ctrl-C alone drains there.
 
 ---
 
