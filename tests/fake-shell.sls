@@ -110,9 +110,10 @@
 ;;; reader's pieces and end and its producer, are each made on a coroutine,
 ;;; one at a time, in order, each event its call brings dispatched once it
 ;;; has ended: a streaming reader's piece is credited, `(body-credit n)`,
-;;; once the reader has taken it.  A call that waits goes on when its
-;;; connection closes, but what it answers is dropped, and the connection
-;;; makes no more calls (decision 0015 item 4).  The fake drains its
+;;; once the reader has taken it, whatever values the piece answers, none
+;;; included, as the libuv shell's (the M7 exit).  A call that waits goes on
+;;; when its connection closes, but what it answers is dropped, and the
+;;; connection makes no more calls (decision 0015 item 4).  The fake drains its
 ;;; scheduler after every dispatch, so no event can close a connection
 ;;; between the dispatch that asks for the handler's call and that call, as
 ;;; libuv's turn can: it keeps none of the libuv shell's check for a handler
@@ -417,7 +418,7 @@
              (bv (cadr a)) (start (caddr a)) (end (cadddr a)))
          (when r
            (if (fake-shell-waits? s)
-               (call-waiting! s (lambda () ((body-reader-on-piece r) bv start end))
+               (call-waiting! s (lambda () ((body-reader-on-piece r) bv start end) #t)
                               (lambda (v) (and (not (body-reader-whole? r))
                                                (list 'body-credit (- end start)))))
                (guard (e (#t (fake-shell-deliver! s (list 'handler-failed e))))

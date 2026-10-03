@@ -679,3 +679,125 @@ answers nothing now.
 
 The finished tree run whole: forty-seven suites, 1,643 expected passes,
 every pin ok; and on Linux in Docker the same.
+
+## The M7 exit (2026-10-02 and 2026-10-03)
+
+Measured first on main at 3b1bb75, then built as two stacked steps
+(progress.md, the M7 exit): a waiting reader's piece answering no values,
+fixed (fix/waiting-piece-values); and the exit's checks (feat/m7-exit).
+Each was proven on its own tree, a frozen copy of the working tree's
+files with vendor and build linked. Each run took a set of mutants against
+every suite of its tree, three at a time. Every mutant loaded (no
+`Exception` in any report).
+
+### R1–R5 on the merged tree, measured first
+
+Each invariant's mutants from M7.1 and M7.2, eighteen, the latest cut of
+each: M7.2's re-cuts of the M7.1 mutants its rewrite had orphaned (M7W-8,
+M7W-13 and M7W-14 for M7S-C, M7S-D1 and M7S-E), and the final M7.2 cuts of
+its own. Every one reddened a suite but M7B-6.
+
+| Mutant | Invariant | Where | Change | Reddens on main (suite, failures) |
+|---|---|---|---|---|
+| M7B-4 | R1 | `shell` | the libuv shell calls a handler from inside on-data, in place (design §5.3's mutation) | shell 3 |
+| M7S-D2 | R1 | `scheduler` | R1's check gone from the drain: a drain inside the poll runs | scheduler 1 |
+| M7S-O | R1 | `scheduler` | the poll not in the phase 'in-uv-run | scheduler 3, waits 2 |
+| M7W-13 | R1 | `scheduler` | R1's check gone from `waiting-coroutine`: a park or a wait inside the poll is not refused as R1 (M7S-D1 re-cut) | scheduler 1, waits 2 |
+| M7S-Q | R2 | `scheduler` | a call run on a coroutine of its own | scheduler 2, shell 9 |
+| M7W-8 | R2 | `scheduler` | a wait on no coroutine is not refused as R2: waiting-coroutine answers #f | scheduler 1, shell 1, waits 2 |
+| M7S-B | R3 | `scheduler` | R3: a coroutine's first run returns normally at its end, into the continuation that first entered it | contract 52, scheduler (raised, exit 2, 2 failed), shell (raised, exit 2, 1 failed), waits 40 |
+| M7S-R | R3 | `scheduler` | a woken coroutine entered again from its start, not resumed where it parked | contract 10, scheduler 7, shell (raised, exit 2, 23 failed), waits 15 |
+| M7W-1 | R4 | `waits` | R4's one-shot check removed (design §5.3's third): every resume after `register` wakes the coroutine | shell 1, waits 4 |
+| M7W-2 | R4 | `waits` | a resume called while `register` runs is lost: the wait parks anyway (re-cut for the finished tree) | shell 3, waits 3 |
+| M7W-4 | R4 | `waits` | a late resume is not logged | shell 1, waits 4 |
+| M7W-10 | R4 | `waits` | a resume wakes the coroutine with #t, not what it was given | contract 9, shell 3, waits 15 |
+| M7W-15 | R4 | `waits` | a late resume logged with no verb | shell 1, waits 4 |
+| M7S-K | R5 | `scheduler` | a feed's end leaves the phase 'in-parser | scheduler 2 |
+| M7R-3 | R5 | `scheduler` | a feed's beginning leaves the phase as it was | scheduler 2, waits 2 |
+| M7W-14 | R5 | `scheduler` | R5's check gone from `waiting-coroutine`: a park or a wait inside a feed is not refused as R5 (M7S-E re-cut) | scheduler 1, waits 2 |
+| M7B-6 | R5 | `shell` | the shell feeds the parser outside the phase 'in-parser | none: survives |
+| M7S-A | the poll | `scheduler` | the poll's modes swapped: 'once when something is ready, 'nowait when nothing is | clients 3, contract 4, scheduler 1, serve 1, shell (raised, exit 2, 10 failed) |
+
+By invariant, the rows each mutant reddens, read from each row's own FAIL
+line:
+- R1: the scheduler's "R1: a callback that parks, and a drain inside a
+  callback, are refused as R1", by M7W-13, M7S-D2 and M7S-O; the shell
+  suite's "a handler is called after libuv's turn, from the scheduler's
+  drain, on no coroutine", by M7B-4, design §5.3's, and M7S-Q;
+- R2: the scheduler's "R2: a park on no coroutine, in a call the drain
+  makes and outside any turn, is refused as R2", by M7W-8 and M7S-Q; the
+  shell suite's "after a 500, the refusal logged as R2's, a wait on no
+  coroutine", by M7W-8, M7B-4 and M7S-Q;
+- R3: the scheduler's "R3: a coroutine that parks, is woken and ends, ends
+  through the scheduler, and the turns after it run on", by M7S-R alone,
+  a broken resume; R3's own, M7S-B, never reached it (below);
+- R4: the waits suite's four R4 rows, by M7W-1, design §5.3's, M7W-4 and
+  M7W-15; the shell suite's late-resume row, by those three and M7W-10;
+- R5: the scheduler's "R5: a park inside a feed is refused as R5, and the
+  phase is the drain's once the feed is over", by M7W-14, M7S-K and M7R-3;
+  M7B-6 survives, M7.1's scope statement, `make check-imports` holding that
+  nothing a feed runs reaches the scheduler;
+- design §5.3's first, M7S-A, the poll's modes swapped: the scheduler's
+  yield row, and the clients, contract, serve and shell suites.
+
+**R3's own mutant no longer reached R3's row.** Under M7S-B the scheduler
+suite failed its fourth and fifth checks, a coroutine that raises and one
+that raises after a park, and raised in its sixth; R3's row was its
+eleventh. At M7.1's tree (72ac3fb) M7S-B reddened R3's row, twelve checks
+passing before and after it, and the suite raised later: inside the
+`guard` M7.1 put around a coroutine's thunk, Chez made the continuations
+full ones, so a return into the first one was let through, and only R3's
+row, whose turns run on after the coroutine ends, saw them go wrong. From
+M7.2's first step (e9538d2, M7S-B run there too) the raise is caught by a
+handler, the continuations stay one-shot, and Chez refuses the return at
+once, "attempt to invoke shot one-shot continuation", at the first
+coroutine that raises, or parks and ends; the coroutine running stays set,
+so every drain after it is refused. M7.2 re-ran its own mutants, not
+M7.1's. Moved first in a scratch copy of the suite, R3's row passed with
+the other twenty, and M7S-B reddened it, reading that refusal, then the
+suite raised, as at M7.1. Decided by form: R3's row first (the second
+step).
+
+### The first step: a waiting reader's piece (fix/waiting-piece-values)
+
+| Mutant | Where | Change | Reddens on the step's tree (suite, failures) |
+|---|---|---|---|
+| M7Z-1 | `shell` | the piece of a waiting handler's reader answers what the piece answers: none, and its coroutine fails | contract 2, shell 1 |
+| M7Z-2 | `fake-shell` | the same in the fake | contract 2 |
+
+M7.3's thirty-three ran again on the step's tree, the contract's waiting
+scripts calling the changed `slept`. Two were re-cut for the step's text:
+M7C-6, `slept` marking its end where it begins, for a `slept` that answers
+no values; and M7F-3, the fake handing a waiting reader its pieces in
+place, for the piece's call that answers #t. Each reddens a suite but
+M7F-10, M7.3's scope statement.
+
+By check: every check the step added or changed is reddened on the step's
+tree, 30 of 30:
+- the shell suite's "the client of a handler that waits, whose reader's
+  piece ends with a sleep and answers no values, reads its response": M7Z-1,
+  M7A-6, M7A-9, M7C-4, M7C-8 and M7O-1;
+- `/read-sleeps`' "the client read the bytes the fake shell wrote" and "the
+  two shells' traces are identical": M7Z-1 and M7Z-2, among fifteen and
+  seventeen others; its first, "the libuv shell read what the client sent,
+  then its end alone, and closed": M7A-6 and M7A-9;
+- the other eight waiting scripts' three checks each, `slept` changed under
+  those that sleep: the first by M7A-9, M7A-6 too for two; the second and
+  third each by six to fourteen, among the fake's mutants, the suite's,
+  M7A-5, M7A-9 and M7O-1;
+- the order row: M7A-6, M7A-9, M7C-4, M7C-8 and M7O-1;
+- the fake-only close row, whose piece ends with `slept`: M7C-4, M7F-3,
+  M7F-5, M7F-7, M7F-8, M7F-11, M7F-12, M7F-14, M7F-16, M7F-17 and M7F-18.
+
+The review's fixes in this step (progress.md, the M7 exit's review): the
+shell check binds its wait before it reads the responses; `/read-sleeps`'
+reader sleeps at each piece, keeps it, then answers `(values)`, so the
+contract holds again that a waiting reader's piece is whole after its
+sleep. The step's tree was made afresh, main at 3b1bb75 with its four
+files, and its thirty-five mutants ran on it again, against every suite:
+each loads and reddens what it did but M7F-10, which survives, and every
+check above is reddened as listed, 30 of 30, M7F-7 now among the killers of
+`/read-sleeps`' second.
+
+The step's tree run whole: forty-seven suites, 1,644 expected passes, every
+pin ok.

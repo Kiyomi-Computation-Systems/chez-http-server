@@ -124,7 +124,8 @@
 ;; timers before it polls, then resolves it again with none, and answers
 ;; "passed" or "resolved", then the second lookup's addresses;
 ;; `/read-sleeps` reads the body with a reader that sleeps 5 ms at each
-;; piece and answers the pieces joined; `/stream-sleeps` answers with a
+;; piece, then keeps it, and answers no values, as a piece that ends with a
+;; sleep does, and answers the pieces joined; `/stream-sleeps` answers with a
 ;; producer that sleeps 5 ms before each call; and `/read-then-wait`, an
 ;; ordinary handler, reads the body with a reader whose end answers
 ;; `awaiting`, its thunk sleeping 5 ms.
@@ -186,7 +187,8 @@
               (let ((pieces '()))
                 (read-body (lambda (bv start end)
                              (slept 5)
-                             (set! pieces (cons (bytes-between bv start end) pieces)))
+                             (set! pieces (cons (bytes-between bv start end) pieces))
+                             (values))
                            (lambda () (make-response 200 #f '() (joined (reverse pieces)))))))))
           ((bytevector=? target (b "/stream-sleeps"))
            (awaiting
@@ -216,11 +218,12 @@
 
 ;; slept : Nat -> Void
 ;; sleep-ms, marked where it ends: at its time, or at a deadline's raise,
-;; which goes on.
+;; which goes on.  It answers no values, as sleep-ms does.
 (define (slept ms)
   (guard (e ((deadline-passed? e) (woke! '(timer)) (raise e)))
     (sleep-ms ms))
-  (woke! '(timer)))
+  (woke! '(timer))
+  (values))
 
 ;; resolved : String -> (Listof String)
 ;; resolve, marked where it ends: with the addresses, or with the reason it

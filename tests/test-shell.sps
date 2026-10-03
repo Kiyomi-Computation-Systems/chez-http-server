@@ -22,7 +22,9 @@
 ;;;     answer is written; its reader takes each piece on a coroutine, in
 ;;;     order, reading waiting while it takes one, and its producer is called
 ;;;     on a coroutine for each piece; an ordinary handler that waits fails,
-;;;     500, the refusal logged as R2's (M7.1);
+;;;     500, the refusal logged as R2's (M7.1); and its reader's piece may
+;;;     answer no values, as an ordinary reader's may: one that ends with a
+;;;     sleep does (the M7 exit);
 ;;;   - the verbs a handler waits with (decision 0015, M7.2): a handler that
 ;;;     waits on `await` is woken by another request's handler, and a second
 ;;;     resume is logged as `late-resume` (R4); a handler that holds the
@@ -314,7 +316,9 @@
 ;; `/resolve-empty` resolves "", `/resolve-nul` a name with a NUL in it,
 ;; `/resolve-long` one of 300 characters, and `/resolve-unknown` "a..b",
 ;; whose empty label the resolver refuses without asking a server, each
-;; answering the reason it raised with.
+;; answering the reason it raised with; and `/await-none` waits and reads
+;; the body with a reader whose piece ends with a sleep, answering no
+;; values, and answers its target at the body's end.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -434,6 +438,11 @@
                                (set! parked (current-coroutine))
                                (coroutine-park!)))
                            (lambda () (make-response 200 #f '() target)))))))
+          ((bytevector=? target (b "/await-none"))
+           (awaiting
+            (lambda ()
+              (read-body (lambda (bv start end) (sleep-ms 0))
+                         (lambda () (make-response 200 #f '() target))))))
           ((bytevector=? target (b "/await-stream"))
            (awaiting
             (lambda ()
@@ -900,6 +909,15 @@
                         (let ((rs (responses (client-bytes cl))))
                           (if (= 2 (length rs)) (list (status (cadr rs)) (body (cadr rs))) 'no-response))
                         (shell-waits-timed shell)))
+      (client-close! cl))
+    ;; A piece of a waiting handler's reader may answer no values, as an
+    ;; ordinary reader's may: one that ends with a sleep does.
+    (let* ((cl (open-client! (b "POST /await-none HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")))
+           (waited (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))
+           (rs (responses (client-bytes cl))))
+      (test-equal "the client of a handler that waits, whose reader's piece ends with a sleep and answers no values, reads its response"
+                  '(satisfied (200 "/await-none"))
+                  (list waited (if (pair? rs) (list (status (car rs)) (body (car rs))) 'no-response)))
       (client-close! cl))
     (set! logged '())
     (let ((cl (open-client! (b "GET /wait-plain HTTP/1.1\r\nHost: x\r\n\r\n"))))
