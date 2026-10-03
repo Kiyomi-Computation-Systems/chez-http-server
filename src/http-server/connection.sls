@@ -382,13 +382,15 @@
           (only (httparse methods) httparse-method-numbers))
 
   ;; conn-states : (Listof Symbol)
-  ;; The eleven connection states: design §4.3's nine; `lingering`, where a
-  ;; connection that closes after its response waits for the client to close
-  ;; (decision 0011); and `awaiting-credit`, where a body waits for its
-  ;; reader's credit (M6.2).  Only `idle`, `head`, `body` and `lingering`
-  ;; read from the socket; `closed` is terminal.
+  ;; The ten connection states: design §4.3's nine, less `draining`, which
+  ;; M8.1 retired (an idle connection told to finish closes at once, and one
+  ;; with a request in flight closes after its response, lingering);
+  ;; `lingering`, where a connection that closes after its response waits
+  ;; for the client to close (decision 0011); and `awaiting-credit`, where a
+  ;; body waits for its reader's credit (M6.2).  Only `idle`, `head`, `body`
+  ;; and `lingering` read from the socket; `closed` is terminal.
   (define conn-states
-    '(idle head body awaiting-credit handling responding lingering draining handed-off
+    '(idle head body awaiting-credit handling responding lingering handed-off
       closing closed))
 
   ;; conn-events : (Listof Symbol)
@@ -861,10 +863,16 @@
       (else (values s '()))))
 
   ;; any live state, read-error -> closing: log it, close, no response.
+  ;; ECANCELED is a request only the shell's own close cancels: a close from
+  ;; outside the core, at a drain's deadline or for a bug, with a write or
+  ;; the half-close outstanding.  No transport failed, so it closes for
+  ;; `cancelled`, and logs nothing (M8.1's review).
   (define (on-read-error s errno)
     (case (conn-phase s)
-      ((idle head body awaiting-credit handling responding lingering draining)
-       (close s 'read-error (list (list 'log 'read-error errno))))
+      ((idle head body awaiting-credit handling responding lingering)
+       (if (eq? errno 'ECANCELED)
+           (close s 'cancelled '())
+           (close s 'read-error (list (list 'log 'read-error errno)))))
       (else (values s '()))))
 
   ;; responding, write-completed: the write and its bytes are no longer
@@ -1061,8 +1069,7 @@
   ;; So the kind the state records is read, then cleared, and a row that
   ;; keeps the connection arms what it needs.  Every kind the core arms has
   ;; its row (M5.2):
-  ;;   idle past the idle deadline -> closing, with no response; and so does
-  ;;     draining, from idle, past the idle deadline it carried there;
+  ;;   idle past the idle deadline -> closing, with no response;
   ;;   head past the header deadline -> responding 408;
   ;;   body past the body deadline -> responding 408, the request in flight's;
   ;;   responding past the write deadline -> closing, with no response: the
@@ -1078,7 +1085,7 @@
     (let ((kind (conn-deadline s)))
       (conn-deadline-set! s #f)
       (case (conn-phase s)
-        ((idle draining)
+        ((idle)
          (if (eq? kind 'idle)
              (close s 'idle-timeout '())
              (values s '())))
@@ -2111,13 +2118,25 @@
                              fields (body-owed bd)))
       (body-owed-set! bd (fx- (body-owed bd) n))))
 
-  ;; idle, shutdown-requested -> draining: nothing is in flight, so shut down.
-  ;; The in-flight states wait for M8, which writes the rows draining leaves by.
+  ;; The server's drain has told the connection to finish (M8.1; plan §14).
+  ;; idle, shutdown-requested -> closing: nothing is in flight, so close at
+  ;; once, with no response, as at the idle deadline (decision 0011's
+  ;; amendment: a close with no response is at once).
+  ;; head, body, awaiting-credit, handling or responding, shutdown-requested:
+  ;; the request in flight is finished by the rows it is under way in, and
+  ;; the connection closes after its response, for a reason of its own if it
+  ;; has one, or else `shutdown`: the response says `Connection: close` if
+  ;; its head is not yet written, the pipelined rest is dropped (decision
+  ;; 0004 item 4), and the connection lingers, as every close after a
+  ;; response does (decision 0011).
+  ;; Every other state asks for nothing: lingering closes after its response
+  ;; already, and closing and closed are closing.
   (define (on-shutdown-requested s)
     (case (conn-phase s)
-      ((idle)
-       (conn-phase-set! s 'draining)
-       (values s '((shutdown))))
+      ((idle) (close s 'shutdown '()))
+      ((head body awaiting-credit handling responding)
+       (unless (conn-close-after s) (conn-close-after-set! s 'shutdown))
+       (values s '()))
       (else (values s '()))))
 
   ;; closing, closed -> closed.

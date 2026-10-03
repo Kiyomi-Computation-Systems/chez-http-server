@@ -482,6 +482,14 @@ write a status, then close.
 > state, `lingering` (the row above). A close with no response is at once. And a state
 > that reads stops reading when it refuses a request, so `responding` never reads, as
 > the table says. The rows are §4.4's amendment below.
+>
+> *Amended 2026-10-03 (M8.1):* `draining` is retired, and the states are ten. Only
+> `idle` entered it, half-closing at a shutdown and then waiting out its idle deadline,
+> and plan §14 has an idle connection told to finish close at once, as at that
+> deadline. A connection with a request in flight finishes it in the states it is
+> already in, and closes after its response through `lingering`, which is what this
+> table's `draining` row described: "last response written, close to follow". §4.4's
+> amendment of the same day has the rows.
 
 ### 4.4 The transitions
 
@@ -820,6 +828,27 @@ procedure in `(http-server decisions)` with the doc cited beside it. Verified at
 pin by `research/spike/smoke-v040.sps` (ledger, 2026-09-19 night): the CONNECT and
 Upgrade rows hand off with `hands-off? #t`, the h2c row too, and the plain pipelining
 pause answers `#f`.
+
+> *Amended 2026-10-03 (M8.1):* the shutdown row, as plan §14 has it built. The server's
+> drain tells each connection `shutdown-requested` (§4.6):
+>
+> | State | Event | State' | Actions |
+> |---|---|---|---|
+> | `idle` | `shutdown-requested` | `closing` | `disarm-deadline`, `close shutdown` — **no response**, as at the idle deadline |
+> | `head`, `body`, `awaiting-credit`, `handling`, `responding` | `shutdown-requested` | the same | none; the connection closes after its response, for `shutdown` unless it already closes for a reason of its own |
+> | `lingering`, `closing`, `closed`, `handed-off` | `shutdown-requested` | the same | none |
+>
+> So the request in flight is finished by the rows it is under way in. Its response
+> says `Connection: close` if its head is not yet written (decision 0010), the pipelined
+> rest is dropped (0004 item 4), and the connection lingers after it (0011). `draining`
+> is retired (§4.3), and its two rows, the read error and the idle deadline it carried,
+> with it.
+>
+> And a read error whose errno is `ECANCELED` closes for `cancelled`, logging nothing
+> (M8.1's review). Only the shell's own close cancels a request: at a drain's deadline,
+> or for a bug, it closes a handle with no step of the core, and a write or the
+> half-close still outstanding reports the cancellation. Measured before: every slow
+> reader a drain's deadline cut logged `read-error ECANCELED`.
 
 ### 4.5 Run-to-completion
 
@@ -1972,3 +2001,5 @@ into the record in place, which is the shape the decision README prescribes
    not an omission but a sequencing choice: each arrives with the milestone that first
    needs it (M3, M5, M8), with its own default test and its own drift guard. Worth
    saying out loud so nobody reads the nine-field record as the whole of decision 0005.
+   *Noted 2026-10-03 (M8.1):* the last of them, `drain-timeout-ms`, has arrived; the
+   record has twenty fields, decision 0011's linger and the Host switch among them.

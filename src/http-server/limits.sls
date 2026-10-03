@@ -23,7 +23,10 @@
 ;;; producer is asked for a piece only while the bytes written and not yet
 ;;; completed are at or below the high water, and once past it, is asked
 ;;; again when they fall to the low water (M6.3; 0005's amendment of
-;;; 2026-09-25).  A low water above the high water is refused.  The
+;;; 2026-09-25).  A low water above the high water is refused.  A drain
+;;; has 10 s (milestone plan §3, M8.1): once a shutdown is asked for, the
+;;; server waits that long for its connections to finish, then closes the
+;;; rest.  The
 ;;; backlog reaches libuv's uv_listen as a C int, so it is at most 2147483647,
 ;;; the largest a C int holds on every platform the project targets.  The pipeline cap accepts only 1: the server
 ;;; answers one request at a time by design (decision 0004's amendment of
@@ -67,19 +70,20 @@
     limits-require-host?
     limits-write-high-water
     limits-write-low-water
+    limits-drain-timeout-ms
     limits-deadline-ms
     address-from-environment)
   (import (rnrs))
 
   ;; make-limits :
   ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Nat Nat Boolean
-  ;;   Nat Nat -> Limits
-  ;; The nineteen fields, in declaration order:
+  ;;   Nat Nat Nat -> Limits
+  ;; The twenty fields, in declaration order:
   ;;   read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
   ;;   linger-timeout-ms write-timeout-ms tick-ms max-header-bytes max-header-count
   ;;   max-header-field-bytes max-header-value-bytes max-target-bytes
   ;;   max-body-bytes pipeline-cap read-buffer-size max-connections backlog
-  ;;   require-host? write-high-water write-low-water
+  ;;   require-host? write-high-water write-low-water drain-timeout-ms
   ;; (make-limits, limits? and the accessors are generated below.)
   (define-record-type limits
     (fields
@@ -101,7 +105,8 @@
       (immutable backlog                    limits-backlog)
       (immutable require-host?              limits-require-host?)
       (immutable write-high-water           limits-write-high-water)
-      (immutable write-low-water            limits-write-low-water)))
+      (immutable write-low-water            limits-write-low-water)
+      (immutable drain-timeout-ms           limits-drain-timeout-ms)))
 
   ;; limits-with : Limits (Listof (Pair Symbol Any)) -> Limits
   ;; `base` with the fields named in `overrides` replaced, each as (name .
@@ -128,7 +133,7 @@
   ;; decision 0011's linger.
   (define default-limits
     (make-limits 60000 75000 60000 30000 60000 250 16384 100 8192 8192 8192 #f 1 16384 10000 511 #t
-                 262144 65536))
+                 262144 65536 10000))
 
   ;; limits-environment-variables : (Listof String)
   ;; The environment variables consulted by `limits-from-environment`,
@@ -152,7 +157,8 @@
       "CHEZ_HTTP_BACKLOG"
       "CHEZ_HTTP_REQUIRE_HOST"
       "CHEZ_HTTP_WRITE_HIGH_WATER"
-      "CHEZ_HTTP_WRITE_LOW_WATER"))
+      "CHEZ_HTTP_WRITE_LOW_WATER"
+      "CHEZ_HTTP_DRAIN_TIMEOUT"))
 
   ;; blank? : (U String #f) -> Boolean — an absent or empty value.
   (define (blank? s)
@@ -252,7 +258,8 @@
       (env-integer     lookup "CHEZ_HTTP_BACKLOG"                 511   1 c-int-max)
       (env-boolean     lookup "CHEZ_HTTP_REQUIRE_HOST"            #t)
       high
-      low))
+      low
+      (env-seconds->ms lookup "CHEZ_HTTP_DRAIN_TIMEOUT"           10000)))
 
   ;; limits-deadline-ms : Limits Symbol -> Nat
   ;; How long a deadline of `kind` lasts: each kind the connection core arms

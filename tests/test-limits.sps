@@ -22,7 +22,9 @@
 ;;; kind of deadline the core arms lasts its own timeout (design §4.3;
 ;;; decision 0011's linger).  0005's write water marks, 262 144 and 65 536
 ;;; bytes outstanding, arrive in M6.3 (its amendment of 2026-09-25; plan §14):
-;;; sizes, given in bytes, a low water above the high water refused.
+;;; sizes, given in bytes, a low water above the high water refused.  0005's
+;;; drain timeout, 10 s after a shutdown is asked for, arrives in M8.1 (plan
+;;; §3), given in whole seconds as the other timeouts are.
 (import (rnrs) (srfi :64) (testing) (http-server limits))
 
 ;; env : (Pair String String) ... -> (String -> (U String #f))
@@ -56,7 +58,8 @@
         (cons 'backlog limits-backlog)
         (cons 'require-host? limits-require-host?)
         (cons 'write-high-water limits-write-high-water)
-        (cons 'write-low-water limits-write-low-water)))
+        (cons 'write-low-water limits-write-low-water)
+        (cons 'drain-timeout-ms limits-drain-timeout-ms)))
 
 (define all-fields (map cdr named-fields))
 
@@ -93,6 +96,7 @@
     (test-eq  "an HTTP/1.1 Host is required" #t   (limits-require-host? default-limits))
     (test-eqv "write high water 256 KiB outstanding" 262144 (limits-write-high-water default-limits))
     (test-eqv "write low water 64 KiB outstanding" 65536 (limits-write-low-water default-limits))
+    (test-eqv "drain 10 s after a shutdown is asked for" 10000 (limits-drain-timeout-ms default-limits))
 
     ;; --- default-limits is exactly the empty environment (one code path) ---
     ;; Every field, so a default that moves in one place and not the other is
@@ -113,7 +117,8 @@
                   "CHEZ_HTTP_MAX_BODY_BYTES" "CHEZ_HTTP_PIPELINE_CAP"
                   "CHEZ_HTTP_READ_BUFFER_SIZE" "CHEZ_HTTP_MAX_CONNECTIONS"
                   "CHEZ_HTTP_BACKLOG" "CHEZ_HTTP_REQUIRE_HOST"
-                  "CHEZ_HTTP_WRITE_HIGH_WATER" "CHEZ_HTTP_WRITE_LOW_WATER")
+                  "CHEZ_HTTP_WRITE_HIGH_WATER" "CHEZ_HTTP_WRITE_LOW_WATER"
+                  "CHEZ_HTTP_DRAIN_TIMEOUT")
                 limits-environment-variables)
 
     ;; --- overrides: timeouts are seconds -> ms; sizes/counts as given ---
@@ -147,6 +152,17 @@
                 (let ((L (limits-from-environment
                           (env '("CHEZ_HTTP_WRITE_TIMEOUT" . "90") '("CHEZ_HTTP_TICK_MS" . "100")))))
                   (list (limits-write-timeout-ms L) (limits-tick-ms L))))
+
+    ;; --- the drain timeout in whole seconds (M8.1) ---
+    ;; Made inside the check, so a reader that refuses them fails the check.
+    ;; A drain of 0 s is accepted: its deadline is the shutdown's own instant.
+    (test-equal "drain 3 s -> 3000 ms, and 0 s -> 0 ms; below 0, or not a number, is refused"
+                '(3000 0 faulted faulted)
+                (map (lambda (value)
+                       (guard (e (#t 'faulted))
+                         (limits-drain-timeout-ms
+                          (limits-from-environment (env (cons "CHEZ_HTTP_DRAIN_TIMEOUT" value))))))
+                     '("3" "0" "-1" "soon")))
 
     ;; --- the write water marks, in bytes (M6.3) ---
     ;; Made inside the checks, so a reader that refuses them fails the check.
@@ -278,7 +294,7 @@
                   max-header-bytes max-header-count max-header-field-bytes
                   max-header-value-bytes max-target-bytes max-body-bytes pipeline-cap
                   read-buffer-size max-connections backlog require-host?
-                  write-high-water write-low-water)
+                  write-high-water write-low-water drain-timeout-ms)
                 (map car (filter alone? named-fields)))
     (test-equal "and several at once"
                 '(1 128 #f)
