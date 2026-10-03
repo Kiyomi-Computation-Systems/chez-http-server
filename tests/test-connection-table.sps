@@ -49,7 +49,13 @@
 ;;; request whose body is still arriving waits on its handler in handling,
 ;;; reading stopped and nothing armed, and its reader's answer reads again,
 ;;; with the body deadline; the rows B2 to B19, C3, S4 and E3 to E7 that
-;;; answer in that wait say so.
+;;; answer in that wait say so.  And M8.1's, from plan §14 and design §4.4's
+;;; shutdown row: told to finish, an idle connection closes at once, with no
+;;; response, as at its idle deadline (decision 0011's amendment: a close
+;;; with no response is at once), and one with a request in flight answers
+;;; it, `Connection: close` while its head is unwritten, then lingers, as
+;;; every close after a response does.  So `draining`, which only idle
+;;; entered, is retired, and the states are ten.
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -334,8 +340,6 @@
         (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100)
            '(read-error EPIPE)
            '(closing #f ((log read-error EPIPE) (disarm-deadline) (close read-error))))
-        (i (state 'draining) '(read-error ECONNRESET)
-           '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'lingering 'deadline 'linger 'close-after 'headers-too-large) '(read-error ECONNRESET)
            '(closing headers-too-large ((log read-error ECONNRESET) (disarm-deadline) (close read-error)))))
 
@@ -382,17 +386,63 @@
         (i (state 'body 'deadline 'body 'request req) '(parser-result paused 63 63 paused-upgrade #f)
            `(handed-off #f ((read-stop) (disarm-deadline) (hand-off ,req)))))
 
-   ;; Instantiated on idle only: with nothing in flight "finish in flight" is
-   ;; vacuous.  The in-flight states have no row into draining, so they have
-   ;; nothing to finish through yet; that is M8's.  The idle deadline goes
-   ;; with the connection into draining, and D3 acts on it there.
-   (row 'T8 "any, shutdown-requested -> draining: finish in flight, then shutdown"
+   ;; M8.1: told to finish, an idle connection has nothing in flight, so it
+   ;; closes at once, with no response, as at its idle deadline.  A state
+   ;; with a request in flight keeps its rows and closes after its response,
+   ;; for a reason of its own if it has one: T10 and T11 follow one through.
+   ;; A state already closing after its response, or closing, is left as it is.
+   (row 'T8 "any, shutdown-requested: idle closes at once, no response; in flight, close after the response"
         (i (state 'idle 'deadline 'idle) '(shutdown-requested)
-           '(draining #f ((shutdown)))))
+           '(closing #f ((disarm-deadline) (close shutdown))))
+        (i (state 'head 'deadline 'header) '(shutdown-requested)
+           '(head shutdown ()))
+        (i (state 'body 'deadline 'body 'request post) '(shutdown-requested)
+           '(body shutdown ()))
+        (i (withheld 10 '(3 8)) '(shutdown-requested)
+           '(awaiting-credit shutdown ()))
+        (i (state 'handling 'request req) '(shutdown-requested)
+           '(handling shutdown ()))
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100) '(shutdown-requested)
+           '(responding shutdown ()))
+        (i (streaming 'chunked) '(shutdown-requested)
+           '(responding shutdown ()))
+        (i (state 'handling 'request req 'close-after 'not-keep-alive) '(shutdown-requested)
+           '(handling not-keep-alive ()))
+        (i (state 'lingering 'deadline 'linger 'close-after 'headers-too-large) '(shutdown-requested)
+           '(lingering headers-too-large ()))
+        (i (state 'closing) '(shutdown-requested)
+           '(closing #f ())))
 
    (row 'T9 "closing, closed -> closed"
         (i (state 'closing) '(closed)
-           '(closed #f ())))))
+           '(closed #f ())))
+
+   ;; The request in flight is answered as any is, saying it closes, since
+   ;; its head is not yet written (decision 0010 items 2 and 3).
+   (row 'T10 "told to finish, handling, handler-responded -> responding: the response says Connection: close"
+        (i (after (state 'handling 'request req) '(shutdown-requested)) `(handler-responded ,resp)
+           `(responding shutdown (,answered-closing (arm-deadline write)))))
+
+   ;; Its last write's completion is followed by the staged close, the
+   ;; pipelined rest dropped (decision 0004 item 4; decision 0011).
+   (row 'T11 "told to finish, responding, last write-completed -> lingering: shutdown, read-start, arm linger"
+        (i (after (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
+                         'pending (list bv 10 20))
+                  '(shutdown-requested))
+           '(write-completed 100)
+           '(lingering shutdown ((shutdown) (read-start) (arm-deadline linger)))))
+
+   ;; A request only the shell's own close cancels: a close from outside the
+   ;; core, at a drain's deadline or for a bug, cancels the write or the
+   ;; half-close outstanding, which reports ECANCELED.  That is no transport
+   ;; failure, so the core closes as for one, and logs nothing (M8.1's
+   ;; review).
+   (row 'T12 "any live state, read-error ECANCELED -> closing: disarm, close, no log"
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100)
+           '(read-error ECANCELED)
+           '(closing #f ((disarm-deadline) (close cancelled))))
+        (i (state 'lingering 'deadline 'linger 'close-after 'shutdown) '(read-error ECANCELED)
+           '(closing shutdown ((disarm-deadline) (close cancelled)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Decision 0004's pause protocol: three rows (M2.4).  Design §4.4 folds the
@@ -582,9 +632,9 @@
 ;; ---------------------------------------------------------------------------
 ;; M5.2: every deadline the core arms has its tick row (design §4.4, amended
 ;; 2026-09-27; decision 0005's table).  T5, T4 and L3 act on the idle, header
-;; and linger deadlines; D1 and D2 act on the other two, and D3 on the idle
-;; deadline a draining connection carries.  A body that stalls past its
-;; inactivity deadline is answered 408, as a head that stalls is, framed for
+;; and linger deadlines; D1 and D2 act on the other two.  (D3 acted on the
+;; idle deadline a draining connection carried, until M8.1 retired the
+;; state.)  A body that stalls past its inactivity deadline is answered 408, as a head that stalls is, framed for
 ;; the request in flight.  A write still outstanding past its deadline means a
 ;; client that is not reading, so nothing more can be written to it: the
 ;; connection closes with no response, for the write deadline, whatever it
@@ -618,14 +668,6 @@
            '(closing header-timeout ((log write-timeout 100) (disarm-deadline) (close write-timeout)) #f))
         (i (state 'responding 'outstanding 1 'outstanding-bytes 100) '(tick 60000)
            '(responding #f () #f)))
-   ;; A connection draining from idle had nothing in flight, and the idle
-   ;; deadline went with it (T8): past it, the connection closes, as idle's
-   ;; does.  The rows M8 writes for draining arm the write deadline there.
-   (row 'D3 "draining, tick past the idle deadline it carried from idle -> closing: disarm, close, no response"
-        (i (state 'draining 'deadline 'idle) '(tick 75000)
-           '(closing #f ((disarm-deadline) (close idle-timeout)) #f))
-        (i (state 'draining) '(tick 75000)
-           '(draining #f () #f)))
    ;; A tick means the wheel has let the deadline go: an advance returns its
    ;; keys already disarmed.  So the state records none after a tick, even
    ;; where no row acts on the kind it recorded, and agrees with the wheel.
@@ -1982,8 +2024,8 @@
 (run-suite "connection-table"
   (lambda ()
     ;; --- the closed sets -------------------------------------------------
-    (test-equal "eleven states: design §4.3's nine, decision 0011's lingering and M6.2's awaiting-credit"
-                '(idle head body awaiting-credit handling responding lingering draining handed-off
+    (test-equal "ten states: design §4.3's nine, less draining (M8.1), decision 0011's lingering and M6.2's awaiting-credit"
+                '(idle head body awaiting-credit handling responding lingering handed-off
                   closing closed)
                 conn-states)
     (test-equal "fifteen events (decision 0002 item 2)"
@@ -2036,7 +2078,7 @@
              (verdict (lambda () (conn-step (state 'idle) '(no-such-event)))))
     (test-eq "an event that is not a tagged list is an assertion violation" 'refused
              (verdict (lambda () (conn-step (state 'idle) 'eof))))
-    (test-eq "a state outside the eleven is refused" 'refused
+    (test-eq "a state outside the ten is refused" 'refused
              (verdict (lambda () (state 'no-such-state))))
     ;; The writes and bytes outstanding are counts, zero together: every
     ;; write has bytes, a status line at least, and bytes are outstanding
@@ -2072,13 +2114,13 @@
            (paddings (count-rows "padding" padding-rows asked-by))
            (cut-offs (count-rows "cut-off" cut-off-rows asked-by)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
-      (test-eqv "design §4.4: all 9 termination and error rows have a test" 9 term)
+      (test-eqv "design §4.4: all 9 termination and error rows have a test, and M8.1's three" 12 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
       (test-eqv "M2.5: both upgrade-door rows have a test" 2 upgrade)
       (test-eqv "M3.2: both response rows have a test" 2 answered)
       (test-eqv "M3.3: all 5 accounting rows have a test" 5 accounting)
       (test-eqv "M3.5: all 4 linger rows have a test" 4 linger)
-      (test-eqv "M5.2: all 4 tick rows have a test" 4 ticks)
+      (test-eqv "M5.2: all 3 tick rows left since M8.1 retired draining have a test" 3 ticks)
       (test-eqv "M6.1: all 19 body rows have a test" 19 bodies)
       (test-eqv "M6.2: all 11 credit rows have a test" 11 credits)
       (test-eqv "M6.3: all 19 stream rows have a test" 19 streams)
@@ -2118,10 +2160,10 @@
     ;; state a row leaves it armed in, armed there or carried in from the
     ;; state before, the connection moves on, to a 408 or a close, never
     ;; staying where it was.  A write that never completes must not keep the
-    ;; connection open, and a draining connection must not keep the idle
+    ;; connection open, and no connection may keep the idle
     ;; deadline it carried with nothing to act on it.
     (test-equal "each deadline a row leaves armed, ticked in the state it leaves, moves the connection on"
-                '((idle idle closing) (draining idle closing) (head header responding)
+                '((idle idle closing) (head header responding)
                   (body body responding) (responding write closing) (lingering linger closing))
                 (map (lambda (pair)
                        (let ((s (state (car pair) 'deadline (cdr pair))))

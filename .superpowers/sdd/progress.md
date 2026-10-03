@@ -4202,3 +4202,63 @@ DONE and merged (0bcb998, PR #104; d3ad473, PR #105): **the M7 exit. M7 COMPLETE
 - Decided by form: R3's row first; the fix as its own PR; the check in `make test`; review, then two stacked PRs. A /code-review high found four, in tests; three were fixed, and the fourth, R3's row held first by its place alone, is noted.
 
 NEXT: M8 (plan §14), shutdown, hand-off, black-box and release, when the owner asks.
+
+M8.1: THE DRAIN (plan §14), on the owner's word: "start M8.1". Cut from main at 0ad7511 as feat/m8.1-drain, 2026-10-03, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. Mutation log: m8-mutations.md, "M8.1".
+
+Gathered before the first test, from the brief's M8 and plan §14:
+- the brief: SIGTERM drain with deadline;
+- plan §3: `drain-timeout-ms`, 10,000 after SIGTERM, force-close all, arrives in M8 with its four things (the field, a value test against 0005's default, its variable in `limits-environment-variables`, the drift guard over it);
+- plan §14: `server-step` gets the rest of the drain (the connections told to finish; `force-close-all` on the tick at the deadline; the drain's end on `connection-closed`); the core gets `shutdown-requested` rows for its in-flight states, today only `idle` has one; the shell watches SIGTERM through a signal handle, and `serve` returns when the drain ends; on a socket, a request in flight at SIGTERM is answered, then closed, an idle keep-alive connection closes at once, and a client that holds its connection is closed at the deadline; the mutation, `force-close-all` never asked for, reddens the held connection's row;
+- design §4.4's row: any state, `shutdown-requested`: finish in flight, `Connection: close` on the last response, then close; decision 0011's amendment: a close with no response is at once.
+
+MEASURED, before the form (scratch probes on main at 0ad7511):
+- **A shutdown tells no connection anything.** `shell-shutdown!` closes the listener and nothing else: an idle keep-alive client, a request in flight on a handler that waited 150 ms, and a client holding half a head were all still open a second later, and the request in flight was answered keep-alive, with no `Connection: close`, its connection idle again. The shell never dispatches `shutdown-requested` to a connection, and never tells the server `connection-closed`: so a drain never ends while a client keeps using its connection.
+- **SIGTERM kills `serve` at once.** `tests/serve-child.sps`, sent SIGTERM once it logged `listening`, ended by the signal.
+- **SIGINT does not stop an idle `serve`.** Sent SIGINT, the child ran on through 20,000 iterations of a 1 ms ticker; a request then was reset (ECONNRESET, nothing read), and the child exited 255. Chez takes SIGINT as a keyboard interrupt, which it services only when Scheme runs, and an idle loop runs none.
+- **Once SIGINT has been watched, Chez's keyboard interrupt is gone.** A watch of SIGINT started, stopped and closed: the next SIGINT ended the process, exit 130; with no watch first, Chez's keyboard interrupt handler ran.
+- **The shell's timer stops while its only connection is in `handling`.** The core arms no deadline there (design §4.3), so the wheel empties: with a handler waiting 300 ms, tick-ms 10, the server was told the time once in 200 ms. A drain whose connections are all in `handling` would never reach its deadline.
+
+DECIDED on the owner's word (2026-10-03), by one form, on those measurements:
+- **"SIGTERM and SIGINT (Recommended)":** both signals start the drain; once `serve` returns, a later SIGINT ends the process (exit 130) rather than breaking into Chez. Weighed: "SIGTERM only (the plan)", Ctrl-C left as measured.
+- **"Start, cut-off, end (Recommended)":** the drain logs `draining` with the connections it waits for as it starts, `drain-timeout` if the deadline closes connections, and `stopped` when it ends. Weighed: "No new lines".
+
+Settled by the plan and the records, with no form:
+- an idle connection closes at once, with no response, as at its idle deadline (plan §14; 0011's amendment). So the core's `draining` state, which only `idle` entered, half-closing, is left with no row into it, and is retired;
+- a connection with a request in flight is answered with `Connection: close` if its head is not yet written, its pipelined rest dropped (0004 item 4), and lingers after, as every close after a response does (0011);
+- the step keeps no count (decided 2026-09-26), so `shutdown-requested` and `listener-failed` carry the loop's time and the connections open, as an arrival carries its count; a listener's failure drains the same way;
+- the shell keeps its timer running while the server drains, whatever the wheel holds, so the deadline is told the time;
+- `serve` returns when the drain ends, whatever waits are still armed: the loop's teardown closes them.
+
+M8.1 BUILT in one working tree, then measured (2026-10-03), before the walkthrough: `make test` green, forty-seven suites, 1,685 expected passes (1,645 + 40), every pin ok; sixty-three mutants on a frozen copy of the tree, each against every suite, each loading, each reddening a check; every one of the seventy-one checks the slice added or changed reddened by one, sixty-seven by name and four whose expected value alone changed (m8-mutations.md, M8.1). Plan §14's mutation, `force-close-all` never asked for, reddens the held connection's row, as the plan expects, and the server's deadline rows and both signal checks beside it.
+
+DECIDED on the owner's word (2026-10-03), by form, after the plan-vs-landed walkthrough: **"Review, then 3 stacked PRs (Recommended)"**: a /code-review high of the uncommitted branch first, its findings fixed on the owner's word; then one PR a step: the limit and the core's rows (+121 −55), the drain in the shell (+616 −179), the signals and `serve` (+203 −18, and the records). Weighed: "3 stacked PRs now", and "Review, then 1 PR".
+
+M8.1's REVIEW (2026-10-03, on the owner's form): a /code-review high of the uncommitted branch found nine:
+1. a forced close at the drain's deadline closes each handle with no step of the core, so a write still outstanding is cancelled into a core in `responding`, which logs it as a transport failure: measured, a client that never reads an 8 MiB answer, a 200 ms drain, logged `draining 1`, `drain-timeout`, `read-error ECANCELED`, `stopped`;
+2. the serve suite's signal checks need the child's 600 ms sleep to outlast the time from its `handling` line to the signal, a wall-clock margin: on a slow runner the request is answered before the signal, keep-alive, and both checks fail with the server right;
+3. libuv never delivers SIGTERM on Windows (its `docs/src/signal.rst`: SIGINT, SIGBREAK, SIGHUP and SIGWINCH alone), and a console's close arrives as SIGHUP, which the server does not watch; the docs name SIGTERM with no platform note;
+4. once `serve` returns, the loop's teardown runs the loop until every request completes, and a lookup already running cannot be cancelled: the records' "the loop's teardown closes them" overstates it, and a slow lookup holds the process past the drain;
+5. the listener's failure, which now carries the time and the count and starts a timed drain, is reported by libuv only on Windows, so no suite reaches the shell's line for it; the server's rows cover the step;
+6. `docs/handlers.org`'s "once `serve` has returned, Ctrl-C ends the process at once" rests on a scratch probe, no check;
+7. the serve suite's `drained-by-a-child` repeats `served-by-a-child`'s spawn, collector, kill and teardown;
+8. the shell suite's `firings-of` repeats the deadline block's `firings`;
+9. `event-fields` finds an event's time and count by index arithmetic keyed on its kind, where per-kind shapes would read plainly.
+
+DECIDED on the owner's word (2026-10-03), by form: **"Fix 1, 2, 6–9; note 3–5 (Recommended)"**: the core takes a cancelled request as its own close, with no log (1); the serve suite's in-flight request made in flight by construction (2); a check that once `serve` has returned a SIGINT ends the process (6); the three cleanups (7–9). Noted: Windows' SIGTERM in the docs (3), a running lookup at `serve`'s return in the records (4), and the listener's failure as a scope statement (5). Weighed: "Fix 1 and 2; note the rest", and "Fix all, SIGHUP drains on Windows", a new decision on signals.
+
+FIXED as decided, before the first commit, each in the step it belongs to: the first's row in the first step, and its socket check, the eighth and the ninth in the second; the second, sixth and seventh in the third, whose records note the third, fourth and fifth. Red first: T12, the core's new row, failed both its instances, and the shell's slow reader found `read-error ECANCELED` in the log; the serve suite's check of a SIGINT once `serve` has returned failed against the child before it sent one, the child exiting 0. Then each step's tree was made afresh, main's with the step's files, its `make test` run and its own mutants run on it, and all sixty-five on the finished tree.
+
+M8.1 FIRST STEP: the limit, and the core's shutdown rows (feat/m8.1-rows).
+- `src/http-server/limits.sls`: `drain-timeout-ms`, the twentieth field, 10,000, read from `CHEZ_HTTP_DRAIN_TIMEOUT` in whole seconds, 0 accepted; in `limits-environment-variables`, and under the drift guard.
+- `src/http-server/connection.sls`: told to finish, `idle` closes at once, with no response, for `shutdown`; `head`, `body`, `awaiting-credit`, `handling` and `responding` close after their response, for `shutdown` unless for a reason of their own; the rest ask for nothing. `draining`, which only `idle` entered, half-closing, is retired, its two rows with it: ten states. And a read error whose errno is ECANCELED closes for `cancelled`, logging nothing (the review's first).
+- `tests/test-limits.sps`: the drain's value test, its variable, its override in seconds, 0 accepted and below 0 refused, the drift guard and `limits-with` over it.
+- `tests/test-connection-table.sps`: T8 instantiated on every state that answers it, ten instances; T10, the response of a request told to finish says `Connection: close`; T11, its last write's completion lingers, the pipelined rest dropped; T12, a cancelled request closes with no log; D3 and T2's `draining` instance retired; the states, ten.
+- Records: design §4.3's and §4.4's notes, and §9.4's count of the limits.
+
+Measured on the step's tree (2026-10-03, Darwin arm64): `make test` green, forty-seven suites, 1,657 expected passes (1,645 + 12), every pin ok. Red first: before the core's rows the table failed eleven checks, the ten states, T8's seven new instances, T10, T11 and the held pairs, then T12's two once the review wrote it; the limits suite did not load, with no accessor.
+
+Watched to fail (m8-mutations.md, M8.1, the first step): eighteen mutants on the step's tree, each loading and reddening a check; every one of the fourteen checks the step added or changed reddened by one.
+
+Size: src +50 −24; tests +90 −32.
+
+NEXT: the second step, the drain in the shell, stacked on this one.
