@@ -754,12 +754,14 @@
   ;; the reader raises, `handler-failed`, logged.  With no reader, nothing:
   ;; the core let it go after this piece was asked for.  The reader of a
   ;; handler that waits takes it on a coroutine (call-waiting!), and a
-  ;; streaming one is then credited with it, `(body-credit n)`.
+  ;; streaming one is then credited with it, `(body-credit n)`.  What the
+  ;; piece answers is not read, so it may answer no values, as one that
+  ;; ends with a sleep does: the coroutine answers #t after it.
   (define (deliver-body! c bv start end)
     (let ((r (conn-body-reader (connection-state c))))
       (when r
         (if (connection-waits? c)
-            (call-waiting! c (lambda () ((body-reader-on-piece r) bv start end))
+            (call-waiting! c (lambda () ((body-reader-on-piece r) bv start end) #t)
                            (lambda (v) (and (not (body-reader-whole? r))
                                             (list 'body-credit (- end start)))))
             (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
