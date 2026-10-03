@@ -4449,3 +4449,19 @@ Measured first, with a scratch probe, two identical runs, Darwin arm64. A taker 
 - a write that completed had its `done` called inside libuv's callback, as the close call is.
 
 Docs and records only, a second commit on #111: `make test` green, forty-eight suites, 1,795 expected passes.
+
+MERGED to main on 2026-10-03, on the owner's "Do closing ritual": **M8.2, as three stacked PRs.**
+- **#109, the switch, the transport and the 101,** as a5cac4c. Its squash tree (347434e) is the tested tip's, fb1099f's, and its parent is 70b7adf. It merged first and kept its branch, since #110 was based on it.
+- **#110, the core's door,** as 8d1d0af. It was retargeted to main and rebased from #109's tip, fb1099f. The rebased tip, c8e75c9, has the tested tree (bebd13e, 47bcd02's), and so does the squash, whose parent is a5cac4c. It kept its branch, since #111 was based on it.
+- **#111, the shell's transport and the facade,** as 20d8481. It was retargeted to main and rebased from #110's first tip, 47bcd02. The rebased tip, 82b86ca, has the tested tree (067f149, eb6648f's), and so does the squash, whose parent is 8d1d0af. Its two commits, the step and the review's noted findings, were squashed with one message.
+- **CI.** Each merged on `linux` SUCCESS at its head: #109 on fb1099f (run 37145792279); #110 on c8e75c9 (run 37160194575); #111 on 82b86ca (run 37160285596). Each log holds its step's count: forty-seven suites and 1,728 expected passes, then forty-eight and 1,775, then 1,795.
+- **Branches.** All three deleted, local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: forty-eight suites, 1,795 expected passes, every pin ok.
+
+DONE and merged (a5cac4c, PR #109; 8d1d0af, PR #110; 20d8481, PR #111): **M8.2, the hand-off door.**
+- A handler takes an upgrade by answering `(switch-protocols headers take-over)`. The server writes the 101, the 100 first when the request expects it. It then hands the stream over as a transport it keeps: in the table under `max-connections`, closed through `handle-close!`, its deadline the connection's entry in the wheel, its taker told of the drain, which waits for its close.
+- Found and fixed on the way: a taker's call that returned no values crashed chez-libuv's callback; RFC 9110 §7.8's 100 before the 101; the parser's own hand-off row, never reached, retired.
+- Decided by form: the server writes the 101; the transport, the server keeping the stream; tell it, then wait; upgrades only; review, then three stacked PRs; the review's 2, 3 and 7–9 fixed, the first documented (the taker bounds its writes), 4–6 and 10 noted, two of them in the docs and all four in plan §14's open list. A /code-review high found ten.
+
+NEXT: M8.3 (plan §14), the black-box and robustness lanes, when the owner asks.
