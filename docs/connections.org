@@ -22,9 +22,11 @@ request's body ends cannot be trusted.
 
 A request can ask to switch the connection to another protocol: a WebSocket
 handshake (~Connection: upgrade~ with ~Upgrade: websocket~), ~Upgrade: h2c~,
-or a proxy's ~CONNECT host:port~. This server speaks only HTTP/1.1 and 1.0, so
-your handler answers such a request like any other, and then the server closes
-the connection. Anything the client sent after that request is ignored.
+or a proxy's ~CONNECT host:port~. This server speaks only HTTP/1.1 and 1.0.
+Your handler can take an HTTP/1.1 upgrade with no body and speak the new
+protocol itself ([[file:handlers.org][handlers.org]]). Otherwise it answers such a request like any
+other, and then the server closes the connection. Anything the client sent
+after that request is ignored.
 
 A client that opens with HTTP/2's preface (~PRI * HTTP/2.0~) gets ~505 HTTP
 Version Not Supported~, and the connection closes.
@@ -70,11 +72,13 @@ Send the process ~SIGTERM~ (what Docker, Kubernetes and systemd send) or
    when it next needs it.
 3. It finishes each request in flight. Its response says ~Connection: close~,
    if it has not started yet, and the connection then closes gently, as above.
-4. After ~CHEZ_HTTP_DRAIN_TIMEOUT~ (10 s) it closes whatever is still open, at
+4. It tells each connection a handler took over (an upgrade) to finish,
+   through the handler's drain call, and waits for it to close.
+5. After ~CHEZ_HTTP_DRAIN_TIMEOUT~ (10 s) it closes whatever is still open, at
    once.
-5. Once no connection is left, ~serve~ returns.
+6. Once no connection is left, ~serve~ returns.
 
-It logs ~draining~ with the connections it waits for, ~drain-timeout~ if step 4
+It logs ~draining~ with the connections it waits for, ~drain-timeout~ if step 5
 closed any, and ~stopped~ at the end. A second signal changes nothing. If the
 listener fails (on Windows only), the server drains the same way, so whatever
 supervises it can start it again.

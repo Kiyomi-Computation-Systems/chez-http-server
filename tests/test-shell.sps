@@ -142,6 +142,17 @@
 ;;;     goes on.  A shell asked to watch signals holds a handle for SIGTERM
 ;;;     and one for SIGINT, watches once, and closes them once it serves no
 ;;;     more; one that has stopped is refused a watch (decided 2026-10-03);
+;;;   - the door (M8.2; decision 0016): a WebSocket handshake answered with
+;;;     a switch is answered 101, and the stream handed to the taker, which
+;;;     writes back the frame its client sent with the handshake, then what
+;;;     it reads, however the kernel split the reads, and closes once its
+;;;     client ends; a taker that raises has its stream closed, logged; a
+;;;     write after the close is asked for is cancelled; a taken stream
+;;;     counts against max-connections; a taker's deadline is met on time;
+;;;     and the drain runs a taker's drain call, which says goodbye and
+;;;     closes, before the deadline, at once for one registered as the
+;;;     server drains, and closes at the deadline a stream whose taker
+;;;     ignores it, telling it so;
 ;;;   - the shell's one timer: four connections add one timer to the loop;
 ;;;     its wheel empty, it stops, and the shell keeps it for its next
 ;;;     deadline, and closes it once shut down with no connection left; when
@@ -161,7 +172,7 @@
 ;;; was asked at, which the server is told, plus the suite's drain timeout.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?
-              current-time time-second time-nanosecond)
+              current-time time-second time-nanosecond fork-thread)
         (libuv) (uv-testing)
         (rename (only (libuv private native) live-counts) (live-counts debug-live-counts))
         (only (byte-machine private conditions)
@@ -180,6 +191,7 @@
               conn-outstanding conn-outstanding-bytes)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (only (http-server body) read-body read-whole-body)
+        (http-server switch) (http-server transport)
         (response-reader) (shell-testing) (producers))
 
 (define (b s) (string->utf8 s))
@@ -566,6 +578,73 @@
            (make-response 200 #f '()
                           (producer-of '("one piece")
                                        (lambda () (raise (make-message-condition "the producer failed"))))))
+          ((bytevector=? target (b "/door")) (switching echo))
+          ((bytevector=? target (b "/door-raise"))
+           (switching (lambda (t retained) (raise (make-message-condition "the taker failed")))))
+          ((bytevector=? target (b "/door-late"))
+           (switching (lambda (t retained)
+                        (transport-write! t (b "bye"))
+                        (transport-close! t)
+                        (transport-write! t (b "late") 0 4 (lambda (err) (took! 'late err))))))
+          ((bytevector=? target (b "/door-deaf"))
+           (switching (lambda (t retained)
+                        (transport-on-close! t (lambda ()
+                                                 (took! 'closed)
+                                                 (transport-write! t (b "x") 0 1 (lambda (err) (took! 'after-close err)))
+                                                 (transport-read-start! t (lambda (bv from to) #t)
+                                                                        (lambda (why) (took! 'late-end why)))
+                                                 (transport-deadline! t 1 (lambda () (took! 'late-passed)))
+                                                 (transport-on-close! t (lambda () (took! 'closed-late)))
+                                                 (values)))
+                        (transport-read-start! t (lambda (bv from to) #t) (lambda (why) (took! 'ended why))))))
+          ((bytevector=? target (b "/door-shut"))
+           (switching (lambda (t retained)
+                        (uv-shutdown! (connection-tcp (newest))
+                                      (lambda (err)
+                                        (transport-write! t (b "late") 0 4
+                                                          (lambda (err) (took! 'refused err) (transport-close! t))))))))
+          ((bytevector=? target (b "/door-thread"))
+           (switching (lambda (t retained) (set! thread-transport t))))
+          ((bytevector=? target (b "/door-pause"))
+           (switching (lambda (t retained)
+                        (set! paused-transport t)
+                        (transport-read-start! t
+                                               (lambda (bv from to)
+                                                 (took! 'paused-read (bytes-between bv from to))
+                                                 (transport-read-stop! t))
+                                               (lambda (why) (took! 'ended why) (transport-close! t))))))
+          ((bytevector=? target (b "/door-twice"))
+           (switching (lambda (t retained)
+                        (transport-read-start! t (lambda (bv from to) (took! 'first-reader)) (lambda (why) #t))
+                        (transport-read-start! t (lambda (bv from to) (transport-write! t bv from to))
+                                               (lambda (why) (transport-close! t))))))
+          ((bytevector=? target (b "/door-timed"))
+           (switching (lambda (t retained)
+                        (transport-read-start!
+                         t
+                         (lambda (bv from to)
+                           (took! 'armed (uv-now loop))
+                           (transport-deadline! t door-ms (lambda () (took! 'passed (uv-now loop)) (transport-close! t))))
+                         (lambda (why) #t)))))
+          ((bytevector=? target (b "/door-big"))
+           (switching (lambda (t retained)
+                        (transport-write! t big-door)
+                        (transport-close! t))))
+          ((bytevector=? target (b "/door-disarm"))
+           (switching (lambda (t retained)
+                        (transport-deadline! t 60000 (lambda () (took! 'passed)))
+                        (took! 'armed (shell-deadlines adopting))
+                        (transport-deadline! t #f)
+                        (took! 'disarmed (shell-deadlines adopting))
+                        (transport-close! t))))
+          ((bytevector=? target (b "/door-redrain"))
+           (switching (lambda (t retained)
+                        (transport-on-drain! t (lambda ()
+                                                 (took! 'drained)
+                                                 (transport-on-drain! t (lambda () (took! 'drained-again)))
+                                                 (transport-close! t))))))
+          ((bytevector=? target (b "/door-await"))
+           (awaiting (lambda () (set! parked (current-coroutine)) (coroutine-park!) (switching echo))))
           ((eq? (request-method req) 'POST)
            (read-body (lambda (bv start end) #t) (lambda () (make-response 200 #f '() target))))
           (else (make-response 200 #f '() target)))))
@@ -814,6 +893,71 @@
 ;; What the drains logged since `logged` was cleared, oldest first.
 (define (drain-logged)
   (filter (lambda (e) (memq (car e) '(draining drain-timeout stopped))) (reverse logged)))
+
+;; --- the door (M8.2) ----------------------------------------------------------------
+
+;; What the suite's takers saw, newest first, as (what . details).
+(define took '())
+(define (took! what . details) (set! took (cons (cons what details) took)))
+
+;; took-of : Symbol -> (Listof (Listof Any)) — the details of each `what`
+;; the takers noted, oldest first.
+(define (took-of what) (map cdr (filter (lambda (e) (eq? (car e) what)) (reverse took))))
+
+;; switching : (Transport Bytevector -> Any) -> Switch
+;; A WebSocket's switch, RFC 6455 §1.3's Sec-WebSocket-Accept beside it.
+(define (switching take-over)
+  (switch-protocols (list (cons (b "Upgrade") (b "websocket"))
+                          (cons (b "Sec-WebSocket-Accept") (b "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")))
+                    take-over))
+
+;; The 101 the switch is written as, as the client reads it.
+(define door-101
+  (b "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nConnection: upgrade\r\n\r\n"))
+
+;; echo : Transport Bytevector -> Void
+;; The suite's taker: it writes back the bytes it was handed, then each it
+;; reads, and closes once its client ends; told the server drains, it writes
+;; `bye` and closes.  Each end and close is noted.
+(define (echo t retained)
+  (took! 'retained retained)
+  (transport-on-close! t (lambda () (took! 'closed)))
+  (transport-on-drain! t (lambda () (took! 'drained) (transport-write! t (b "bye")) (transport-close! t)))
+  (when (> (bytevector-length retained) 0) (transport-write! t retained))
+  (transport-read-start! t
+                         (lambda (bv from to) (transport-write! t bv from to))
+                         (lambda (why) (took! 'ended why) (transport-close! t))))
+
+;; door-handshake : String -> Bytevector — a handshake to `target`.
+(define (door-handshake target)
+  (b (string-append "GET " target " HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")))
+
+;; RFC 6455 §5.7's masked "Hello", and "Hi" with the same mask.
+(define hello-frame (u8-list->bytevector '(#x81 #x85 #x37 #xfa #x21 #x3d #x7f #x9f #x4d #x51 #x58)))
+(define hi-frame (u8-list->bytevector '(#x81 #x82 #x37 #xfa #x21 #x3d #x7f #x93)))
+
+;; How long a taker's deadline lasts, under drain-limits' 10 ms tick.
+(define door-ms 50)
+
+;; What the taker of /door-big writes, then closes: more than a loopback
+;; socket takes at once, so its write is still under way as the close is
+;; asked for.  Its bytes count up modulo 251, so their order shows.
+(define big-door
+  (let ((bv (make-bytevector (* 4 1024 1024))))
+    (do ((i 0 (+ i 1))) ((= i (bytevector-length bv)) bv) (bytevector-u8-set! bv i (mod i 251)))))
+
+;; The transport of /door-thread's taker, written to from another thread, and
+;; what that write raised, once it has.
+(define thread-transport #f)
+(define thread-raised #f)
+
+;; The transport of the taker that stops reading, to start it again.
+(define paused-transport #f)
+
+;; read-bytes : Symbol -> Bytevector — the bytes the takers noted under
+;; `what`, end to end.
+(define (read-bytes what) (joined (map car (took-of what))))
 
 ;; slowhttptest's slow headers and slow body send a request a piece at a
 ;; time, each piece `gap-ms` after the last, well within every limit above.
@@ -2146,6 +2290,311 @@
                                    (shell-watch-signals! stopped)
                                    'watched)))
                     (list watched (shell-signals stopped)))))
+
+    ;; The door (M8.2; decision 0016), through a real socket.  A client sends
+    ;; a WebSocket handshake and, with it, a frame, as one write: the switch
+    ;; is answered 101, and the taker, handed the stream, writes back what it
+    ;; was handed and then what it reads, so the client reads the 101 and the
+    ;; frame back whether the kernel delivered the frame with the handshake
+    ;; or after it (design §8.5: never asserting how the stream was split).
+    ;; A second frame comes back the same way; the client's end reaches the
+    ;; taker, which closes, the close told to it once.
+    (set! took '())
+    (let* ((p (open-adopted! (joined (list (door-handshake "/door") hello-frame))))
+           (c (cdr p))
+           (back (wait-for (lambda () (>= (bytevector-length (client-bytes (car p)))
+                                          (+ (bytevector-length door-101) (bytevector-length hello-frame))))))
+           (first-read (client-bytes (car p))))
+      (test-equal "through the door: the 101, then the frame sent with the handshake, written back, the connection handed off"
+                  (list 'satisfied (joined (list door-101 hello-frame)) 'handed-off)
+                  (list back first-read (if (connection? c) (phase c) 'none)))
+      (client-send! (car p) hi-frame)
+      (let ((again (wait-for (lambda () (= (bytevector-length (client-bytes (car p)))
+                                           (+ (bytevector-length first-read) (bytevector-length hi-frame)))))))
+        (client-shut! (car p))
+        (let* ((gone (wait-for (lambda () (closed-and-gone? shell c))))
+               (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+          (test-equal "a frame sent later comes back after it; the client's end reaches the taker, which closes, told once; the core ends closed"
+                      (list 'satisfied (joined (list door-101 hello-frame hi-frame)) 'satisfied 'satisfied 'eof
+                            '((eof)) '(()) 'closed)
+                      (list again (client-bytes (car p)) gone ended (client-end (car p))
+                            (took-of 'ended) (took-of 'closed) (if (connection? c) (phase c) 'none)))))
+      (client-close! (car p)))
+
+    ;; A taker that raises as it takes the stream: logged, and the stream
+    ;; closed after the 101, as a bug closes its connection.
+    (set! logged '())
+    (let* ((p (open-adopted! (door-handshake "/door-raise")))
+           (gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+           (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+      (test-equal "a taker that raises: logged taker-failed, the stream closed after the 101"
+                  (list 'satisfied 'satisfied door-101 'eof '(taker-failed))
+                  (list gone ended (client-bytes (car p)) (client-end (car p))
+                        (map car (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))))
+      (client-close! (car p)))
+
+    ;; A write asked for once the close has been is not written: its
+    ;; callback is told ECANCELED, and the close waits for the write before
+    ;; it, which the client reads.
+    (set! took '())
+    (let* ((p (open-adopted! (door-handshake "/door-late")))
+           (gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+           (told (wait-for (lambda () (pair? (took-of 'late)))))
+           (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+      (test-equal "the taker's close follows its write; a write after the close is cancelled, its callback told so"
+                  (list 'satisfied 'satisfied 'satisfied (joined (list door-101 (b "bye"))) 'eof '((ECANCELED)))
+                  (list gone told ended (client-bytes (car p)) (client-end (car p)) (took-of 'late)))
+      (client-close! (car p)))
+
+    ;; The taker's close waits for its write: 4 MiB, more than the socket
+    ;; takes at once, so the write is still under way as the close is asked
+    ;; for.  Its client reads all of it, then the stream's end.
+    (let* ((p (open-adopted! (door-handshake "/door-big")))
+           (gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+           (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+      (test-equal "the taker's close waits for a write still under way: its client reads all of it, then the stream's end"
+                  (list 'satisfied 'satisfied 'eof #t)
+                  (list gone ended (client-end (car p))
+                        (equal? (client-bytes (car p)) (joined (list door-101 big-door)))))
+      (client-close! (car p)))
+
+    ;; A write libuv refuses at the call, the stream's write side shut behind
+    ;; the shell's back: its callback is told the errno after the turn, as a
+    ;; failed write's would be at its completion (libuv's uv_write refuses a
+    ;; stream it cannot write to with EPIPE at the call).
+    (set! took '())
+    (let* ((p (open-adopted! (door-handshake "/door-shut")))
+           (told (wait-for (lambda () (pair? (took-of 'refused)))))
+           (gone (wait-for (lambda () (closed-and-gone? shell (cdr p))))))
+      (test-equal "a write refused at the call: its callback is told the errno, and the taker's close closes the stream"
+                  '(satisfied satisfied ((EPIPE)))
+                  (list told gone (took-of 'refused)))
+      (client-close! (car p)))
+
+    ;; A taker that stops reading reads nothing more until it starts again:
+    ;; a frame sent while it is stopped waits, through fifty turns of the
+    ;; loop, and is read once reading starts again, then the client's end.
+    (set! took '())
+    (let* ((p (open-adopted! (door-handshake "/door-pause")))
+           (switched (wait-for (lambda () (>= (bytevector-length (client-bytes (car p))) (bytevector-length door-101))))))
+      (client-send! (car p) hello-frame)
+      (let ((first (wait-for (lambda () (pair? (took-of 'paused-read))))))
+        (client-send! (car p) hi-frame)
+        (let* ((stopped (run-loop-until loop (lambda () #f) 50))
+               (read-while-stopped (bytevector-length (read-bytes 'paused-read))))
+          (test-equal "a taker that stops reading reads nothing more while it is stopped"
+                      (list 'satisfied 'satisfied 'iterations-exhausted #t)
+                      (list switched first stopped (<= read-while-stopped (bytevector-length hello-frame))))
+          (transport-read-start! paused-transport
+                                 (lambda (bv from to) (took! 'resumed (bytes-between bv from to)))
+                                 (lambda (why) (took! 'ended why) (transport-close! paused-transport)))
+          (let ((resumed (wait-for (lambda () (= (+ (bytevector-length (read-bytes 'paused-read))
+                                                    (bytevector-length (read-bytes 'resumed)))
+                                                 (+ (bytevector-length hello-frame) (bytevector-length hi-frame)))))))
+            (client-shut! (car p))
+            (let ((gone (wait-for (lambda () (closed-and-gone? shell (cdr p))))))
+              (test-equal "started again, it reads what waited, then the client's end"
+                          (list 'satisfied 'satisfied (joined (list hello-frame hi-frame)) '((eof)))
+                          (list resumed gone (joined (list (read-bytes 'paused-read) (read-bytes 'resumed)))
+                                (took-of 'ended)))))))
+      (client-close! (car p)))
+    (set! paused-transport #f)
+
+    ;; A write chez-libuv refuses for no transport's failure, from a thread
+    ;; that is not the loop's (`&uv-wrong-thread`), raises to its caller and
+    ;; leaves nothing outstanding, so the taker's close still closes the
+    ;; stream (M8.2's review, the second).
+    (set! thread-transport #f)
+    (set! thread-raised #f)
+    (let* ((p (open-adopted! (door-handshake "/door-thread")))
+           (taken (wait-for (lambda () (and thread-transport #t)))))
+      (fork-thread (lambda ()
+                     (set! thread-raised
+                           (guard (e (#t e))
+                             (transport-write! thread-transport (b "elsewhere"))
+                             'returned))))
+      (let ((raised (wait-for (lambda () (and thread-raised #t)))))
+        (transport-close! thread-transport)
+        (let* ((gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+               (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+          (test-equal "a write refused off the loop's thread raises to its caller, and leaves the taker's close free to close"
+                      (list 'satisfied 'satisfied #t 'satisfied 'satisfied door-101 'eof)
+                      (list taken raised (uv-wrong-thread? thread-raised) gone ended
+                            (client-bytes (car p)) (client-end (car p))))))
+      (client-close! (car p)))
+    (set! thread-transport #f)
+
+    ;; Reading started again while it reads takes the new callbacks: a frame
+    ;; comes back once, from the second, and the first hears nothing.
+    (set! took '())
+    (let* ((p (open-adopted! (door-handshake "/door-twice")))
+           (switched (wait-for (lambda () (>= (bytevector-length (client-bytes (car p))) (bytevector-length door-101))))))
+      (client-send! (car p) hello-frame)
+      (let ((back (wait-for (lambda () (>= (bytevector-length (client-bytes (car p)))
+                                           (+ (bytevector-length door-101) (bytevector-length hello-frame)))))))
+        (client-shut! (car p))
+        (let* ((gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+               (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+          (test-equal "reading started again while it reads: the second callbacks take the reads, the first hears nothing"
+                      (list 'satisfied 'satisfied 'satisfied 'satisfied (joined (list door-101 hello-frame)) '())
+                      (list switched back gone ended (client-bytes (car p)) (took-of 'first-reader)))))
+      (client-close! (car p)))
+
+    ;; A taken stream keeps its place in max-connections: with a cap of one,
+    ;; a second client is refused while the first's stream is taken, and
+    ;; accepted once it has closed.
+    (let ((capped (make-shell loop handler (with 'max-connections 1) clock log! trace!)))
+      (set! adopting capped)
+      (set! took '())
+      (set! logged '())
+      (let* ((p (open-adopted! (door-handshake "/door")))
+             (taken (wait-for (lambda () (and (connection? (cdr p)) (eq? (phase (cdr p)) 'handed-off)))))
+             (q (open-client! #f))
+             (refused (wait-for (lambda () (not (eq? (client-end q) 'open))))))
+        (test-equal "a taken stream counts against max-connections: a second client is refused while it is open, reading the stream's end and nothing"
+                    '(satisfied satisfied eof 0 ((refusing max-connections)) 1)
+                    (list taken refused (client-end q) (collector-count (client-collector q))
+                          (filter (lambda (e) (eq? (car e) 'refusing)) logged)
+                          (length (shell-connections capped))))
+        (client-shut! (car p))
+        (let* ((gone (wait-for (lambda () (closed-and-gone? capped (cdr p)))))
+               (r (open-client! (b "GET /third HTTP/1.1\r\nHost: x\r\n\r\n")))
+               (served (wait-for (lambda () (= 1 (length (responses (client-bytes r))))))))
+          (test-equal "and once it has closed, the next client is served"
+                      '(satisfied satisfied (200))
+                      (list gone served (map status (responses (client-bytes r)))))
+          (client-close! r))
+        (client-close! q)
+        (client-close! (car p)))
+      (shell-shutdown! capped)
+      (set! adopting shell))
+
+    ;; A taker's deadline rides the shell's wheel: met the first time the
+    ;; timer fires at or after it, as a connection's are (design §8.5).  The
+    ;; taker arms it as its first read comes, once the timer has stopped:
+    ;; the hand-off took the connection's last deadline out of the wheel, and
+    ;; the next firing found it empty.
+    (let ((timed-shell (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting timed-shell)
+      (set! took '())
+      (let* ((p (open-adopted! (door-handshake "/door-timed")))
+             (taken (wait-for (lambda () (and (connection? (cdr p)) (eq? (phase (cdr p)) 'handed-off)))))
+             (fired (firings-of timed-shell))
+             (stopped (wait-for (lambda () (> (firings-of timed-shell) fired))))
+             (quiet (firings-of timed-shell))
+             (idle (run-loop-until loop (lambda () #f) 30))
+             (still (firings-of timed-shell))
+             (sent (begin (client-send! (car p) hello-frame) 'sent))
+             (passed (wait-for (lambda () (pair? (took-of 'passed)))))
+             (gone (wait-for (lambda () (closed-and-gone? timed-shell (cdr p)))))
+             (armed (let ((a (took-of 'armed))) (and (pair? a) (car (car a)))))
+             (at (let ((a (took-of 'passed))) (and (pair? a) (car (car a)))))
+             (fires (map caddr (filter (lambda (e) (and (eq? (car e) 'fire) (eq? (cadr e) timed-shell)))
+                                       (reverse timed)))))
+        (test-equal "a taker's deadline, armed with the timer stopped, passes the first time the timer fires at or after it, once"
+                    '(satisfied satisfied iterations-exhausted #t satisfied satisfied #t #t 1)
+                    (list taken stopped idle (= quiet still) passed gone
+                          (and armed at (memv at fires) (<= (+ armed door-ms) at) #t)
+                          (and armed at (not (exists (lambda (f) (and (<= (+ armed door-ms) f) (< f at))) fires)))
+                          (length (took-of 'passed))))
+        (client-close! (car p)))
+      (shell-shutdown! timed-shell)
+      (set! adopting shell))
+
+    ;; A taker's deadline disarmed leaves none armed, so an idle server's
+    ;; timer can stop (decision 0005).
+    (let ((disarmer (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting disarmer)
+      (set! took '())
+      (let* ((p (open-adopted! (door-handshake "/door-disarm")))
+             (done (wait-for (lambda () (pair? (took-of 'disarmed))))))
+        (test-equal "a taker's deadline is the stream's one entry in the wheel, and disarmed leaves none"
+                    '(satisfied ((1)) ((0)) satisfied)
+                    (list done (took-of 'armed) (took-of 'disarmed)
+                          (wait-for (lambda () (closed-and-gone? disarmer (cdr p))))))
+        (client-close! (car p)))
+      (shell-shutdown! disarmer)
+      (set! adopting shell))
+
+    ;; The drain tells a taken stream and waits (decision 0016 item 3): the
+    ;; taker's drain call says goodbye and closes, and the drain ends then,
+    ;; before its deadline.  One that ignores the drain is closed at the
+    ;; deadline, on time, its close told to it.
+    (let ((door-drainer (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting door-drainer)
+      (set! took '())
+      (set! logged '())
+      (let* ((p (open-adopted! (door-handshake "/door")))
+             (taken (wait-for (lambda () (and (connection? (cdr p)) (eq? (phase (cdr p)) 'handed-off))))))
+        (shell-shutdown! door-drainer)
+        (let* ((gone (wait-for (lambda () (closed-and-gone? door-drainer (cdr p)))))
+               (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+          (test-equal "told the server drains, a taker says goodbye and closes; the drain ends then, before its deadline"
+                      (list 'satisfied 'satisfied 'satisfied (joined (list door-101 (b "bye"))) 'eof
+                            '(()) 'never-forced 'stopped '((draining 1) (stopped)))
+                      (list taken gone ended (client-bytes (car p)) (client-end (car p))
+                            (took-of 'drained) (drain-forced door-drainer)
+                            (server-phase (shell-server door-drainer)) (drain-logged))))
+        (client-close! (car p))))
+    (let ((deaf-drainer (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting deaf-drainer)
+      (set! took '())
+      (set! logged '())
+      (let* ((p (open-adopted! (door-handshake "/door-deaf")))
+             (taken (wait-for (lambda () (and (connection? (cdr p)) (eq? (phase (cdr p)) 'handed-off))))))
+        (shell-shutdown! deaf-drainer)
+        (let* ((gone (wait-for (lambda () (closed-and-gone? deaf-drainer (cdr p)))))
+               (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+          (test-equal "a taker that ignores the drain has its stream closed at the deadline, on time, its close told to it"
+                      (list 'satisfied 'satisfied 'satisfied door-101 'eof '(()) 'on-time
+                            '((draining 1) (drain-timeout) (stopped)))
+                      (list taken gone ended (client-bytes (car p)) (client-end (car p))
+                            (took-of 'closed) (drain-forced deaf-drainer) (drain-logged))))
+        ;; Its close call, run once the stream has closed, writes, reads and
+        ;; arms a deadline: the write is cancelled, told after the turn, and
+        ;; the read and the deadline are not begun, so they report nothing,
+        ;; however long the loop runs on.  It ends with no values, which the
+        ;; shell drops: its callbacks return one to chez-libuv.
+        (let* ((told (wait-for (lambda () (pair? (took-of 'after-close)))))
+               (from (uv-now loop))
+               (later (wait-for (lambda () (>= (uv-now loop) (+ from 30))))))
+          (test-equal "on a stream the server has closed, a write is cancelled, reading and a deadline begin nothing, and a close call registered then runs at once"
+                      '(satisfied satisfied ((ECANCELED)) () () (()))
+                      (list told later (took-of 'after-close) (took-of 'late-end) (took-of 'late-passed)
+                            (took-of 'closed-late))))
+        (client-close! (car p))))
+    ;; A drain call runs once: one its taker registers again while the
+    ;; server drains, from inside the first, is not run.
+    (let ((redrainer (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting redrainer)
+      (set! took '())
+      (let* ((p (open-adopted! (door-handshake "/door-redrain")))
+             (taken (wait-for (lambda () (and (connection? (cdr p)) (eq? (phase (cdr p)) 'handed-off))))))
+        (shell-shutdown! redrainer)
+        (let ((gone (wait-for (lambda () (closed-and-gone? redrainer (cdr p))))))
+          (test-equal "a drain call runs once: one registered again while the server drains is not run"
+                      '(satisfied satisfied (()) ())
+                      (list taken gone (took-of 'drained) (took-of 'drained-again))))
+        (client-close! (car p))))
+    ;; A switch answered while the server drains: the taker's drain call,
+    ;; registered as it takes the stream, runs at once.
+    (let ((late-drainer (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting late-drainer)
+      (set! took '())
+      (set! parked #f)
+      (let* ((p (open-adopted! (door-handshake "/door-await")))
+             (waiting (wait-for (lambda () (and parked #t)))))
+        (shell-shutdown! late-drainer)
+        (when parked (coroutine-wake! parked 'woken))
+        (let* ((gone (wait-for (lambda () (closed-and-gone? late-drainer (cdr p)))))
+               (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+          (test-equal "a switch answered while the server drains: its taker's drain call runs as it is registered"
+                      (list 'satisfied 'satisfied 'satisfied (joined (list door-101 (b "bye"))) '(()) 'never-forced)
+                      (list waiting gone ended (client-bytes (car p)) (took-of 'drained)
+                            (drain-forced late-drainer))))
+        (client-close! (car p))
+        (set! parked #f)))
+    (set! adopting shell)
 
     ;; Backpressure on the read side (M6.2), on a shell of its own with the
     ;; short limits, made on credit, as M7's coroutine shell will hand a

@@ -20,3 +20,10 @@ The architecture document planned four libraries. Two of them already exist unde
 
 - Library layout: `(http-server limits)`, `(http-server request)`, `(http-server response)`, `(http-server decisions)` (framing precedence and error-to-status mapping only; keep-alive and needs-eof come from `(httparse decisions)` since 2026-09-19), `(http-server connection)`, `(http-server wheel)`, `(http-server server)` are pure and import no libuv; `(http-server private adapter)`, `(http-server private shell)`, `(http-server private scheduler)` are the shell; `(http-server)` is the facade.
 - A `make test` gate asserts that the pure libraries import neither `(libuv ...)` nor `(chezscheme)`.
+
+## Noted (2026-10-03)
+
+Item 4's transport record exists since M8.2: `(http-server transport)`, a record of
+verbs over a stream that a handler takes through the upgrade hook (decision 0016). The
+server's shell implements it over chez-libuv, and a taker's tests make one of their own.
+A TLS layer would be a transport that wraps one.

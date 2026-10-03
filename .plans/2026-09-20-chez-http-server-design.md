@@ -952,6 +952,12 @@ ask for nothing.
   and waits for one already running (M8.1's review). On Windows libuv delivers no
   SIGTERM, so Ctrl-C alone drains there.
 
+*Noted 2026-10-03 (M8.2; decision 0016 item 3):* a stream a handler took stays in the
+table, so the drain counts it, and `finish-all` runs its taker's drain call where it
+tells any other connection `shutdown-requested`; one registered while the server drains
+runs at once. The drain waits for its close, and `force-close-all` closes it at the
+deadline, as any connection.
+
 ---
 
 ## 5. Callback discipline
@@ -1916,6 +1922,12 @@ fake made the same way, and the coroutine shell's bytes to the direct shell's (p
 marks in the libuv shell's events where each of its waits ended, and the replay ends
 the fake's wait there: its timer fired, or its lookup answered as the libuv shell's
 resolver answered.
+
+*Noted 2026-10-03 (M8.2):* the contract test holds no script through the upgrade door.
+What a taker reads and writes are no events of the core's, which the replay gives the
+fake, so the fake's taker would read nothing past the hand-off. The door's contract is
+held at every delivery size by `tests/test-connection-switch.sps`, on the fake shell's
+transport, and on a real socket by the socket lane.
 
 ### 8.5 The socket lane
 

@@ -1567,6 +1567,28 @@ lands (0006 item 3): the retained bytes are exactly `parser-result-next` onward.
 HTTP/2 preface is still answered 505.
 - **Mutation:** the retained bytes start a byte late. Expect the hook's row red.
 
+*Noted 2026-10-03 (M8.2):* decided first, as decision 0016, then built.
+- **Decided on the owner's word, by form**, on measurements of main: "The server
+  (Recommended)" writes the 101, for a handler that answers `(switch-protocols headers
+  take-over)`; "Transport; server keeps it (Recommended)", on a second form, after the
+  owner asked what keeping the stream gains when the servers surveyed hand over a raw
+  handle; "Tell it, then wait (Recommended)" for the drain; and "Upgrades only
+  (Recommended)": an HTTP/1.1 upgrade with no body, CONNECT and HTTP/1.0 left as they
+  were.
+- **Measured first** (`research/spike/m8-door-pending.sps`): when the handler is asked,
+  the core already holds the rest of the last read from `parser-result-next`, since
+  reading stops at the message's end. At every delivery size of six inputs, 525 runs,
+  that and what reading on brings were exactly the bytes after the request. So the door
+  opens with no new parse.
+- **The door is not the parser's hand-off.** It is a row of `responding`, at the 101's
+  last completion; the head/body hand-off row, never reached, is retired.
+- **The transport has seven verbs**: write, start and stop reading, close, one deadline,
+  the drain call, and a call when the stream has closed.
+- **Found while building**: a taker's call that returned no values made chez-libuv's
+  close callback raise, so the shell drops what each call returns.
+- **The plan's mutation reddens what it expects**: the table's hand-off row, W2, and the
+  contract at every delivery size.
+
 **M8.3 — the black-box and robustness lanes** (design §8.8).
 - Against a port: curl scripts beyond the M4 exit's, vtest2's `.vtc`, and hurl. Brief
   risk 4 is answered here: the test client reads a close-delimited response with

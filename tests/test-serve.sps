@@ -31,7 +31,8 @@
 ;;;     literal ('bad-address);
 ;;;   - decision 0001: the handler contract is request -> response, so the
 ;;;     facade exports what a handler needs, the server's start, and its
-;;;     errors;
+;;;     errors; and decision 0016: a handler takes an upgrade with the
+;;;     facade's names alone, its switch, and the transport's verbs;
 ;;;   - the Twelve-Factor App's logs (XI): one line for each thing that
 ;;;     happens, written to standard output.  A condition's text is Chez's
 ;;;     `display-condition`'s, as Chez 10.4.1 prints it;
@@ -65,14 +66,24 @@
 
 ;; The handler reads the request through the facade's names alone, and
 ;; answers with what it read: the method, the path, the query, the host and
-;; the X-Probe header, "-" for one that is not there.
+;; the X-Probe header, "-" for one that is not there.  At `/door` it takes
+;; the upgrade to `echo` (decision 0016), with the facade's names alone: its
+;; taker writes back what it is handed and what it reads, and closes at the
+;; client's end.
 (define (handler r)
-  (make-response 200 #f '()
-                 (b (string-append (symbol->string (request-method r))
-                                   " " (request-path r)
-                                   " " (or (request-query r) "-")
-                                   " " (request-host r)
-                                   " " (or (request-header r "x-probe") "-")))))
+  (if (string=? (request-path r) "/door")
+      (switch-protocols (list (cons (b "Upgrade") (b "echo")))
+                        (lambda (t retained)
+                          (when (> (bytevector-length retained) 0) (transport-write! t retained))
+                          (transport-read-start! t
+                                                 (lambda (bv from to) (transport-write! t bv from to))
+                                                 (lambda (why) (transport-close! t)))))
+      (make-response 200 #f '()
+                     (b (string-append (symbol->string (request-method r))
+                                       " " (request-path r)
+                                       " " (or (request-query r) "-")
+                                       " " (request-host r)
+                                       " " (or (request-header r "x-probe") "-"))))))
 
 ;; refused : (-> Any) String -> (U (List Boolean Boolean Boolean Boolean) 'started)
 ;; How `start` fails: whether its raise is an &http-server-config-error, an
@@ -263,12 +274,14 @@
     (putenv "CHEZ_HTTP_HOST" unbound-host)
 
     ;; --- what the facade exports ---
-    (test-equal "the facade exports the handler's names, the verbs it waits with, the server's start, and its errors"
+    (test-equal "the facade exports the handler's names, the verbs it waits with, a switch and the transport's verbs, the server's start, and its errors"
                 '(&deadline-passed &http-server-config-error &http-server-error &resolve-error await
                   awaiting deadline-passed? http-server-config-error? http-server-error? make-response
-                  read-body read-whole-body request-header request-host request-method request-path
-                  request-query request? resolve resolve-error-reason resolve-error? response? serve
-                  sleep-ms with-deadline)
+                  make-transport read-body read-whole-body request-header request-host request-method
+                  request-path request-query request? resolve resolve-error-reason resolve-error?
+                  response? serve sleep-ms switch-protocols transport-close! transport-deadline!
+                  transport-on-close! transport-on-drain! transport-read-start! transport-read-stop!
+                  transport-write! transport? with-deadline)
                 (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
                            (library-exports '(http-server))))
 
@@ -306,6 +319,23 @@
                   '(413 "" complete)
                   (exchange loop sh port
                             (b "POST /u HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello")))
+      ;; A client sends its handshake and, with it, the first bytes of the
+      ;; new protocol: it reads the 101 and those bytes back; then it ends
+      ;; its side, and reads the stream's end, which the taker closes at its
+      ;; own.
+      (let* ((sent (b "GET /door HTTP/1.1\r\nHost: h\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\nping"))
+             (expected "HTTP/1.1 101 Switching Protocols\r\nUpgrade: echo\r\nConnection: upgrade\r\n\r\nping")
+             (cl (open-client loop port sent #t))
+             (back (run-shell-until loop sh (lambda () (>= (bytevector-length (client-bytes cl))
+                                                           (string-length expected)))
+                                    cap)))
+        (client-shut! cl)
+        (run-shell-until loop sh (lambda () (not (eq? (client-end cl) 'open))) cap)
+        (client-close! cl)
+        (run-shell-until loop sh (lambda () (null? (shell-connections sh))) cap)
+        (test-equal "a handler takes an upgrade with the facade's names alone: the 101, then what its taker writes back, then the stream's end"
+                    (list 'satisfied expected 'eof)
+                    (list back (utf8->string (client-bytes cl)) (client-end cl))))
       (shell-shutdown! sh)
       (run-until-drained loop cap)
       (test-equal "shut down, the server leaves nothing on the loop" '() (uv-loop-live-handles loop))
