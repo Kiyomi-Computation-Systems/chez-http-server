@@ -491,3 +491,27 @@ tick timer it is stopped while nothing is armed, so an idle server still sleeps,
 closed by a shell that serves no more. The connections' deadlines keep the wheel and its
 tick. Measured for decision 0015 (`research/spike/m7-waits.sps`): on the wheel's 250 ms
 tick, a 10 ms sleep took 250.7 to 256.2 ms; on the waits' timer, 10.2 to 13.7 ms.
+
+## Amendment (2026-10-03) — drain-timeout-ms, as M8.1 built it
+
+The table's `drain-timeout-ms` row arrives in M8.1 (milestone plan §3 and §14), with
+its default and on-breach column unchanged: once a shutdown is asked for, the server
+waits 10 000 ms for its connections to finish, then closes the rest at once.
+
+- **The four things.** It is the twentieth field of `(http-server limits)`, read from
+  `CHEZ_HTTP_DRAIN_TIMEOUT` in whole seconds, as the other timeouts are; 0 is accepted,
+  and closes what is open at the first tick. It has a value test against this table's
+  default, its variable in `limits-environment-variables`, and the drift guard over it.
+- **The deadline is the server's,** not a connection's: `server-step` sets it at the
+  shutdown's instant plus this limit, and the first tick at or after it asks for every
+  connection still open to be closed. So it fires within [D, D + `tick-ms`], as the
+  connections' deadlines do, and the tick timer runs while the server drains, whatever
+  the wheel holds.
+- **"After SIGTERM" reads "after SIGTERM or SIGINT".** Decided on the owner's word, by
+  form (2026-10-03), on measurements of main: Ctrl-C left an idle `serve` running, and
+  its next request was reset. Weighed: SIGTERM alone, as the table and the brief say. A
+  listener that fails (the amendment of 2026-09-26) drains the same way. On Windows
+  libuv delivers no SIGTERM (its `docs/src/signal.rst`), so Ctrl-C alone drains there.
+- **The drain is logged** (decided the same day, by form): `draining` with the
+  connections it waits for, `drain-timeout` when this limit closes what is left, and
+  `stopped` at its end. Weighed: no new lines.

@@ -119,7 +119,9 @@
 ;;; to be closed at once, `force-close-all`, each through handle-close!.
 ;;; While the server drains, the timer runs whatever the wheel holds, so the
 ;;; server is told the time even when no connection has a deadline armed: one
-;;; whose handler waits arms none (design §4.3).
+;;; whose handler waits arms none (design §4.3).  A shell asked to watch the
+;;; process's signals (shell-watch-signals!) asks the server to shut down at
+;;; SIGTERM or SIGINT (decided 2026-10-03), through a signal handle each.
 ;;;
 ;;; ONE PROCEDURE CLOSES EVERY HANDLE: handle-close!, the one uv-close! call
 ;;; (tests/test-close-ownership.sps reads the source to hold it), for a
@@ -214,8 +216,9 @@
 ;;; failure's place: a log that raises there is ignored.
 (library (http-server private shell)
   (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run! shell-turn!
+          shell-watch-signals!
           loop-turn!
-          shell-connections shell-server shell-listener shell-timer shell-deadlines
+          shell-connections shell-server shell-listener shell-timer shell-signals shell-deadlines
           shell-waits-timed
           connection? connection-state connection-tcp connection-violations
           connection-deadline
@@ -268,6 +271,9 @@
   ;;   the one timer that ticks its connections' deadlines, running or
   ;;   stopped, from the first deadline armed until the shell has stopped
   ;;   listening and has no connection left; #f before and after
+  ;; shell-signals : Shell -> (Listof UvSignal)
+  ;;   the signal handles it watches the process's signals through, from
+  ;;   shell-watch-signals! until it serves no more; open or closed
   ;; The limits' tick-ms is its wheel's bucket, and one below 1 is an
   ;; assertion violation (make-wheel's).
   (define-record-type (shell %make-shell shell?)
@@ -275,6 +281,7 @@
             waits-kept                         ; the box of its loop's waits' timer (loop-clock!)
             (mutable server)
             (mutable listener)
+            (mutable signals)                   ; the signal handles it watches through
             (mutable timer) (mutable ticking?)  ; the timer, and whether it runs
             (mutable read-at) (mutable read-ms)       ; the clock's last reading, and when
             (mutable date-second) (mutable date-line)))
@@ -288,7 +295,7 @@
               (kept (hashtable-ref waits-timers loop #f)))
          (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
                       (make-wheel (limits-tick-ms limits)) s kept
-                      (make-server-state 'listening 0 limits #f) #f #f #f #f #f #f #f)))))
+                      (make-server-state 'listening 0 limits #f) #f '() #f #f #f #f #f #f)))))
 
   ;; loop-scheduler : UvLoop [(Symbol (Listof Any) -> Any)] -> Scheduler
   ;; The loop's scheduler, made the first time it is asked for: its poll is
@@ -482,6 +489,26 @@
     (let ((loop (shell-loop sh)))
       (uv-update-time! loop)
       (server-dispatch! sh (append head (list (uv-now loop) (hashtable-size (shell-table sh)))))))
+
+  ;; shell-watch-signals! : Shell -> Void
+  ;; Ask the server to shut down when the process is sent SIGTERM or SIGINT
+  ;; (decided 2026-10-03), through a signal handle each, closed once the
+  ;; shell serves no more (release-timer!).  Once the last watch of SIGINT
+  ;; has closed, the process ends at the next one: chez-libuv leaves its
+  ;; default disposition, not Chez's keyboard interrupt.  A shell watches
+  ;; once, while it listens; anything else is an assertion violation.  A
+  ;; handle whose start raises is closed, and the raise goes on.
+  (define (shell-watch-signals! sh)
+    (unless (eq? (server-phase (shell-server sh)) 'listening)
+      (assertion-violation 'shell-watch-signals! "the server has stopped listening" sh))
+    (unless (null? (shell-signals sh))
+      (assertion-violation 'shell-watch-signals! "the shell watches signals already" sh))
+    (for-each (lambda (name)
+                (let ((h (make-uv-signal (shell-loop sh))))
+                  (shell-signals-set! sh (cons h (shell-signals sh)))
+                  (closing-on-raise sh h
+                    (lambda () (uv-signal-start! h name (lambda (signal) (shell-shutdown! sh)))))))
+              '(sigterm sigint)))
 
   ;; shell-adopt! : Shell UvTcp -> (U Connection #f)
   ;; Offer an accepted TCP handle to the server, with the count of
@@ -1034,7 +1061,8 @@
   ;; release-timer! : Shell -> Void
   ;; Close the timer once the shell has stopped listening and no connection
   ;; is left: a shell that serves no more holds none.  The timer of its
-  ;; loop's waits goes with it, once they have nothing armed.
+  ;; loop's waits goes with it, once they have nothing armed, and so do the
+  ;; signal handles it watches through.
   (define (release-timer! sh)
     (when (and (fxzero? (hashtable-size (shell-table sh)))
                (not (eq? (server-phase (shell-server sh)) 'listening)))
@@ -1043,7 +1071,8 @@
           (shell-timer-set! sh #f)
           (shell-ticking?-set! sh #f)
           (handle-close! sh timer)))
-      (release-waits-timer! sh)))
+      (release-waits-timer! sh)
+      (for-each (lambda (h) (handle-close! sh h)) (shell-signals sh))))
 
   ;; release-waits-timer! : Shell -> Void
   ;; Close the timer of its loop's waits, if it has one and they have

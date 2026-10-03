@@ -4277,3 +4277,27 @@ Watched to fail (m8-mutations.md, M8.1, the second step): forty-one mutants on t
 Size: src +211 −87; tests +426 −97.
 
 NEXT: the third step, the signals and `serve`, stacked on this one.
+
+M8.1 THIRD STEP: the signals and `serve` (feat/m8.1-signals).
+- `src/http-server/private/shell.sls`: `shell-watch-signals!`, a signal handle each for SIGTERM and SIGINT, which ask the server to shut down; a shell watches once, while it listens, and closes them once it serves no more.
+- `src/http-server/private/serve.sls`: `serve` watches the signals, and returns when the server has stopped.
+- `tests/serve-child.sps` and `tests/test-serve.sps`: `serve` itself, in a process of its own, sent SIGTERM, then SIGINT: an idle client closed at once; a request in flight, its body sent once the drain has begun, answered saying it closes (the review's second); one held a minute closed at the 2 s deadline; the drain logged; `serve` returning, the process exiting 0. Once `serve` has returned, a SIGINT ends the process (the review's sixth). One helper starts and ends the child (the review's seventh).
+- `tests/test-shell.sps`: the watch: two handles, watched once, closed once the shell serves no more; a shell stopped first is refused one.
+- Records: plan §14's note; design §4.6's last bullet; decision 0005's amendment; `docs/configuration.org`, `docs/connections.org`, `docs/handlers.org` and the README's status; the review's third and fourth noted there and in `serve.sls`.
+
+Measured on the finished tree (2026-10-03, Darwin arm64): `make test` green, forty-seven suites, 1,689 expected passes (1,684 + 5), every pin ok.
+
+Watched to fail (m8-mutations.md, M8.1, the third step): sixty-five mutants on the finished tree, the step's six and the first two steps' fifty-nine, each loading and reddening a check but M8H-15. Every one of the seventy-four checks the slice added or changed, seventy by name and four whose expected value alone changed, is reddened by one.
+
+Size: src +51 −12; tests +196 −29.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Linux 6.12.76-linuxkit aarch64, Chez 10.4.1, libuv 1.44.2), from a copy of the finished tree made with `COPYFILE_DISABLE=1`, curl, ab and python3 installed: `make test`, less its submodule and pin checks, forty-seven suites, 1,689 expected passes; and the server, shell and serve suites green three more times each, 43, 169 and 15.
+
+M8.1 BUILT, the three steps proved each on its own tree (2026-10-03):
+- the first, main at 0ad7511 with its files: `make test` green, forty-seven suites and 1,657 expected passes; its eighteen mutants there, 14 of 14 checks;
+- the second, on the first: 1,684; its forty-one mutants there, 55 of 55 checks, M8H-15 surviving as a scope statement;
+- the third, the finished tree: 1,689, on Darwin and on Linux; sixty-five mutants, 74 of 74 checks, M8H-15 surviving.
+
+Size, against main: src +310 −121; tests +711 −157; and the records.
+
+NEXT: the three stacked PRs, as decided, merged bottom up on the owner's "do closing ritual" once CI is green on each head. Then M8.2, the hand-off door, decided first (plan §14), when the owner asks.

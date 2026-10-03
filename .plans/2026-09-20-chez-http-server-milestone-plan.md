@@ -1527,6 +1527,38 @@ time its timer fires, `(tick now)`, and today the server asks for nothing. That 
 runs only while a connection is open, and a drain with none has already ended. The
 socket lane reads those ticks to show a deadline was met on time (design §8.5).
 
+*Noted 2026-10-03 (M8.1):* built as written, with these settled on the way.
+- **Decided on the owner's word, by form.** SIGINT drains too ("SIGTERM and SIGINT
+  (Recommended)"): measured on main, Ctrl-C left an idle `serve` running, and its next
+  request was reset. The cost, measured: once `serve` returns, a later Ctrl-C ends the
+  process (exit 130) rather than breaking into Chez. The drain logs `draining` with the
+  connections it waits for, `drain-timeout` when the deadline closes what is left, and
+  `stopped` at its end ("Start, cut-off, end (Recommended)").
+- **An idle connection closes at once**, with no response, as at its idle deadline. The
+  core's `draining` state, which only `idle` entered, half-closing, is left with no row
+  into it, and is retired: ten states. A state with a request in flight finishes it by
+  its own rows and closes after its response, which says `Connection: close` if its head
+  is not yet written; `lingering` and `closing` are left as they are.
+- **The step keeps no count** (decided 2026-09-26), so `shutdown-requested` and
+  `listener-failed` carry the loop's time and the connections open. `finish-all` is a
+  sixth action, and `stopped` a third phase: the drain ends at the last close, or at
+  once with none open.
+- **Found by measurement.** The shell's timer stopped once its wheel was empty, and a
+  connection whose handler waits arms no deadline (design §4.3): with a handler waiting
+  300 ms, the server was told the time once in 200 ms. So the timer runs while the
+  server drains, whatever the wheel holds, and this note's "runs only while a connection
+  is open" holds no more. And the shell told the server of no close: now it tells it of
+  each one, and of each connection the reconciliation drops.
+- **`serve` returns when the drain ends**, whatever waits are still armed: the loop's
+  teardown closes their timers and cancels the lookups not yet begun. A lookup already
+  running holds the teardown until it answers (M8.1's review).
+- **A cancelled request is no failure** (M8.1's review). A close at the deadline cancels
+  the writes still outstanding, which libuv reports as ECANCELED: measured, every slow
+  reader cut logged a `read-error`. The core now closes for `cancelled`, logging
+  nothing, since only the shell's own close cancels a request.
+- **Windows** delivers no SIGTERM (libuv's `docs/src/signal.rst`): Ctrl-C drains there,
+  and a console's close, SIGHUP, does not. Noted in `docs/connections.org`, by form.
+
 **M8.2 — the hand-off door, decided first.** A decision record answers §9's three
 questions: who writes the `101`, what the handed-off stream still belongs to, and what
 the door hands over (§9 recommends the transport record). The door opens at

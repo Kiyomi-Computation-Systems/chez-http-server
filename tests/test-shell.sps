@@ -139,7 +139,9 @@
 ;;;     shutdown is dated by the loop's time brought up to date; a shutdown
 ;;;     with no connection open stops at once; and when telling each
 ;;;     connection to finish raises, each is still told, and the first raise
-;;;     goes on;
+;;;     goes on.  A shell asked to watch signals holds a handle for SIGTERM
+;;;     and one for SIGINT, watches once, and closes them once it serves no
+;;;     more; one that has stopped is refused a watch (decided 2026-10-03);
 ;;;   - the shell's one timer: four connections add one timer to the loop;
 ;;;     its wheel empty, it stops, and the shell keeps it for its next
 ;;;     deadline, and closes it once shut down with no connection left; when
@@ -2119,6 +2121,31 @@
                       (list served raised unspent gone (server-phase (shell-server told)) (drain-logged))))
         (for-each (lambda (p) (client-close! (car p))) (list x y))))
     (set! adopting shell)
+
+    ;; A shell asked to watch the process's signals holds a signal handle
+    ;; for SIGTERM and one for SIGINT (decided 2026-10-03), watches once,
+    ;; while it listens, and closes them once it serves no more.  No signal
+    ;; is sent here: tests/test-serve.sps sends them to `serve`'s process.
+    (let ((watcher (make-shell loop handler drain-limits clock log! trace!)))
+      (shell-watch-signals! watcher)
+      (let* ((signals (shell-signals watcher))
+             (opened (map (lambda (h) (and (uv-signal? h) (uv-handle-state h))) signals))
+             (again (guard (e ((assertion-violation? e) 'refused))
+                      (shell-watch-signals! watcher)
+                      'watched-again)))
+        (shell-shutdown! watcher)
+        (let ((closed (wait-for (lambda () (for-all (lambda (h) (eq? (uv-handle-state h) 'closed)) signals)))))
+          (test-equal "a shell that watches signals holds two signal handles, watches once, and closes them once it serves no more"
+                      '((open open) refused satisfied)
+                      (list opened again closed)))))
+    (let ((stopped (make-shell loop handler drain-limits clock log! trace!)))
+      (shell-shutdown! stopped)
+      (test-equal "a shell that has stopped is refused a watch, and holds no signal handle"
+                  '(refused ())
+                  (let ((watched (guard (e ((assertion-violation? e) 'refused))
+                                   (shell-watch-signals! stopped)
+                                   'watched)))
+                    (list watched (shell-signals stopped)))))
 
     ;; Backpressure on the read side (M6.2), on a shell of its own with the
     ;; short limits, made on credit, as M7's coroutine shell will hand a

@@ -18,8 +18,10 @@ its response, so a big upload or download is never held in memory whole.
 Since M7 a handler can wait: for another request, a time, a deadline or a
 name's lookup (see [[file:docs/handlers.org][docs/handlers.org]]). A connection
 costs no more once its handler is done waiting, and one contract test holds all
-three shells, waiting handlers included, to the same bytes. Still to come: a
-graceful shutdown (M8). See
+three shells, waiting handlers included, to the same bytes. Since M8.1 it
+shuts down gracefully: sent SIGTERM or SIGINT (Ctrl-C), it finishes the
+requests in flight, closes the rest after ~CHEZ_HTTP_DRAIN_TIMEOUT~, and
+~serve~ returns (see [[file:docs/connections.org][docs/connections.org]]). See
 [[file:.plans/2026-09-19-chez-http-server-project-brief.md][the project brief]] for the milestone map.
 
 ** Quick start

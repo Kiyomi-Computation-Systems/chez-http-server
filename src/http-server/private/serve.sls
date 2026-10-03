@@ -5,8 +5,9 @@
 ;;; `serve` is what the facade gives an embedder: a server on a loop of its
 ;;; own, configured through the process's environment (the Twelve-Factor
 ;;; App's config), logging a line for each thing that happens on standard
-;;; output (its logs), and run until it stops.  In v1 a server stops only if
-;;; its listener fails; M8 brings the drain a SIGTERM asks for.
+;;; output (its logs), and run until it stops: once the process is sent
+;;; SIGTERM or SIGINT (decided 2026-10-03), or its listener fails, the server
+;;; drains (M8.1), and `serve` returns when the drain ends.
 ;;;
 ;;; THE START (`start-server`) reads the settings through a lookup, as the
 ;;; limits are read (decision 0005): the limits, and where the server
@@ -43,7 +44,9 @@
           (only (chezscheme) getenv display-condition)
           (libuv)
           (only (http-server limits) limits-from-environment address-from-environment)
-          (only (http-server private shell) make-shell shell-listen! shell-turn! wall-clock))
+          (only (http-server server) server-phase)
+          (only (http-server private shell)
+                make-shell shell-listen! shell-turn! shell-watch-signals! shell-server wall-clock))
 
   ;; &http-server-error : the condition type of the server's own errors.
   ;; http-server-error? : Any -> Boolean
@@ -57,9 +60,14 @@
 
   ;; serve : (Request -> Response) [(String -> (U String #f))] -> Void
   ;; Serve `handler` where the environment says, logging on standard output,
-  ;; until the server stops.  `lookup` stands in for the process's
-  ;; environment, as `getenv` does by default.  A malformed setting raises
-  ;; &http-server-config-error before anything listens.
+  ;; until the server stops: it drains once the process is sent SIGTERM or
+  ;; SIGINT, or its listener fails, and `serve` returns when the drain ends,
+  ;; whatever waits are still armed: the loop's teardown closes their timers
+  ;; and cancels the lookups not yet begun, but one already running holds it
+  ;; until the lookup answers (M8.1's review).
+  ;; `lookup` stands in for the process's environment, as `getenv` does by
+  ;; default.  A malformed setting raises &http-server-config-error before
+  ;; anything listens.
   (define serve
     (case-lambda
       ((handler) (serve handler getenv))
@@ -67,8 +75,10 @@
        (call-with-uv-loop
         (lambda (loop)
           (let ((sh (start-server loop handler lookup log-line)))
+            (shell-watch-signals! sh)
             (let run ()
-              (when (shell-turn! sh) (run)))))))))
+              (when (and (shell-turn! sh) (not (eq? (server-phase (shell-server sh)) 'stopped)))
+                (run)))))))))
 
   ;; start-server : UvLoop (Request -> Response) (String -> (U String #f))
   ;;                (Symbol (Listof Any) -> Any) -> Shell

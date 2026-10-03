@@ -13,6 +13,13 @@
 ;;; process of its own, tests/serve-child.sps, started with the Chez the
 ;;; environment's CHEZ names, as `make` runs it, or `chez`: the suite reads
 ;;; the port it logs, and a client on the suite's loop asks it for a page.
+;;; Sent SIGTERM, or SIGINT, the child drains (M8.1; decided 2026-10-03): a
+;;; client idle on its keep-alive connection is closed at once, a request in
+;;; flight is answered, saying the connection closes, one held past the
+;;; drain's deadline is closed at it, the drain is logged, and `serve`
+;;; returns once its last connection has closed: the child exits 0, where it
+;;; was killed by SIGTERM and kept on by SIGINT before.  Once `serve` has
+;;; returned, a SIGINT ends the process at once.
 ;;;
 ;;; Oracles:
 ;;;   - decision 0012: where the server listens, and what a handler reads;
@@ -27,7 +34,9 @@
 ;;;     errors;
 ;;;   - the Twelve-Factor App's logs (XI): one line for each thing that
 ;;;     happens, written to standard output.  A condition's text is Chez's
-;;;     `display-condition`'s, as Chez 10.4.1 prints it.
+;;;     `display-condition`'s, as Chez 10.4.1 prints it;
+;;;   - and its disposability (IX): a process shuts down gracefully when sent
+;;;     SIGTERM, and, decided on the owner's word, SIGINT too (M8.1).
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) library-exports with-output-to-string putenv getenv)
         (libuv) (uv-testing) (shell-testing) (response-reader)
@@ -90,42 +99,128 @@
     (let ((r (read-response (client-bytes cl) #f #t)))
       (list (car r) (cadddr r) (list-ref r 4)))))
 
-;; served-by-a-child : -> (List Symbol (U (List Nat String Symbol) #f))
-;; Start tests/serve-child.sps as a process of its own, its standard output
-;; read on a loop of the suite's, until it logs where it listens, whatever
-;; it writes before that line; then a
-;; client asks it for a page, reading until it closes the stream.  How the
-;; waits ended, the first that did not end 'satisfied, and the response,
-;; by chez-httparse's response parser, or #f if none was read; the child is
-;; killed after.
-(define (served-by-a-child)
+;; with-child : (Listof String) (UvLoop (-> String) (-> (U #f List)) UvProcess -> Any) -> Any
+;; Start tests/serve-child.sps with `args` as a process of its own, with the
+;; Chez the environment's CHEZ names, or `chez`, its standard output
+;; collected on a loop of the suite's own, and call `body` with the loop,
+;; what the child has written so far, how it exited, (status signal), or #f
+;; while it runs, and the process.  Then a child still running is killed,
+;; everything closed and the loop torn down, answering what `body` answered.
+(define (with-child args body)
   (let* ((loop (make-uv-loop))
          (pipe (make-uv-pipe loop))
          (out (make-byte-collector))
          (exit-status #f)
          (chez (or (getenv "CHEZ") "chez"))
-         (process (uv-spawn! loop chez (list chez "--program" "tests/serve-child.sps")
+         (process (uv-spawn! loop chez (append (list chez "--program" "tests/serve-child.sps") args)
                              (list (cons 'stdio (list 'ignore (list 'pipe pipe 'from-child)
                                                       '(inherit-fd . 2))))
                              (lambda (status signal) (set! exit-status (list status signal))))))
     (uv-read-start! pipe (lambda (bv start end) (collect-span! out bv start end))
                     (lambda () #f) (lambda (e) #f))
-    (let* ((port (lambda () (listening-port (utf8->string (collector-bytes out)))))
-           (listening (run-loop-until loop (lambda () (and (port) #t)) cap))
-           (cl (and (port)
-                    (open-client loop (port) (b "GET / HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n") #t)))
-           (answered (if cl (run-loop-until loop (lambda () (not (eq? (client-end cl) 'open))) cap) 'no-port))
-           (response (and cl (pair? (responses-of (client-bytes cl)))
-                          (let ((r (read-response (client-bytes cl) #f #t)))
-                            (list (car r) (cadddr r) (list-ref r 4))))))
-      (when cl (client-close! cl))
-      (uv-process-kill! process 'sigkill)
-      (run-loop-until loop (lambda () exit-status) cap)
+    (let ((answer (body loop (lambda () (utf8->string (collector-bytes out))) (lambda () exit-status)
+                        process)))
+      (unless exit-status
+        (uv-process-kill! process 'sigkill)
+        (run-loop-until loop (lambda () exit-status) cap))
       (uv-close! process)
       (uv-close! pipe)
       (run-until-drained loop cap)
       (uv-loop-teardown! loop)
-      (list (if (eq? listening 'satisfied) answered listening) response))))
+      answer)))
+
+;; served-by-a-child : -> (List Symbol (U (List Nat String Symbol) #f))
+;; Start the child (with-child), waiting until it logs where it listens,
+;; whatever it writes before that line; then a client asks it for a page,
+;; reading until it closes the stream.  How the waits ended, the first that
+;; did not end 'satisfied, and the response, by chez-httparse's response
+;; parser, or #f if none was read; the child is killed after.
+(define (served-by-a-child)
+  (with-child '()
+    (lambda (loop text exited process)
+      (let* ((port (lambda () (listening-port (text))))
+             (listening (run-loop-until loop (lambda () (and (port) #t)) cap))
+             (cl (and (port)
+                      (open-client loop (port) (b "GET / HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n") #t)))
+             (answered (if cl (run-loop-until loop (lambda () (not (eq? (client-end cl) 'open))) cap) 'no-port))
+             (response (and cl (pair? (responses-of (client-bytes cl)))
+                            (let ((r (read-response (client-bytes cl) #f #t)))
+                              (list (car r) (cadddr r) (list-ref r 4))))))
+        (when cl (client-close! cl))
+        (list (if (eq? listening 'satisfied) answered listening) response)))))
+
+;; drained-by-a-child : Symbol -> Datum
+;; Start the child.  One client is served `/` and left idle on its
+;; keep-alive connection; a second sends the head of `POST /wait`, in
+;; flight once the child writes `handling`, its body still to come; and a
+;; third `GET /long`, in flight once the child writes `holding`.  Then the
+;; child is sent `sig`; once the idle client's stream has ended, which shows
+;; the drain has begun, the second sends its body.  How each wait ended; the
+;; second's response, its status, body and Connection field, by
+;; chez-httparse's response parser; what the third read, as statuses, and
+;; how its stream ended; the lines the child wrote after `listening`; and
+;; how it exited.  The second client closes once it has read the stream's
+;; end, which ends the child's linger.
+(define (drained-by-a-child sig)
+  (with-child '()
+    (lambda (loop text exited process)
+      (let* ((said? (lambda (line) (and (member line (lines-after-listening (text))) #t)))
+             (port (lambda () (listening-port (text))))
+             (listening (run-loop-until loop (lambda () (and (port) #t)) cap))
+             (idle (and (port) (open-client loop (port) (b "GET / HTTP/1.1\r\nHost: h\r\n\r\n") #t)))
+             (served (if idle
+                         (run-loop-until loop (lambda () (pair? (responses-of (client-bytes idle)))) cap)
+                         'no-port))
+             (flight (and idle (open-client loop (port)
+                                            (b "POST /wait HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\n")
+                                            #t)))
+             (handling (if flight (run-loop-until loop (lambda () (said? "handling")) cap) 'no-port))
+             (held (and flight (open-client loop (port) (b "GET /long HTTP/1.1\r\nHost: h\r\n\r\n") #t)))
+             (holding (if held (run-loop-until loop (lambda () (said? "holding")) cap) 'no-port))
+             (signalled (begin (uv-process-kill! process sig) 'signalled))
+             (idle-ended (if idle (run-loop-until loop (lambda () (not (eq? (client-end idle) 'open))) cap)
+                             'no-port))
+             (sent (begin (when flight (client-send! flight (b "hello"))) 'sent))
+             (answered (if flight (run-loop-until loop (lambda () (not (eq? (client-end flight) 'open))) cap)
+                           'no-port))
+             (response (and flight (pair? (responses-of (client-bytes flight)))
+                            (let ((r (read-response (client-bytes flight) #f #t)))
+                              (list (car r) (cadddr r)
+                                    (let ((f (assoc "Connection" (caddr r)))) (if f (cdr f) 'absent))))))
+             (closed (begin (when flight (client-close! flight)) 'closed))
+             (cut (if held (run-loop-until loop (lambda () (not (eq? (client-end held) 'open))) cap) 'no-port))
+             (ended (run-loop-until loop exited cap)))
+        (for-each (lambda (cl) (when cl (client-close! cl))) (list idle held))
+        (list (list listening served handling holding idle-ended answered cut ended) response
+              (if held (list (map car (responses (client-bytes held))) (client-end held)) 'no-port)
+              (lines-after-listening (text)) (exited))))))
+
+;; returned-then-interrupted : -> Datum
+;; Start the child with `sigint-after` and send it SIGTERM once it listens,
+;; no connection open, so its drain ends at once and `serve` returns; the
+;; child then sends itself SIGINT.  How the waits ended, the lines it wrote
+;; after `listening`, and how it exited.
+(define (returned-then-interrupted)
+  (with-child '("sigint-after")
+    (lambda (loop text exited process)
+      (let* ((listening (run-loop-until loop (lambda () (and (listening-port (text)) #t)) cap))
+             (signalled (begin (uv-process-kill! process 'sigterm) 'signalled))
+             (ended (run-loop-until loop exited cap)))
+        (list listening ended (lines-after-listening (text)) (exited))))))
+
+;; lines-after-listening : String -> (Listof String)
+;; The whole lines of `text` after the first that starts `listening `.
+(define (lines-after-listening text)
+  (let loop ((rest text) (seen? #f) (acc '()))
+    (let ((end (string-index rest #\newline)))
+      (if (not end)
+          (reverse acc)
+          (let ((line (substring rest 0 end))
+                (more (substring rest (+ end 1) (string-length rest))))
+            (cond (seen? (loop more #t (cons line acc)))
+                  ((and (>= (string-length line) 10) (string=? (substring line 0 10) "listening "))
+                   (loop more #t acc))
+                  (else (loop more #f acc))))))))
 
 ;; listening-port : String -> (U Nat #f)
 ;; The port the line `listening HOST PORT` names, among the whole lines of
@@ -243,6 +338,26 @@
     (test-equal "serve, run as a program of its own, answers a request, calling its handler after libuv's turn"
                 '(satisfied (200 "served" complete))
                 (served-by-a-child))
+    ;; The child's drain lasts 2 s: its idle client is closed at once, before
+    ;; the request in flight is answered, and its `/long` is cut short at
+    ;; the deadline, a minute's wait still armed, which `serve` does not
+    ;; wait for.
+    (test-equal "serve, sent SIGTERM, drains: the idle client closed at once, the request in flight answered saying it closes, one held closed at the deadline, the drain logged, and serve returns, the process exiting 0"
+                '((satisfied satisfied satisfied satisfied satisfied satisfied satisfied satisfied)
+                  (200 "waited" "close") (() eof)
+                  ("handling" "holding" "draining 3" "drain-timeout" "stopped") (0 #f))
+                (drained-by-a-child 'sigterm))
+    (test-equal "and so does serve sent SIGINT"
+                '((satisfied satisfied satisfied satisfied satisfied satisfied satisfied satisfied)
+                  (200 "waited" "close") (() eof)
+                  ("handling" "holding" "draining 3" "drain-timeout" "stopped") (0 #f))
+                (drained-by-a-child 'sigint))
+    ;; Once `serve` has returned it watches no signal, and chez-libuv leaves
+    ;; SIGINT's default disposition, not Chez's keyboard interrupt, so the
+    ;; next one ends the process (docs/handlers.org; decided 2026-10-03).
+    (test-equal "once serve has returned, a SIGINT ends the process at once"
+                '(satisfied satisfied ("draining 0" "stopped") (0 sigint))
+                (returned-then-interrupted))
 
     ;; --- the log ---
     (test-equal "the log writes a line for each thing: what happened, then each detail"
