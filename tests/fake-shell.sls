@@ -56,11 +56,13 @@
 ;;;
 ;;;   feed-parser     parser-feed!, then the result as `parser-result`
 ;;;   resume-parser   parser-resume!
-;;;   call-handler    the handler called once the outermost dispatch's drain
-;;;                   has ended, as the libuv shell calls it after libuv's
-;;;                   turn (decision 0014; M7.1): its answer, a response or
-;;;                   a reader, as `handler-responded`, or `handler-failed`
-;;;                   if it raises
+;;;   call-handler    the handler called from the connection's scheduler,
+;;;                   drained once the outermost dispatch's drain has ended,
+;;;                   as the libuv shell calls it after libuv's turn
+;;;                   (decision 0014; M7.1): its answer, a response or a
+;;;                   reader, as `handler-responded`, or `handler-failed` if
+;;;                   it raises; or, if it answers `awaiting`, its thunk run
+;;;                   on a coroutine (A HANDLER THAT WAITS, below)
 ;;;   deliver-body    the piece to the reader the core is handing the body to
 ;;;                   (conn-body-reader), or `handler-failed` if it raises;
 ;;;                   with no reader, nothing (M6.1, decision 0013)
@@ -87,13 +89,36 @@
 ;;; and records the rest (logs, a hand-off) without acting on them: the
 ;;; hand-off is M8's.  A fake connection made on credit (M6.2) answers with
 ;;; each handler's answer and `credit`, `(handler-responded answer credit)`,
-;;; as M7's coroutine shell will, which hands a reader its pieces on
-;;; credit: the test then gives the reader's credit, `(body-credit n)`.  (Since M2.5 the core serves an upgrade and closes after
-;;; it, so its own loop never hands off.)
+;;; as a handler that waits is answered (A HANDLER THAT WAITS, below): the
+;;; test then gives the reader's credit, `(body-credit n)`.  (Since M2.5
+;;; the core serves an upgrade and closes after it, so its own loop never
+;;; hands off.)
 ;;; Input is delivered only while the connection reads, as libuv delivers
 ;;; it.  An event the core cannot finish within `dispatch-cap` dispatches is
 ;;; a harness error, never a hang (global-constraints: cap by iteration
 ;;; count, never wall-clock).
+;;;
+;;; M7.3: A HANDLER THAT WAITS, as the libuv shell's (decision 0014), so
+;;; the contract test (design §8.4) can hold the coroutine shell to it.  A
+;;; fake connection keeps a scheduler of its own, (http-server private
+;;; scheduler)'s, drained once each outermost dispatch has ended, as the
+;;; libuv shell's turn drains its loop's after libuv's run: the handler is
+;;; called there, and the coroutines run there.  A handler that answers
+;;; `(awaiting thunk)` has its thunk run on a coroutine, and its answer
+;;; dispatched on credit once it has ended.  Until the next request's
+;;; handler is called, the connection's calls into the handler's code, its
+;;; reader's pieces and end and its producer, are each made on a coroutine,
+;;; one at a time, in order, each event its call brings dispatched once it
+;;; has ended: a streaming reader's piece is credited, `(body-credit n)`,
+;;; once the reader has taken it.  A call that waits goes on when its
+;;; connection closes, but what it answers is dropped, and the connection
+;;; makes no more calls (decision 0015 item 4).  The fake drains its
+;;; scheduler after every dispatch, so no event can close a connection
+;;; between the dispatch that asks for the handler's call and that call, as
+;;; libuv's turn can: it keeps none of the libuv shell's check for a handler
+;;; whose connection closed before its call (M7.1's review).  It never
+;;; polls: a coroutine that yields runs again at the connection's next
+;;; drain.
 (library (fake-shell)
   (export make-fake-shell fake-shell?
           fake-shell-state fake-shell-now
@@ -105,7 +130,10 @@
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
-          (only (http-server body) body-reader-on-piece body-reader-on-end read-body)
+          (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole? read-body)
+          (only (http-server awaiting) awaiting? awaiting-thunk)
+          (only (http-server private scheduler)
+                make-scheduler scheduler-call! scheduler-spawn! scheduler-drain!)
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server serializer) date-line)
@@ -138,16 +166,19 @@
             (mutable wheel) (mutable entry)   ; a connection's deadline; #f for a stub's
             (mutable dated)                   ; instants its next writes are dated at, in order
             (mutable credit?)                 ; whether it answers on credit (M6.2)
-            (mutable calls))                  ; the handler calls to make once the drain ends, reversed
+            (mutable scheduler)               ; a connection's calls and coroutines; #f for a stub's
+            (mutable waits?)                  ; whether the request's handler answered awaiting
+            (mutable waiting)                 ; its calls on coroutines to make, in order
+            (mutable calling?)                ; whether one of them runs
+            (mutable closing?))               ; whether its close has run
     (protocol (lambda (new)
+                (define (make step state0 now0 perform trace)
+                  (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
+                       #f #f '() #f #f #f '() #f #f))
                 (case-lambda
-                  ((step state0 now0)
-                   (new step state0 now0 '() '() #f '() '() 0 '() '() #f #t 0 '() #f #f #f #f '() #f '()))
-                  ((step state0 now0 perform)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f #f #f #f '() #f '()))
-                  ((step state0 now0 perform trace)
-                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace #f #f '()
-                        #f '()))))))
+                  ((step state0 now0) (make step state0 now0 #f #f))
+                  ((step state0 now0 perform) (make step state0 now0 perform #f))
+                  ((step state0 now0 perform trace) (make step state0 now0 perform trace))))))
 
   ;; trace! : FakeShell Symbol Any -> Void
   (define (trace! s kind datum)
@@ -181,9 +212,10 @@
   ;; fake-shell-deliver! : FakeShell Event -> (Listof Action)
   ;; Dispatch one event: trace it, step it, thread the state, record the
   ;; event, queue the actions, and drain the queue unless a drain or a feed is
-  ;; under way.  Once the outermost drain has ended, make the handler calls
-  ;; it queued, in order (call-handler, above), each answer a dispatch of
-  ;; its own.  Returns this event's actions.
+  ;; under way.  Once the outermost drain has ended, drain the connection's
+  ;; scheduler (schedule!): the handler calls the drain queued and the
+  ;; coroutines ready, in order, each answer a dispatch of its own.  Returns
+  ;; this event's actions.
   (define (fake-shell-deliver! s event)
     (fake-shell-dispatches-set! s (+ (fake-shell-dispatches s) 1))
     (when (> (fake-shell-dispatches s) dispatch-cap)
@@ -198,19 +230,16 @@
        (enqueue! s actions)
        (when (= (fake-shell-depth s) 0)
          (drain! s)
-         (make-calls! s))
+         (schedule! s))
        actions)))
 
-  ;; make-calls! : FakeShell -> Void
-  ;; The handler calls queued, oldest first, until none is: a call's answer
-  ;; may queue another.
-  (define (make-calls! s)
-    (let ((calls (fake-shell-calls s)))
-      (unless (null? calls)
-        (let ((oldest (list-ref calls (- (length calls) 1))))
-          (fake-shell-calls-set! s (remq oldest calls))
-          (oldest)
-          (make-calls! s)))))
+  ;; schedule! : FakeShell -> Void
+  ;; Drain the connection's scheduler: what is ready, handler calls and
+  ;; coroutines, oldest first, until nothing is, each answer a dispatch of
+  ;; its own, which drains it again in turn.  A stub's shell has none.
+  (define (schedule! s)
+    (let ((sched (fake-shell-scheduler s)))
+      (when sched (scheduler-drain! sched))))
 
   ;; enqueue! : FakeShell (Listof Action) -> Void — behind what is queued.
   (define (enqueue! s actions)
@@ -307,13 +336,15 @@
 
   ;; --- the connection ---------------------------------------------------------
 
-  ;; make-fake-connection : Limits (Request -> Response) [Trace [Nat [Boolean]]] -> FakeShell
+  ;; make-fake-connection : Limits (Request -> Answer) [Trace [Nat [Boolean]]] -> FakeShell
+  ;;   Answer = Response | BodyReader | Awaiting
   ;; A connection in idle, reading, the clock at `now` (0 unless given), and
   ;; its idle deadline armed there: (http-server connection)'s core through
-  ;; the adapter, with a parser of its own and `handler` answering every
-  ;; request at once, traced as make-fake-shell traces.  Made `on-credit?`,
-  ;; it answers with each answer and `credit` (M6.2).  Its state is the
-  ;; adapter's context; fake-shell-conn-state reads the core's state from it.
+  ;; the adapter, with a parser of its own, a scheduler of its own, and
+  ;; `handler` answering every request, traced as make-fake-shell traces.
+  ;; Made `on-credit?`, it answers with each answer and `credit` (M6.2).
+  ;; Its state is the adapter's context; fake-shell-conn-state reads the
+  ;; core's state from it.
   (define make-fake-connection
     (case-lambda
       ((limits handler) (make-fake-connection limits handler #f 0 #f))
@@ -329,6 +360,9 @@
                                   trace)))
          (set! cell s)
          (fake-shell-credit?-set! s on-credit?)
+         (fake-shell-scheduler-set!
+          s (make-scheduler
+             (lambda (mode) (assertion-violation 'fake-shell "the fake never polls" mode))))
          (fake-shell-parser-set! s (make-conn-parser ctx))
          (fake-shell-wheel-set! s (make-wheel (limits-tick-ms limits)))
          (fake-shell-entry-set! s (make-wheel-entry s))
@@ -354,45 +388,97 @@
     (wheel-arm! (fake-shell-wheel s) (fake-shell-entry s)
                 (+ (fake-shell-now s) (limits-deadline-ms limits kind))))
 
-  ;; perform-connection! : FakeShell Action (Request -> Response) Limits -> Void
+  ;; perform-connection! : FakeShell Action (Request -> Answer) Limits -> Void
   (define (perform-connection! s a handler limits)
     (case (car a)
       ((feed-parser) (feed! s (cadr a) (caddr a) (cadddr a)))
       ((resume-parser) (parser-resume! (fake-shell-parser s)))
       ((call-handler)
        (let ((request (cadr a)))
-         (fake-shell-calls-set!
-          s (cons (lambda ()
-                    (let ((answer (guard (e (#t (list 'handler-failed e)))
-                                    (list 'handler-responded (handler request)))))
-                      (fake-shell-deliver! s (if (and (fake-shell-credit? s)
-                                                      (eq? (car answer) 'handler-responded))
-                                                 (append answer '(credit))
-                                                 answer))))
-                  (fake-shell-calls s)))))
+         (fake-shell-waits?-set! s #f)
+         (scheduler-call! (fake-shell-scheduler s)
+           (lambda ()
+             (let ((event (guard (e (#t (list 'handler-failed e)))
+                            (answered s (handler request) #t))))
+               (when event (fake-shell-deliver! s event)))))))
       ((deliver-body)
-       (let ((r (conn-body-reader (fake-shell-conn-state s))))
+       (let ((r (conn-body-reader (fake-shell-conn-state s)))
+             (bv (cadr a)) (start (caddr a)) (end (cadddr a)))
          (when r
-           (guard (e (#t (fake-shell-deliver! s (list 'handler-failed e))))
-             ((body-reader-on-piece r) (cadr a) (caddr a) (cadddr a))))))
+           (if (fake-shell-waits? s)
+               (call-waiting! s (lambda () ((body-reader-on-piece r) bv start end))
+                              (lambda (v) (and (not (body-reader-whole? r))
+                                               (list 'body-credit (- end start)))))
+               (guard (e (#t (fake-shell-deliver! s (list 'handler-failed e))))
+                 ((body-reader-on-piece r) bv start end))))))
       ((deliver-body-end)
        (let ((r (conn-body-reader (fake-shell-conn-state s))))
          (when r
-           (fake-shell-deliver! s (guard (e (#t (list 'handler-failed e)))
-                                    (list 'handler-responded ((body-reader-on-end r))))))))
+           (if (fake-shell-waits? s)
+               (call-waiting! s (body-reader-on-end r) (lambda (v) (answered s v #f)))
+               (let ((event (guard (e (#t (list 'handler-failed e)))
+                              (answered s ((body-reader-on-end r)) #f))))
+                 (when event (fake-shell-deliver! s event)))))))
       ((notify-producer)
        (let ((p (conn-producer (fake-shell-conn-state s))))
          (when p
-           (fake-shell-deliver! s (guard (e (#t (list 'handler-failed e)))
-                                    (producer-event (p)))))))
+           (if (fake-shell-waits? s)
+               (call-waiting! s p producer-event)
+               (fake-shell-deliver! s (guard (e (#t (list 'handler-failed e)))
+                                        (producer-event (p))))))))
       ((write) (write! s (cadr a) (caddr a)))
       ((read-stop) (fake-shell-reading?-set! s #f))
       ((read-start) (fake-shell-reading?-set! s #t))
       ((shutdown) (later! s '(shutdown-completed)))
-      ((close) (fake-shell-reading?-set! s #f) (later! s '(closed)))
+      ((close) (fake-shell-reading?-set! s #f) (fake-shell-closing?-set! s #t) (later! s '(closed)))
       ((arm-deadline) (arm! s limits (cadr a)))
       ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
       (else (values))))
+
+  ;; answered : FakeShell Any Boolean -> (U Event #f)
+  ;; The event an answer brings, as the libuv shell's: the handler's or, not
+  ;; `handler?`, a reader's at its end: `(handler-responded answer)`, and
+  ;; `credit` after the handler's on a connection made on credit or once the
+  ;; handler waits; or, for `awaiting`, none yet: its thunk is called on a
+  ;; coroutine (call-waiting!), and its answer answered so in turn.
+  (define (answered s a handler?)
+    (cond
+     ((awaiting? a)
+      (fake-shell-waits?-set! s #t)
+      (call-waiting! s (awaiting-thunk a) (lambda (v) (answered s v handler?)))
+      #f)
+     ((and handler? (or (fake-shell-waits? s) (fake-shell-credit? s)))
+      (list 'handler-responded a 'credit))
+     (else (list 'handler-responded a))))
+
+  ;; call-waiting! : FakeShell (-> Any) (Any -> (U Event #f)) -> Void
+  ;; Call `thunk` on a coroutine, after the connection's calls before it:
+  ;; once it has ended, the event `->event` makes of its value is
+  ;; dispatched, or `handler-failed` if either raised; then the next call
+  ;; starts.  A connection closing makes no more, and drops what one that
+  ;; ends then answers.
+  (define (call-waiting! s thunk ->event)
+    (fake-shell-waiting-set! s (append (fake-shell-waiting s) (list (cons thunk ->event))))
+    (unless (fake-shell-calling? s) (next-call! s)))
+
+  ;; next-call! : FakeShell -> Void — start the oldest call waiting, if any.
+  (define (next-call! s)
+    (let ((calls (fake-shell-waiting s)))
+      (cond
+       ((or (null? calls) (fake-shell-closing? s))
+        (fake-shell-waiting-set! s '())
+        (fake-shell-calling?-set! s #f))
+       (else
+        (let ((call (car calls)))
+          (fake-shell-waiting-set! s (cdr calls))
+          (fake-shell-calling?-set! s #t)
+          (scheduler-spawn! (fake-shell-scheduler s) (car call)
+            (lambda (kind v)
+              (let ((event (guard (e (#t (list 'handler-failed e)))
+                             (if (eq? kind 'raised) (raise v) ((cdr call) v)))))
+                (when (and event (not (fake-shell-closing? s)))
+                  (fake-shell-deliver! s event)))
+              (next-call! s))))))))
 
   ;; fake-shell-date-writes! : FakeShell (Listof Nat) -> Void
   ;; Date the connection's next writes at `instants`, one each, in order,

@@ -6,7 +6,7 @@
 ;;; each dispatched and the actions each ran, in order.  The core and the
 ;;; adapter are shared, so what the contract holds equal is what each shell
 ;;; adds: its message loop, its executors, and the completions it reports.
-;;; M7 adds the coroutine shell.
+;;; M7.3 adds the coroutine shell (THE COROUTINE SHELL, below).
 ;;;
 ;;; HOW THE SAME EVENTS REACH BOTH.  A script is a client's: what it sends,
 ;;; where it waits for the server to have read what it sent, and its end,
@@ -45,11 +45,30 @@
 ;;; second after its event: a fake dated at the event's instant, or at the
 ;;; instants out of order, writes another Date.
 ;;;
+;;; THE COROUTINE SHELL (M7.3) is the libuv shell whose handler waits: it
+;;; answers every request `(awaiting thunk)`, the thunk the same handler's
+;;; call, so the handler, its reader's pieces and end, and its producer run
+;;; on coroutines from the scheduler's drain, and its readers are answered on
+;;; credit (decision 0014).  Every script whose requests reach the handler
+;;; plays to it too: one the core refuses, and those that stall, reach none,
+;;; so through it they would play the direct shell again.  Its events are
+;;; given to a fake made the same way, whose own coroutine path makes its
+;;; answers and its credit: the credit the coroutine shell gives, unlike the
+;;; suite's own for a shell made on credit (M6.2), is the shell's own event,
+;;; not the script's.  Its trace cannot be the direct shell's: a handler that
+;;; waits is answered on credit, and a waiting reader's end is asked for
+;;; before its first piece has run.  What its client reads can be: each Date
+;;; line's value aside, since each run dates its own seconds (decided by
+;;; form, 2026-10-02).
+;;;
 ;;; The checks, for each script:
 ;;;   - the libuv shell read what the client sent, then its end alone, and
 ;;;     closed: so the events the fake is given are the script's;
 ;;;   - the client read the bytes the fake shell wrote;
-;;;   - the two traces are identical.
+;;;   - the two traces are identical;
+;;;   - and through the coroutine shell, the client read what the direct
+;;;     shell's client read, Dates aside, and the handler answered on credit
+;;;     wherever the direct shell's answered with none.
 ;;; A client that does not connect plays nothing, and the first check names
 ;;; how its connect ended.  Where the two shells part, a line on stderr names the script and the
 ;;; first byte, or the first event or action, that differs: `CONTRACT
@@ -66,6 +85,7 @@
         (only (http-server connection) conn-phase)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (http-server body)
+        (only (http-server awaiting) awaiting)
         (fake-shell) (shell-testing) (producers))
 
 (define (b s) (string->utf8 s))
@@ -122,6 +142,11 @@
     (hold-into-next-second!))
   (handler req))
 
+;; waiting : (Request -> Answer) -> (Request -> Awaiting)
+;; The coroutine shell's handler: `h`'s answer, given from a coroutine, as a
+;; handler that waits gives it (THE COROUTINE SHELL, the header).
+(define (waiting h) (lambda (req) (awaiting (lambda () (h req)))))
+
 ;; monotonic-ms : -> Nat — Chez's monotonic clock, in milliseconds.
 (define (monotonic-ms)
   (let ((t (current-time 'time-monotonic)))
@@ -166,7 +191,6 @@
     ("a handler that raises" (send "GET /raise HTTP/1.1\r\nHost: x\r\n\r\n"))
     ("a handler that raises a condition with no message"
      (send "GET /raise-who HTTP/1.1\r\nHost: x\r\n\r\n"))
-    ("a request the core refuses, with no Host" (send "GET /x HTTP/1.1\r\n\r\n"))
     ("a streamed response, chunked, the connection kept"
      (send "GET /stream HTTP/1.1\r\nHost: x\r\n\r\n"))
     ("a streamed response to HTTP/1.0, close-delimited, then the linger"
@@ -181,6 +205,12 @@
      (send "POST /read HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n")
      (read) (send "hello"))))
 
+;; A script whose request the core refuses before any handler is asked,
+;; played to the direct shell alone: through the coroutine shell, it would
+;; play the direct shell again.
+(define refused-scripts
+  '(("a request the core refuses, with no Host" (send "GET /x HTTP/1.1\r\n\r\n"))))
+
 ;; The scripts whose deadlines pass, played to a shell with short limits: a
 ;; fifth of a second or a little more for a head, an idle connection and a
 ;; linger, each its own, and a tick of 10 ms.
@@ -190,10 +220,11 @@
                  (tick-ms . 10))))
 
 ;; The scripts played to a shell made on credit (M6.2), which answers with
-;; each answer and `credit`, as M7's coroutine shell will, handing a reader
-;; its pieces on credit; the fake is made on credit too.  Whenever the
-;; script's connection waits for its reader's credit, the script's waits
-;; credit it, so a script reads the same however the reads divide.
+;; each answer and `credit`, as the coroutine shell answers a handler that
+;; waits, handing a reader its pieces on credit; the fake is made on credit
+;; too.  Whenever the script's connection waits for its reader's credit, the
+;; script's waits credit it, so a script reads the same however the reads
+;; divide.
 (define credit-scripts
   '(("a body streamed to a reader on credit, credited each time it waits"
      (send "POST /read HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234") (read) (send "56789"))))
@@ -370,14 +401,17 @@
              (again (+ n 1)))
             (else 'credit-refused)))))
 
-;; play! : Shell Nat Script -> (List Bytevector Client Datum)
+;; play! : Shell Nat Script Boolean -> (List Bytevector Client Datum)
 ;; Play a script to the libuv shell `sh`, listening on `port`: the bytes the
 ;; client sent, the client, and 'satisfied if every wait was, each `(read)`
 ;; and the connection's close with its client at the stream's end;
-;; otherwise the outcomes of the waits, in order.  A client that does not
-;; connect plays nothing, and answers how its connect ended.  The client's
-;; handle is closed after.
-(define (play! sh port script)
+;; otherwise the outcomes of the waits, in order.  Each wait credits the
+;; script's connection as it waits for its reader's credit if `credit?`
+;; (wait-crediting), as a shell made on credit asks: a waiting handler's
+;; reader is credited by its shell itself.  A client that does not connect
+;; plays nothing, and answers how its connect ended.  The client's handle
+;; is closed after.
+(define (play! sh port script credit?)
   (set! playing sh)
   (set! earlier (shell-connections sh))
   (set! traced '())
@@ -387,6 +421,7 @@
   (set! closed #f)
   (set! adopted-at #f)
   (let* ((cl (open-client loop port #f #t))
+         (wait (if credit? wait-crediting wait-for))
          (sent (make-byte-collector))
          (connecting (wait-for (lambda () (not (eq? (client-connected cl) 'never)))))
          (waits (if (eq? (client-connected cl) 'no-error)
@@ -400,15 +435,14 @@
                                (step (cdr steps) waits)))
                             ((read)
                              (step (cdr steps)
-                                   (cons (wait-crediting (lambda () (= (collector-count delivered)
-                                                                       (collector-count sent))))
+                                   (cons (wait (lambda () (= (collector-count delivered)
+                                                             (collector-count sent))))
                                          waits)))
                             ((stall) (step '() waits))
                             ((bare-close) (step (cdr steps) waits)))
                           (begin
                             (unless (stalls? script) (client-shut! cl))
-                            (reverse (cons (wait-crediting
-                                            (lambda () (and closed (not (eq? (client-end cl) 'open)))))
+                            (reverse (cons (wait (lambda () (and closed (not (eq? (client-end cl) 'open)))))
                                            waits)))))
                     (list (list 'not-connected connecting (client-connected cl))))))
     (client-close! cl)
@@ -418,15 +452,17 @@
 
 ;; --- the fake shell -----------------------------------------------------------
 
-;; replay : Limits Boolean (Listof (Pair Nat Event)) (Listof Nat) -> (values FakeShell (Listof Entry))
+;; replay :
+;;   Limits Boolean Boolean (Listof (Pair Nat Event)) (Listof Nat) -> (values FakeShell (Listof Entry))
 ;; The libuv shell's events given to a fake connection under the same
-;; limits, made on credit if the libuv shell was (M6.2), and at the instant
-;; the libuv shell adopted its own, its clock
-;; moved to each event's instant before it is given: a delivery, the
-;; client's end, a read's error and a reader's credit delivered as they
-;; are, a completion as
-;; the fake's own oldest one waiting, a tick as the fake's timer firing,
-;; and the events a shell makes itself left to the fake.  Then whatever the
+;; limits, made on credit if the libuv shell was (M6.2), its handler
+;; waiting if the libuv shell's did (`waits?`, the coroutine shell's), and
+;; at the instant the libuv shell adopted its own, its clock moved to each
+;; event's instant before it is given: a delivery, the client's end, a
+;; read's error and the suite's credit delivered as they are, a completion
+;; as the fake's own oldest one waiting, a tick as the fake's timer firing,
+;; and the events a shell makes itself left to the fake, a waiting
+;; handler's reader's credit among them.  Then whatever the
 ;; fake still has waiting.  Its writes are dated at `writes`, the instants
 ;; the libuv shell's were, in order (ONE CLOCK).  Answers the fake and its
 ;; trace, in order.  A client the libuv shell never adopted has no events,
@@ -434,9 +470,9 @@
 ;; event, a bug in the core or in the fake, is recorded in its trace as
 ;; `(raised event condition)`, so the traces part there and the checks
 ;; name it, where a raise out of the suite would end it (M6.3's mutants).
-(define (replay limits on-credit? events writes)
+(define (replay limits on-credit? waits? events writes)
   (let* ((seen '())
-         (fake (make-fake-connection limits handler
+         (fake (make-fake-connection limits (if waits? (waiting handler) handler)
                                      (lambda (kind datum)
                                        (set! seen (cons (list kind (render datum)) seen)))
                                      (or adopted-at 0)
@@ -448,13 +484,17 @@
                   (guard (x (#t (set! seen (cons (list 'raised (render event) (render x)) seen))))
                     (case (car event)
                       ((bytes-arrived eof read-error) (fake-shell-deliver! fake event))
-                      ;; A credit the fake's core refuses, where the libuv
-                      ;; shell took it, is a difference the traces show, not
-                      ;; a raise out of the suite.
+                      ;; A credit the suite gave a shell made on credit
+                      ;; (wait-crediting) is given the fake too, and one the
+                      ;; fake's core refuses, where the libuv shell took it,
+                      ;; is a difference the traces show, not a raise out of
+                      ;; the suite.  A waiting handler's reader is credited
+                      ;; by each shell itself.
                       ((body-credit)
-                       (guard (e ((assertion-violation? e)
-                                  (set! seen (cons (list 'refused (render event)) seen))))
-                         (fake-shell-deliver! fake event)))
+                       (when on-credit?
+                         (guard (e ((assertion-violation? e)
+                                    (set! seen (cons (list 'refused (render event)) seen))))
+                           (fake-shell-deliver! fake event))))
                       ((write-completed shutdown-completed closed) (fake-shell-deliver-later! fake))
                       ((tick) (fake-shell-fire! fake))
                       (else (values))))))
@@ -463,17 +503,19 @@
       (fake-shell-settle! fake))
     (values fake (reverse seen))))
 
-;; check-script! : Shell Nat Limits Boolean Script -> Void
+;; check-script! : Shell Nat Limits Boolean Boolean Script -> (Pair Bytevector (Listof Entry))
 ;; Play `script` to the libuv shell `sh`, listening on `port`, replay its
-;; events to a fake under `limits`, made on credit if `sh` was, and check the
-;; three things the contract holds.
-(define (check-script! sh port limits on-credit? script)
-  (let* ((played (play! sh port script))
+;; events to a fake under `limits`, made on credit if `sh` was, its handler
+;; waiting if `sh`'s does (`waits?`, the coroutine shell), and check the
+;; three things the contract holds.  Answers the bytes the client read, and
+;; the libuv shell's trace.
+(define (check-script! sh port limits on-credit? waits? script)
+  (let* ((played (play! sh port script on-credit?))
          (sent (car played)) (cl (cadr played)) (finished (caddr played))
          (libuv (reverse traced))
          (evs (reverse received))
-         (name (car script)))
-    (let-values (((fake fake-trace) (replay limits on-credit? evs (reverse written-at))))
+         (name (if waits? (coroutine-name script) (car script))))
+    (let-values (((fake fake-trace) (replay limits on-credit? waits? evs (reverse written-at))))
       ;; No script resets its connection, so the client's end is the one
       ;; input besides the bytes: a read error there would be the libuv
       ;; shell's own, which the replay would hand the fake too.  A client
@@ -491,7 +533,67 @@
              (compare-bytes (joined (fake-shell-writes fake)) (client-bytes cl)))
       (check name "the two shells' traces are identical"
              'identical
-             (first-difference libuv fake-trace)))))
+             (first-difference libuv fake-trace))
+      (cons (client-bytes cl) libuv))))
+
+;; coroutine-name : Script -> String — its name, played to the coroutine shell.
+(define (coroutine-name script) (string-append "through the coroutine shell, " (car script)))
+
+;; check-alike! :
+;;   Script (Pair Bytevector (Listof Entry)) (Pair Bytevector (Listof Entry)) -> Void
+;; The coroutine shell's checks against the direct shell's play of the same
+;; script, each its client's bytes and its libuv shell's trace: the client
+;; read the bytes the direct shell's client read, each Date line's value
+;; aside; and the handler answered on credit wherever the direct shell's
+;; answered with no word of it, so the coroutine shell's handler waited,
+;; and failed where it failed.
+(define (check-alike! script direct coroutine)
+  (check (coroutine-name script) "the client read what the direct shell's client read, Dates aside"
+         (dateless (car direct)) (dateless (car coroutine)))
+  (check (coroutine-name script) "its handler answered on credit where the direct shell's answered with none"
+         (map (lambda (a) (if (eq? a 'plain) 'credit a)) (answers (cdr direct)))
+         (answers (cdr coroutine))))
+
+;; answers : (Listof Entry) -> (Listof Symbol)
+;; How a libuv shell's trace has the handler answer each request it was
+;; asked for: the first answer after each `call-handler`, 'credit if it came
+;; on credit, 'plain if with no word of it, and 'failed if the handler
+;; failed.
+(define (answers trace)
+  (let scan ((t trace) (asked? #f) (out '()))
+    (if (null? t)
+        (reverse out)
+        (let ((kind (caar t)) (datum (cadar t)))
+          (cond ((and (eq? kind 'action) (eq? (car datum) 'call-handler)) (scan (cdr t) #t out))
+                ((and asked? (eq? kind 'event) (memq (car datum) '(handler-responded handler-failed)))
+                 (scan (cdr t) #f
+                       (cons (cond ((eq? (car datum) 'handler-failed) 'failed)
+                                   ((equal? (cddr datum) '(credit)) 'credit)
+                                   (else 'plain))
+                             out)))
+                (else (scan (cdr t) asked? out)))))))
+
+;; dateless : Bytevector -> String
+;; The bytes, one character each, each Date line's value made "-": each run
+;; dates its writes in seconds of its own.
+(define (dateless bv)
+  (let ((s (latin-1 bv)) (key "\r\nDate: "))
+    (let scan ((from 0) (out '()))
+      (let ((at (find-from s key from)))
+        (if at
+            (let ((value (+ at (string-length key))))
+              (scan (or (find-from s "\r\n" value) (string-length s))
+                    (cons "-" (cons (substring s from value) out))))
+            (apply string-append (reverse (cons (substring s from (string-length s)) out))))))))
+
+;; find-from : String String Nat -> (U Nat #f) — where `key` first begins in
+;; `s`, at or after `from`.
+(define (find-from s key from)
+  (let ((n (string-length key)) (end (string-length s)))
+    (let scan ((i from))
+      (cond ((> (+ i n) end) #f)
+            ((string=? (substring s i (+ i n)) key) i)
+            (else (scan (+ i 1)))))))
 
 (run-suite "contract"
   (lambda ()
@@ -502,7 +604,12 @@
     (let ((quick (make-shell loop held-handler quick-limits (lambda () (uv-now loop))
                              (lambda (what details) #f) trace!))
           (on-credit (make-shell loop held-handler default-limits (lambda () (uv-now loop))
-                                 (lambda (what details) #f) trace! #t)))
+                                 (lambda (what details) #f) trace! #t))
+          ;; The coroutine shell (THE COROUTINE SHELL, above), and the bytes
+          ;; each script's client read from the direct shell.
+          (coroutine (make-shell loop (waiting held-handler) default-limits (lambda () (uv-now loop))
+                                 (lambda (what details) #f) trace!))
+          (direct '()))
       ;; A client the libuv shell never adopted, one that did not connect,
       ;; has no events to replay: the fake writes and traces nothing, so of
       ;; its script's checks only the first fails, naming how the connect
@@ -510,23 +617,33 @@
       (test-equal "a client the libuv shell never adopted replays as nothing"
                   '(() ())
                   (begin (set! adopted-at #f)
-                         (let-values (((fake fake-trace) (replay default-limits #f '() '())))
+                         (let-values (((fake fake-trace) (replay default-limits #f #f '() '())))
                            (list (fake-shell-writes fake) fake-trace))))
       (let ((port (shell-listen! shell "127.0.0.1" 0)))
-        (for-each (lambda (script) (check-script! shell port default-limits #f script)) scripts))
+        (for-each (lambda (script)
+                    (set! direct (cons (cons script (check-script! shell port default-limits #f #f script))
+                                       direct)))
+                  scripts)
+        (for-each (lambda (script) (check-script! shell port default-limits #f #f script))
+                  refused-scripts))
       (let ((port (shell-listen! quick "127.0.0.1" 0)))
-        (for-each (lambda (script) (check-script! quick port quick-limits #f script)) stalling-scripts))
+        (for-each (lambda (script) (check-script! quick port quick-limits #f #f script))
+                  stalling-scripts))
       (let ((port (shell-listen! on-credit "127.0.0.1" 0)))
-        (for-each (lambda (script) (check-script! on-credit port default-limits #t script))
+        (for-each (lambda (script) (check-script! on-credit port default-limits #t #f script))
                   credit-scripts))
+      ;; The scripts again, through the coroutine shell.
+      (let ((port (shell-listen! coroutine "127.0.0.1" 0)))
+        (for-each (lambda (script)
+                    (check-alike! script (cdr (assq script direct))
+                                  (check-script! coroutine port default-limits #f #t script)))
+                  scripts))
 
-      (shell-shutdown! shell)
-      (shell-shutdown! quick)
-      (shell-shutdown! on-credit)
-      (test-equal "at the end, no connection is left, and no handle on the loop" '(() () () ())
-                  (begin (wait-for (lambda ()
-                                     (for-all (lambda (sh) (eq? (uv-handle-state (shell-listener sh)) 'closed))
-                                              (list shell quick on-credit))))
-                         (list (shell-connections shell) (shell-connections quick)
-                               (shell-connections on-credit) (uv-loop-live-handles loop)))))
+      (let ((shells (list shell quick on-credit coroutine)))
+        (for-each shell-shutdown! shells)
+        (test-equal "at the end, no connection is left, and no handle on the loop" '(() () () () ())
+                    (begin (wait-for (lambda ()
+                                       (for-all (lambda (sh) (eq? (uv-handle-state (shell-listener sh)) 'closed))
+                                                shells)))
+                           (append (map shell-connections shells) (list (uv-loop-live-handles loop)))))))
     (uv-loop-teardown! loop)))
