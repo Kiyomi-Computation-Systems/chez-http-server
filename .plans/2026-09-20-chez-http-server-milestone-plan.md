@@ -1426,6 +1426,24 @@ green on its own:
 2. the fake's waits, scripted; handler code that waits, played to the direct shell;
    and the order row, the brief's exit.
 
+*Built 2026-10-02 (M7.3):* the two steps, as above, tests and records only. Chosen
+while building: the fake's handler calls and coroutines run from a scheduler of its own,
+drained once each outermost dispatch has ended; handler code that waits marks where each
+wait ended, in the libuv shell's events, and the fake's wait ends there; the three
+scripts whose requests reach no handler stay the direct shell's, since through the
+coroutine shell they would play it again; the suite credits only a shell made on
+credit, a waiting reader being credited by its shell; and the replay moves the fake's
+clock inside its guard, so a wait that went on past an earlier script's close cannot end
+the suite. A /code-review high found seven, all fixed on the owner's word by form: the
+fake's close checks, which it had dropped, restored, with a row of their own; a check
+that the coroutine pass is the coroutine path; a deadline's raise marked, and a script
+in which a deadline ends a lookup; and four helpers shared with the socket lane. The
+order row's mutation, the coroutine shell answering a waiting handler at once, reddens
+the order row (M7O-1); the plan's, as near as v1 lets it be made, leaves it green
+(M7O-2, M7O-3). M7.1's M7B-7, the fake calling a handler in place, survives still: the
+core asks for a handler last in every drain it runs, so the fake's later call changes
+no trace.
+
 **M7 exit:** the brief's. Each of R1–R5 has a mutation that goes red. The budget spike
 run again shows an idle connection's heap unchanged: an idle connection carries no
 coroutine.

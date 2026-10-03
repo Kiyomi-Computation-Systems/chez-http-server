@@ -26,7 +26,8 @@
 ;;; own, the fake delivering the one it has waiting; and each tick as the
 ;;; fake's own timer firing then.  The events a shell makes itself while it
 ;;; performs an action, a parser's result and a handler's answer, each makes
-;;; on its own.
+;;; on its own.  Where the libuv shell's handler code ended a wait, the
+;;; fake's wait ends (THE WAITS' MARKS, below).
 ;;;
 ;;; ONE CLOCK.  The libuv shell keeps two: the wall clock its Date line is
 ;;; made from, and the loop's (uv_now), which its deadlines are armed and
@@ -61,6 +62,13 @@
 ;;; line's value aside, since each run dates its own seconds (decided by
 ;;; form, 2026-10-02).
 ;;;
+;;; HANDLER CODE THAT WAITS (M7.3), with the server's verbs (decision
+;;; 0015), plays to the direct shell, whose handler waits where a target
+;;; asks: a sleep, a deadline, a lookup, a reader and a producer that sleep,
+;;; and a reader's end that waits; the last, the brief's exit, a lookup
+;;; inside a pipelined connection, whose responses THE ORDER ROW (below)
+;;; holds to the order they were asked in.
+;;;
 ;;; The checks, for each script:
 ;;;   - the libuv shell read what the client sent, then its end alone, and
 ;;;     closed: so the events the fake is given are the script's;
@@ -68,7 +76,9 @@
 ;;;   - the two traces are identical;
 ;;;   - and through the coroutine shell, the client read what the direct
 ;;;     shell's client read, Dates aside, and the handler answered on credit
-;;;     wherever the direct shell's answered with none.
+;;;     wherever the direct shell's answered with none;
+;;;   - and for the lookup inside a pipelined connection, the client read
+;;;     the responses in the order it asked for them.
 ;;; A client that does not connect plays nothing, and the first check names
 ;;; how its connect ended.  Where the two shells part, a line on stderr names the script and the
 ;;; first byte, or the first event or action, that differs: `CONTRACT
@@ -85,7 +95,8 @@
         (only (http-server connection) conn-phase)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (http-server body)
-        (only (http-server awaiting) awaiting)
+        (only (http-server awaiting) awaiting deadline-passed? resolve-error? resolve-error-reason)
+        (only (http-server private waits) sleep-ms with-deadline resolve)
         (fake-shell) (shell-testing) (producers))
 
 (define (b s) (string->utf8 s))
@@ -101,7 +112,22 @@
 ;; `/end-raises` have readers that raise, at the first piece and at the
 ;; end.  `/stream` answers with a producer of three pieces (decision 0013
 ;; item 8; M6.3; tests/producers.sls), and `/stream-raises` with one whose
-;; second call raises.
+;; second call raises.  And it waits (decision 0015; M7.3), each wait
+;; marked where it ends (THE WAITS' MARKS, below): `/sleep` sleeps 20 ms;
+;; `/deadline` sleeps a minute inside a deadline of 10 ms, and answers
+;; "passed" when the deadline's raise comes, or "slept"; `/resolve` resolves
+;; "localhost" and answers the addresses, a space between each;
+;; `/resolve-unknown` resolves "a..b", whose empty label the resolver
+;; refuses without asking a server, and answers the reason it raised with;
+;; `/resolve-twice` resolves "localhost" inside a deadline of 0 ms, which
+;; libuv's turn passes before the lookup can answer, since a turn runs its
+;; timers before it polls, then resolves it again with none, and answers
+;; "passed" or "resolved", then the second lookup's addresses;
+;; `/read-sleeps` reads the body with a reader that sleeps 5 ms at each
+;; piece and answers the pieces joined; `/stream-sleeps` answers with a
+;; producer that sleeps 5 ms before each call; and `/read-then-wait`, an
+;; ordinary handler, reads the body with a reader whose end answers
+;; `awaiting`, its thunk sleeping 5 ms.
 ;; Both shells call it, so it keeps nothing between calls: each answer
 ;; makes a producer of its own.
 (define (handler req)
@@ -130,7 +156,81 @@
            (make-response 200 #f '()
                           (producer-of '("one ")
                                        (lambda () (raise (make-message-condition "the producer failed"))))))
+          ((bytevector=? target (b "/sleep"))
+           (awaiting (lambda () (slept 20) (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/deadline"))
+           (awaiting
+            (lambda ()
+              (make-response 200 #f '()
+                             (b (guard (e ((deadline-passed? e) "passed"))
+                                  (with-deadline 10 (lambda () (slept 60000) "slept"))))))))
+          ((bytevector=? target (b "/resolve"))
+           (awaiting (lambda () (make-response 200 #f '() (b (spaced (resolved "localhost")))))))
+          ((bytevector=? target (b "/resolve-unknown"))
+           (awaiting
+            (lambda ()
+              (make-response 200 #f '()
+                             (b (guard (e ((resolve-error? e) (symbol->string (resolve-error-reason e))))
+                                  (resolved "a..b")
+                                  "resolved"))))))
+          ((bytevector=? target (b "/resolve-twice"))
+           (awaiting
+            (lambda ()
+              (let ((first (guard (e ((deadline-passed? e) "passed"))
+                             (with-deadline 0 (lambda () (resolved "localhost") "resolved")))))
+                (make-response 200 #f '()
+                               (b (string-append first " " (spaced (resolved "localhost")))))))))
+          ((bytevector=? target (b "/read-sleeps"))
+           (awaiting
+            (lambda ()
+              (let ((pieces '()))
+                (read-body (lambda (bv start end)
+                             (slept 5)
+                             (set! pieces (cons (bytes-between bv start end) pieces)))
+                           (lambda () (make-response 200 #f '() (joined (reverse pieces)))))))))
+          ((bytevector=? target (b "/stream-sleeps"))
+           (awaiting
+            (lambda ()
+              (let ((p (producer-of '("one " "two " "three"))))
+                (make-response 200 #f '() (lambda () (slept 5) (p)))))))
+          ((bytevector=? target (b "/read-then-wait"))
+           (read-body (lambda (bv start end) #t)
+                      (lambda () (awaiting (lambda () (slept 5) (make-response 200 #f '() target))))))
           (else (make-response 200 #f '() target)))))
+
+;; THE WAITS' MARKS (M7.3).  The libuv shell's waits end inside libuv's run,
+;; where the suite cannot see them: a timer of the loop's fires, or a
+;; lookup's answer comes, and the coroutine waiting runs again at the next
+;; drain.  So the handler's code marks where each of its waits ended, in the
+;; libuv shell's events, at the loop's time: `(woke timer)` for a sleep's or
+;; a deadline's, `(woke resolve reason addresses)` for a lookup's answer.
+;; The replay ends the fake's wait there, so the fake's handler code runs on
+;; where the libuv shell's did, whatever the kernel and the threadpool did
+;; meanwhile.  So the handler's code waits only through `slept` and
+;; `resolved`, which mark each way a wait can end: a wait made any other way
+;; would leave the fake's waiting for good.  The fake's own handler code
+;; marks too, in the replay, where nothing reads the marks.
+
+;; woke! : Datum -> Void — mark the end of a wait, `(woke . what)`.
+(define (woke! what) (set! received (cons (cons (uv-now loop) (cons 'woke what)) received)))
+
+;; slept : Nat -> Void
+;; sleep-ms, marked where it ends: at its time, or at a deadline's raise,
+;; which goes on.
+(define (slept ms)
+  (guard (e ((deadline-passed? e) (woke! '(timer)) (raise e)))
+    (sleep-ms ms))
+  (woke! '(timer)))
+
+;; resolved : String -> (Listof String)
+;; resolve, marked where it ends: with the addresses, or with the reason it
+;; raises, or at a deadline's raise, the timer's, each of which goes on.
+(define (resolved host)
+  (guard (e ((resolve-error? e) (woke! (list 'resolve (resolve-error-reason e) '())) (raise e))
+            ((deadline-passed? e) (woke! '(timer)) (raise e)))
+    (let ((addresses (resolve host)))
+      (woke! (list 'resolve #f addresses))
+      addresses)))
 
 ;; The libuv shells call the handler through `held-handler`, which first
 ;; holds the loop into the next second for `/next-second`, as a handler that
@@ -228,6 +328,31 @@
 (define credit-scripts
   '(("a body streamed to a reader on credit, credited each time it waits"
      (send "POST /read HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234") (read) (send "56789"))))
+
+;; The scripts whose handler code waits (M7.3), played to the direct shell,
+;; whose handler waits only where its target asks.  The last is the brief's
+;; exit (plan §14, M7.3): a handler awaiting uv-getaddrinfo! inside a
+;; pipelined connection, then an ordinary request and a sleep, which THE
+;; ORDER ROW (below) holds to the order they were asked in.
+(define lookup-in-a-pipeline
+  '("a lookup inside a pipelined connection, then an ordinary request and a sleep"
+    (send "GET /resolve HTTP/1.1\r\nHost: x\r\n\r\nGET /after HTTP/1.1\r\nHost: x\r\n\r\nGET /sleep HTTP/1.1\r\nHost: x\r\n\r\n")))
+(define waiting-scripts
+  (append
+   '(("a handler that sleeps" (send "GET /sleep HTTP/1.1\r\nHost: x\r\n\r\n"))
+     ("a deadline that passes while its handler sleeps" (send "GET /deadline HTTP/1.1\r\nHost: x\r\n\r\n"))
+     ("a handler that resolves localhost" (send "GET /resolve HTTP/1.1\r\nHost: x\r\n\r\n"))
+     ("a handler that resolves a name that does not resolve"
+      (send "GET /resolve-unknown HTTP/1.1\r\nHost: x\r\n\r\n"))
+     ("a deadline that passes before its handler's lookup answers, then a lookup with none"
+      (send "GET /resolve-twice HTTP/1.1\r\nHost: x\r\n\r\n"))
+     ("a body read by a reader that sleeps at each piece, in two deliveries"
+      (send "POST /read-sleeps HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234") (read) (send "56789"))
+     ("a streamed response whose producer sleeps before each call"
+      (send "GET /stream-sleeps HTTP/1.1\r\nHost: x\r\n\r\n"))
+     ("an ordinary handler's reader whose end waits"
+      (send "POST /read-then-wait HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")))
+   (list lookup-in-a-pipeline)))
 
 (define stalling-scripts
   '(("a head never finished: 408 once its deadline passes, then closed once the linger's does"
@@ -462,14 +587,19 @@
 ;; read's error and the suite's credit delivered as they are, a completion
 ;; as the fake's own oldest one waiting, a tick as the fake's timer firing,
 ;; and the events a shell makes itself left to the fake, a waiting
-;; handler's reader's credit among them.  Then whatever the
+;; handler's reader's credit among them; and where the libuv shell's handler
+;; code ended a wait, the fake's wait ended, its timer fired or its lookup
+;; answered as the libuv shell's was (THE WAITS' MARKS).  Then whatever the
 ;; fake still has waiting.  Its writes are dated at `writes`, the instants
 ;; the libuv shell's were, in order (ONE CLOCK).  Answers the fake and its
 ;; trace, in order.  A client the libuv shell never adopted has no events,
 ;; and its fake is made at 0.  Whatever raises while the fake takes an
 ;; event, a bug in the core or in the fake, is recorded in its trace as
 ;; `(raised event condition)`, so the traces part there and the checks
-;; name it, where a raise out of the suite would end it (M6.3's mutants).
+;; name it, where a raise out of the suite would end it (M6.3's mutants):
+;; its clock moved back among them, as by the mark of a wait that went on
+;; past an earlier script's close (decision 0015 item 4), which a mutant
+;; that answers a waiting handler at once makes (M7.3).
 (define (replay limits on-credit? waits? events writes)
   (let* ((seen '())
          (fake (make-fake-connection limits (if waits? (waiting handler) handler)
@@ -479,9 +609,9 @@
                                      on-credit?)))
     (fake-shell-date-writes! fake writes)
     (for-each (lambda (e)
-                (fake-shell-advance! fake (- (car e) (fake-shell-now fake)))
                 (let ((event (cdr e)))
                   (guard (x (#t (set! seen (cons (list 'raised (render event) (render x)) seen))))
+                    (fake-shell-advance! fake (- (car e) (fake-shell-now fake)))
                     (case (car event)
                       ((bytes-arrived eof read-error) (fake-shell-deliver! fake event))
                       ;; A credit the suite gave a shell made on credit
@@ -497,6 +627,12 @@
                            (fake-shell-deliver! fake event))))
                       ((write-completed shutdown-completed closed) (fake-shell-deliver-later! fake))
                       ((tick) (fake-shell-fire! fake))
+                      ;; Where the libuv shell's handler code ended a wait,
+                      ;; the fake's ends it (THE WAITS' MARKS).
+                      ((woke)
+                       (case (cadr event)
+                         ((timer) (fake-shell-fire-waits! fake))
+                         ((resolve) (fake-shell-answer-lookup! fake (caddr event) (cadddr event)))))
                       (else (values))))))
               events)
     (guard (x (#t (set! seen (cons (list 'raised 'settling (render x)) seen))))
@@ -535,6 +671,21 @@
              'identical
              (first-difference libuv fake-trace))
       (cons (client-bytes cl) libuv))))
+
+;; THE ORDER ROW (the brief's exit; plan §14, M7.3).  Through the libuv
+;; shell, a handler awaiting uv-getaddrinfo! inside a pipelined connection
+;; keeps the responses in the order they were asked for: the lookup's
+;; answer, the addresses uv-getaddrinfo! itself answers for "localhost"
+;; (`looked-up`), then the ordinary request's, then the sleep's.  In v1 the
+;; core reads no request past one whose handler has not answered (decision
+;; 0004), so no later handler runs while one waits, and the plan's mutation,
+;; a later request's handler resumed first, cannot be made; the row goes red
+;; when the shell answers a waiting handler before its thunk has ended
+;; (decided by form, 2026-10-02).
+(define (check-order! bytes addresses)
+  (check (car lookup-in-a-pipeline) "the client read the responses in the order it asked for them"
+         (list (list 200 (if (pair? addresses) (spaced addresses) addresses)) '(200 "/after") '(200 "/sleep"))
+         (map (lambda (r) (list (car r) (cadddr r))) (responses bytes))))
 
 ;; coroutine-name : Script -> String — its name, played to the coroutine shell.
 (define (coroutine-name script) (string-append "through the coroutine shell, " (car script)))
@@ -619,13 +770,51 @@
                   (begin (set! adopted-at #f)
                          (let-values (((fake fake-trace) (replay default-limits #f #f '() '())))
                            (list (fake-shell-writes fake) fake-trace))))
+      ;; A wait goes on when its connection closes, what it answers is
+      ;; dropped, and its connection makes no more calls (decision 0015
+      ;; item 4); the socket lane holds the libuv shell to it.  No script can
+      ;; close a connection while a call waits, so the fake is held to it
+      ;; here, alone: a reader whose piece sleeps, its end's call behind it,
+      ;; the connection closed by a read's error meanwhile.  Its sleep ends,
+      ;; once; the piece's credit is dropped, and the end is never called.
+      (test-equal "a fake connection closed while a waiting call sleeps drops that call's answer and makes no more"
+                  '(1 end-not-called ())
+                  (let* ((ended #f)
+                         (seen '())
+                         (fake (make-fake-connection
+                                default-limits
+                                (lambda (req)
+                                  (awaiting
+                                   (lambda ()
+                                     (read-body (lambda (bv start end) (slept 5))
+                                                (lambda () (set! ended #t)
+                                                  (make-response 200 #f '() (b "ended")))))))
+                                (lambda (kind datum) (set! seen (cons (cons kind (car datum)) seen))))))
+                    (set! received '())
+                    (let ((post (b "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")))
+                      (fake-shell-deliver! fake (list 'bytes-arrived post 0 (bytevector-length post))))
+                    (set! seen '())
+                    (fake-shell-deliver! fake '(read-error ECONNRESET))
+                    (fake-shell-advance! fake 10)
+                    (fake-shell-fire-waits! fake)
+                    (fake-shell-settle! fake)
+                    (list (length (filter (lambda (e) (equal? (cdr e) '(woke timer))) received))
+                          (if ended 'end-called 'end-not-called)
+                          (filter (lambda (e) (memq (cdr e) '(body-credit handler-responded handler-failed)))
+                                  (reverse seen)))))
       (let ((port (shell-listen! shell "127.0.0.1" 0)))
         (for-each (lambda (script)
                     (set! direct (cons (cons script (check-script! shell port default-limits #f #f script))
                                        direct)))
                   scripts)
         (for-each (lambda (script) (check-script! shell port default-limits #f #f script))
-                  refused-scripts))
+                  refused-scripts)
+        ;; The scripts whose handler code waits, and the order row.
+        (let ((addresses (looked-up loop "localhost" cap)))
+          (for-each (lambda (script)
+                      (let ((played (check-script! shell port default-limits #f #f script)))
+                        (when (eq? script lookup-in-a-pipeline) (check-order! (car played) addresses))))
+                    waiting-scripts)))
       (let ((port (shell-listen! quick "127.0.0.1" 0)))
         (for-each (lambda (script) (check-script! quick port quick-limits #f #f script))
                   stalling-scripts))

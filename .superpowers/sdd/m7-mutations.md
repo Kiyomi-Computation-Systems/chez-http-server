@@ -603,3 +603,79 @@ alone; M7A-6 and M7A-9, M7.1's, whose text M7.2 rewrote.
 The step's tree made afresh, main at bc570a4 with its two test files laid
 in, cut from the finished tree by taking the second step's parts out, and
 run whole: forty-seven suites, 1,614 expected passes, every pin ok.
+
+### The second step: handler code that waits, and the order row
+
+Eleven mutants of the step's own, on the finished tree, against every
+suite. The order row's is M7O-1, decided by form; M7O-2 and M7O-3 are the
+plan's, as near as v1 lets it be made, and leave the order row green, each
+reddening other checks: the calls' order, the scheduler's.
+
+| Mutant | Where | Change | Reddens on the finished tree (suite, failures) |
+|---|---|---|---|
+| M7C-5 | the suite | the replay ignores the waits' marks | contract 18 |
+| M7C-6 | the suite | a sleep marked where it begins, not where it ends | contract 12 |
+| M7C-7 | the suite | `resolved` marks nothing at a deadline's raise | contract 2 |
+| M7C-8 | `shell-testing` | the shared `responses` drops the last response it reads (tests/shell-testing.sls) | contract 1, shell 46 |
+| M7F-14 | `fake-shell` | the timer of the fake's waits fires and ends nothing | contract 15 |
+| M7F-15 | `fake-shell` | the fake's lookup answered with no addresses | contract 6 |
+| M7F-16 | `fake-shell` | the fake's waits keep a clock that stands at 0 | contract 13 |
+| M7F-19 | `fake-shell` | the fake's cancel keeps its lookup waiting | contract 2 |
+| M7O-1 | `shell` | the coroutine shell answers a waiting handler before its thunk has ended (the order row's, decided by form) | contract 84, shell 13 |
+| M7O-2 | `shell` | the plan's mutation, as near as v1 lets it be made: a waiting connection's newest call started first | contract 7, shell 1 |
+| M7O-3 | `scheduler` | the plan's mutation, as near as v1 lets it be made: the scheduler's ready queue run newest first | scheduler 2, waits 5 |
+
+The first step's twenty-two again, on the finished tree:
+
+| Mutant | Reddens on the finished tree (suite, failures) |
+|---|---|
+| M7A-5 | contract 43, shell 1 |
+| M7A-6 | contract 47, shell 12 |
+| M7A-9 | contract 117, shell 17 |
+| M7C-1 | contract 4 |
+| M7C-2 | contract 2 |
+| M7C-3 | contract 16 |
+| M7C-4 | contract 20, scheduler 7, shell 10, waits 7 |
+| M7F-1 | contract 14 |
+| M7F-2 | contract 26 |
+| M7F-3 | contract 8 |
+| M7F-4 | contract 6 |
+| M7F-5 | contract 10 |
+| M7F-6 | contract 2 |
+| M7F-7 | contract 3 |
+| M7F-8 | contract 27 |
+| M7F-9 | contract 1 |
+| M7F-10 | none: survives |
+| M7F-11 | contract 55 |
+| M7F-12 | connection-body 28, connection-cut-off 3, connection-deadlines 4, connection-expect 16, connection-head 16, connection-linger 9, connection-originated 6, connection-padding 14, connection-response 23, connection-stream 16, contract 93, libhtp-lane 15, message-loop 12, outcome-lane 3, ratchet 1, view 13 |
+| M7F-13 | contract 2 |
+| M7F-17 | contract 1 |
+| M7F-18 | contract 1 |
+
+So every mutant reddens a check on the finished tree but M7F-10, the scope
+statement: the first step's eight survivors, M7C-2, M7F-1, M7F-6, M7F-7,
+M7F-9, M7F-13, M7F-17 and M7F-18, each red where handler code waits.
+
+By check: every check the slice added or changed is reddened on the
+finished tree, 119 of 119: the first step's 91, the waiting scripts' 27,
+and the order row; and so is the suite's row for the review's first fix,
+by M7F-17 and M7F-18 alone. By kind, beyond the first step's (whose kinds
+M7O-1 and M7O-2 redden too):
+- the waiting scripts' first check (9): M7A-6, M7A-9;
+- their second (9) and third (9): the fake's mutants, the suite's, M7A-5,
+  M7A-9 and M7O-1, each by six at least;
+- the order row: M7A-6, M7A-9, M7C-4, M7C-8, M7O-1.
+
+The review's fixes in this step (progress.md), each check red first: the
+fake's close checks' row failed before them, and M7F-17 and M7F-18 each
+redden it alone; the new script, a deadline of 0 ms that passes before its
+lookup can answer, then a second lookup, failed its second and third
+checks, the fake never answering, and with `resolved` alone fixed, the
+fake's cancel raised; M7C-7 and M7F-19 take each fix out, and each reddens
+those two checks; the four helpers shared, M7C-8, the shared `responses`
+dropping its last response, reddening the order row and 46 of the socket
+lane's checks. Re-cut for the fixes: M7F-15, for the lookup's answer that
+answers nothing now.
+
+The finished tree run whole: forty-seven suites, 1,643 expected passes,
+every pin ok; and on Linux in Docker the same.

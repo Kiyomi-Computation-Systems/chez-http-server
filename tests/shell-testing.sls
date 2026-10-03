@@ -14,8 +14,9 @@
 (library (shell-testing)
   (export open-client client? client-tcp client-collector client-connected client-end
           client-read! client-send! client-shut! client-bytes client-close!
-          err->symbol run-shell-until run-loop-until run-until-drained)
-  (import (rnrs) (libuv) (uv-testing)
+          err->symbol run-shell-until run-loop-until run-until-drained
+          bytes-between responses spaced looked-up)
+  (import (rnrs) (libuv) (uv-testing) (response-reader)
           (only (http-server private shell) shell-turn! loop-turn!))
 
   ;; err->symbol : (U #f Condition) -> Symbol
@@ -122,6 +123,45 @@
   ;; the loop is empty, the ticker closed by then.
   (define (run-until-drained loop cap)
     (run-until/ticking loop (lambda () (for-all uv-timer? (uv-loop-live-handles loop))) cap))
+
+  ;; bytes-between : Bytevector Nat Nat -> Bytevector — a copy of bv[from, to).
+  (define (bytes-between bv from to)
+    (let ((out (make-bytevector (- to from))))
+      (bytevector-copy! bv from out 0 (- to from))
+      out))
+
+  ;; responses : Bytevector -> (Listof ResponseRead)
+  ;; The whole responses at the front of `bv`, in order, each read by
+  ;; chez-httparse's response parser (tests/response-reader.sls): the
+  ;; shortest prefix it reads as one complete message is the first, and what
+  ;; follows is read the same way.
+  (define (responses bv)
+    (let next ((from 0) (acc '()))
+      (let grow ((to (+ from 1)))
+        (if (> to (bytevector-length bv))
+            (reverse acc)
+            (let ((r (read-response (bytes-between bv from to) #f #f)))
+              (if (eq? (list-ref r 4) 'complete)
+                  (next to (cons r acc))
+                  (grow (+ to 1))))))))
+
+  ;; spaced : (Listof String) -> String — the strings, a space between each.
+  (define (spaced strings)
+    (if (null? strings)
+        ""
+        (fold-left (lambda (acc x) (string-append acc " " x)) (car strings) (cdr strings))))
+
+  ;; looked-up : UvLoop String Nat -> (U (Listof String) 'failed)
+  ;; What uv-getaddrinfo! itself answers for `host`, stream sockets alone:
+  ;; the oracle a handler's lookup is held to.  `loop` is run until it has
+  ;; answered, `cap` steps at most (run-loop-until).
+  (define (looked-up loop host cap)
+    (let ((answer #f))
+      (uv-getaddrinfo! loop host #f '((socktype . stream))
+                       (lambda (err results)
+                         (set! answer (if err 'failed (map uv-addrinfo-address results)))))
+      (run-loop-until loop (lambda () answer) cap)
+      answer))
 
   ;; disarm! : UvLoop UvTimer -> Void — stop and close the ticker, if it is
   ;; open, and drain its close.

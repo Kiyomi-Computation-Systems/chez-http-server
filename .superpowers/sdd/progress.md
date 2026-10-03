@@ -4083,3 +4083,24 @@ Records: plan §14's M7.3 note; design §8.4's note.
 Size: 312 inserted lines of tests, 109 deleted.
 
 NEXT: the second step, handler code that waits and the order row, stacked on this one.
+
+M7.3 SECOND STEP: handler code that waits, and the order row (feat/m7.3-waits-in-order).
+- `tests/fake-shell.sls`: a fake connection's waits, `(http-server private waits)`'s, scripted: their clock the injected one; their timer the test's, `fake-shell-fire-waits!`; their resolver the test's, `fake-shell-answer-lookup!`, one lookup at a time, a deadline's cancel dropping it (the review's third).
+- `tests/test-contract.sps`: handler code that waits, played to the direct shell: a sleep; a deadline that passes while its handler sleeps; a lookup of localhost, and of a name that does not resolve; a deadline of 0 ms that passes before its lookup can answer, then a second lookup (the review's third); a reader that sleeps at each piece; a producer that sleeps before each call; an ordinary handler's reader whose end waits; and the brief's exit, a lookup inside a pipelined connection, then an ordinary request and a sleep, which THE ORDER ROW holds to the order they were asked in, the lookup's answer what uv-getaddrinfo! itself answers. THE WAITS' MARKS: the handler code waits only through `slept` and `resolved`, which mark in the libuv shell's events where each wait ended, and the replay ends the fake's wait there. The replay moves the fake's clock inside its guard, so an event out of time is a trace entry, not the suite's end: under the order row's mutation a wait went on past its connection's close (decision 0015 item 4), marked its end among the next script's events, earlier than that fake's start, and ended the suite before the order row ran. The suite's own row for the review's first fix.
+- `tests/shell-testing.sls`, `tests/test-shell.sps`: `responses`, `bytes-between`, `spaced` and `looked-up`, shared (the review's fourth).
+
+Measured on the step's tree, the finished one (2026-10-02, Darwin arm64): `make test` green, forty-seven suites, 1,643 expected passes (1,614 + 29), every pin ok. On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree made with `COPYFILE_DISABLE=1`, curl and ab installed: `make test`, less its submodule and pin checks, forty-seven suites, 1,643 expected passes.
+
+Watched to fail (m7-mutations.md, M7.3): thirty-three mutants on the finished tree, the first step's twenty-two among them; each reddens a check but M7F-10, and every one of the 119 checks the slice added or changed is reddened by one, the suite's row for the review's first fix too. The order row: M7O-1, decided by form, and M7A-6, M7A-9, M7C-4 and M7C-8; the plan's mutation, as near as v1 lets it be made, M7O-2 and M7O-3, leaves it green.
+
+Records: design §8.4's note, its sentence on the marks; plan §14's built note; the README's status.
+
+Size: 295 inserted lines of tests, 52 deleted.
+
+M7.3 BUILT, the two steps proved each on its own tree, the review's fixes in (2026-10-02):
+- Each step's tree made afresh, main at bc570a4 with the step's files and those of the step below laid in, `make check-imports` and every suite run there: the first, forty-seven suites and 1,614 expected passes; the second, the finished tree, forty-seven and 1,643.
+- Each step's mutants on its own tree: twenty-two on the first, and on the finished tree all thirty-three (m7-mutations.md, M7.3). Every mutant loads; on the finished tree each reddens a check but M7F-10, the scope survivor. Every check a step added is reddened by its own step's mutants on its own tree: 91 of 91 on the first, 119 of 119 on the finished tree.
+
+Size, inserted and deleted lines of tests, each step against the one below it: the first 312 and 109; the second 295 and 52; the slice, against main, 600 and 154. No file under `src/` changes.
+
+NEXT: the two stacked PRs, merged bottom up on the owner's "do closing ritual" once CI is green on each head. Then the M7 exit (plan §14): each of R1 to R5 with a mutation that goes red, and the budget spike run again, an idle connection carrying no coroutine, when the owner asks.

@@ -118,7 +118,13 @@
 ;;; libuv's turn can: it keeps none of the libuv shell's check for a handler
 ;;; whose connection closed before its call (M7.1's review).  It never
 ;;; polls: a coroutine that yields runs again at the connection's next
-;;; drain.
+;;; drain.  Its handler code waits with (http-server private waits)'s verbs
+;;; (decision 0015) on waits of its own, scripted: their clock is the
+;;; injected one; their timer is the test's, `fake-shell-fire-waits!` firing
+;;; it at the clock's now; and their resolver is the test's,
+;;; `fake-shell-answer-lookup!` answering the lookup asked for, one at a
+;;; time, as the connection's calls are made.  A deadline that ends a lookup
+;;; cancels it, and the lookup is answered no more.
 (library (fake-shell)
   (export make-fake-shell fake-shell?
           fake-shell-state fake-shell-now
@@ -126,7 +132,8 @@
           fake-shell-advance! fake-shell-deliver! fake-shell-tick! fake-shell-fire! fake-shell-run!
           make-fake-connection fake-shell-conn-state fake-shell-reading? drops-body
           fake-shell-deliver-later! fake-shell-settle! fake-shell-feed-input!
-          fake-shell-writes fake-shell-date-writes! written-status write-wire)
+          fake-shell-writes fake-shell-date-writes! written-status write-wire
+          fake-shell-fire-waits! fake-shell-answer-lookup!)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
@@ -134,6 +141,7 @@
           (only (http-server awaiting) awaiting? awaiting-thunk)
           (only (http-server private scheduler)
                 make-scheduler scheduler-call! scheduler-spawn! scheduler-drain!)
+          (only (http-server private waits) make-waits waits-clock! waits-fire! waits-resolver!)
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server serializer) date-line)
@@ -170,11 +178,13 @@
             (mutable waits?)                  ; whether the request's handler answered awaiting
             (mutable waiting)                 ; its calls on coroutines to make, in order
             (mutable calling?)                ; whether one of them runs
-            (mutable closing?))               ; whether its close has run
+            (mutable closing?)                ; whether its close has run
+            (mutable timed)                   ; a connection's waits, scripted (fake-waits)
+            (mutable lookup))                 ; the lookup they asked for: (host . answer!), or #f
     (protocol (lambda (new)
                 (define (make step state0 now0 perform trace)
                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
-                       #f #f '() #f #f #f '() #f #f))
+                       #f #f '() #f #f #f '() #f #f #f #f))
                 (case-lambda
                   ((step state0 now0) (make step state0 now0 #f #f))
                   ((step state0 now0 perform) (make step state0 now0 perform #f))
@@ -363,6 +373,7 @@
          (fake-shell-scheduler-set!
           s (make-scheduler
              (lambda (mode) (assertion-violation 'fake-shell "the fake never polls" mode))))
+         (fake-shell-timed-set! s (fake-waits s))
          (fake-shell-parser-set! s (make-conn-parser ctx))
          (fake-shell-wheel-set! s (make-wheel (limits-tick-ms limits)))
          (fake-shell-entry-set! s (make-wheel-entry s))
@@ -434,6 +445,46 @@
       ((arm-deadline) (arm! s limits (cadr a)))
       ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
       (else (values))))
+
+  ;; fake-waits : FakeShell -> Waits
+  ;; The waits of the connection's scheduler: their clock the injected one,
+  ;; their timer the test's (fake-shell-fire-waits!), and their resolver the
+  ;; test's, a lookup kept until fake-shell-answer-lookup! answers it, or a
+  ;; deadline cancels it: one at a time, as a connection's calls are made,
+  ;; so a second while one waits is an assertion violation.  What they
+  ;; would log, a late resume, is dropped.
+  (define (fake-waits s)
+    (let ((w (make-waits (fake-shell-scheduler s) (lambda (what details) (values)))))
+      (waits-clock! w (lambda () (fake-shell-now s)) (lambda (ms) (values)) (lambda () (values)))
+      (waits-resolver! w
+                       (lambda (host answer!)
+                         (when (fake-shell-lookup s)
+                           (assertion-violation 'fake-shell "a second lookup while one waits" host))
+                         (fake-shell-lookup-set! s (cons host answer!))
+                         (fake-shell-lookup s))
+                       (lambda (request)
+                         (when (eq? request (fake-shell-lookup s))
+                           (fake-shell-lookup-set! s #f))))
+      w))
+
+  ;; fake-shell-fire-waits! : FakeShell -> Void
+  ;; The timer of a connection's waits fires at the injected now: each sleep
+  ;; and deadline due by then ends (waits-fire!), and what that wakes runs.
+  (define (fake-shell-fire-waits! s)
+    (waits-fire! (fake-shell-timed s))
+    (schedule! s))
+
+  ;; fake-shell-answer-lookup! : FakeShell (U Symbol #f) (Listof String) -> Void
+  ;; The lookup a connection's handler code asked for, unanswered, answered
+  ;; with `reason` and `addresses`, as a resolver answers (#f and the
+  ;; addresses, or the reason it failed, such as EAI_NONAME, and '()), and
+  ;; what that wakes run; with none waiting, nothing.
+  (define (fake-shell-answer-lookup! s reason addresses)
+    (let ((lookup (fake-shell-lookup s)))
+      (when lookup
+        (fake-shell-lookup-set! s #f)
+        ((cdr lookup) reason addresses)
+        (schedule! s))))
 
   ;; answered : FakeShell Any Boolean -> (U Event #f)
   ;; The event an answer brings, as the libuv shell's: the handler's or, not
