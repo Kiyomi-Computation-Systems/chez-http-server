@@ -92,7 +92,8 @@
 ;;;     those over max-connections, closing each at once, the first refusal
 ;;;     logged and the count once a place is free; serves the next then;
 ;;;     listens on one listener at a time; closes the listener the clients
-;;;     used at a shutdown, and never listens after it; listens with the
+;;;     used at a shutdown, stopping at once with none open, and never
+;;;     listens after it; listens with the
 ;;;     limits' backlog; and closes a listener that cannot listen, after which
 ;;;     the shell may listen again;
 ;;;   - deadlines (M5.3; decision 0005), under short limits and the loop's own
@@ -123,6 +124,22 @@
 ;;;     whole body in order, never holding more than one read, and the
 ;;;     response is written; and a credit for more than it was handed closes
 ;;;     the connection and raises to the caller;
+;;;   - the drain (M8.1; plan §14), on shells whose drain lasts 200 ms, the
+;;;     shutdown asked with shell-shutdown! in the signal's place: told to
+;;;     finish, an idle keep-alive connection is closed at once, with no
+;;;     response; a request in flight is answered, saying the connection
+;;;     closes, which closes once its client does; a client that holds its
+;;;     connection with half a head is closed at the drain's deadline; and so
+;;;     is one held in its handler, nothing armed, the timer stopped before
+;;;     the shutdown, which starts it again; each deadline met on time, read
+;;;     from the trace as the deadlines' are.  The drain ends with its last
+;;;     connection: the server has stopped, logged `draining`,
+;;;     `drain-timeout` and `stopped`, and the shell holds no timer.  A
+;;;     connection the run loop drops ends a drain as a close does; a
+;;;     shutdown is dated by the loop's time brought up to date; a shutdown
+;;;     with no connection open stops at once; and when telling each
+;;;     connection to finish raises, each is still told, and the first raise
+;;;     goes on;
 ;;;   - the shell's one timer: four connections add one timer to the loop;
 ;;;     its wheel empty, it stops, and the shell keeps it for its next
 ;;;     deadline, and closes it once shut down with no connection left; when
@@ -136,9 +153,10 @@
 ;;; GMT, as the shell's clock; chez-httparse's response parser; chez-libuv's
 ;;; live-handle list and its dev-build counters; byte-machine's own contract
 ;;; condition, provoked by a feed from inside a callback; the weak-pair
-;;; instrument, calibrated below; and for deadlines, the loop's time
-;;; (uv_now) each was armed at, read where it was armed, and each write
-;;; began at, and the suite's own limits.
+;;; instrument, calibrated below; for deadlines, the loop's time (uv_now)
+;;; each was armed at, read where it was armed, and each write began at, and
+;;; the suite's own limits; and for the drain, the loop's time each shutdown
+;;; was asked at, which the server is told, plus the suite's drain timeout.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?
               current-time time-second time-nanosecond)
@@ -218,6 +236,10 @@
     ((arm-deadline) (time! (list 'arm c (cadr datum) (uv-now loop))))
     ((write) (time! (list 'write c (uv-now loop))))
     ((tick) (time! (list (if (connection? c) 'tick 'fire) c (cadr datum)))))
+  (when (and (eq? kind 'server-event) (eq? (car datum) 'shutdown-requested))
+    (time! (list 'shutdown c (cadr datum))))
+  (when (and (eq? kind 'server-action) (eq? (car datum) 'force-close-all))
+    (time! (list 'forced c)))
   (when (and closing-at (connection? c) (eq? kind 'action) (equal? datum closing-at))
     (set! closing-at #f)
     (connection-close! c))
@@ -243,8 +265,11 @@
 ;; What the deadlines' checks read, newest first: each deadline armed, as
 ;; (arm connection kind at), `at` the loop's time where it was armed; each
 ;; write a connection began, as (write connection at); each tick a
-;; connection was given, as (tick connection now); and each time a shell's
-;; timer fired, as (fire shell now), which it tells its server.  The first
+;; connection was given, as (tick connection now); each time a shell's
+;; timer fired, as (fire shell now), which it tells its server; and each
+;; shutdown a shell's server was asked for, as (shutdown shell now), and
+;; each time it asked for every connection to be closed, as (forced shell)
+;; (M8.1).  The first
 ;; idle deadline, which the shell arms as it adopts a connection, is
 ;; recorded where the suite's listener adopts it.
 (define timed '())
@@ -256,6 +281,11 @@
   (reverse (map caddr (filter (lambda (t) (and (eq? (car t) c) (eq? (cadr t) kind))) traced))))
 (define (verbs c) (traced-of c 'action))
 (define (events c) (traced-of c 'event))
+
+;; last-verbs : Connection Nat -> (Listof Symbol) — its last `n` actions.
+(define (last-verbs c n)
+  (let ((v (verbs c)))
+    (if (< (length v) n) v (list-tail v (- (length v) n)))))
 
 ;; in-order? : (Listof Symbol) (Listof Symbol) -> Boolean — `wanted` appears
 ;; in `seen` in its order, other verbs between.
@@ -740,6 +770,49 @@
   (let ((e (find (lambda (e) (and (eq? (car e) 'write) (eq? (cadr e) c))) timed)))
     (and e (caddr e))))
 
+;; --- the drain (M8.1) ---------------------------------------------------------------
+
+;; A drain of 200 ms and a tick of 10 ms, every other limit decision 0005's,
+;; so no deadline of a connection's passes while the suite looks.
+(define drain-limits
+  (limits-with default-limits '((drain-timeout-ms . 200) (tick-ms . 10))))
+
+;; drain-forced : Shell -> Datum
+;; Whether `sh`'s server closed what was left at its drain's deadline on
+;; time: the instant its shutdown was asked at plus the drain's 200 ms; then
+;; the first time `sh`'s timer fired at or after it, which told the server
+;; the time, asked for every connection to be closed: never before the
+;; deadline, and no firing between.  'on-time; or the deadline, the firing
+;; that asked and the firings from the deadline to it; or 'never-forced, or
+;; 'never-shut-down.
+(define (drain-forced sh)
+  (let* ((log (reverse timed))
+         (asked (find (lambda (e) (and (eq? (car e) 'shutdown) (eq? (cadr e) sh))) log)))
+    (if (not asked)
+        'never-shut-down
+        (let ((deadline (+ (caddr asked) (limits-drain-timeout-ms drain-limits))))
+          (let scan ((es log) (fired #f))
+            (cond ((null? es) 'never-forced)
+                  ((and (eq? (car (car es)) 'fire) (eq? (cadr (car es)) sh))
+                   (scan (cdr es) (caddr (car es))))
+                  ((and (eq? (car (car es)) 'forced) (eq? (cadr (car es)) sh))
+                   (let ((firings (filter (lambda (f) (and (eq? (car f) 'fire) (eq? (cadr f) sh)
+                                                           fired (<= deadline (caddr f) fired)))
+                                          log)))
+                     (if (and fired (<= deadline fired) (equal? (map caddr firings) (list fired)))
+                         'on-time
+                         (list deadline fired (map caddr firings)))))
+                  (else (scan (cdr es) fired))))))))
+
+;; firings-of : Shell -> Nat — how many times `sh`'s timer has fired.
+(define (firings-of sh)
+  (length (filter (lambda (e) (and (eq? (car e) 'fire) (eq? (cadr e) sh))) timed)))
+
+;; drain-logged : -> (Listof (Pair Symbol (Listof Any)))
+;; What the drains logged since `logged` was cleared, oldest first.
+(define (drain-logged)
+  (filter (lambda (e) (memq (car e) '(draining drain-timeout stopped))) (reverse logged)))
+
 ;; slowhttptest's slow headers and slow body send a request a piece at a
 ;; time, each piece `gap-ms` after the last, well within every limit above.
 (define gap-ms 60)
@@ -790,17 +863,20 @@
 ;; A timer whose callback raises `obj`; the shell's run loop is stepped until
 ;; the timer has fired.  What the run loop did: `(raised e)` if it raised
 ;; `e`, or 'ran-on.  The timer is closed, and its close drained, either way.
-(define (raise-in-callback obj)
-  (let ((t (make-uv-timer loop)) (fired #f))
-    (uv-timer-start! t (lambda (t) (set! fired #t) (raise obj)) 0 0)
-    (let ((outcome (guard (e (#t (list 'raised e)))
-                     (let step ((i 0))
-                       (cond (fired 'ran-on)
-                             ((= i cap) 'iterations-exhausted)
-                             (else (shell-run! shell 'once) (step (+ i 1))))))))
-      (uv-close! t)
-      (run-until loop (lambda () (eq? (uv-handle-state t) 'closed)) 8)
-      outcome)))
+(define raise-in-callback
+  (case-lambda
+    ((obj) (raise-in-callback obj shell))
+    ((obj sh)
+     (let ((t (make-uv-timer loop)) (fired #f))
+       (uv-timer-start! t (lambda (t) (set! fired #t) (raise obj)) 0 0)
+       (let ((outcome (guard (e (#t (list 'raised e)))
+                        (let step ((i 0))
+                          (cond (fired 'ran-on)
+                                ((= i cap) 'iterations-exhausted)
+                                (else (shell-run! sh 'once) (step (+ i 1))))))))
+         (uv-close! t)
+         (run-until loop (lambda () (eq? (uv-handle-state t) 'closed)) 8)
+         outcome)))))
 
 ;; contract-code : (U (List 'raised Any) Symbol) -> Any — the code of the
 ;; contract condition raised, or the outcome itself.
@@ -1596,12 +1672,14 @@
                     (refusals))
         (client-close! next)
         (wait-for (lambda () (null? (shell-connections capped)))))
+      (set! logged '())
       (shell-shutdown! capped)
-      (test-equal "a shutdown closes the listener the clients used, and the server drains"
-                  '(closed draining)
+      (test-equal "a shutdown with no connection open closes the listener the clients used, and the server stops at once, logged"
+                  '(closed stopped ((draining 0) (stopped)))
                   (begin
                     (wait-for (lambda () (eq? (uv-handle-state listening) 'closed)))
-                    (list (uv-handle-state listening) (server-phase (shell-server capped)))))
+                    (list (uv-handle-state listening) (server-phase (shell-server capped))
+                          (drain-logged))))
       (test-eq "and a server that has stopped listening never listens again" 'refused
                (guard (e ((assertion-violation? e) 'refused))
                  (shell-listen! capped "127.0.0.1" 0)
@@ -1690,9 +1768,7 @@
 
     ;; Deadlines (M5.3), on a shell of their own with short limits, adopted
     ;; through the suite's listener, which records when each was adopted.
-    (let* ((quick (make-shell loop handler quick-limits clock log! trace!))
-           (firings (lambda ()
-                      (length (filter (lambda (e) (and (eq? (car e) 'fire) (eq? (cadr e) quick))) timed)))))
+    (let ((quick (make-shell loop handler quick-limits clock log! trace!)))
       (set! adopting quick)
       (let* ((half (open-adopted! (b "GET /half HTTP/1.1\r\nHo")))
              (idle (open-adopted! (b "GET /idle HTTP/1.1\r\nHost: x\r\n\r\n")))
@@ -1825,9 +1901,9 @@
       (let ((timer (shell-timer quick)))
         (test-equal "its wheel empty, the timer stops, firing once more at most, and the shell keeps it"
                     '(#t #t)
-                    (let* ((before (firings))
+                    (let* ((before (firings-of quick))
                            (ran (run-loop-until loop (lambda () #f) 50)))
-                      (list (<= (- (firings) before) 1)
+                      (list (<= (- (firings-of quick) before) 1)
                             (and timer (uv-timer? timer) (eq? (shell-timer quick) timer)))))
 
         ;; Each tick is delivered under its own guard.  Two connections
@@ -1871,6 +1947,178 @@
                     '(#f #t)
                     (list (shell-timer quick)
                           (and timer (memq (uv-handle-state timer) '(closing closed)) #t)))))
+
+    ;; The drain (M8.1; plan §14), on shells of their own under
+    ;; drain-limits, adopted through the suite's listener: shell-shutdown!
+    ;; stands in for the signal, which tests/test-serve.sps sends `serve`
+    ;; itself.  Three clients: one idle on its keep-alive connection, one
+    ;; whose handler waits on `/await`, and one that has sent half a head.
+    ;; Told to finish, the idle one is closed at once; the handler, woken,
+    ;; is answered, saying the connection closes, and the connection closes
+    ;; once its client does; and the half head is closed at the drain's
+    ;; deadline, which the trace shows met on time.  The drain then ends:
+    ;; the server has stopped, logged, and the shell holds no timer.  Each
+    ;; reading is bound in turn, since Chez evaluates a call's arguments in
+    ;; no fixed order.
+    (let ((drainer (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting drainer)
+      (set! parked #f)
+      (set! logged '())
+      (let* ((idle (open-adopted! (b "GET /idle HTTP/1.1\r\nHost: x\r\n\r\n")))
+             (served (wait-for (lambda () (= 1 (length (responses (client-bytes (car idle))))))))
+             (flight (open-adopted! (b "GET /await HTTP/1.1\r\nHost: x\r\n\r\n")))
+             (waiting (wait-for (lambda () (and parked #t))))
+             (half (open-adopted! (b "GET /half HTTP/1.1\r\nHo")))
+             (heading (wait-for (lambda () (and (connection? (cdr half)) (eq? (phase (cdr half)) 'head)))))
+             (phases (map (lambda (p) (if (connection? (cdr p)) (phase (cdr p)) 'none))
+                          (list idle flight half))))
+        (test-equal "before the shutdown: a keep-alive client served, a handler waiting, half a head read"
+                    '(satisfied satisfied satisfied (idle handling head))
+                    (list served waiting heading phases))
+        (shell-shutdown! drainer)
+        (let* ((idle-gone (wait-for (lambda () (closed-and-gone? drainer (cdr idle)))))
+               (half-open (list (client-end (car half)) (and (memq (cdr half) (shell-connections drainer)) #t)))
+               (idle-ended (wait-for (lambda () (not (eq? (client-end (car idle)) 'open))))))
+          (test-equal "told to finish, an idle keep-alive connection is closed at once, with no response, while the half head is still open"
+                      '(satisfied (open #t) satisfied (200) eof (disarm-deadline close))
+                      (list idle-gone half-open idle-ended (map status (responses (client-bytes (car idle))))
+                            (client-end (car idle)) (last-verbs (cdr idle) 2))))
+        (when parked (coroutine-wake! parked 'woken))
+        (let* ((answered (wait-for (lambda () (and (= 1 (length (responses (client-bytes (car flight)))))
+                                                   (not (eq? (client-end (car flight)) 'open))))))
+               (rs (responses (client-bytes (car flight)))))
+          (test-equal "a request in flight is answered, saying the connection closes, then its client reads the stream's end"
+                      '(satisfied (200 "close") eof)
+                      (list answered
+                            (if (pair? rs) (list (status (car rs)) (field (car rs) "Connection")) 'no-response)
+                            (client-end (car flight)))))
+        (client-close! (car flight))
+        (let ((gone (wait-for (lambda () (closed-and-gone? drainer (cdr flight))))))
+          (test-equal "and the connection closes once its client does, before the drain's deadline asks for anything"
+                      '(satisfied never-forced)
+                      (list gone (drain-forced drainer))))
+        (let* ((gone (wait-for (lambda () (closed-and-gone? drainer (cdr half)))))
+               (ended (wait-for (lambda () (not (eq? (client-end (car half)) 'open))))))
+          (test-equal "a client that holds its connection is closed at the drain's deadline, with no response, on time"
+                      '(satisfied satisfied () eof on-time)
+                      (list gone ended (map status (responses (client-bytes (car half))))
+                            (client-end (car half)) (drain-forced drainer))))
+        (test-equal "the drain ends with its last connection: the server has stopped, logged, and the shell holds no timer"
+                    '(stopped ((draining 3) (drain-timeout) (stopped)) #f)
+                    (list (server-phase (shell-server drainer)) (drain-logged) (shell-timer drainer)))
+        (for-each (lambda (p) (client-close! (car p))) (list idle flight half))
+        (set! parked #f)))
+
+    ;; A drain whose only connection is held in its handler: the core arms
+    ;; no deadline there (design §4.3), so the shell's wheel is empty, and
+    ;; the next firing of its timer stops it.  Once it has, the shutdown:
+    ;; the timer is started again and runs on, telling the server the time,
+    ;; until the deadline closes the connection.
+    (let ((parker (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting parker)
+      (set! parked #f)
+      (set! logged '())
+      (let* ((p (open-adopted! (b "GET /await HTTP/1.1\r\nHost: x\r\n\r\n")))
+             (waiting (wait-for (lambda () (and parked #t))))
+             (armed (shell-deadlines parker))
+             (fired (firings-of parker))
+             (stopped (wait-for (lambda () (> (firings-of parker) fired)))))
+        (shell-shutdown! parker)
+        (let* ((gone (wait-for (lambda () (closed-and-gone? parker (cdr p)))))
+               (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+          (test-equal "a connection held in its handler, nothing armed, the timer stopped, is closed at the drain's deadline, on time"
+                      '(satisfied 0 satisfied satisfied satisfied () eof on-time)
+                      (list waiting armed stopped gone ended (map status (responses (client-bytes (car p))))
+                            (client-end (car p)) (drain-forced parker))))
+        (test-equal "and that drain ends: stopped, logged"
+                    '(stopped ((draining 1) (drain-timeout) (stopped)))
+                    (list (server-phase (shell-server parker)) (drain-logged)))
+        (client-close! (car p))
+        (set! parked #f)))
+
+    ;; A client that never reads its answer, a write outstanding when the
+    ;; drain's deadline closes its connection: the write the close cancels
+    ;; is no transport failure, and nothing logs a read error (M8.1's
+    ;; review).
+    (let ((stalled (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting stalled)
+      (set! logged '())
+      (let* ((p (begin (set! small-send-buffer 4096) (open-adopted! #f #f)))
+             (c (cdr p)))
+        (set! small-send-buffer #f)
+        (client-send! (car p) (b "GET /wide HTTP/1.1\r\nHost: x\r\n\r\n"))
+        (let ((writing (wait-for (lambda () (and (connection? c) (eq? (phase c) 'responding))))))
+          (shell-shutdown! stalled)
+          (let ((gone (wait-for (lambda () (closed-and-gone? stalled c)))))
+            (test-equal "a client that never reads its answer is closed at the drain's deadline, on time, and the write the close cancels logs no read error"
+                        '(satisfied satisfied on-time ((draining 1) (drain-timeout) (stopped)) #f)
+                        (list writing gone (drain-forced stalled) (drain-logged)
+                              (and (assq 'read-error logged) #t)))))
+        (client-close! (car p))))
+
+    ;; A connection the run loop drops during a drain, its handle closed
+    ;; behind the shell so its close never reports back, is a close the
+    ;; server is told of: the drain ends, before its deadline.
+    (let ((dropper (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting dropper)
+      (set! logged '())
+      (let* ((p (open-adopted! (b "GET /kept HTTP/1.1\r\nHost: x\r\n\r\n")))
+             (served (wait-for (lambda () (= 1 (length (responses (client-bytes (car p))))))))
+             (c (cdr p)))
+        (when (connection? c) (uv-close! (connection-tcp c)))
+        (wait-for (lambda () (and (connection? c) (eq? (uv-handle-state (connection-tcp c)) 'closed))))
+        (shell-shutdown! dropper)
+        (let* ((draining (server-phase (shell-server dropper)))
+               (outcome (raise-in-callback (make-message-condition "a bug in a callback") dropper))
+               (stopped (server-phase (shell-server dropper))))
+          (test-equal "a connection the run loop drops during a drain, its handle closed behind the shell, ends it as a close does"
+                      '(satisfied draining ran-on stopped ((draining 1) (stopped)))
+                      (list served draining outcome stopped (drain-logged))))
+        (client-close! (car p))))
+    (set! adopting shell)
+
+;; A shutdown is dated by the loop's time brought up to date as it is
+    ;; asked for, as a deadline is armed (chez-libuv #28): one asked once the
+    ;; loop has been held 300 ms dates its drain after the hold.
+    (let ((late (make-shell loop handler drain-limits clock log! trace!)))
+      (uv-update-time! loop)
+      (let ((before (uv-now loop)))
+        (hold! slow-ms)
+        (shell-shutdown! late)
+        (let ((asked (find (lambda (e) (and (eq? (car e) 'shutdown) (eq? (cadr e) late))) timed)))
+          ;; The hold is read on Chez's monotonic clock and the loop's time on
+          ;; libuv's, each in whole milliseconds, so the two may round apart
+          ;; by one.
+          (test-equal "a shutdown asked once the loop has been held 300 ms dates its drain after the hold"
+                      '(#t stopped)
+                      (list (and asked (>= (- (caddr asked) before) (- slow-ms 1)) #t)
+                            (server-phase (shell-server late)))))))
+
+    ;; Told to finish, each connection is told under its own guard, as each
+    ;; is ticked: one whose dispatch raises is closed, the rest are still
+    ;; told, and once all have been, the first raise goes on to the caller.
+    ;; Both raise here, each its own condition, so both are closed by their
+    ;; raises, and the drain ends with them, before its deadline.
+    (let ((told (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting told)
+      (set! logged '())
+      (let* ((x (open-adopted! (b "GET /x HTTP/1.1\r\nHost: x\r\n\r\n")))
+             (y (open-adopted! (b "GET /y HTTP/1.1\r\nHost: x\r\n\r\n")))
+             (served (wait-for (lambda () (for-all (lambda (p) (= 1 (length (responses (client-bytes (car p))))))
+                                                   (list x y))))))
+        (trap! 'event 'shutdown-requested)
+        (trap! 'event 'shutdown-requested (make-message-condition "a second bug"))
+        (let* ((raised (guard (e ((message-condition? e) (condition-message e)))
+                         (shell-shutdown! told)
+                         'nothing-raised))
+               (unspent (length traps))
+               (gone (wait-for (lambda () (for-all (lambda (p) (closed-and-gone? told (cdr p))) (list x y))))))
+          (set! traps '())
+          (test-equal "when telling each connection to finish raises, each is still told and closed, the first raise goes on, and the drain ends before its deadline"
+                      '(satisfied "a bug in the shell" 0 satisfied stopped ((draining 2) (stopped)))
+                      (list served raised unspent gone (server-phase (shell-server told)) (drain-logged))))
+        (for-each (lambda (p) (client-close! (car p))) (list x y))))
+    (set! adopting shell)
 
     ;; Backpressure on the read side (M6.2), on a shell of its own with the
     ;; short limits, made on credit, as M7's coroutine shell will hand a

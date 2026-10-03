@@ -63,3 +63,59 @@ closing by M8C-8), T10 and T11 (M8C-2), T12 (M8C-10), the held pairs
 (M8C-0), the two counts (M8T-1, M8T-2), and the state outside the ten
 (M8C-9).
 
+### The second step: the drain in the shell
+
+Forty-one mutants on the step's own tree, after the review: each reddens a
+check but M8H-15, the listener's failure, which libuv reports only on
+Windows. A scope statement (the review's fifth).
+
+| Mutant | Step | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|---|
+| M8H-1 | 2 | `shell` | finish-all tells no connection | shell 4 |
+| M8H-2 | 2 | `shell` | force-close-all closes nothing | shell 8 |
+| M8H-3 | 2 | `shell` | the timer stops on an empty wheel while draining | shell 4 |
+| M8H-4 | 2 | `shell` | the timer not started as the drain begins | shell 4 |
+| M8H-5 | 2 | `shell` | a close not told to the server | shell 4 |
+| M8H-6 | 2 | `shell` | a reconciled connection not told to the server | shell 1 |
+| M8H-9 | 2 | `shell` | the shutdown dated by the loop's cached time | shell 1 |
+| M8H-10 | 2 | `shell` | telling the connections stops at the first raise | shell 1 |
+| M8H-11 | 2 | `shell` | the last raise kept, not the first | shell 1 |
+| M8H-13 | 2 | `shell` | the shutdown told no connection is open | shell 11 |
+| M8H-15 | 2 | `shell` | a listener's failure told with no time and no connections open (a scope statement: libuv reports one only on Windows) | none: survives |
+| M8S-1 | 2 | `server` | force-close-all never asked for (plan §14's mutation) | server 4, shell 8 |
+| M8S-2 | 2 | `server` | the deadline's tick must pass it, not reach it | server 3, shell 1 |
+| M8S-3 | 2 | `server` | the deadline kept after the forced close | server 3 |
+| M8S-4 | 2 | `server` | the last close never ends the drain | server 4, shell 5 |
+| M8S-5 | 2 | `server` | a shutdown with none open drains, never stopping | server 2, shell 2 |
+| M8S-6 | 2 | `server` | the connections never told to finish | server 8, shell 8 |
+| M8S-7 | 2 | `server` | draining logged without its count | server 10, shell 6 |
+| M8S-8 | 2 | `server` | a listener failure stops at once, open connections or not | server 2 |
+| M8S-9 | 2 | `server` | an event's time and count unchecked | server 2 |
+| M8S-10 | 2 | `server` | a state takes any deadline | server 1 |
+| M8S-11 | 2 | `server` | an arrival once stopped is accepted | server 1 |
+| M8S-12 | 2 | `server` | the deadline 10 s whatever the limits say | server 2, shell 4 |
+| M8S-13 | 2 | `server` | stopped not a phase | server 6 |
+| M8S-14 | 2 | `server` | the forced close not logged | server 4, shell 3 |
+| M8S-15 | 2 | `server` | the drain's end not logged | server 4, shell 5 |
+| M8S-16 | 2 | `server` | finish-all not in the vocabulary | server 2 |
+| M8S-17 | 2 | `server` | refusals after the first not counted | server 2, shell 1 |
+| M8S-18 | 2 | `server` | an arrival answered with a copy of the state | server 1 |
+| M8S-19 | 2 | `server` | a tick's time unchecked | server 1 |
+| M8S-20 | 2 | `server` | an arrival at the cap accepted | server 5, shell 3 |
+| M8S-22 | 2 | `server` | an arrival below the cap refused | clients 15, contract (raised, exit 2, 2 failed), serve 5, server 5, shell (raised, exit 2, 9 failed) |
+| M8S-23 | 2 | `server` | a shutdown or failure in any phase taken as one while listening | server 3 |
+| M8S-24 | 2 | `server` | an arrival while draining accepted | server 1 |
+| M8S-25 | 2 | `server` | a listener failure not logged | server 3 |
+| M8S-26 | 2 | `server` | a tick that asks for no close logs itself | clients 1, server 6 |
+| M8S-27 | 2 | `server` | the last close ends a server still listening too | clients 17, contract (raised, exit 2, 1 failed), serve 4, server 1, shell (raised, exit 2, 5 failed) |
+| M8S-28 | 2 | `server` | any close ends the drain | server 2, shell 2 |
+| M8S-29 | 2 | `server` | connection-closed not an event | server 2 |
+| M8X-1 | 2 | `shell` | an awaiting answer taken as a response: no handler waits | contract 84, shell 17 |
+| M8X-2 | 2 | `connection` | a lingering connection whose client closes stays until its deadline | clients 2, connection-linger 4, connection-originated 23, connection-table 1, contract 22, libhtp-lane 5, message-loop 1, outcome-lane 3, ratchet 1, serve 1, shell 6 |
+
+The step adds or changes fifty-five checks, the server suite's forty-two
+and thirteen of the shell suite's, each reddened by one of them. The
+shell's precondition, past M8X-1's eighth FAIL line, was read from the
+suite run by hand on that mutant's root: seventeen failures, the
+precondition the twelfth.
+

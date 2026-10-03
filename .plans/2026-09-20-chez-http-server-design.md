@@ -893,6 +893,27 @@ the drain: the connections told to finish, `force-close-all` on a tick at the
 deadline, and the drain's end on `connection-closed`. Until then a tick and a close
 ask for nothing.
 
+*Noted 2026-10-03 (M8.1):* the drain, as built.
+- **The events carry what the step reads.** The step keeps no count and reads no
+  clock, so the shell hands it the loop's time, brought up to date, and the connections
+  open: `(shutdown-requested now open)` and `(listener-failed errno now open)`; and the
+  connections left with each close, `(connection-closed open)`, a connection the
+  reconciliation drops among them.
+- **A sixth action, `finish-all`,** tells every connection open `shutdown-requested`
+  (§4.4's amendment). The drain's deadline is `now` plus `drain-timeout-ms`, and the
+  first `(tick now)` at or after it asks for `force-close-all`, once: the shell closes
+  each connection still open at once, through `handle-close!`. A drain of 0 ms closes at
+  the first tick.
+- **A third phase, `stopped`,** is entered at the last close, or at once when the
+  shutdown finds none open. A second shutdown, a failure while draining, and an arrival
+  once stopped ask for nothing but its refusal.
+- **The log** (decided on the owner's word, 2026-10-03): `draining` with the
+  connections it waits for, `drain-timeout` at the deadline, and `stopped` at the end.
+- **The shell keeps its timer running while the server drains,** whatever its wheel
+  holds: a connection whose handler waits arms no deadline (§4.3), so a wheel left
+  empty would never tell the server its deadline had come (measured on main: one tick in
+  200 ms with a handler waiting).
+
 ---
 
 ## 5. Callback discipline
