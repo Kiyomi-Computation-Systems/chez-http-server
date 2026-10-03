@@ -4104,3 +4104,18 @@ M7.3 BUILT, the two steps proved each on its own tree, the review's fixes in (20
 Size, inserted and deleted lines of tests, each step against the one below it: the first 312 and 109; the second 295 and 52; the slice, against main, 600 and 154. No file under `src/` changes.
 
 NEXT: the two stacked PRs, merged bottom up on the owner's "do closing ritual" once CI is green on each head. Then the M7 exit (plan §14): each of R1 to R5 with a mutation that goes red, and the budget spike run again, an idle connection carrying no coroutine, when the owner asks.
+
+MERGED to main on 2026-10-02, on the owner's "do closing ritual": **M7.3, as two stacked PRs.**
+- **#102, every script that reaches a handler through the coroutine shell,** as fbab4a2. Its squash tree (8179beb) is the tested tip's, b85a46e's, and its parent is bc570a4. It merged first and kept its branch, since #103 was based on it.
+- **#103, handler code that waits and the order row,** as 3317e8d. It was retargeted to main and rebased from #102's tip, b85a46e. The rebased tip, 9b33851, has the tested tree (80cda3d, a5c2724's), and so does the squash, whose parent is fbab4a2.
+- **CI.** Each merged on `linux` SUCCESS at its head: #102 on b85a46e (run 37078945265); #103 on 9b33851 (run 37083318030). Each log holds its step's count: forty-seven suites, 1,614 and 1,643 expected passes.
+- **Branches.** Both deleted, local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: forty-seven suites, 1,643 expected passes, every pin ok.
+
+DONE and merged (fbab4a2, PR #102; 3317e8d, PR #103): **M7.3.**
+- The fake shell has the libuv shell's coroutine path and scripted waits. The contract plays every script that reaches a handler through the coroutine shell, and handler code that waits through the direct shell, and holds the brief's exit: a handler awaiting a lookup inside a pipelined connection keeps the responses in order.
+- Decided by form: the plan's order-row mutation cannot be made in v1, and the row's is the shell answering a waiting handler at once; the three shells are held to the same bytes, each libuv shell's trace to its own fake.
+- A /code-review high found seven, all fixed on the owner's word by form. Thirty-three mutants on the finished tree, each reddening a check but M7F-10, a scope statement.
+
+NEXT: the M7 exit (plan §14): each of R1 to R5 with a mutation that goes red, and the budget spike run again, an idle connection carrying no coroutine. On a fresh branch cut from main after this commit, when the owner asks.
