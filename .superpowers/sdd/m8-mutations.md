@@ -318,3 +318,62 @@ precondition the twelfth).
   - and so does serve sent SIGINT: M8C-1, and 23 more
   - once serve has returned, a SIGINT ends the process at once: M8H-7, and 5 more
 
+## M8.2 — the hand-off door (2026-10-03)
+
+Decided first, as decision 0016, on the owner's "start M8.2"; built in one
+working tree, reviewed on the owner's form, then cut into three stacked
+steps: the switch, the transport and the 101 (feat/m8.2-switch); the core's
+door and the fake transport (feat/m8.2-door); the shell's transport and the
+facade (feat/m8.2-transport). Each run took a set of mutants against every
+suite of its tree, a frozen copy of the working tree's files, or of the
+step's own, main's with the step's files, with vendor and build linked, three
+or four at a time. Every mutant in every final run loaded (no `unbound
+identifier` and no `Exception in read` in any report).
+
+### The first step: the switch, the transport and the 101
+
+Thirty-three mutants on the step's own tree, after the review: each reddens a
+check.
+
+| Mutant | Step | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|---|
+| M8DR-1 | 1 | `switch` | a switch's accessors swapped | records 2, serializer 20 |
+| M8DR-2 | 1 | `switch` | switch? accepts nothing | records 1, serializer 21 |
+| M8DR-3 | 1 | `switch` | a switch is a response | records 2, serializer 2 |
+| M8DR-4 | 1 | `transport` | a whole write's range a byte short | records 1 |
+| M8DR-5 | 1 | `transport` | a disarm hands its procedure #t | records 1 |
+| M8DR-6 | 1 | `transport` | transport? accepts nothing | records 1 |
+| M8DR-7 | 1 | `transport` | transport? accepts anything | records 1 |
+| M8DR-8 | 1 | `transport` | a write of no bytes accepted | records 2 |
+| M8DR-9 | 1 | `transport` | reading started with anything | records 2 |
+| M8DR-10 | 1 | `transport` | a negative deadline accepted | records 2 |
+| M8DR-11 | 1 | `transport` | a drain call that is no procedure accepted | records 2 |
+| M8DR-12 | 1 | `transport` | a verb reaches its procedure before its check | records 2 |
+| M8DR-13 | 1 | `transport` | a transport made of anything | records 1 |
+| M8DS-1 | 1 | `serializer` | the 101 says no Connection | serializer 3 |
+| M8DS-2 | 1 | `serializer` | the 101 carries a Date slot | serializer 3 |
+| M8DS-3 | 1 | `serializer` | a handler's Connection copied | connection-response 2, connection-table 1, serializer 4 |
+| M8DS-4 | 1 | `serializer` | a response written as a 101 | serializer 1 |
+| M8DS-5 | 1 | `serializer` | not-a-switch not looked for | serializer 1 |
+| M8DS-6 | 1 | `serializer` | invalid-take-over not looked for | serializer 1 |
+| M8DS-7 | 1 | `serializer` | a switch's Connection judged as a response's | serializer 2 |
+| M8DS-9 | 1 | `serializer` | a switch with no Upgrade accepted | serializer 2 |
+| M8DS-10 | 1 | `serializer` | a protocol not offered accepted | serializer 3 |
+| M8DS-11 | 1 | `serializer` | protocols compared by their bytes, case and all | serializer 2 |
+| M8DS-12 | 1 | `serializer` | only the request's first Upgrade line read | serializer 1 |
+| M8DS-13 | 1 | `serializer` | a request's fields that are spans not read | serializer 1 |
+| M8DS-14 | 1 | `headers` | an empty element names a protocol | headers 1 |
+| M8DS-15 | 1 | `serializer` | a switch's Connection untrimmed | serializer 1 |
+| M8DS-16 | 1 | `serializer` | the switch's Upgrade field looked for under another name | serializer 5 |
+| M8DS-17 | 1 | `headers` | field-elements leaves the OWS around an element | headers 2 |
+| M8DS-18 | 1 | `headers` | field-elements reads only the first field | headers 1 |
+| M8DS-20 | 1 | `headers` | field-elements reads a span's whole bytevector | headers 1 |
+| M8DS-21 | 1 | `serializer` | a switch's Connection that lists upgrade among others accepted | serializer 1 |
+| M8DS-22 | 1 | `serializer` | a switch's fields not checked | serializer 7 |
+
+The step adds thirty-nine checks, each reddened by one of them: the
+records suite's fourteen, the switch's (M8DR-1 to M8DR-3) and the
+transport's (M8DR-4 to M8DR-13); the serializer's four on the 101 (M8DS-1
+to M8DS-4) and its nineteen fault rows, each reddened by the mutant of its
+rule (M8DS-5 to M8DS-22), the field rules' five by M8DS-22; and the headers
+suite's two on `field-elements` (M8DS-14, M8DS-17, M8DS-18, M8DS-20).

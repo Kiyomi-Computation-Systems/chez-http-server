@@ -33,6 +33,15 @@
 ;;; as the write is issued (design §7.3), so a segment may also be a span of
 ;;; a bytevector, `(bv start end)`, as uv-write*! takes one.
 ;;;
+;;; A SWITCH IS WRITTEN AS A 101 (M8.2; decision 0016 item 1): the status
+;;; line, the handler's fields and `Connection: upgrade` (RFC 9110 §7.8), with
+;;; no Date slot, since a 1xx may go without (§6.6.1) and the `100 Continue`
+;;; the server writes has none, and no framing, since a 1xx has no content
+;;; (§15.2).  `switch-fault` names what the server cannot write safely in a
+;;; switch, beside a response's faults: an Upgrade field missing, or naming a
+;;; protocol the request's did not offer (§7.8's MUST and MUST NOT), and a
+;;; handler's Connection field that says anything but `upgrade`.
+;;;
 ;;; WHAT CANNOT BE WRITTEN SAFELY is a fault (decision 0010 item 2).
 ;;; `response-fault` names it, and the core answers 500 instead; serializing
 ;;; a response with a fault is a caller bug, an assertion violation.  A
@@ -44,10 +53,10 @@
 ;;; PURE: imports only (rnrs) and this project's pure libraries.
 (library (http-server serializer)
   (export serialize-response serialize-checked-response serialize-piece serialize-end
-          serialize-continue
-          response-fault response-closes? framing-modes date-line date-line-length)
-  (import (rnrs) (http-server response) (http-server span)
-          (only (http-server headers) header-name=? trim-ows range-ci=?))
+          serialize-continue serialize-switch
+          response-fault response-closes? switch-fault framing-modes date-line date-line-length)
+  (import (rnrs) (http-server response) (http-server span) (http-server switch)
+          (only (http-server headers) header-name=? trim-ows range-ci=? field-lists? field-elements))
 
   ;; framing-modes : (Listof Symbol)
   ;; How a response's body goes on the wire, as the framing decision names it
@@ -191,6 +200,7 @@
   (define chunked-line (string->utf8 "Transfer-Encoding: chunked\r\n"))
   (define close-line (string->utf8 "Connection: close\r\n"))
   (define keep-alive-line (string->utf8 "Connection: keep-alive\r\n"))
+  (define upgrade-line (string->utf8 "Connection: upgrade\r\n"))
   (define crlf (string->utf8 "\r\n"))
 
   ;; put-bytes! : Bytevector Nat Bytes -> Nat — copy `x` in at `at`; where it ends.
@@ -211,6 +221,7 @@
            (closing (case connection
                       ((close) close-line)
                       ((keep-alive) keep-alive-line)
+                      ((upgrade) upgrade-line)
                       (else #f)))
            (size (fold-left (lambda (n h)
                               (if (copied? h)
@@ -300,6 +311,22 @@
 
   (define continue-line (list (string->utf8 "HTTP/1.1 100 Continue\r\n\r\n")))
 
+  ;; serialize-switch : Switch -> (values (Listof Segment) Nat)
+  ;; The 101 a switch is written as (M8.2; decision 0016 item 1): the status
+  ;; line, then one segment of the handler's fields but Connection, the
+  ;; server's `Connection: upgrade` and the blank line.  No Date slot and no
+  ;; framing: a 1xx may leave out Date (RFC 9110 §6.6.1) and has no content
+  ;; (§15.2).  The caller has found no fault in the switch (switch-fault);
+  ;; anything but a switch is an assertion violation.
+  (define (serialize-switch sw)
+    (unless (switch? sw)
+      (assertion-violation 'serialize-switch "not a switch" sw))
+    (let ((block (header-block (switch-headers sw) 'no-body 0 'upgrade)))
+      (values (list switching-line block)
+              (fx+ (bytevector-length switching-line) (bytevector-length block)))))
+
+  (define switching-line (status-line 101 #f))
+
   ;; chunk-size-line : Nat -> Bytevector — `length` in lowercase hex, CRLF.
   (define (chunk-size-line length)
     (let* ((digits (let loop ((n length) (d 1)) (if (fx<? n 16) d (loop (fxdiv n 16) (fx+ d 1)))))
@@ -373,13 +400,52 @@
           ((not (let ((reason (response-reason r)))
                   (or (not reason) (and (bytevector? reason) (field-text? reason)))))
            'invalid-reason)
-          ((headers-fault (response-headers r)))
+          ((headers-fault (response-headers r) close-option?))
           ((not (let ((body (response-body r))) (or (not body) (bytevector? body) (procedure? body))))
            'invalid-body)
           (else #f)))
 
-  ;; headers-fault : Any -> (U #f Symbol) — the first field's fault, if any.
-  (define (headers-fault headers)
+  ;; switch-fault : Any (Listof (Pair Bytes Bytes)) -> (U #f Symbol)
+  ;; #f when `sw` is a switch the server can write safely as the 101 to a
+  ;; request whose fields are `offered` (M8.2; decision 0016 item 1);
+  ;; otherwise the first fault found:
+  ;;   not-a-switch          not a switch record
+  ;;   invalid-take-over     a take-over that is not a procedure
+  ;;   invalid-headers, invalid-header-name, invalid-header-value,
+  ;;   framing-field         as a response's (a 1xx carries no framing field
+  ;;                         either: RFC 9110 §8.6)
+  ;;   connection-field      a Connection that is not `upgrade`: the server
+  ;;                         writes `Connection: upgrade` (§7.8)
+  ;;   invalid-upgrade       no Upgrade field naming a protocol, or one naming
+  ;;                         a protocol the request's Upgrade did not (§7.8:
+  ;;                         a 101 MUST send Upgrade, and MUST NOT switch to
+  ;;                         a protocol the client did not indicate);
+  ;;                         protocols are compared without regard to case,
+  ;;                         as §7.8 says a recipient SHOULD
+  (define (switch-fault sw offered)
+    (cond ((not (switch? sw)) 'not-a-switch)
+          ((not (procedure? (switch-take-over sw))) 'invalid-take-over)
+          ((headers-fault (switch-headers sw) upgrade-option?))
+          ((not (upgrades-offered? (switch-headers sw) offered)) 'invalid-upgrade)
+          (else #f)))
+
+  ;; upgrades-offered? : Headers (Listof (Pair Bytes Bytes)) -> Boolean
+  ;; Whether `headers` name a protocol in their Upgrade fields, and every one
+  ;; they name is in `offered`'s: each element of their lists, as (http-server
+  ;; headers)' field-elements reads them, one of `offered`'s, as its
+  ;; field-lists? reads those.
+  (define (upgrades-offered? headers offered)
+    (let ((protocols (field-elements headers upgrade-name)))
+      (and (pair? protocols)
+           (for-all (lambda (p) (field-lists? offered upgrade-name p)) protocols))))
+
+  (define upgrade-name (string->utf8 "Upgrade"))
+
+  ;; headers-fault : Any (Bytes -> Boolean) -> (U #f Symbol)
+  ;; The first field's fault, if any, a Connection field's value judged by
+  ;; `connection-option?`: `close` alone in a response, `upgrade` alone in
+  ;; a switch.
+  (define (headers-fault headers connection-option?)
     (cond ((not (list? headers)) 'invalid-headers)
           ((not (for-all (lambda (h) (and (pair? h) (bytes? (car h)) (bytes? (cdr h)))) headers))
            'invalid-headers)
@@ -393,7 +459,7 @@
                          ((or (header-name=? name content-length-name)
                               (header-name=? name transfer-encoding-name))
                           'framing-field)
-                         ((and (header-name=? name connection-name) (not (close-option? value)))
+                         ((and (header-name=? name connection-name) (not (connection-option? value)))
                           'connection-field)
                          (else (loop (cdr hs))))))))))
 
@@ -441,6 +507,16 @@
         (range-ci=? bv start end close-token))))
 
   (define close-token (string->utf8 "close"))
+
+  ;; upgrade-option? : Bytes -> Boolean
+  ;; The value is the connection option `upgrade`, in any case, with optional
+  ;; whitespace around it: the one a switch's Connection may say (M8.2).
+  (define (upgrade-option? x)
+    (let ((bv (bytes-vector x)))
+      (let-values (((start end) (trim-ows bv (bytes-start x) (bytes-end x))))
+        (range-ci=? bv start end upgrade-token))))
+
+  (define upgrade-token (string->utf8 "upgrade"))
 
   ;; --- the Date line ------------------------------------------------------------
 

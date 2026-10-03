@@ -10,9 +10,12 @@
 ;;; are here too: OWS (RFC 9110 §5.6.3), and a range compared with a token
 ;;; without regard to case, each reading the bytes in place; and whether a
 ;;; field's list holds a token (§5.6.1), which the core asks of a request's
-;;; Expect (M6.4).  PURE: imports only (rnrs) and (http-server span).
+;;; Expect (M6.4); and a field's elements, which the serializer reads a
+;;; switch's Upgrade with (M8.2).  PURE: imports only (rnrs) and (http-server
+;;; span).
 (library (http-server headers)
-  (export header-name=? headers-ref headers-ref-all ows? trim-ows range-ci=? field-lists?)
+  (export header-name=? headers-ref headers-ref-all ows? trim-ows range-ci=? field-lists?
+          field-elements)
   (import (rnrs) (http-server span))
 
   ;; Bytes = (U Bytevector Span)
@@ -102,6 +105,31 @@
              (let-values (((from to) (trim-ows bv i comma)))
                (or (range-ci=? bv from to token)
                    (loop (fx+ comma 1))))))))
+
+  ;; field-elements : (Listof (Pair Bytes Bytes)) Bytes -> (Listof Bytevector)
+  ;; The elements of the comma-separated lists in every field named `name`,
+  ;; in wire order, the OWS around each trimmed, each a copy of its own; an
+  ;; empty element is none (RFC 9110 §5.6.1).  Where field-lists? asks after
+  ;; one token and allocates nothing, this hands each element over.
+  (define (field-elements headers name)
+    (let fields ((hs headers) (acc '()))
+      (cond ((null? hs) (reverse acc))
+            ((header-name=? (caar hs) name)
+             (let* ((v (cdar hs)) (bv (bytes-vector v)) (end (bytes-end v)))
+               (let each ((i (bytes-start v)) (acc acc))
+                 (if (fx>? i end)
+                     (fields (cdr hs) acc)
+                     (let ((comma (find-comma bv i end)))
+                       (let-values (((from to) (trim-ows bv i comma)))
+                         (each (fx+ comma 1)
+                               (if (fx=? from to) acc (cons (copy-range bv from to) acc)))))))))
+            (else (fields (cdr hs) acc)))))
+
+  ;; copy-range : Bytevector Nat Nat -> Bytevector — a copy of bv[from, to).
+  (define (copy-range bv from to)
+    (let ((out (make-bytevector (fx- to from))))
+      (bytevector-copy! bv from out 0 (fx- to from))
+      out))
 
   ;; find-comma : Bytevector Nat Nat -> Nat — the first comma in [i, end), or end.
   (define (find-comma bv i end)

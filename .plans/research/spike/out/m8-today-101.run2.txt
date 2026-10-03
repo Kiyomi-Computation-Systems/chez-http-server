@@ -1,0 +1,3 @@
+(a-101 written (500) logs ((log invalid-response invalid-status)) close-after invalid-response state lingering)
+(a-101-with-connection-upgrade written (500) logs ((log invalid-response invalid-status)) close-after invalid-response state lingering)
+(a-plain-200 written (200) logs () close-after upgrade state lingering)
