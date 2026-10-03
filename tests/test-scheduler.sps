@@ -10,7 +10,14 @@
 ;;; more batches remain.  Every run of turns is capped by a count, never by
 ;;; the clock (global-constraints).
 ;;;
-;;; The checks:
+;;; The checks, R3's first.  A coroutine that returns normally, R3 broken,
+;;; breaks every drain after it: Chez refuses its return into the
+;;; continuation its park used, or its raise's handler returns, and the
+;;; coroutine running stays set.  Since M7.2's handler for a coroutine's
+;;; raise, that comes at the first coroutine that raises, or parks and ends,
+;;; so R3's row runs before any other (the M7 exit):
+;;;   - R3: a coroutine that parks, is woken and ends, ends through the
+;;;     scheduler: its end once, and the turns after it run on;
 ;;;   - a coroutine spawned runs at the next drain, not where it was spawned,
 ;;;     a callback included: a callback only enqueues (R1);
 ;;;   - a coroutine's end, its value or what it raised, comes to its end
@@ -26,8 +33,6 @@
 ;;;     refused as R1;
 ;;;   - R2: a park on no coroutine, from a call the drain makes or from
 ;;;     outside any turn, is refused as R2;
-;;;   - R3: a coroutine that parks, is woken and ends, ends through the
-;;;     scheduler: its end once, and the turns after it run on;
 ;;;   - R5: a park inside a feed is refused as R5, and the phase is the one
 ;;;     before the feed once it is over;
 ;;;   - a call is made in the drain, on no coroutine;
@@ -106,6 +111,28 @@
 
 (run-suite "scheduler"
   (lambda ()
+    ;; R3's row first: once a coroutine returns normally, no drain after it
+    ;; runs (the header).
+    (let*-values (((note! seen) (recorder))
+                  ((parked) #f)
+                  ((s) #f)
+                  ((poll! modes)
+                   (scripted (list (list (lambda () (coroutine-wake! parked 41)))
+                                   (list (lambda ()
+                                           (scheduler-spawn! s (lambda () (note! 'later) 'l)
+                                                             (ender note!))))
+                                   (list (lambda () (note! 'last-callback)))))))
+      (set! s (make-scheduler poll!))
+      (scheduler-spawn! s
+        (lambda ()
+          (set! parked (current-coroutine))
+          (+ 1 (coroutine-park!)))
+        (ender note!))
+      (let ((taken (refusal (lambda () (turns! s 8)))))
+        (test-equal "R3: a coroutine that parks, is woken and ends, ends through the scheduler, and the turns after it run on"
+          '((returned 3) ((end returned 42) later (end returned l) last-callback))
+          (list taken (seen)))))
+
     (let-values (((note! seen) (recorder))
                  ((poll! modes) (scripted '())))
       (let ((s (make-scheduler poll!)))
@@ -236,26 +263,6 @@
         (note! (refusal (lambda () (coroutine-park!))))
         (test-equal "R2: a park on no coroutine, in a call the drain makes and outside any turn, is refused as R2"
           '((refused r2) (refused r2)) (seen))))
-
-    (let*-values (((note! seen) (recorder))
-                  ((parked) #f)
-                  ((s) #f)
-                  ((poll! modes)
-                   (scripted (list (list (lambda () (coroutine-wake! parked 41)))
-                                   (list (lambda ()
-                                           (scheduler-spawn! s (lambda () (note! 'later) 'l)
-                                                             (ender note!))))
-                                   (list (lambda () (note! 'last-callback)))))))
-      (set! s (make-scheduler poll!))
-      (scheduler-spawn! s
-        (lambda ()
-          (set! parked (current-coroutine))
-          (+ 1 (coroutine-park!)))
-        (ender note!))
-      (let ((taken (refusal (lambda () (turns! s 8)))))
-        (test-equal "R3: a coroutine that parks, is woken and ends, ends through the scheduler, and the turns after it run on"
-          '((returned 3) ((end returned 42) later (end returned l) last-callback))
-          (list taken (seen)))))
 
     (let-values (((note! seen) (recorder))
                  ((poll! modes) (scripted '())))

@@ -196,7 +196,7 @@ answer: a response or a reader. There it can wait with ~await~.
   so the next request on it waits too. Other connections go on.
 - A waiting handler holds about 3.6 KB until its wait ends, even if its
   client has gone: the server only notices a client leave when it reads or
-  writes.
+  writes. Once it has answered, its connection holds no more than any other.
 
 To wait for a time, or to stop waiting after one:
 

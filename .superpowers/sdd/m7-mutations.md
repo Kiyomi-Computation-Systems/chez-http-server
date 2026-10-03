@@ -801,3 +801,144 @@ check above is reddened as listed, 30 of 30, M7F-7 now among the killers of
 
 The step's tree run whole: forty-seven suites, 1,644 expected passes, every
 pin ok.
+
+### The second step: R3's row first, and an idle connection (feat/m7-exit)
+
+Red before green: under M7S-B, R3's own, R3's row was never reached on
+main (above). The idle check passed on main, as the property it holds did;
+its red is M7H-6's.
+
+Sixty-nine mutants on the finished tree, against every suite: the eighteen
+above again, R3's row now first; the scheduler suite's other mutants of
+M7.1 and M7.2, fourteen (M7S-F, M7S-G, M7S-H, M7S-I, M7S-L, M7S-M, M7S-N,
+M7S-P, M7G-1 to M7G-5, M7T-29), so each of its rows is mapped on the
+finished tree; M7H-6 and M7X-1, for the idle check; and the first step's
+thirty-five. Two are new:
+
+| Mutant | Where | Change | Reddens on the finished tree (suite, failures) |
+|---|---|---|---|
+| M7H-6 | `heap` | the slot an entry leaves is not cleared (M7.2's, run again) | heap 1, shell 1 |
+| M7X-1 | `scheduler` | the scheduler keeps the drain's continuation once a coroutine has run | none: survives |
+
+All sixty-nine on the finished tree, after the review's fixes:
+
+| Mutant | Reddens on the finished tree (suite, failures) |
+|---|---|
+| M7A-5 | contract 43, shell 1 |
+| M7A-6 | contract 47, shell 14 |
+| M7A-9 | contract 117, shell 19 |
+| M7B-4 | shell 3 |
+| M7B-6 | none: survives |
+| M7C-1 | contract 4 |
+| M7C-2 | contract 2 |
+| M7C-3 | contract 16 |
+| M7C-4 | contract 20, scheduler 7, shell 12, waits 7 |
+| M7C-5 | contract 18 |
+| M7C-6 | contract 12 |
+| M7C-7 | contract 2 |
+| M7C-8 | contract 1, shell 48 |
+| M7F-1 | contract 14 |
+| M7F-2 | contract 26 |
+| M7F-3 | contract 8 |
+| M7F-4 | contract 6 |
+| M7F-5 | contract 10 |
+| M7F-6 | contract 2 |
+| M7F-7 | contract 3 |
+| M7F-8 | contract 27 |
+| M7F-9 | contract 1 |
+| M7F-10 | none: survives |
+| M7F-11 | contract 55 |
+| M7F-12 | connection-body 28, connection-cut-off 3, connection-deadlines 4, connection-expect 16, connection-head 16, connection-linger 9, connection-originated 6, connection-padding 14, connection-response 23, connection-stream 16, contract 93, libhtp-lane 15, message-loop 12, outcome-lane 3, ratchet 1, view 13 |
+| M7F-13 | contract 2 |
+| M7F-14 | contract 15 |
+| M7F-15 | contract 6 |
+| M7F-16 | contract 13 |
+| M7F-17 | contract 1 |
+| M7F-18 | contract 1 |
+| M7F-19 | contract 2 |
+| M7G-1 | scheduler 2 |
+| M7G-2 | scheduler (raised, exit 2, 1 failed) |
+| M7G-3 | contract 44, scheduler (raised, exit 2, 2 failed), waits 25 |
+| M7G-4 | contract 44, scheduler (raised, exit 2, 2 failed), waits 25 |
+| M7G-5 | scheduler 1 |
+| M7H-6 | heap 1, shell 1 |
+| M7O-1 | contract 84, shell 15 |
+| M7O-2 | contract 7, shell 2 |
+| M7O-3 | scheduler 2, waits 5 |
+| M7R-3 | scheduler 2, waits 2 |
+| M7S-A | clients 3, contract 5, scheduler 1, serve 1, shell (raised, exit 2, 10 failed) |
+| M7S-B | contract 53, scheduler (raised, exit 2, 1 failed), shell (raised, exit 2, 1 failed), waits 40 |
+| M7S-D2 | scheduler 1 |
+| M7S-F | contract 43, scheduler 1, waits 1 |
+| M7S-G | contract (raised, exit 2, 40 failed), scheduler 1 |
+| M7S-H | scheduler 1 |
+| M7S-I | contract 2, scheduler (raised, exit 2, 2 failed) |
+| M7S-K | scheduler 2 |
+| M7S-L | scheduler 5, waits 14 |
+| M7S-M | scheduler 2 |
+| M7S-N | contract (raised, exit 2, 40 failed), scheduler (raised, exit 2, 1 failed), shell (raised, exit 2, 7 failed), waits 30 |
+| M7S-O | scheduler 3, waits 2 |
+| M7S-P | scheduler 2, waits 5 |
+| M7S-Q | scheduler 2, shell 9 |
+| M7S-R | contract 10, scheduler 7, shell (raised, exit 2, 24 failed), waits 15 |
+| M7T-29 | contract 2, shell 5, waits 10 |
+| M7W-1 | shell 1, waits 4 |
+| M7W-2 | shell 3, waits 3 |
+| M7W-4 | shell 1, waits 4 |
+| M7W-8 | scheduler 1, shell 1, waits 2 |
+| M7W-10 | contract 9, shell 4, waits 15 |
+| M7W-13 | scheduler 1, waits 2 |
+| M7W-14 | scheduler 1, waits 2 |
+| M7W-15 | shell 1, waits 4 |
+| M7X-1 | none: survives |
+| M7Z-1 | contract 2, shell 2 |
+| M7Z-2 | contract 2 |
+
+So every mutant reddens a check on the finished tree but three: M7B-6 and
+M7F-10, the scope statements of M7.1 and M7.3; and M7X-1, which keeps what
+holds nothing: by the time the drain goes on, the continuation it keeps
+has been used, and a used one-shot continuation holds no frame, so the
+coroutine is let go. M7W-1's contract raised once, in the run before the
+review's fixes (exit 2, after 71 checks), and in none since: nine runs of
+it by hand, three at a time, passed all 187 checks, as did the run after
+the fixes. Its red is the waits and shell suites'.
+
+By check: every check the step added or changed, and every row of the
+scheduler suite, whose order it changed, is reddened on the finished tree,
+60 of 60, each read from its own FAIL line:
+- R3's row, first: M7S-B, which reads Chez's refusal, "attempt to invoke
+  shot one-shot continuation", then the suite raises, as at M7.1; and
+  M7S-R, M7S-N and M7C-4;
+- the scheduler's other twenty rows: R1's by M7S-D2, M7S-O and M7W-13;
+  R2's by M7S-Q and M7W-8; R5's by M7R-3, M7S-K and M7W-14; the rest by
+  M7S-A, M7S-F, M7S-G, M7S-H, M7S-I, M7S-L, M7S-M, M7S-P, M7S-Q, M7S-R,
+  M7G-1 to M7G-5, M7O-3 and M7C-4, each row by one at least;
+- the waits suite's four R4 rows, by M7W-1, M7W-4 and M7W-15 each, and its
+  row of refusals, R2's, R1's and R5's, by M7W-8, M7W-13 and M7W-14;
+- the shell suite's rows of where a handler is called (M7B-4), of R2's
+  refusal (M7B-4, M7W-8) and of the late resume (M7W-1);
+- the shell suite's new checks: the first step's (M7Z-1 among eight); and
+  "a connection idle after its handler, its reader and its producer waited
+  holds none of the coroutines they ran on", by M7H-6, a coroutine kept in
+  the heap's slot, which no other check in the suite sees, and by nine that
+  keep the handler from being answered or the connection from going idle
+  (M7A-6, M7A-9, M7C-4, M7C-8, M7O-1, M7O-2, M7T-29, M7W-10, M7Z-1);
+- the contract's twenty-nine the first step changed, again.
+
+The review's fixes in this step (progress.md, the M7 exit's review): the
+idle check binds its wait, then the kinds noted, then the collection, in
+turn, so the collection can never come before the wait and read an empty
+`noted`; and R3's row stays first by its place alone, which the
+scheduler suite's header says and no check holds (the review's third,
+noted on the owner's word): a check put above it that raises in a
+coroutine, or parks and ends, would stop the suite under M7S-B before R3's
+row again, as M7.2's rewrite did. The finished tree was made afresh and its
+sixty-nine ran again, against every suite (the table above): every check
+above is reddened as listed, 60 of 60, the idle check by M7H-6 still. Under
+M7S-N the shell suite now stops after seven failures, where it stopped
+after twenty-four: the two checks bind their waits outside the check, as
+the suite's others do, so a raise out of a wait ends the suite there.
+
+The finished tree run whole: forty-seven suites, 1,645 expected passes,
+every pin ok; and on Linux in Docker the same, the scheduler, shell and
+contract suites green three more times each.

@@ -1448,6 +1448,38 @@ no trace.
 run again shows an idle connection's heap unchanged: an idle connection carries no
 coroutine.
 
+*Noted 2026-10-03 (the M7 exit):* each item is checked on the merged tree, 3b1bb75.
+- **Each of R1–R5 has a mutation that goes red,** run against every suite. R1: a
+  handler called from inside `on-data` (design §5.3's) reddens the shell suite's check
+  of where a handler is called, and R1's refusals removed redden R1's rows. R2: a wait
+  on no coroutine let through reddens R2's rows. R3: a coroutine's end returning
+  normally reddens R3's row, which now runs first. Since M7.2's first step such a
+  coroutine breaks every drain after it, from the first coroutine that raises, or parks
+  and ends, so the row, the eleventh, was never reached. Moved first on the owner's word
+  by form; weighed: a suite of its own, and the suites' red recorded as R3's. R4: the
+  one-shot check removed (design §5.3's) reddens R4's rows. R5: R5's refusal removed
+  reddens R5's rows; the shell feeding the parser outside `'in-parser` survives still,
+  M7.1's scope statement, held by `make check-imports`. Design §5.3's first, the poll's
+  modes swapped, reddens the yield row and four suites (m7-mutations.md, the M7 exit).
+- **An idle connection carries no coroutine.** The budget spike, run again
+  (`research/spike/m7-exit-budget.sps`), holds 100 and then 500 connections idle after
+  1 to 200 GETs each, answered at once or by a handler that waited, sleeping or looking
+  localhost up: 1,875 to 1,971 B of heap a connection the one way, 1,911 to 1,924 B the
+  other, over two runs, and of 1,252,800 coroutines made, none left after a full
+  collection. The M5 exit's spike, run on the tree before M7 and on M7's, reads medians
+  of 1,880 and 1,940 B: M7 adds three fields to a connection's record, 32 B, which hold
+  nothing while it is idle (design §7.5's note). A parked coroutine holds 3,637 to
+  3,639 B. The shell suite checks it, on the owner's word by form: a connection idle
+  after its handler, reader and producer waited holds none of the coroutines they ran
+  on. Weighed: the spike's readings alone.
+- **Found while building that check:** a waiting handler's reader whose piece answered
+  no values, as one that ends with a sleep does, failed the handler, 500, where an
+  ordinary reader's may. Fixed first, in a PR of its own, on the owner's word by form:
+  neither shell reads what a piece answers. Weighed: the fix inside the exit's PR, and a
+  note for M8.
+- **The brief's other item,** a handler awaiting `uv-getaddrinfo!` inside a pipelined
+  connection keeping response order, is M7.3's order row.
+
 *Carried from M6.2 (2026-09-28):* a handler asked at a head that announces a body
 answers in the same drain in v1, so the pieces kept for its answer are only those the
 head's read brought. An awaiting handler answers later, and until it does, reading goes

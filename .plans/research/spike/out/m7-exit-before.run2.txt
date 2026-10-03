@@ -1,0 +1,30 @@
+Chez Chez Scheme Version 10.4.1, libuv 1.52.1, the listener on 127.0.0.1:63064
+One held connection's heap, (heap with 500 - heap with 100) / 400:
+  held 100 after 1 GET each: satisfied, heap 23267808 B; TCP handles 101, read buffers 101, timers 1; deadlines armed 100, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 500 after 1 GET each: satisfied, heap 24006976 B; TCP handles 501, read buffers 501, timers 1; deadlines armed 500, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 100 after 1 GET each: satisfied, heap 23283128 B; TCP handles 101, read buffers 101, timers 1; deadlines armed 100, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 500 after 1 GET each: satisfied, heap 24022752 B; TCP handles 501, read buffers 501, timers 1; deadlines armed 500, timer handles on the loop 1; then satisfied, client exit (0 #f)
+after 1 GET each: 1847.92 B, and again 1849.06 B
+  held 100 after 10 GETs each: satisfied, heap 23287624 B; TCP handles 101, read buffers 101, timers 1; deadlines armed 100, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 500 after 10 GETs each: satisfied, heap 24011744 B; TCP handles 501, read buffers 501, timers 1; deadlines armed 500, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 100 after 10 GETs each: satisfied, heap 23266888 B; TCP handles 101, read buffers 101, timers 1; deadlines armed 100, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 500 after 10 GETs each: satisfied, heap 24054528 B; TCP handles 501, read buffers 501, timers 1; deadlines armed 500, timer handles on the loop 1; then satisfied, client exit (0 #f)
+after 10 GETs each: 1810.3 B, and again 1969.1 B
+  held 100 after 50 GETs each: satisfied, heap 23279984 B; TCP handles 101, read buffers 101, timers 1; deadlines armed 100, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 500 after 50 GETs each: satisfied, heap 24042704 B; TCP handles 501, read buffers 501, timers 1; deadlines armed 500, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 100 after 50 GETs each: satisfied, heap 23266360 B; TCP handles 101, read buffers 101, timers 1; deadlines armed 100, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 500 after 50 GETs each: satisfied, heap 24031744 B; TCP handles 501, read buffers 501, timers 1; deadlines armed 500, timer handles on the loop 1; then satisfied, client exit (0 #f)
+after 50 GETs each: 1906.8 B, and again 1913.46 B
+  held 100 after 200 GETs each: satisfied, heap 23290520 B; TCP handles 101, read buffers 101, timers 1; deadlines armed 100, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 500 after 200 GETs each: satisfied, heap 24040440 B; TCP handles 501, read buffers 501, timers 1; deadlines armed 500, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 100 after 200 GETs each: satisfied, heap 23281808 B; TCP handles 101, read buffers 101, timers 1; deadlines armed 100, timer handles on the loop 1; then satisfied, client exit (0 #f)
+  held 500 after 200 GETs each: satisfied, heap 24051368 B; TCP handles 501, read buffers 501, timers 1; deadlines armed 500, timer handles on the loop 1; then satisfied, client exit (0 #f)
+after 200 GETs each: 1874.8 B, and again 1923.9 B
+Outside the heap, a connection's: uv_tcp_t 264 B (uv_handle_size), read buffer 16384 B (limits-read-buffer-size); the shell's one timer, uv_timer_t 152 B
+The parts, fresh, less a list's pair (16 B):
+  the core's state, with its head and target judge: 400 B
+  the adapter's context: 4001/125 B
+  a parser on the shared binding list: 592 B
+  chez-libuv's TCP handle, its heap side: 29124/125 B
+  a wheel entry: 48 B
+A disarm then an arm at the idle deadline, a million times: 160 B; the measuring loop alone: 160 B
