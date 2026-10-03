@@ -292,7 +292,13 @@ What the transport does:
   your writes waiting, in memory. Count what you have written and not yet
   had ~done~ for; past a bound you choose, stop writing, or stop reading what
   you would echo; and arm a deadline to close a client that never catches up.
+- Each ~transport-write!~ is a write of its own: the server does not join
+  small ones together, as it does for a response. Many small writes are
+  slower than one, so join small pieces into one bytevector first.
 - A write after ~transport-close!~ is not sent: its ~done~ gets ~ECANCELED~.
+  That ~done~, and the one for a write refused as you ask for it, comes on
+  the server's next turn, so it never comes if the server stops first. Free
+  what you hold in your close call: it comes before ~serve~ returns.
 - One deadline at a time: a new one replaces the last. It is checked every
   ~CHEZ_HTTP_TICK_MS~ (250 ms), so it can pass up to that late.
 - When the server shuts down, your drain call is your chance to say goodbye

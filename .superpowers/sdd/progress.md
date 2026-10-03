@@ -4438,3 +4438,14 @@ M8.2 BUILT, the three steps proved each on its own tree (2026-10-03):
 Size, against main: src +585 −46; tests +1,387 −53; and the records.
 
 NEXT: the three stacked PRs, as decided. They merge bottom up on the owner's "do closing ritual", once CI is green on each head. Then M8.3 (plan §14), the black-box and robustness lanes, when the owner asks.
+
+NOTED on the owner's word (2026-10-03), once the three PRs were open. The owner asked "Did we make note of the other issues?": the review's four noted findings were in decision 0016 and this ledger only, two of them with no reason given. Then, on "Let's do that":
+- `docs/handlers.org`'s "Taking an upgrade" now says that each `transport-write!` is a write of its own, so small pieces are best joined (the tenth). It also says that a `done` the server calls on its next turn, for a write asked for after the close or refused as it was asked for, never comes if the server stops first, so a taker frees what it holds in its close call (the sixth).
+- Plan §14's "Open, and not sliced" lists all four.
+- Decision 0016's noted paragraph says where they went, and what was measured.
+
+Measured first, with a scratch probe, two identical runs, Darwin arm64. A taker whose close call writes; the server drained; the loop run as `serve` runs it:
+- the late write's `done` was still uncalled when the loop returned, and was told ECANCELED a turn later;
+- a write that completed had its `done` called inside libuv's callback, as the close call is.
+
+Docs and records only, a second commit on #111: `make test` green, forty-eight suites, 1,795 expected passes.
