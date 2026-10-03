@@ -4301,3 +4301,19 @@ M8.1 BUILT, the three steps proved each on its own tree (2026-10-03):
 Size, against main: src +310 −121; tests +711 −157; and the records.
 
 NEXT: the three stacked PRs, as decided, merged bottom up on the owner's "do closing ritual" once CI is green on each head. Then M8.2, the hand-off door, decided first (plan §14), when the owner asks.
+
+MERGED to main on 2026-10-03, on the owner's "do closing ritual": **M8.1, as three stacked PRs.**
+- **#106, the drain's limit and the core's shutdown rows,** as 71878db. Its squash tree (3a64712) is the tested tip's, 21ff9aa's, and its parent is 0ad7511. It merged first and kept its branch, since #107 was based on it.
+- **#107, the server drains its connections,** as f2d256c. It was retargeted to main and rebased from #106's tip, 21ff9aa. The rebased tip, 9b96876, has the tested tree (e7a66c8, f9d1d66's), and so does the squash, whose parent is 71878db. It kept its branch, since #108 was based on it.
+- **#108, SIGTERM and SIGINT drain `serve`,** as 7bcfcb4. It was retargeted to main and rebased from #107's first tip, f9d1d66. The rebased tip, 6826c6d, has the tested tree (717f255, b3b9405's), and so does the squash, whose parent is f2d256c.
+- **CI.** Each merged on `linux` SUCCESS at its head: #106 on 21ff9aa (run 37133157275); #107 on 9b96876 (run 37133338112); #108 on 6826c6d (run 37133494793). Each log holds its step's count: forty-seven suites, 1,657, 1,684 and 1,689 expected passes.
+- **Branches.** All three deleted, local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: forty-seven suites, 1,689 expected passes, every pin ok.
+
+DONE and merged (71878db, PR #106; f2d256c, PR #107; 7bcfcb4, PR #108): **M8.1, the drain.**
+- SIGTERM or SIGINT drains `serve` (SIGINT decided by form): the listener closes, idle connections close at once, requests in flight are answered with `Connection: close`, and what is open at `drain-timeout-ms` (10 s, `CHEZ_HTTP_DRAIN_TIMEOUT`) is closed; the drain is logged, `draining`, `drain-timeout`, `stopped`, and `serve` returns at its end.
+- Found and fixed on the way: the shell's timer stopped while no connection had a deadline, and the shell told the server of no close, so a drain could neither reach its deadline nor end; and a forced close logged its own cancellation as a read error (the review's first).
+- Decided by form: SIGTERM and SIGINT; the drain's three log lines; review, then three stacked PRs; the review's 1, 2 and 6–9 fixed, 3–5 noted. A /code-review high found nine.
+
+NEXT: M8.2 (plan §14), the hand-off door, decided first, when the owner asks.
