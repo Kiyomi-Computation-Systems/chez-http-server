@@ -4186,3 +4186,19 @@ M7 EXIT BUILT, the two steps proved each on its own tree (2026-10-03):
 No file under `src/` changes but the libuv shell, in the first step.
 
 NEXT: the owner's word on how it ships: two stacked PRs, the fix below the exit, as decided; then the closing ritual on "do closing ritual", and M8 when the owner asks.
+
+MERGED to main on 2026-10-03, on the owner's "do closing ritual": **the M7 exit, as two stacked PRs.**
+- **#104, a waiting handler's reader may answer a piece with no values,** as 0bcb998. Its squash tree (c918d68) is the tested tip's, ecb90c9's, and its parent is 3b1bb75. It merged first and kept its branch, since #105 was based on it.
+- **#105, R3's row first, and an idle connection carries no coroutine,** as d3ad473. It was retargeted to main and rebased from #104's tip, ecb90c9. The rebased tip, 6f32f28, has the tested tree (0ce2ff5, 3214bb7's), and so does the squash, whose parent is 0bcb998.
+- **CI.** Each merged on `linux` SUCCESS at its head: #104 on ecb90c9 (run 37123999546); #105 on 6f32f28 (run 37124260922). Each log holds its step's count: forty-seven suites, 1,644 and 1,645 expected passes.
+- **Branches.** Both deleted, local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: forty-seven suites, 1,645 expected passes, every pin ok.
+
+DONE and merged (0bcb998, PR #104; d3ad473, PR #105): **the M7 exit. M7 COMPLETE.**
+- Each of R1–R5 has a mutation that goes red on the merged tree; R3's again, its row now first.
+- The budget spike, run again: an idle connection carries no coroutine, and holds 32 B more than before M7, three fields of its record, which hold nothing while it is idle; the shell suite checks that it holds none of the coroutines its handler, reader and producer ran on.
+- Found and fixed on the way, as its own PR: a waiting reader's piece that answered no values failed its handler.
+- Decided by form: R3's row first; the fix as its own PR; the check in `make test`; review, then two stacked PRs. A /code-review high found four, in tests; three were fixed, and the fourth, R3's row held first by its place alone, is noted.
+
+NEXT: M8 (plan §14), shutdown, hand-off, black-box and release, when the owner asks.
