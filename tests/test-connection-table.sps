@@ -55,7 +55,14 @@
 ;;; with no response is at once), and one with a request in flight answers
 ;;; it, `Connection: close` while its head is unwritten, then lingers, as
 ;;; every close after a response does.  So `draining`, which only idle
-;;; entered, is retired, and the states are ten.
+;;; entered, is retired, and the states are ten.  And M8.2's seven for the
+;;; door, from decision 0016: a handler that takes an HTTP/1.1 upgrade with
+;;; no body answers a switch, the 101 is written, and once it is, the stream
+;;; is handed over with the bytes read past the request, the pending input
+;;; the message's pause kept; any other request answered a switch, and a
+;;; switch with a fault, is answered 500, as a response with a fault is.  So
+;;; the parser's own hand-off, which the core never resumes the parser
+;;; onto, is no row (T7, retired) but a refusal.
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused
@@ -64,8 +71,9 @@
 ;;; has open (the cut-off-span PR).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
-        (http-server limits) (http-server body) (fake-shell)
-        (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE F-CHUNKED F-CONTENT-LENGTH)
+        (http-server limits) (http-server body) (http-server switch) (fake-shell)
+        (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE F-CONNECTION-KEEP-ALIVE
+              F-CHUNKED F-CONTENT-LENGTH)
         (only (chezscheme) display-condition))
 
 (define (b s) (string->utf8 s))
@@ -375,16 +383,11 @@
         (i (state 'handling) '(handler-failed boom)
            `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)))))
 
-   ;; The pause channel.  In v1 the core's own flow never reaches this row:
-   ;; it pauses the parser at every message's end, and serves an upgrade and
-   ;; closes after it (U1), so the parser never runs on to its hand-off.  It
-   ;; is the door M8 opens for a handler that takes upgrades (decision 0006's
-   ;; amendment of 2026-09-25).  The error channel is U2's.
-   (row 'T7 "head/body, parser-result hands off -> handed-off: read-stop, disarm, the hand-off hook"
-        (i (state 'head 'deadline 'header 'request req) '(parser-result paused 55 55 paused-upgrade #f)
-           `(handed-off #f ((read-stop) (disarm-deadline) (hand-off ,req))))
-        (i (state 'body 'deadline 'body 'request req) '(parser-result paused 63 63 paused-upgrade #f)
-           `(handed-off #f ((read-stop) (disarm-deadline) (hand-off ,req)))))
+   ;; T7, the parser's own hand-off on its pause channel, is retired (M8.2):
+   ;; the core pauses the parser at every message's end and never resumes
+   ;; it onto an upgrade, so the hand-off cannot come, and the door is the
+   ;; switch rows' (decision 0016).  The suite's checks refuse it.  The
+   ;; error channel is U2's.
 
    ;; M8.1: told to finish, an idle connection has nothing in flight, so it
    ;; closes at once, with no response, as at its idle deadline.  A state
@@ -505,6 +508,143 @@
         (i (state 'head 'deadline 'header) '(parser-result error 24 24 paused-h2-upgrade #f)
            `(responding http2-preface (,(status-write 505 "HTTP Version Not Supported") (read-stop)
                                        (arm-deadline write)))))))
+
+;; ---------------------------------------------------------------------------
+;; M8.2: the door, seven rows (decision 0016, decided on the owner's word by
+;; form, 2026-10-03).  A handler takes an upgrade by answering a switch.  The
+;; door opens for an HTTP/1.1 request the parser marks as an upgrade, kept
+;; alive, that is no CONNECT and has no body (item 4): its 101 is written,
+;; `Connection: upgrade` with the switch's fields (item 1), and once it is,
+;; the core hands the stream over with its take-over and the bytes read past
+;; the request, the pending input the message's pause kept (0006 item 3's
+;; contract; the spike `m8-door-pending.sps` measured it at every delivery
+;; size).  Any other request answered a switch, and a switch with a fault,
+;; is answered 500, logged, as a response with a fault is (decision 0010
+;; item 2).  Handed off, the core asks for nothing more but ends at the
+;; stream's close.
+
+;; A WebSocket handshake read in one delivery, its request 72 bytes, then 5
+;; bytes of another protocol's.
+(define ws-wire
+  (b "GET /chat HTTP/1.1\r\nHost: x\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\nFRAME"))
+(define ws-end (- (bytevector-length ws-wire) 5))
+(define ws-fields '(("Connection" . "upgrade") ("Upgrade" . "websocket")))
+(define (take-over transport retained) 'taken)
+(define (switch . headers)
+  (switch-protocols (map (lambda (h) (cons (b (car h)) (b (cdr h)))) headers) take-over))
+(define ws-switch (switch '("Upgrade" . "websocket")))
+(define the-101-line "HTTP/1.1 101 Switching Protocols\r\n")
+(define the-101-fields "Upgrade: websocket\r\nConnection: upgrade\r\n\r\n")
+(define the-101 (string-append the-101-line the-101-fields))
+
+;; upgrading : ConnState Nat Nat Nat Nat Nat Nat [Nat] -> ConnState
+;; `s`, a head being read, read through: one delivery of `ws-wire`'s first
+;; `delivered` bytes (all of them by default), then on-headers-complete with
+;; llhttp's method number, the version, the flags, the content-length and
+;; the parser's `upgrade`, then the message's end and its pause, the rest of
+;; the delivery kept from `ws-end`.  A request with no body is then in
+;; handling, its handler asked; one with a body is asked at its head, and
+;; its message has not ended.
+(define (upgrading s method major minor flags length upgrade . delivered)
+  (conn-step s `(bytes-arrived ,ws-wire 0 ,(if (null? delivered) (bytevector-length ws-wire) (car delivered))))
+  (conn-step s `(parser-event on-headers-complete ,method ,major ,minor ,flags ,length ,upgrade ,ws-end))
+  (if (> length 0)
+      (conn-step s `(parser-result need-input ,ws-end ,ws-end #f #f))
+      (begin
+        (conn-step s `(parser-event on-message-complete ,ws-end))
+        (conn-step s `(parser-result paused ,ws-end ,ws-end #f #f))))
+  s)
+
+;; ws : [Nat] -> ConnState — the WebSocket handshake, in handling.
+(define (ws . delivered)
+  (apply upgrading (state 'head 'deadline 'header 'target "/chat" 'host "x" 'fields ws-fields)
+         1 1 1 upgrade-flags 0 1 delivered))
+
+;; switching : ConnState Switch -> ConnState — `s`, its 101 written for `sw`.
+(define (switching s sw)
+  (conn-step s `(handler-responded ,sw))
+  s)
+
+;; refused-switch : Symbol -> Datum — a switch answered 500 for `fault`.
+(define (refused-switch fault)
+  `(responding invalid-response
+               ((log invalid-response ,fault) ,(status-write 500 "Internal Server Error")
+                (arm-deadline write))))
+
+(define (switch-rows)
+  (list
+   (row 'W1 "handling, handler-responded with a switch, the door open -> responding: the 101's write, arm write"
+        (i (ws) `(handler-responded ,ws-switch)
+           `(responding upgrade (,(written the-101-line the-101-fields) (arm-deadline write)))))
+
+   ;; The 101 is the one write outstanding, its bytes what it wrote.
+   (row 'W2 "responding, the 101's last write-completed -> handed-off: disarm, the hand-off, the bytes read past the request"
+        (i (switching (ws) ws-switch) `(write-completed ,(string-length the-101))
+           `(handed-off upgrade ((disarm-deadline) (hand-off ,take-over (,ws-wire ,ws-end ,(+ ws-end 5))))))
+        (i (switching (ws ws-end) ws-switch) `(write-completed ,(string-length the-101))
+           `(handed-off upgrade ((disarm-deadline) (hand-off ,take-over #f)))))
+
+   ;; Item 4: a request that does not upgrade; one below HTTP/1.1, which
+   ;; closes after its response, or is kept alive by its Connection; a
+   ;; CONNECT, which llhttp's rule upgrades whatever its fields; and one with
+   ;; a body, answered at its head (decision 0013).
+   (row 'W3 "handling, handler-responded with a switch, the door closed -> responding 500, close-after: log not-an-upgrade"
+        (i (upgrading (state 'head 'deadline 'header 'target "/chat" 'host "x") 1 1 1 0 0 0)
+           `(handler-responded ,ws-switch)
+           (refused-switch 'not-an-upgrade))
+        (i (upgrading (state 'head 'deadline 'header 'target "/chat" 'fields ws-fields) 1 1 0 upgrade-flags 0 1)
+           `(handler-responded ,ws-switch)
+           (refused-switch 'not-an-upgrade))
+        (i (upgrading (state 'head 'deadline 'header 'target "/chat" 'fields ws-fields)
+                      1 1 0 (bitwise-ior upgrade-flags F-CONNECTION-KEEP-ALIVE) 0 1)
+           `(handler-responded ,ws-switch)
+           (refused-switch 'not-an-upgrade))
+        (i (upgrading (state 'head 'deadline 'header 'target "example.com:443" 'host "example.com:443")
+                      5 1 1 0 0 1)
+           `(handler-responded ,ws-switch)
+           (refused-switch 'not-an-upgrade))
+        (i (upgrading (state 'head 'deadline 'header 'target "/chat" 'host "x" 'fields ws-fields)
+                      3 1 1 (bitwise-ior upgrade-flags F-CONTENT-LENGTH) 4 1)
+           `(handler-responded ,ws-switch)
+           (refused-switch 'not-an-upgrade)))
+
+   ;; Item 1: what the server cannot write safely, as (http-server
+   ;; serializer)'s switch-fault names it.
+   (row 'W4 "handling, handler-responded with a switch with a fault, the door open -> responding 500, close-after: log the fault"
+        (i (ws) `(handler-responded ,(switch '("Sec-WebSocket-Accept" . "x")))
+           (refused-switch 'invalid-upgrade))
+        (i (ws) `(handler-responded ,(switch '("Upgrade" . "h2c")))
+           (refused-switch 'invalid-upgrade))
+        (i (ws) `(handler-responded ,(switch '("Upgrade" . "websocket") '("Content-Length" . "0")))
+           (refused-switch 'framing-field))
+        (i (ws) `(handler-responded ,(switch-protocols (list (cons (b "Upgrade") (b "websocket"))) 'no))
+           (refused-switch 'invalid-take-over)))
+
+   ;; RFC 9110 §7.8: a server that receives both Upgrade and an Expect of
+   ;; 100-continue MUST send the 100 before the 101.  The door's request has
+   ;; no body, so no 100 was sent for one (M6.4): the switch writes it first,
+   ;; in the 101's one write.
+   (row 'W7 "handling, handler-responded with a switch, the request expecting 100-continue -> responding: the 100, then the 101, one write"
+        (i (upgrading (state 'head 'deadline 'header 'target "/chat" 'host "x"
+                             'fields (append ws-fields '(("Expect" . "100-continue"))))
+                      1 1 1 upgrade-flags 0 1)
+           `(handler-responded ,ws-switch)
+           `(responding upgrade (,(written "HTTP/1.1 100 Continue\r\n\r\n" the-101-line the-101-fields)
+                                 (arm-deadline write)))))
+
+   (row 'W5 "handed-off, closed -> closed"
+        (i (state 'handed-off) '(closed) '(closed #f ())))
+
+   ;; The shell hands the stream's reads, writes and deadline to the taker,
+   ;; and the drain to its drain call: an event that reaches the core
+   ;; anyway changes nothing.
+   (row 'W6 "handed-off, any other event -> handed-off: nothing"
+        (i (state 'handed-off) `(bytes-arrived ,bv 0 5) '(handed-off #f ()))
+        (i (state 'handed-off) '(eof) '(handed-off #f ()))
+        (i (state 'handed-off) '(read-error ECONNRESET) '(handed-off #f ()))
+        (i (state 'handed-off) '(tick 75000) '(handed-off #f ()))
+        (i (state 'handed-off) '(shutdown-requested) '(handed-off #f ()))
+        (i (state 'handed-off) `(handler-responded ,resp) '(handed-off #f ())))))
 
 ;; ---------------------------------------------------------------------------
 ;; M3.2: what handler-responded does with what the handler answers (decision
@@ -2074,6 +2214,30 @@
                      (list (make-bytevector 0) (make-string 100000 #\a) (vector 1 2)
                            (list (b "a") (b "b")) (cons (b "a") (b "b")) 'done #\a 42 #f car
                            (make-response 200 #f '() #f))))
+    ;; The core pauses the parser at every message's end and never resumes it
+    ;; onto an upgrade, so the parser's own hand-off on its pause channel
+    ;; cannot come (M8.2; T7 retired): one that did would be the shell's bug.
+    (test-equal "a hand-off on the parser's pause channel is refused, in head and in body"
+                '(refused refused)
+                (list (verdict (lambda () (conn-step (state 'head 'deadline 'header 'request req)
+                                                     '(parser-result paused 55 55 paused-upgrade #f))))
+                      (verdict (lambda () (conn-step (state 'body 'deadline 'body 'request req)
+                                                     '(parser-result paused 63 63 paused-upgrade #f))))))
+    ;; The door lets go of what it no longer needs (M8.2): handed off, the
+    ;; core keeps no input, no request and no take-over; and a 101 a read
+    ;; error cuts short closes, its take-over let go with it, so a closed
+    ;; connection holds no handler's code.
+    (test-equal "handed off, the core keeps no input, request or take-over"
+                '(handed-off #f #f #f)
+                (let ((s (switching (ws) ws-switch)))
+                  (conn-step s `(write-completed ,(string-length the-101)))
+                  (list (conn-phase s) (conn-pending s) (conn-request s) (conn-taker s))))
+    (test-equal "a 101 cut short by a read error closes, its take-over let go"
+                '(#t closing #f)
+                (let ((s (switching (ws) ws-switch)))
+                  (let ((held (procedure? (conn-taker s))))
+                    (conn-step s '(read-error ECONNRESET))
+                    (list held (conn-phase s) (conn-taker s)))))
     (test-eq "an unknown event is an assertion violation" 'refused
              (verdict (lambda () (conn-step (state 'idle) '(no-such-event)))))
     (test-eq "an event that is not a tagged list is an assertion violation" 'refused
@@ -2101,6 +2265,7 @@
            (term (count-rows "termination" termination outcome))
            (pause (count-rows "pause-protocol" pause-protocol kept))
            (upgrade (count-rows "upgrade-door" upgrade-door outcome))
+           (switches (count-rows "switch" switch-rows outcome))
            (answered (count-rows "response" response-rows outcome))
            (accounting (count-rows "accounting" accounting-rows accounted))
            (linger (count-rows "linger" linger-rows outcome))
@@ -2114,9 +2279,10 @@
            (paddings (count-rows "padding" padding-rows asked-by))
            (cut-offs (count-rows "cut-off" cut-off-rows asked-by)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
-      (test-eqv "design §4.4: all 9 termination and error rows have a test, and M8.1's three" 12 term)
+      (test-eqv "design §4.4: 8 of the 9 termination and error rows have a test, T7 retired (M8.2), and M8.1's three" 11 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
       (test-eqv "M2.5: both upgrade-door rows have a test" 2 upgrade)
+      (test-eqv "M8.2: all 7 switch rows have a test" 7 switches)
       (test-eqv "M3.2: both response rows have a test" 2 answered)
       (test-eqv "M3.3: all 5 accounting rows have a test" 5 accounting)
       (test-eqv "M3.5: all 4 linger rows have a test" 4 linger)
