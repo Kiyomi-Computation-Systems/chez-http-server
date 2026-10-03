@@ -4391,3 +4391,61 @@ Watched to fail (m8-mutations.md, M8.2, the second step): forty-one mutants on t
 Size: src +117 −26; tests +685 −34.
 
 NEXT: the third step, the shell's transport and the facade, stacked on this one.
+
+M8.2 THIRD STEP: the shell's transport and the facade (feat/m8.2-transport).
+- `src/http-server/private/shell.sls`: the door's other side. When the core asks for the hand-off, the shell calls the switch's take-over with a transport over the connection and a copy of the bytes handed over. The connection stays in the table, so it counts against `max-connections`, and it closes through `handle-close!`.
+  - A write is a `uv-write*!` of its own, counted once libuv has taken it (the review's second), and its callback is told when it completes. A write asked for once the close has been is cancelled, and its callback is told ECANCELED after the turn.
+  - Reading restarts libuv's reads with the taker's callbacks, stopping a read already started.
+  - The close waits for the writes still outstanding.
+  - The deadline is the connection's one entry in the wheel.
+  - The drain runs a taker's drain call once, at once if it is registered while the server drains, then waits for the close, which the drain's deadline forces.
+  - The close tells the core, `closed`, then runs the close call, at once if it is registered later (the review's eighth).
+  - Each call into the taker is guarded and what it returns is dropped; one that raises is logged `taker-failed` and its stream closed.
+- `src/http-server.sls`: the facade exports `switch-protocols` and the transport's verbs, and `make-transport` for a taker's tests.
+- `tests/test-shell.sps`, the door over real sockets:
+  - through the door, with a frame sent with the handshake; later frames, and the client's end;
+  - a taker that raises;
+  - the close after the writes, among them a 4 MiB write still under way;
+  - a write refused at the call, and one refused off the loop's thread;
+  - reading stopped and started again, and restarted while it reads;
+  - `max-connections` while a stream is taken;
+  - the deadline, armed with the timer stopped, and disarmed;
+  - the drain, with a taker that says goodbye, one that ignores it, a drain call registered twice, and one registered while the server drains;
+  - a stream the server has closed.
+- `tests/test-serve.sps`: the facade's exports, and a handler that takes an upgrade with the facade's names alone.
+- Records:
+  - design §4.6's and §8.4's notes;
+  - decisions 0001's and 0005's notes;
+  - plan §14's M8.2 note;
+  - `docs/handlers.org`'s "Taking an upgrade", with how a taker bounds its writes (the review's first);
+  - `docs/connections.org` and the README's status.
+
+Measured on the finished tree (2026-10-03, Darwin arm64): `make test` green, forty-eight suites, 1,795 expected passes (1,775 + 20), every pin ok.
+
+Watched to fail (m8-mutations.md, M8.2, the third step): ninety-seven mutants on the finished tree, the step's twenty-three and the first two steps' seventy-four, each loading and reddening a check. Every one of the ninety-seven checks the slice added or changed, by name, is reddened by one, and each of the table's twenty instances, as on the second step's tree.
+
+Size: src +205 −10; tests +492 −13.
+
+On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the finished tree made with `COPYFILE_DISABLE=1`, with curl, ab and python3 installed:
+- `make test`, less its submodule and pin checks: forty-eight suites, 1,795 expected passes;
+- the switch, shell and serve suites green three more times each: 23, 188 and 16.
+
+M8.2 BUILT, the three steps proved each on its own tree (2026-10-03):
+- the first, main at 70b7adf with its files: `make test` green, forty-seven suites and 1,728 expected passes; its thirty-three mutants there, 39 of 39 checks;
+- the second, on the first: forty-eight suites, 1,775; its forty-one mutants there, 37 of 37 checks by name, and the table's twenty instances;
+- the third, the finished tree: 1,795, on Darwin and on Linux; ninety-seven mutants, 97 of 97 checks.
+
+Size, against main: src +585 −46; tests +1,387 −53; and the records.
+
+NEXT: the three stacked PRs, as decided. They merge bottom up on the owner's "do closing ritual", once CI is green on each head. Then M8.3 (plan §14), the black-box and robustness lanes, when the owner asks.
+
+NOTED on the owner's word (2026-10-03), once the three PRs were open. The owner asked "Did we make note of the other issues?": the review's four noted findings were in decision 0016 and this ledger only, two of them with no reason given. Then, on "Let's do that":
+- `docs/handlers.org`'s "Taking an upgrade" now says that each `transport-write!` is a write of its own, so small pieces are best joined (the tenth). It also says that a `done` the server calls on its next turn, for a write asked for after the close or refused as it was asked for, never comes if the server stops first, so a taker frees what it holds in its close call (the sixth).
+- Plan §14's "Open, and not sliced" lists all four.
+- Decision 0016's noted paragraph says where they went, and what was measured.
+
+Measured first, with a scratch probe, two identical runs, Darwin arm64. A taker whose close call writes; the server drained; the loop run as `serve` runs it:
+- the late write's `done` was still uncalled when the loop returned, and was told ECANCELED a turn later;
+- a write that completed had its `done` called inside libuv's callback, as the close call is.
+
+Docs and records only, a second commit on #111: `make test` green, forty-eight suites, 1,795 expected passes.

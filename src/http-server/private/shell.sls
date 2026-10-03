@@ -67,8 +67,10 @@
 ;;;   arm-deadline    the connection's entry in the wheel, at the loop's now
 ;;;                   plus the kind's limit (below)
 ;;;   disarm-deadline its entry taken out of the wheel
-;;; The hand-off (M8) is never asked for in v1's flow.  A shell made on
-;;; credit (M6.2) answers with each handler's answer and `credit`, and a
+;;;   hand-off        the switch's take-over called with the stream, as a
+;;;                   transport, and a copy of the bytes handed over (THE
+;;;                   DOOR, below)
+;;; A shell made on credit (M6.2) answers with each handler's answer and `credit`, and a
 ;;; streaming reader's credit reaches the core through
 ;;; connection-body-credit!, which no action asks for.  v1's server never
 ;;; makes one: the checks do, standing in for M7's coroutine shell, which
@@ -122,6 +124,30 @@
 ;;; whose handler waits arms none (design §4.3).  A shell asked to watch the
 ;;; process's signals (shell-watch-signals!) asks the server to shut down at
 ;;; SIGTERM or SIGINT (decided 2026-10-03), through a signal handle each.
+;;;
+;;; THE DOOR (M8.2; decision 0016).  Once a switch's 101 is written the core
+;;; hands the stream over, and the shell calls the switch's take-over with a
+;;; transport, (http-server transport)'s record of verbs, over the
+;;; connection, which stays in the table: it counts against max-connections,
+;;; and its close is handle-close!'s.  The verbs:
+;;; a write is one uv-write*! of its own, copied at the call, never held for
+;;; the turn's write, its callback told #f or the errno once it completes;
+;;; one asked for once the close has been, or the handle's, is not written,
+;;; and its callback is told ECANCELED after the turn.  Reading starts libuv's
+;;; reads again with the taker's callbacks, its end reported once.  The
+;;; close waits for the writes outstanding, then closes the handle.  The
+;;; deadline is the connection's one entry in the wheel, armed at the loop's
+;;; time brought up to date, as a connection's are, and the timer, as it
+;;; fires, calls it for a connection taken where it ticks any other.  The
+;;; drain, `finish-all`, runs a taker's drain call, once, where it tells any
+;;; other connection to finish, and runs at once one registered while the
+;;; server drains; the drain waits for the stream's close, and its deadline
+;;; closes it, as any connection.  Its close's callback, whoever closed it,
+;;; tells the core, `closed`, then calls the taker's close call, and one
+;;; registered after it is run at once.  The
+;;; taker's code runs in place, in these callbacks, as a reader's does, and
+;;; each call into it is guarded, what it returns dropped: one that raises is
+;;; logged `taker-failed`, and its stream closed.
 ;;;
 ;;; ONE PROCEDURE CLOSES EVERY HANDLE: handle-close!, the one uv-close! call
 ;;; (tests/test-close-ownership.sps reads the source to hold it), for a
@@ -243,6 +269,7 @@
                 make-waits waits-clock! waits-fire! waits-timed waits-resolver!)
           (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
+          (only (http-server transport) make-transport)
           (http-server private adapter))
 
   ;; make-shell :
@@ -421,7 +448,8 @@
             (mutable producer-called?)        ; whether the drain has called a producer yet
             (mutable waits?)                  ; whether the request's handler answered awaiting
             (mutable calls)                   ; its calls on coroutines to make, in order
-            (mutable calling?)))              ; whether one of them runs
+            (mutable calling?)                ; whether one of them runs
+            (mutable taker)))                 ; once handed off, its taker's (THE DOOR)
 
   ;; connection-state : Connection -> ConnState — the core's state.
   (define (connection-state c) (conn-context-state (connection-ctx c)))
@@ -579,7 +607,10 @@
       ((close-listener) (listener-close! sh))
       ((finish-all)
        (start-ticking! sh)
-       (each-connection! sh (lambda (c) (dispatch! c '(shutdown-requested)))))
+       (each-connection! sh (lambda (c)
+                              (if (connection-taker c)
+                                  (taker-drain! c)
+                                  (dispatch! c '(shutdown-requested))))))
       ((force-close-all) (each-connection! sh connection-close!))
       ((log) (log! sh (cadr a) (cddr a)))
       (else (assertion-violation 'server-run! "not an action the shell performs here" a))))
@@ -620,7 +651,7 @@
   ;; option has already failed, which reading will report.  A start that
   ;; raises goes on to shell-adopt!, which closes the handle.
   (define (serve! sh tcp)
-    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f)))
+    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f #f)))
       (connection-entry-set! c (make-wheel-entry c))
       (connection-ctx-set! c (make-conn-context
                               (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
@@ -731,6 +762,7 @@
       ((log) (log! (connection-shell c) (cadr a) (cddr a)))
       ((arm-deadline) (arm! c (cadr a)))
       ((disarm-deadline) (disarm! c))
+      ((hand-off) (hand-off! c (cadr a) (caddr a)))
       (else (values))))
 
   (define (trace! c kind datum)
@@ -989,6 +1021,151 @@
                     (lambda (err)
                       (dispatch! c (if err (list 'read-error (errno err)) '(shutdown-completed)))))))
 
+  ;; --- the door (M8.2; decision 0016) --------------------------------------------
+
+  ;; What a taker has registered for its stream, and how far the stream has
+  ;; gone: its deadline's call, its drain call, its close call, its writes
+  ;; outstanding, whether its close has been asked for, whether its drain
+  ;; call has run, and whether the stream has closed.
+  (define-record-type taker
+    (fields (mutable on-passed) (mutable on-drain) (mutable on-close)
+            (mutable writes) (mutable closing?) (mutable drained?) (mutable closed?))
+    (protocol (lambda (new) (lambda () (new #f #f #f 0 #f #f #f)))))
+
+  ;; hand-off! : Connection (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) -> Void
+  ;; The 101 is written: call the switch's take-over with a transport over
+  ;; the connection and a copy of the bytes handed over, empty when none
+  ;; were.
+  (define (hand-off! c take-over retained)
+    (let ((tk (make-taker)))
+      (connection-taker-set! c tk)
+      (taker-call! c (lambda () (take-over (connection-transport c tk) (retained-copy retained))))))
+
+  ;; retained-copy : (U #f (List Bytevector Nat Nat)) -> Bytevector
+  (define (retained-copy retained)
+    (if retained
+        (let* ((from (cadr retained)) (n (fx- (caddr retained) from)) (out (make-bytevector n)))
+          (bytevector-copy! (car retained) from out 0 n)
+          out)
+        (make-bytevector 0)))
+
+  ;; taker-call! : Connection (-> Any) -> Void
+  ;; Call into the taker's code; if it raises, log `taker-failed` and close
+  ;; its stream.  A log that raises then is ignored.  What the call returns
+  ;; is dropped: the shell's callbacks return to chez-libuv, which takes one
+  ;; value, and a taker's code may end with none.
+  (define (taker-call! c thunk)
+    (guard (e (#t (log-quietly! (connection-shell c) 'taker-failed (list e))
+                  (connection-close! c)))
+      (thunk))
+    (if #f #f))
+
+  ;; taker-later! : Connection (-> Any) -> Void
+  ;; Call into the taker's code after libuv's turn, from the scheduler's
+  ;; drain, guarded as taker-call! guards it.
+  (define (taker-later! c thunk)
+    (scheduler-call! (shell-scheduler (connection-shell c)) (lambda () (taker-call! c thunk))))
+
+  ;; connection-transport : Connection Taker -> Transport — the verbs (THE
+  ;; DOOR, the header).
+  (define (connection-transport c tk)
+    (make-transport
+     (lambda (bv start end written) (taker-write! c tk bv start end written))
+     (lambda (on-bytes on-end) (taker-read-start! c tk on-bytes on-end))
+     (lambda () (read-stop! c))
+     (lambda () (taker-close! c tk))
+     (lambda (ms passed) (taker-deadline! c tk ms passed))
+     (lambda (thunk)
+       (taker-on-drain-set! tk thunk)
+       (when (eq? (server-phase (shell-server (connection-shell c))) 'draining)
+         (taker-drain! c)))
+     (lambda (thunk)
+       (taker-on-close-set! tk thunk)
+       (when (taker-closed? tk) (taker-call! c thunk)))))
+
+  ;; taker-write! : Connection Taker Bytevector Nat Nat (U #f ((U #f Symbol) -> Any)) -> Void
+  ;; bv[start, end) as one uv-write*!, chez-libuv copying it at the call; the
+  ;; callback told on completion.  Once the close has been asked for, or the
+  ;; handle's, nothing is written, and the callback is told ECANCELED after
+  ;; the turn; so is a write refused at the call, with its errno.  A write is
+  ;; counted outstanding once libuv has taken it, which never completes it
+  ;; inside the call, so a refusal for any other reason, such as a call off
+  ;; the loop's thread (`&uv-wrong-thread`), raises to the taker and leaves
+  ;; nothing for the close to wait for (M8.2's review).
+  (define (taker-write! c tk bv start end written)
+    (if (or (taker-closing? tk) (connection-closing? c))
+        (when written (taker-later! c (lambda () (written 'ECANCELED))))
+        (guard (e ((transport-condition? e)
+                   (let ((why (errno e)))
+                     (when written (taker-later! c (lambda () (written why)))))))
+          (uv-write*! (connection-tcp c) (list (list bv start end))
+                      (lambda (err) (taker-wrote! c tk written (and err (errno err)))))
+          (taker-writes-set! tk (fx+ (taker-writes tk) 1)))))
+
+  ;; taker-wrote! : Connection Taker (U #f ((U #f Symbol) -> Any)) (U #f Symbol) -> Void
+  ;; A write has completed, or failed for `why`: its callback told, and the
+  ;; stream closed if its close was asked for and no write is outstanding.
+  (define (taker-wrote! c tk written why)
+    (taker-writes-set! tk (fx- (taker-writes tk) 1))
+    (when written (taker-call! c (lambda () (written why))))
+    (when (and (taker-closing? tk) (fxzero? (taker-writes tk)))
+      (connection-close! c)))
+
+  ;; taker-read-start! : Connection Taker (Bytevector Nat Nat -> Any) (Symbol -> Any) -> Void
+  ;; libuv's reads started again with the taker's callbacks, each guarded;
+  ;; reading already started is restarted with them.  The end, 'eof or the
+  ;; errno, reading stopped, a read refused at the start among them: libuv
+  ;; reports one end a start, and reads no more after it.  A stream closing
+  ;; reads no more.
+  (define (taker-read-start! c tk on-bytes on-end)
+    (unless (or (connection-closing? c) (taker-closing? tk))
+      (let ((tcp (connection-tcp c)))
+        (define (ended why)
+          (connection-reading?-set! c #f)
+          (taker-call! c (lambda () (on-end why))))
+        (when (connection-reading? c) (uv-read-stop! tcp))
+        (connection-reading?-set! c #t)
+        (guard (e ((transport-condition? e) (ended (errno e))))
+          (uv-read-start! tcp
+                          (lambda (bv start end) (taker-call! c (lambda () (on-bytes bv start end))))
+                          (lambda () (ended 'eof))
+                          (lambda (e) (ended (errno e))))))))
+
+  ;; taker-close! : Connection Taker -> Void
+  ;; Reading stopped, and the handle closed once no write is outstanding.
+  (define (taker-close! c tk)
+    (unless (taker-closing? tk)
+      (taker-closing?-set! tk #t)
+      (read-stop! c)
+      (when (fxzero? (taker-writes tk)) (connection-close! c))))
+
+  ;; taker-deadline! : Connection Taker (U #f Nat) (U #f (-> Any)) -> Void
+  ;; The stream's one deadline, `ms` from the loop's time brought up to date,
+  ;; replacing the one armed, and the timer running; #f disarms it.  A stream
+  ;; closing is armed no more, as a connection's is not (arm!).
+  (define (taker-deadline! c tk ms passed)
+    (taker-on-passed-set! tk passed)
+    (cond ((not ms) (disarm! c))
+          ((not (connection-closing? c))
+           (let ((sh (connection-shell c)))
+             (uv-update-time! (shell-loop sh))
+             (wheel-arm! (shell-wheel sh) (connection-entry c) (+ (uv-now (shell-loop sh)) ms))
+             (start-ticking! sh)))))
+
+  ;; taker-passed! : Connection -> Void
+  ;; Its deadline has passed: its call.  The wheel lets an entry go as it
+  ;; passes, so the call is made once a deadline armed.
+  (define (taker-passed! c)
+    (let ((passed (taker-on-passed (connection-taker c))))
+      (when passed (taker-call! c passed))))
+
+  ;; taker-drain! : Connection -> Void — the server drains: its drain call, once.
+  (define (taker-drain! c)
+    (let* ((tk (connection-taker c)) (drain (taker-on-drain tk)))
+      (when (and drain (not (taker-drained? tk)))
+        (taker-drained?-set! tk #t)
+        (taker-call! c drain))))
+
   ;; --- deadlines ----------------------------------------------------------------
 
   ;; arm! : Connection Symbol -> Void
@@ -1050,7 +1227,8 @@
       (define (guarded thunk)
         (guard (e (#t (set! raised (kept-raise raised e))))
           (thunk)))
-      (for-each (lambda (c) (guarded (lambda () (dispatch! c event))))
+      (for-each (lambda (c)
+                  (guarded (lambda () (if (connection-taker c) (taker-passed! c) (dispatch! c event)))))
                 (wheel-advance! (shell-wheel sh) now))
       (when (and (fxzero? (wheel-count (shell-wheel sh)))
                  (not (eq? (server-phase (shell-server sh)) 'draining)))
@@ -1132,7 +1310,12 @@
       (when c
         (hashtable-delete! (shell-table sh) h)
         (server-dispatch! sh (list 'connection-closed (hashtable-size (shell-table sh))))
-        (dispatch! c '(closed)))))
+        (dispatch! c '(closed))
+        (let ((tk (connection-taker c)))
+          (when tk
+            (taker-closed?-set! tk #t)
+            (when (taker-on-close tk)
+              (taker-call! c (taker-on-close tk))))))))
 
   ;; transport-condition? : Any -> Boolean
   ;; What a verb raises when the connection, not the program, has failed.

@@ -21,7 +21,9 @@ costs no more once its handler is done waiting, and one contract test holds all
 three shells, waiting handlers included, to the same bytes. Since M8.1 it
 shuts down gracefully: sent SIGTERM or SIGINT (Ctrl-C), it finishes the
 requests in flight, closes the rest after ~CHEZ_HTTP_DRAIN_TIMEOUT~, and
-~serve~ returns (see [[file:docs/connections.org][docs/connections.org]]). See
+~serve~ returns (see [[file:docs/connections.org][docs/connections.org]]). Since
+M8.2 a handler can take an upgrade, a WebSocket's say, and speak the new
+protocol over the connection itself (see [[file:docs/handlers.org][docs/handlers.org]]). See
 [[file:.plans/2026-09-19-chez-http-server-project-brief.md][the project brief]] for the milestone map.
 
 ** Quick start
@@ -80,7 +82,8 @@ with none — see [[file:docs/host-header.org][docs/host-header.org]].
 ** Connections
 
 How one connection carries many requests, answered one at a time, and what a
-request to switch protocols gets — see [[file:docs/connections.org][docs/connections.org]].
+request to switch protocols gets — see [[file:docs/connections.org][docs/connections.org]]. How a handler
+takes one is in [[file:docs/handlers.org][docs/handlers.org]].
 
 ** Responses
 

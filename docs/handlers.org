@@ -239,6 +239,83 @@ To look up a host's addresses:
 Inside a handler that waits, ~guard~ costs about 3.7 KB each time it runs.
 ~with-exception-handler~ costs next to nothing.
 
+* Taking an upgrade
+
+A client can ask to switch the connection to another protocol, a WebSocket
+say. A handler takes it by answering ~(switch-protocols headers take-over)~.
+The server writes ~101 Switching Protocols~ with your headers, then calls
+~(take-over t retained)~. From then on the connection is a stream of bytes,
+and ~t~, the transport, is how you use it.
+
+#+begin_src scheme
+;; a client asking for Upgrade: echo gets back every byte it sends
+(serve
+ (lambda (request)
+   (if (equal? (request-header request "upgrade") "echo")
+       (switch-protocols
+        (list (cons (string->utf8 "Upgrade") (string->utf8 "echo")))
+        (lambda (t retained)
+          (when (> (bytevector-length retained) 0) (transport-write! t retained))
+          (transport-read-start! t
+                                 (lambda (bv start end) (transport-write! t bv start end))
+                                 (lambda (why) (transport-close! t)))
+          (transport-on-drain! t (lambda () (transport-close! t)))))
+       (make-response 200 #f '() (string->utf8 "ask for Upgrade: echo\n")))))
+#+end_src
+
+Which requests can be taken:
+
+- An HTTP/1.1 request with ~Connection: upgrade~ and ~Upgrade~, and no body.
+  A switch answered to any other request gets ~500~, and the server logs
+  ~invalid-response not-an-upgrade~.
+- Your ~Upgrade~ header must name a protocol the client's did, or the client
+  gets ~500~ (~invalid-upgrade~). The server writes ~Connection: upgrade~
+  itself; leave out ~Content-Length~ and ~Transfer-Encoding~. A client that
+  also sent ~Expect: 100-continue~ gets ~100 Continue~ first.
+- ~retained~ is what the client sent after its request that the server had
+  already read. It is usually empty: a WebSocket client waits for the ~101~.
+
+What the transport does:
+
+| Call                                  | Does                                                           |
+|---------------------------------------+----------------------------------------------------------------|
+| ~(transport-write! t bv [start end] [done])~ | sends the bytes; ~done~ gets ~#f~ once sent, or the error |
+| ~(transport-read-start! t on-bytes on-end)~ | each read as ~(on-bytes bv start end)~; ~(on-end why)~ once: ~eof~ or the error |
+| ~(transport-read-stop! t)~            | stops reading                                                  |
+| ~(transport-close! t)~                | closes, once your writes have gone out                         |
+| ~(transport-deadline! t ms proc)~     | calls ~proc~ once ~ms~ milliseconds pass; ~(transport-deadline! t #f)~ cancels |
+| ~(transport-on-drain! t proc)~        | calls ~proc~ when the server shuts down                        |
+| ~(transport-on-close! t proc)~        | calls ~proc~ once the stream has closed, whoever closed it (at once if it has) |
+
+- Each read's bytevector is yours to keep. A write of no bytes is refused.
+- Nothing bounds what you write but you. A client that stops reading leaves
+  your writes waiting, in memory. Count what you have written and not yet
+  had ~done~ for; past a bound you choose, stop writing, or stop reading what
+  you would echo; and arm a deadline to close a client that never catches up.
+- Each ~transport-write!~ is a write of its own: the server does not join
+  small ones together, as it does for a response. Many small writes are
+  slower than one, so join small pieces into one bytevector first.
+- A write after ~transport-close!~ is not sent: its ~done~ gets ~ECANCELED~.
+  That ~done~, and the one for a write refused as you ask for it, comes on
+  the server's next turn, so it never comes if the server stops first. Free
+  what you hold in your close call: it comes before ~serve~ returns.
+- One deadline at a time: a new one replaces the last. It is checked every
+  ~CHEZ_HTTP_TICK_MS~ (250 ms), so it can pass up to that late.
+- When the server shuts down, your drain call is your chance to say goodbye
+  (a WebSocket sends close code 1001) and close. The server waits for the
+  close, and after ~CHEZ_HTTP_DRAIN_TIMEOUT~ closes the stream itself. The
+  drain call runs once; registered while the server is already shutting
+  down, it runs at once.
+- A taken stream still counts toward ~CHEZ_HTTP_MAX_CONNECTIONS~. One you
+  neither read nor time out stays open, a client gone or not, until the
+  server shuts down: read it, or arm a deadline.
+- Your code runs inside the server's own callbacks, so keep it quick, and it
+  cannot ~await~. If it raises, the server logs ~taker-failed~ and closes the
+  stream.
+- To test your taker without a server, make a transport of your own:
+  ~make-transport~ takes the seven procedures the calls above end up in, in
+  that order.
+
 * When the server will not start
 
 A malformed setting, such as ~CHEZ_HTTP_PORT=http~ or a ~CHEZ_HTTP_HOST~ that is not

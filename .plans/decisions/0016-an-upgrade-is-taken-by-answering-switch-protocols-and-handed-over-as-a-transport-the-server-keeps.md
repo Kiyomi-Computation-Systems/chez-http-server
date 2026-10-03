@@ -202,7 +202,10 @@ form deciding which to fix, 2026-10-03):
   reads the parser's upgrade flag from the close-after reason, which only
   on-headers-complete sets for an upgrade. A taker's callbacks deferred to the next turn
   are lost if `serve` returns first. A taker's writes are a write request each, not
-  batched as the core's are under 4 KiB.
+  batched as the core's are under 4 KiB. After the PRs opened, on the owner's word, the
+  last two went into `docs/handlers.org` and all four into plan §14's open list.
+  Measured then: the `done` of a write asked for in a taker's close call was still
+  uncalled when `serve`'s loop returned, and was told ECANCELED a turn later.
 
 **The checks:**
 

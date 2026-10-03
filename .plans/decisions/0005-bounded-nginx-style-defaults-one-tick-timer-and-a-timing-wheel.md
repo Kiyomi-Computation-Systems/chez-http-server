@@ -515,3 +515,16 @@ waits 10 000 ms for its connections to finish, then closes the rest at once.
 - **The drain is logged** (decided the same day, by form): `draining` with the
   connections it waits for, `drain-timeout` when this limit closes what is left, and
   `stopped` at its end. Weighed: no new lines.
+
+## Noted (2026-10-03) — a taken stream, under these limits
+
+Decision 0016 (M8.2) keeps a stream a handler takes through the upgrade door in the
+connection table, so these limits hold it as they hold any connection, and none is added:
+
+- it counts against `max-connections` until it closes, its read buffer the
+  `read-buffer-size` it was given when accepted;
+- its one deadline, the taker's (`transport-deadline!`), is the connection's entry in the
+  wheel, armed at the loop's time brought up to date and met at the first tick at or after
+  it, within [D, D + `tick-ms`], as the connections' deadlines are: no timer a stream;
+- `drain-timeout-ms` closes it, as any connection, if its taker has not closed it when
+  the drain's deadline comes.

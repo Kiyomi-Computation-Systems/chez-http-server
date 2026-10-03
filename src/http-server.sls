@@ -26,8 +26,15 @@
 ;;; among them; with `sleep-ms`; inside `with-deadline`, whose wait raises
 ;;; &deadline-passed once its time has passed; and with `resolve`, which
 ;;; looks a name up, or raises &resolve-error (decision 0015; see
-;;; (http-server private waits)).  A malformed setting raises
-;;; &http-server-config-error at startup (design §6.4).
+;;; (http-server private waits)).  A handler takes a request that asks to
+;;; switch protocols, an HTTP/1.1 upgrade with no body, by answering
+;;; `(switch-protocols headers take-over)`: the server writes the 101 and
+;;; then calls `take-over` with the stream, as a transport whose verbs
+;;; write, read, close, arm a deadline and hear of the drain and the close,
+;;; and the bytes it read past the request (decision 0016; see (http-server
+;;; switch) and (http-server transport)).  A taker's tests make a fake with
+;;; `make-transport`.  A malformed setting raises &http-server-config-error
+;;; at startup (design §6.4).
 ;;;
 ;;; Nothing here names a libuv handle or verb: the shell owns every one
 ;;; (decision 0003; tests/test-exports.sps).
@@ -39,7 +46,10 @@
     request? request-method request-path request-query request-header request-host
     read-body read-whole-body
     ;; what it answers
-    make-response response? awaiting
+    make-response response? awaiting switch-protocols
+    ;; the stream a handler that takes an upgrade is handed
+    make-transport transport? transport-write! transport-read-start! transport-read-stop!
+    transport-close! transport-deadline! transport-on-drain! transport-on-close!
     ;; what a handler that waits waits with, and what a wait raises
     await sleep-ms with-deadline resolve
     &deadline-passed deadline-passed?
@@ -51,6 +61,8 @@
           (only (http-server view) request-path request-query request-header request-host)
           (only (http-server body) read-body read-whole-body)
           (only (http-server response) make-response response?)
+          (only (http-server switch) switch-protocols)
+          (http-server transport)
           (only (http-server awaiting) awaiting &deadline-passed deadline-passed?
                 &resolve-error resolve-error? resolve-error-reason)
           (only (http-server private waits) await sleep-ms with-deadline resolve)
