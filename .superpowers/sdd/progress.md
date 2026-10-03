@@ -4262,3 +4262,18 @@ Watched to fail (m8-mutations.md, M8.1, the first step): eighteen mutants on the
 Size: src +50 −24; tests +90 −32.
 
 NEXT: the second step, the drain in the shell, stacked on this one.
+
+M8.1 SECOND STEP: the drain in the shell (feat/m8.1-drain).
+- `src/http-server/server.sls`: the drain. `shutdown-requested` and `listener-failed` carry the loop's time and the connections open; a sixth action, `finish-all`, tells those open to finish; the drain's deadline is the time plus the limits' drain timeout, and the first tick at or after it asks for `force-close-all`, once; a third phase, `stopped`, comes at the last close, or at once with none open; logged `draining` with the count, `drain-timeout` and `stopped`. Each event's shape is checked by `shaped` (the review's ninth).
+- `src/http-server/private/shell.sls`: a shutdown, or a listener's failure, told with the loop's time brought up to date and the table's size; `finish-all` dispatched to each connection and `force-close-all` closing each, each under its own guard, the first raise kept (`kept-raise`, tick!'s rule, now shared); each close told to the server with the connections left, and each connection the reconciliation drops; the timer running while the server drains, whatever the wheel holds, and started as the drain begins.
+- `tests/test-server.sps`: twenty-nine rows on a fake clock, three drain sequences, and the vocabulary and shape checks, forty-two in all.
+- `tests/test-shell.sps`: the drain on shells of their own, 200 ms long: an idle connection closed at once; a request in flight answered, saying it closes, and closed once its client closes, before the deadline; half a head closed at the deadline, on time, read from the trace; one held in its handler, nothing armed, the timer stopped first, closed at the deadline, on time; a slow reader closed at the deadline, no read error logged (the review's first); the drain's end, stopped, logged, no timer; a reconciled connection ends a drain; a shutdown dated by the loop's time brought up to date; a raise as each connection is told to finish. The deadline block counts its firings with `firings-of` (the review's eighth).
+- Records: design §4.6's note.
+
+Measured on the step's tree (2026-10-03, Darwin arm64): `make test` green, forty-seven suites, 1,684 expected passes (1,657 + 27), every pin ok.
+
+Watched to fail (m8-mutations.md, M8.1, the second step): forty-one mutants on the step's tree, plan §14's among them, each loading and reddening a check but M8H-15, the listener's failure, which libuv reports only on Windows: a scope statement (the review's fifth). Every one of the fifty-five checks the step added or changed reddened by one.
+
+Size: src +211 −87; tests +426 −97.
+
+NEXT: the third step, the signals and `serve`, stacked on this one.

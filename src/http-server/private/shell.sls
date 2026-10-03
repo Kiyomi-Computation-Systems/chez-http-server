@@ -90,11 +90,12 @@
 ;;; loop's thread (`&uv-wrong-thread`), and the shell runs only on it
 ;;; (decision 0003).  ONE TIMER TICKS THEM ALL, every tick-ms: made when a
 ;;; deadline is first armed, stopped by the first firing that finds the
-;;; wheel empty, so an idle server sleeps (0005), started again by the next
-;;; arm, and closed once the shell has stopped listening and no connection
-;;; is left.  Each time it fires, the wheel is advanced to the loop's now,
-;;; each connection whose deadline has passed is ticked, `(tick now)`, and
-;;; the server is told the time, as its events say (design §4.6).  A
+;;; wheel empty while the server does not drain (THE DRAIN, below), so an
+;;; idle server sleeps (0005), started again by the next arm or drain, and
+;;; closed once the shell has stopped listening and no connection is left.
+;;; Each time it fires, the wheel is advanced to the loop's now, each
+;;; connection whose deadline has passed is ticked, `(tick now)`, and the
+;;; server is told the time, as its events say (design §4.6).  A
 ;;; connection is ticked the first time the timer fires at or after its
 ;;; deadline: never before it, and within tick-ms of it when the loop runs
 ;;; on time.  A connection that leaves with no step of the core, closed by
@@ -108,6 +109,17 @@
 ;;; listener, and none left open with no one to close it.  A shutdown, or a
 ;;; listener that fails, closes the listener, and a shell whose server has
 ;;; stopped listening never listens again.
+;;;
+;;; THE DRAIN (M8.1; design §4.6).  A shutdown, or a listener that fails, is
+;;; told to the server with the loop's time, brought up to date, and the
+;;; connections open; so is each connection's close, with those left, and
+;;; each one the reconciliation drops (THE RUN LOOP, below).  The server
+;;; asks for the connections to be told to finish, `finish-all`, each
+;;; dispatched `shutdown-requested`; and at its deadline for each still open
+;;; to be closed at once, `force-close-all`, each through handle-close!.
+;;; While the server drains, the timer runs whatever the wheel holds, so the
+;;; server is told the time even when no connection has a deadline armed: one
+;;; whose handler waits arms none (design §4.3).
 ;;;
 ;;; ONE PROCEDURE CLOSES EVERY HANDLE: handle-close!, the one uv-close! call
 ;;; (tests/test-close-ownership.sps reads the source to hold it), for a
@@ -276,7 +288,7 @@
               (kept (hashtable-ref waits-timers loop #f)))
          (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
                       (make-wheel (limits-tick-ms limits)) s kept
-                      (make-server-state 'listening 0 limits) #f #f #f #f #f #f #f)))))
+                      (make-server-state 'listening 0 limits #f) #f #f #f #f #f #f #f)))))
 
   ;; loop-scheduler : UvLoop [(Symbol (Listof Any) -> Any)] -> Scheduler
   ;; The loop's scheduler, made the first time it is asked for: its poll is
@@ -443,7 +455,7 @@
           (uv-listen! tcp (limits-backlog (shell-limits sh))
                       (lambda (err)
                         (if err
-                            (server-dispatch! sh (list 'listener-failed (errno err)))
+                            (stopping! sh (list 'listener-failed (errno err)))
                             (let ((client (accept! sh tcp)))
                               (when client (shell-adopt! sh client))))))
           (uv-tcp-getsockname-port tcp)))))
@@ -457,10 +469,19 @@
       (uv-accept! listener)))
 
   ;; shell-shutdown! : Shell -> Void
-  ;; Ask the server to shut down: it stops listening, and refuses what it is
-  ;; offered after.  The connections open are served on (M8 drains them).
+  ;; Ask the server to shut down: it stops listening, refuses what it is
+  ;; offered after, and drains (THE DRAIN, the header).
   (define (shell-shutdown! sh)
-    (server-dispatch! sh '(shutdown-requested)))
+    (stopping! sh (list 'shutdown-requested)))
+
+  ;; stopping! : Shell (Listof Any) -> Void
+  ;; Tell the server it is to stop listening, as `head`, the event's kind
+  ;; and its own fields, then the loop's time, brought up to date, and the
+  ;; connections open.
+  (define (stopping! sh head)
+    (let ((loop (shell-loop sh)))
+      (uv-update-time! loop)
+      (server-dispatch! sh (append head (list (uv-now loop) (hashtable-size (shell-table sh)))))))
 
   ;; shell-adopt! : Shell UvTcp -> (U Connection #f)
   ;; Offer an accepted TCP handle to the server, with the count of
@@ -519,16 +540,43 @@
       (run-server-actions! sh (cdr actions))))
 
   ;; server-run! : Shell Action -> Void
-  ;; A server action that brings no handle: close the listener, or log.  An
-  ;; arrival's `accept` or `refuse` is taken with its handle, in shell-adopt!,
-  ;; and `force-close-all` is M8's; anything else here is an assertion
-  ;; violation, so an action the shell cannot perform is never dropped.
+  ;; A server action that brings no handle: close the listener; tell each
+  ;; connection to finish, the timer started, to run while the server
+  ;; drains (THE DRAIN, the header); close each connection; or log.  An
+  ;; arrival's `accept` or `refuse` is taken with its handle, in
+  ;; shell-adopt!; anything else here is an assertion violation, so an
+  ;; action the shell cannot perform is never dropped.
   (define (server-run! sh a)
     (server-trace! sh 'server-action a)
     (case (car a)
       ((close-listener) (listener-close! sh))
+      ((finish-all)
+       (start-ticking! sh)
+       (each-connection! sh (lambda (c) (dispatch! c '(shutdown-requested)))))
+      ((force-close-all) (each-connection! sh connection-close!))
       ((log) (log! sh (cadr a) (cddr a)))
       (else (assertion-violation 'server-run! "not an action the shell performs here" a))))
+
+  ;; each-connection! : Shell (Connection -> Any) -> Void
+  ;; `proc` for each connection open, each under its own guard, so one that
+  ;; raises keeps none of the rest from its turn; its dispatch has closed
+  ;; it.  Once every one has had it, the raise kept goes on (kept-raise).
+  (define (each-connection! sh proc)
+    (let ((raised #f))
+      (for-each (lambda (c) (guard (e (#t (set! raised (kept-raise raised e)))) (proc c)))
+                (shell-connections sh))
+      (when raised (raise raised))))
+
+  ;; kept-raise : (U #f Condition) Condition -> Condition
+  ;; Of the raise kept from calls made in turn and a new one, the one to
+  ;; raise once all are made: the first, unless the new one is a
+  ;; byte-machine contract condition and the first is not, since the run
+  ;; loop keeps those fatal (design §6.4).
+  (define (kept-raise kept e)
+    (if (or (not kept)
+            (and (byte-machine-contract-condition? e) (not (byte-machine-contract-condition? kept))))
+        e
+        kept))
 
   ;; listener-close! : Shell -> Void — close the listener, if the shell has one.
   (define (listener-close! sh)
@@ -960,28 +1008,28 @@
   ;; tick! : Shell -> Void
   ;; The timer has fired: advance the wheel to the loop's now, tick each
   ;; connection whose deadline has passed, earliest first, stop the timer
-  ;; if the wheel is then empty, and tell the server the time.  The wheel
-  ;; has let every one of them go, so each is ticked under its own guard,
-  ;; and one that raises keeps none of the rest from its tick; its dispatch
-  ;; has closed its connection.  Once every tick is delivered, the first
-  ;; raise goes on, and the run loop logs it, unless a later one is a
-  ;; byte-machine contract condition, which the run loop keeps fatal
-  ;; (design §6.4): that one goes on.
+  ;; if the wheel is then empty and the server does not drain (THE DRAIN,
+  ;; the header), and tell the server the time.  The wheel has let every
+  ;; one of them go, so each is ticked under its own guard, and one that
+  ;; raises keeps none of the rest from its tick; its dispatch has closed
+  ;; its connection.  Once every tick is delivered, the first raise goes on,
+  ;; and the run loop logs it, unless a later one is a byte-machine contract
+  ;; condition, which the run loop keeps fatal (kept-raise): that one goes
+  ;; on.
   (define (tick! sh)
     (let* ((now (uv-now (shell-loop sh)))
            (event (list 'tick now))
-           (raised '()))
+           (raised #f))
       (define (guarded thunk)
-        (guard (e (#t (when (or (null? raised)
-                                (and (byte-machine-contract-condition? e)
-                                     (not (byte-machine-contract-condition? (car raised)))))
-                        (set! raised (list e)))))
+        (guard (e (#t (set! raised (kept-raise raised e))))
           (thunk)))
       (for-each (lambda (c) (guarded (lambda () (dispatch! c event))))
                 (wheel-advance! (shell-wheel sh) now))
-      (when (fxzero? (wheel-count (shell-wheel sh))) (stop-ticking! sh))
+      (when (and (fxzero? (wheel-count (shell-wheel sh)))
+                 (not (eq? (server-phase (shell-server sh)) 'draining)))
+        (stop-ticking! sh))
       (guarded (lambda () (server-dispatch! sh event)))
-      (unless (null? raised) (raise (car raised)))))
+      (when raised (raise raised))))
 
   ;; release-timer! : Shell -> Void
   ;; Close the timer once the shell has stopped listening and no connection
@@ -1047,12 +1095,14 @@
         (disarm! c)))
     (uv-close! h (lambda () (handle-closed! sh h))))
 
-  ;; handle-closed! : Shell UvHandle -> Void — a handle's close has completed.
+  ;; handle-closed! : Shell UvHandle -> Void — a handle's close has completed:
+  ;; a connection's leaves the table, and the server is told, with the
+  ;; connections left (THE DRAIN, the header).
   (define (handle-closed! sh h)
     (let ((c (hashtable-ref (shell-table sh) h #f)))
       (when c
         (hashtable-delete! (shell-table sh) h)
-        (release-timer! sh)
+        (server-dispatch! sh (list 'connection-closed (hashtable-size (shell-table sh))))
         (dispatch! c '(closed)))))
 
   ;; transport-condition? : Any -> Boolean
@@ -1135,8 +1185,10 @@
   ;; Hold the table to the loop: a connection whose handle the loop no longer
   ;; has, so whose close never reported back, is logged, taken out of the
   ;; wheel and dropped, which frees its place, since the server counts the
-  ;; table.  A server that has stopped listening takes the timer with its
-  ;; last connection (release-timer!).
+  ;; table, and the server is told, as of a close (handle-closed!), a raise
+  ;; from what it asks for dropped, as the run loop's own log's is
+  ;; (log-quietly!).  A server that has stopped listening takes the timer
+  ;; with its last connection (release-timer!).
   (define (reconcile! sh)
     (let ((live (make-eq-hashtable)))
       (for-each (lambda (h) (hashtable-set! live h #t))
@@ -1147,6 +1199,8 @@
            (unless (hashtable-contains? live h)
              (log-quietly! sh 'reconciled (list c))
              (disarm! c)
-             (hashtable-delete! (shell-table sh) h)))
+             (hashtable-delete! (shell-table sh) h)
+             (guard (e (#t (values)))
+               (server-dispatch! sh (list 'connection-closed (hashtable-size (shell-table sh)))))))
          handles connections))
       (release-timer! sh))))
