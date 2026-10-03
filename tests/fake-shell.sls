@@ -86,17 +86,34 @@
 ;;;   arm-deadline    arms the wheel at the clock's now plus the kind's limit
 ;;;   disarm-deadline disarms it
 ;;;
-;;; and records the rest (logs, a hand-off) without acting on them: the
-;;; hand-off is M8's.  A fake connection made on credit (M6.2) answers with
+;;;   hand-off        the switch's take-over called with a transport over the
+;;;                   fake connection and the bytes handed over, copied
+;;;                   (THE DOOR, below)
+;;;
+;;; and records the rest (logs) without acting on them.  A fake connection made on credit (M6.2) answers with
 ;;; each handler's answer and `credit`, `(handler-responded answer credit)`,
 ;;; as a handler that waits is answered (A HANDLER THAT WAITS, below): the
-;;; test then gives the reader's credit, `(body-credit n)`.  (Since M2.5
-;;; the core serves an upgrade and closes after it, so its own loop never
-;;; hands off.)
+;;; test then gives the reader's credit, `(body-credit n)`.
 ;;; Input is delivered only while the connection reads, as libuv delivers
 ;;; it.  An event the core cannot finish within `dispatch-cap` dispatches is
 ;;; a harness error, never a hang (global-constraints: cap by iteration
 ;;; count, never wall-clock).
+;;;
+;;; M8.2: THE DOOR (decision 0016).  Handed off, the connection is the
+;;; taker's: the fake transport's verbs act on it as the libuv shell's do.
+;;; A write keeps its bytes as the client reads them, after the 101, and its
+;;; callback is told on a later turn, #f; one asked for once the close has
+;;; been is not written, and its callback is told ECANCELED.  Reading
+;;; delivers each delivery to the taker, `(on-bytes bv start end)`, and the
+;;; client's end or a read error to its `on-end`, reading then stopped; none
+;;; reaches the core.  The close comes on a later turn, after the writes asked for
+;;; before it, as `closed` to the core and the taker's close call, which,
+;;; registered after it, runs at once.  The
+;;; deadline is the connection's one wheel entry, and `fake-shell-fire!`
+;;; calls it once its time has come; a stream closing arms none.
+;;; `fake-shell-drain!` is the shell
+;;; draining: the core told `shutdown-requested`, or a taker's drain call
+;;; run, once, and one registered while the shell drains runs at once.
 ;;;
 ;;; M7.3: A HANDLER THAT WAITS, as the libuv shell's (decision 0014), so
 ;;; the contract test (design §8.4) can hold the coroutine shell to it.  A
@@ -134,7 +151,7 @@
           make-fake-connection fake-shell-conn-state fake-shell-reading? drops-body
           fake-shell-deliver-later! fake-shell-settle! fake-shell-feed-input!
           fake-shell-writes fake-shell-date-writes! written-status write-wire
-          fake-shell-fire-waits! fake-shell-answer-lookup!)
+          fake-shell-fire-waits! fake-shell-answer-lookup! fake-shell-drain! fake-shell-armed)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
@@ -146,6 +163,7 @@
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server serializer) date-line)
+          (only (http-server transport) make-transport)
           (http-server private adapter))
 
   ;; make-fake-shell : Step State Nat [Perform [Trace]] -> FakeShell
@@ -181,11 +199,13 @@
             (mutable calling?)                ; whether one of them runs
             (mutable closing?)                ; whether its close has run
             (mutable timed)                   ; a connection's waits, scripted (fake-waits)
-            (mutable lookup))                 ; the lookup they asked for: (host . answer!), or #f
+            (mutable lookup)                  ; the lookup they asked for: (host . answer!), or #f
+            (mutable taker)                   ; once handed off, the taker's calls (THE DOOR)
+            (mutable draining?))              ; whether the shell has drained
     (protocol (lambda (new)
                 (define (make step state0 now0 perform trace)
                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
-                       #f #f '() #f #f #f '() #f #f #f #f))
+                       #f #f '() #f #f #f '() #f #f #f #f #f #f))
                 (case-lambda
                   ((step state0 now0) (make step state0 now0 #f #f))
                   ((step state0 now0 perform) (make step state0 now0 perform #f))
@@ -232,6 +252,13 @@
     (when (> (fake-shell-dispatches s) dispatch-cap)
       (assertion-violation 'fake-shell-deliver! "no progress: the dispatch cap was reached"
                            dispatch-cap event))
+    (if (and (fake-shell-taker s) (memq (car event) '(bytes-arrived eof read-error)))
+        (begin (taker-read! s (fake-shell-taker s) event) '())
+        (step-event! s event)))
+
+  ;; step-event! : FakeShell Event -> (Listof Action) — fake-shell-deliver!'s
+  ;; dispatch to the step.
+  (define (step-event! s event)
     (trace! s 'event event)
     (call-with-values
      (lambda () ((fake-shell-step s) (fake-shell-state s) event))
@@ -316,9 +343,12 @@
     (let ((wheel (fake-shell-wheel s)) (now (fake-shell-now s)))
       (unless wheel
         (assertion-violation 'fake-shell-fire! "a stub step's shell keeps no timer" s))
-      (if (pair? (wheel-advance! wheel now))
-          (fake-shell-deliver! s (list 'tick now))
-          '())))
+      (cond ((not (pair? (wheel-advance! wheel now))) '())
+            ((fake-shell-taker s)
+             (let ((passed (fake-taker-on-passed (fake-shell-taker s))))
+               (when passed (passed))
+               '()))
+            (else (fake-shell-deliver! s (list 'tick now))))))
 
   ;; fake-shell-run! : FakeShell (Listof Event) -> Void — deliver them in order.
   (define (fake-shell-run! s events)
@@ -328,14 +358,18 @@
   (define (later! s event)
     (fake-shell-later-set! s (append (fake-shell-later s) (list event))))
 
-  ;; fake-shell-deliver-later! : FakeShell -> (U Event #f)
+  ;; fake-shell-deliver-later! : FakeShell -> (U Event (-> Any) #f)
   ;; Deliver the oldest event waiting for a later turn, a write's completion,
-  ;; a half-close's or a close's, and return it; #f if none waits.
+  ;; a half-close's or a close's, and return it; #f if none waits.  A
+  ;; taker's completion or close waits as a procedure, called then (THE
+  ;; DOOR).
   (define (fake-shell-deliver-later! s)
     (let ((later (fake-shell-later s)))
       (and (pair? later)
            (begin (fake-shell-later-set! s (cdr later))
-                  (fake-shell-deliver! s (car later))
+                  (if (procedure? (car later))
+                      ((car later))
+                      (fake-shell-deliver! s (car later)))
                   (car later)))))
 
   ;; fake-shell-settle! : FakeShell -> Void
@@ -445,7 +479,99 @@
       ((close) (fake-shell-reading?-set! s #f) (fake-shell-closing?-set! s #t) (later! s '(closed)))
       ((arm-deadline) (arm! s limits (cadr a)))
       ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
+      ((hand-off) (hand-off! s (cadr a) (caddr a)))
       (else (values))))
+
+  ;; --- the door (M8.2) ----------------------------------------------------------
+
+  ;; The calls a taker has registered, and how far its stream has gone.
+  (define-record-type fake-taker
+    (fields (mutable on-bytes) (mutable on-end) (mutable on-passed) (mutable on-drain)
+            (mutable on-close) (mutable closing?) (mutable drained?) (mutable closed?))
+    (protocol (lambda (new) (lambda () (new #f #f #f #f #f #f #f #f)))))
+
+  ;; hand-off! : FakeShell (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) -> Void
+  ;; The switch's take-over, called with a transport over the connection and
+  ;; the bytes handed over, a copy, empty when none were.
+  (define (hand-off! s take-over retained)
+    (let ((tk (make-fake-taker)))
+      (fake-shell-taker-set! s tk)
+      (take-over (fake-transport s tk)
+                 (if retained (copy-of (car retained) (cadr retained) (caddr retained)) (make-bytevector 0)))))
+
+  ;; copy-of : Bytevector Nat Nat -> Bytevector — bv[from, to), copied.
+  (define (copy-of bv from to)
+    (let ((o (make-bytevector (- to from)))) (bytevector-copy! bv from o 0 (- to from)) o))
+
+  ;; fake-transport : FakeShell FakeTaker -> Transport
+  ;; The verbs over the fake connection, as THE DOOR in the header has them.
+  (define (fake-transport s tk)
+    (make-transport
+     (lambda (bv start end written)
+       (if (fake-taker-closing? tk)
+           (when written (later! s (lambda () (written 'ECANCELED))))
+           (begin
+             (fake-shell-writes-rev-set! s (cons (copy-of bv start end) (fake-shell-writes-rev s)))
+             (later! s (lambda () (when written (written #f)))))))
+     (lambda (on-bytes on-end)
+       (fake-taker-on-bytes-set! tk on-bytes)
+       (fake-taker-on-end-set! tk on-end)
+       (unless (fake-taker-closing? tk) (fake-shell-reading?-set! s #t)))
+     (lambda () (fake-shell-reading?-set! s #f))
+     (lambda ()
+       (unless (fake-taker-closing? tk)
+         (fake-taker-closing?-set! tk #t)
+         (fake-shell-reading?-set! s #f)
+         (fake-shell-closing?-set! s #t)
+         (later! s (lambda ()
+                     (fake-shell-deliver! s '(closed))
+                     (fake-taker-closed?-set! tk #t)
+                     (let ((closed (fake-taker-on-close tk))) (when closed (closed)))))))
+     (lambda (ms passed)
+       (fake-taker-on-passed-set! tk passed)
+       (cond ((not ms) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
+             ((not (fake-shell-closing? s))
+              (wheel-arm! (fake-shell-wheel s) (fake-shell-entry s) (+ (fake-shell-now s) ms)))))
+     (lambda (thunk)
+       (fake-taker-on-drain-set! tk thunk)
+       (when (fake-shell-draining? s) (drain-taker! tk)))
+     (lambda (thunk)
+       (fake-taker-on-close-set! tk thunk)
+       (when (fake-taker-closed? tk) (thunk)))))
+
+  ;; taker-read! : FakeShell FakeTaker Event -> Void
+  ;; A delivery, the client's end or a read error, to the taker: each read
+  ;; to its on-bytes, and the end to its on-end, once.
+  (define (taker-read! s tk event)
+    (case (car event)
+      ((bytes-arrived) ((fake-taker-on-bytes tk) (cadr event) (caddr event) (cadddr event)))
+      (else
+       (let ((on-end (fake-taker-on-end tk)))
+         (when on-end
+           (fake-shell-reading?-set! s #f)
+           (on-end (if (eq? (car event) 'eof) 'eof (cadr event))))))))
+
+  ;; fake-shell-armed : FakeShell -> (U Nat #f)
+  ;; The instant a fake connection's deadline passes at, its core's or, once
+  ;; handed off, its taker's; #f while none is armed.
+  (define (fake-shell-armed s) (wheel-entry-deadline (fake-shell-entry s)))
+
+  ;; fake-shell-drain! : FakeShell -> Void
+  ;; The shell drains: a connection handed off has its taker's drain call
+  ;; run, once; any other is told `shutdown-requested`.
+  (define (fake-shell-drain! s)
+    (unless (fake-shell-draining? s)
+      (fake-shell-draining?-set! s #t)
+      (if (fake-shell-taker s)
+          (drain-taker! (fake-shell-taker s))
+          (fake-shell-deliver! s '(shutdown-requested)))))
+
+  ;; drain-taker! : FakeTaker -> Void — its drain call, once, if it has one.
+  (define (drain-taker! tk)
+    (let ((drain (fake-taker-on-drain tk)))
+      (when (and drain (not (fake-taker-drained? tk)))
+        (fake-taker-drained?-set! tk #t)
+        (drain))))
 
   ;; fake-waits : FakeShell -> Waits
   ;; The waits of the connection's scheduler: their clock the injected one,

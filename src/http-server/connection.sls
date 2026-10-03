@@ -35,7 +35,7 @@
 ;;;            (call-handler request)  (deliver-body bv start end)
 ;;;            (deliver-body-end)  (notify-producer)  (arm-deadline kind)
 ;;;            (disarm-deadline)  (shutdown)  (close reason)
-;;;            (log what . details)  (hand-off request)
+;;;            (log what . details)  (hand-off take-over retained)
 ;;;
 ;;; A parser-result's `offset` is the parser's own count of the bytes it has
 ;;; taken since it was made (chez-httparse's `parser-result-stream-offset`),
@@ -137,9 +137,28 @@
 ;;; another protocol's, are never read.  v1 has nothing to hand them to.
 ;;; `Upgrade: h2c` is such a request.  The HTTP/2 preface is not a request: it
 ;;; hands off on the parser's error channel (`result-hands-off-stream?` checks
-;;; both), and the core answers it 505, then close.  The pause channel's
-;;; hand-off (design §4.4's head/body row, `handed-off`) is the door M8 opens
-;;; for a handler that takes upgrades; the core's own flow never reaches it.
+;;; both), and the core answers it 505, then close.  The parser's hand-off on
+;;; its pause channel never comes, since the core never resumes the parser
+;;; onto an upgrade: one that did would be the shell's bug, refused.
+;;;
+;;; THE DOOR (M8.2; decision 0016, on the owner's word by form, 2026-10-03).
+;;; A handler takes an upgrade by answering a switch, (http-server switch)'s
+;;; record, instead of a response.  The door opens for an HTTP/1.1 request
+;;; the parser marks as an upgrade, `Connection: upgrade` with `Upgrade`,
+;;; kept alive, that is no CONNECT and has no body (item 4): its 101 is
+;;; written, (http-server serializer)'s, and once the 101's write has
+;;; completed the core hands the stream over, `(hand-off take-over
+;;; retained)`: the switch's take-over, and the bytes read past the request,
+;;; the pending input the message's pause kept, `(bv start end)`, or #f when
+;;; the read ended with the request (0006 item 3's contract).  A request
+;;; that expects 100-continue has the 100 written first, in the 101's one
+;;; write (RFC 9110 §7.8).  The connection
+;;; is then `handed-off`, its input forgotten and its deadline disarmed; the
+;;; shell hands the taker the stream, and the core asks for nothing more but
+;;; ends at the stream's close.  A switch answered to any other request, and
+;;; one the serializer finds a fault in (switch-fault), is answered 500,
+;;; logged `invalid-response`, as a response with a fault is (decision 0010
+;;; item 2).
 ;;;
 ;;; A RESPONSE IS WRITTEN AS SEGMENTS (M3.2; design §7.3; decision 0010).
 ;;; `(write segments nbytes)` is one write: (http-server serializer)'s
@@ -366,7 +385,7 @@
           make-conn-state conn-state?
           conn-phase conn-deadline conn-close-after conn-outstanding
           conn-outstanding-bytes conn-pending conn-request conn-limits conn-body-reader
-          conn-body-buffered conn-producer producer-event
+          conn-body-buffered conn-producer conn-taker producer-event
           conn-step conn-parser-step conn-headers-complete-step)
   (import (rnrs)
           (http-server response) (http-server request) (http-server span)
@@ -376,7 +395,8 @@
           (only (http-server transfer-coding) unsupported-transfer-coding? faulty-framing?)
           (only (http-server serializer)
                 serialize-response serialize-checked-response serialize-piece serialize-end
-                serialize-continue response-fault response-closes?)
+                serialize-continue serialize-switch response-fault response-closes? switch-fault)
+          (only (http-server switch) switch? switch-take-over)
           (only (http-server headers) field-lists?)
           (only (httparse decisions) should-keep-alive? F-CHUNKED)
           (only (httparse methods) httparse-method-numbers))
@@ -489,7 +509,8 @@
             (mutable parsed      conn-parsed      conn-parsed-set!)
             (mutable base        conn-base        conn-base-set!)
             (mutable mark        conn-mark        conn-mark-set!)
-            (mutable run         conn-run         conn-run-set!))
+            (mutable run         conn-run         conn-run-set!)
+            (mutable taker       conn-taker       conn-taker-set!))
     (protocol
      (lambda (new)
        (lambda (phase deadline close-after outstanding outstanding-bytes pending request limits)
@@ -508,7 +529,7 @@
              (body-answer-set! body 'asked)
              (body-complete?-set! body #t))
            (new phase deadline close-after outstanding outstanding-bytes pending request limits
-                (make-head) body (make-target-judge) #f #f #f #f 0 0 0 'lines))))))
+                (make-head) body (make-target-judge) #f #f #f #f 0 0 0 'lines #f))))))
 
   ;; conn-body-reader : ConnState -> (U #f BodyReader)
   ;; The reader the handler answered with, while the core hands it the body:
@@ -520,6 +541,11 @@
   ;; The producer a streamed response's body is written from, while it is:
   ;; the one each `notify-producer` asks the shell to call, and #f otherwise
   ;; (decision 0013 item 8).
+
+  ;; conn-taker : ConnState -> (U #f (Transport Bytevector -> Any))
+  ;; The take-over of the switch whose 101 is being written, while it is: the
+  ;; one the hand-off carries once the 101 is written, and #f otherwise
+  ;; (decision 0016).
 
   ;; producer-event : Any -> Event
   ;; The event a producer's answer is to the core: a bytevector of a byte or
@@ -911,6 +937,7 @@
   ;; staged close, or idle, as on-write-completed says.
   (define (response-written s)
     (cond
+     ((conn-taker s) (hand-off s))
      ((conn-close-after s)
       (forget-input! s)
       (conn-phase-set! s 'lingering)
@@ -925,6 +952,20 @@
                     ,@(if pending (list (cons 'feed-parser pending)) '())
                     (read-start)
                     (arm-deadline idle)))))))
+
+  ;; hand-off : ConnState -> (values ConnState (Listof Action))
+  ;; responding, the 101's last write completed -> handed-off (M8.2;
+  ;; decision 0016): the deadline disarmed, and the hand-off, with the
+  ;; switch's take-over and the bytes read past the request, the pending
+  ;; input the message's pause kept, or #f.  The input is forgotten, and the
+  ;; take-over with it.
+  (define (hand-off s)
+    (let ((take-over (conn-taker s)) (retained (conn-pending s)))
+      (conn-taker-set! s #f)
+      (forget-input! s)
+      (conn-phase-set! s 'handed-off)
+      (conn-deadline-set! s #f)
+      (values s (list '(disarm-deadline) (list 'hand-off take-over retained)))))
 
   ;; stream-completed : ConnState -> (values ConnState (Listof Action))
   ;; A completion while a streamed body is written (M6.3).  A producer that
@@ -1713,12 +1754,12 @@
   ;; and not at all if it answers with a response, as it would had the body
   ;; come in a later read.
   ;; head/body: a hand-off, on either of the parser's channels
-  ;; (`result-hands-off-stream?`), is the door (M2.5).  The HTTP/2 preface, on
-  ;; the error channel, is answered 505, then close (decision 0006 item 2).
-  ;; A pause for an upgrade stops reading, disarms the deadline (M5.2) and
-  ;; hands the stream off (0006 item 3): the door M8 opens for a handler that
-  ;; takes upgrades, which the core's own flow never reaches, since it pauses
-  ;; at every message's end and closes after an upgrade.  Any other error is
+  ;; (`result-hands-off-stream?`).  The HTTP/2 preface, on the error
+  ;; channel, is answered 505, then close (decision 0006 item 2).  A pause
+  ;; for an upgrade never comes, since the core pauses the parser at every
+  ;; message's end and never resumes it onto an upgrade: the door is a
+  ;; switch's, at its 101's completion (M8.2; switch-with), and a pause for
+  ;; one here is the shell's bug, an assertion violation.  Any other error is
   ;; answered with a status, then close: one the core asked for with `fail`
   ;; gets its reason's status (design §6.3), and any other the status
   ;; (http-server decisions) gives its code.
@@ -1806,11 +1847,9 @@
         ((result-hands-off-stream? status err pause)
          (if (eq? status 'error)
              (respond-and-close s 'http2-preface '())
-             (begin
-               (conn-phase-set! s 'handed-off)
-               (conn-deadline-set! s #f)
-               (values s (list '(read-stop) '(disarm-deadline)
-                               (list 'hand-off (conn-request s)))))))
+             (assertion-violation 'conn-step
+               "a hand-off the core never asks for: it pauses the parser at every message's end"
+               pause)))
         ((not (eq? status 'error))
          (if (fxzero? (body-owed (conn-body s))) (ask-handler s) (await-credit s)))
         (else (answer-refusal s err))))
@@ -1918,11 +1957,12 @@
          (case (body-answer bd)
            ((asked)
             (cond ((body-reader? answer) (accept-reader s answer (pair? rest)))
+                  ((switch? answer) (switch-with s answer))
                   ((body-framed? bd)
                    (unless (conn-close-after s) (conn-close-after-set! s 'unread-body))
                    (respond-with s answer))
                   (else (respond-with s answer))))
-           ((ending) (respond-with s answer))
+           ((ending) (if (switch? answer) (switch-with s answer) (respond-with s answer)))
            (else (values s '())))))
       (else (values s '()))))
 
@@ -2001,10 +2041,7 @@
   ;; waits otherwise.
   (define (respond-with s response)
     (cond
-     ((response-fault response)
-      => (lambda (fault)
-           (let-values (((s actions) (respond-and-close s 'invalid-response '())))
-             (values s (cons (list 'log 'invalid-response fault) actions)))))
+     ((response-fault response) => (lambda (fault) (refuse-answer s fault)))
      (else
       (when (and (not (conn-close-after s)) (response-closes? response))
         (conn-close-after-set! s 'handler-close))
@@ -2021,6 +2058,58 @@
                  (conn-asked?-set! s #t)
                  (values s (append head '((notify-producer)))))
                 (else (values s head))))))))
+
+  ;; refuse-answer : ConnState Symbol -> (values ConnState (Listof Action))
+  ;; An answer the server cannot write safely, for `fault`: 500 instead, then
+  ;; close, logged `invalid-response` with the fault (decision 0010 item 2).
+  (define (refuse-answer s fault)
+    (let-values (((s actions) (respond-and-close s 'invalid-response '())))
+      (values s (cons (list 'log 'invalid-response fault) actions))))
+
+  ;; switch-with : ConnState Switch -> (values ConnState (Listof Action))
+  ;; handling, a switch (M8.2; decision 0016): through the door, if it is
+  ;; open (door-open?) and the switch has no fault, -> responding: the 101's
+  ;; write, the write deadline armed, the take-over kept for the hand-off
+  ;; once the 101 is written (response-written).  Otherwise 500, for
+  ;; `not-an-upgrade` or the switch's fault (refuse-answer).
+  (define (switch-with s sw)
+    (cond
+     ((not (door-open? s)) (refuse-answer s 'not-an-upgrade))
+     ((switch-fault sw (request-headers (conn-request s))) => (lambda (fault) (refuse-answer s fault)))
+     (else
+      (conn-taker-set! s (switch-take-over sw))
+      (conn-phase-set! s 'responding)
+      (conn-deadline-set! s 'write)
+      (body-roll! (conn-body s))
+      (let-values (((segments bytes) (switch-segments s sw)))
+        (values s (list (count-write! s segments bytes) '(arm-deadline write)))))))
+
+  ;; switch-segments : ConnState Switch -> (values (Listof Segment) Nat)
+  ;; The 101's one write, the `100 Continue` before it when the request's
+  ;; Expect lists 100-continue: RFC 9110 §7.8 says a server that receives
+  ;; Upgrade and that expectation MUST send the 100 before the 101, and the
+  ;; door's request has no body, so no 100 was sent for one (M6.4).
+  (define (switch-segments s sw)
+    (let-values (((segments bytes) (serialize-switch sw)))
+      (if (field-lists? (request-headers (conn-request s)) expect-name continue-token)
+          (let-values (((continuing continued) (serialize-continue)))
+            (values (append continuing segments) (fx+ continued bytes)))
+          (values segments bytes))))
+
+  ;; door-open? : ConnState -> Boolean
+  ;; Whether the request being answered may be taken (decision 0016 item 4):
+  ;; one the parser marks as an upgrade and that keeps the connection, its
+  ;; close-after `upgrade` (M2.5), HTTP/1.1 (RFC 9110 §7.8: a server MUST
+  ;; ignore an HTTP/1.0 request's Upgrade, and §15.2: send it no 1xx), no
+  ;; CONNECT, which llhttp's rule upgrades whatever its fields say, and with
+  ;; no body (h2o's rule; RFC 6455 §4.1's handshake is a GET).
+  (define (door-open? s)
+    (let ((r (conn-request s)))
+      (and r
+           (eq? (conn-close-after s) 'upgrade)
+           (http/1.1? (request-http-major r) (request-http-minor r))
+           (not (eq? (request-method r) 'CONNECT))
+           (not (body-framed? (conn-body s))))))
 
   ;; write-action : ConnState Response Serializer -> Action
   ;;   Serializer = serialize-response, or serialize-checked-response for a
@@ -2139,10 +2228,11 @@
        (values s '()))
       (else (values s '()))))
 
-  ;; closing, closed -> closed.
+  ;; closing, closed -> closed.  handed-off too: the stream the taker was
+  ;; handed has closed (M8.2).
   (define (on-closed s)
     (case (conn-phase s)
-      ((closing) (conn-phase-set! s 'closed) (values s '()))
+      ((closing handed-off) (conn-phase-set! s 'closed) (values s '()))
       (else (values s '()))))
 
   ;; close : ConnState Symbol (Listof Action) -> (values ConnState (Listof Action))
@@ -2156,6 +2246,7 @@
     (conn-deadline-set! s #f)
     (body-roll! (conn-body s))
     (end-stream! s)
+    (conn-taker-set! s #f)
     (values s (append before (list '(disarm-deadline) (list 'close reason)))))
 
   ;; respond-and-close :

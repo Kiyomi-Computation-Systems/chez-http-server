@@ -73,3 +73,25 @@ The parser facts are in `research/spike/upgrade-door.sps` (two identical runs):
   `next`;
 - llhttp's rule equals the parser's own `upgrade` field;
 - the preface errors before any on-headers-complete.
+
+## Amendment (2026-10-03) — the hook, as M8.2 opens it
+
+Decision 0016 settled the door's shape on the owner's word, by form: a handler takes an
+upgrade by answering a switch, the server writes the 101, and the stream is handed over
+as a transport the server keeps. What that changes here:
+
+1. **Item 3's hook is the switch's take-over, called once its 101 is written.** The core
+   emits `(hand-off take-over retained)` at the 101's last completion, not `(hand-off
+   request unconsumed-bytes)` at the parser's hand-off: the core pauses every message's
+   end and never resumes the parser onto an upgrade, so that hand-off cannot come, and
+   the core refuses one that did. `retained` is the core's pending input, the rest of the
+   last read from `parser-result-next`, which the shell copies for the taker. "Steal the
+   socket" is not what is handed over: the taker gets a transport, and the server keeps
+   the stream's close, its place in `max-connections`, its deadline and the drain.
+2. **The contract test landed** as `tests/test-connection-switch.sps`: at every delivery
+   size, the bytes handed over, followed by what the taker reads on, are exactly the bytes
+   after the request; the plan's mutation, those bytes starting a byte late, reddens it
+   and the table's hand-off row (M8.2's mutation log).
+3. **The amendment's item 1 stands for every upgrade not taken**: an upgrade a handler
+   answers with a response is served, then closed. Only an HTTP/1.1 upgrade with no body
+   can be taken (0016 item 4). Item 2 is unchanged: the HTTP/2 preface is answered 505.

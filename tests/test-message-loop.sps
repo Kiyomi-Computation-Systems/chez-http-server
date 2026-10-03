@@ -45,7 +45,7 @@
 ;;; decision 0006 as amended on the owner's word, 2026-09-25; decision 0013.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
-        (http-server span) (http-server limits) (fake-shell))
+        (http-server span) (http-server limits) (http-server switch) (fake-shell))
 
 (define (b s) (string->utf8 s))
 
@@ -69,10 +69,15 @@
 
 ;; render-action : Action -> Datum
 ;; A request is a record, so it is rendered by its contents; a write, by the
-;; status its segments write.
+;; status its segments write; a hand-off, by the bytes it hands over, as
+;; text, or #f (M8.2).
 (define (render-action a)
   (case (car a)
-    ((call-handler hand-off) (list (car a) (render-request (cadr a))))
+    ((call-handler) (list 'call-handler (render-request (cadr a))))
+    ((hand-off) (list 'hand-off (let ((r (caddr a)))
+                                  (and r (let ((o (make-bytevector (- (caddr r) (cadr r)))))
+                                           (bytevector-copy! (car r) (cadr r) o 0 (bytevector-length o))
+                                           (utf8->string o))))))
     ((write) (list 'write (written-status a)))
     (else a)))
 
@@ -329,6 +334,16 @@
                               (let ((s (fake-shell-conn-state sh))) (list (conn-phase s) (conn-close-after s))))))
     ;; The HTTP/2 preface hands off on the parser's error channel; with no
     ;; HTTP/2 to hand to, it is answered 505 and no handler runs (0006 item 2).
+    ;; Taken by a handler's switch (M8.2), the handshake's 101 is written and
+    ;; the stream handed off, with the bytes after the request.
+    (test-equal "a WebSocket handshake taken by a switch, read whole: its 101, then handed off with the bytes after it"
+                (list (list (list 'call-handler (list 'GET "/chat" 1 1 (list ws-host ws-conn ws-up)))
+                            '(write 101) '(hand-off "FRAME"))
+                      'handed-off)
+                (outcome (run websocket (bytevector-length websocket) default-limits
+                              (lambda (request)
+                                (switch-protocols (list (cons (b "Upgrade") (b "websocket")))
+                                                  (lambda (transport retained) #t))))))
     (test-equal "the HTTP/2 preface, every delivery size: 505, then the staged close"
                 (list (list (list '(write 505)) 'lingering))
                 (every-size (b "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nFRAME") default-limits outcome))

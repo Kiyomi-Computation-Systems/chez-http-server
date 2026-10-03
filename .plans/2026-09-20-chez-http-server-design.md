@@ -490,6 +490,12 @@ write a status, then close.
 > already in, and closes after its response through `lingering`, which is what this
 > table's `draining` row described: "last response written, close to follow". §4.4's
 > amendment of the same day has the rows.
+>
+> *Amended 2026-10-03 (M8.2; decision 0016):* `handed-off` is entered once a switch's
+> 101 is written, not at the parser's hand-off, which the core never resumes the parser
+> onto. Its reading and its deadline are the taker's: the shell routes its reads, its
+> wheel entry and the drain to the taker's transport, and the core asks for nothing more
+> but ends `closed` at the stream's close. §4.4's amendment of the same day has the rows.
 
 ### 4.4 The transitions
 
@@ -849,6 +855,32 @@ pause answers `#f`.
 > or for a bug, it closes a handle with no step of the core, and a write or the
 > half-close still outstanding reports the cancellation. Measured before: every slow
 > reader a drain's deadline cut logged `read-error ECANCELED`.
+
+> *Amended 2026-10-03 (M8.2; decision 0016, on the owner's word by form):* the door. A
+> handler takes an upgrade by answering a switch, `(switch-protocols headers take-over)`,
+> and the door opens for an HTTP/1.1 request the parser marks as an upgrade, kept alive
+> (its close-after `upgrade`), that is no CONNECT and has no body. The rows:
+>
+> | State | Event | State' | Actions |
+> |---|---|---|---|
+> | `handling` | `handler-responded`, a switch, the door open | `responding` | the 101's `write`, `arm-deadline write`; the take-over kept |
+> | `responding` | `write-completed`, the 101's last | `handed-off` | `disarm-deadline`, `(hand-off take-over retained)`: the pending input, `(bv start end)`, or #f; the input forgotten |
+> | `handling` | `handler-responded`, a switch, the door closed | `responding` | `log invalid-response not-an-upgrade`, `write` 500, `arm-deadline write`; close-after `invalid-response` |
+> | `handling` | `handler-responded`, a switch with a fault | `responding` | `log invalid-response` with the fault, `write` 500, `arm-deadline write` |
+> | `handed-off` | `closed` | `closed` | — |
+> | `handed-off` | any other event | `handed-off` | — |
+>
+> The 101 is `HTTP/1.1 101 Switching Protocols`, the switch's fields but Connection, and
+> `Connection: upgrade` (RFC 9110 §7.8), with no Date and no framing, as the 100 is
+> written; a request that expects 100-continue is sent the 100 first, in the same write
+> (§7.8's MUST). A switch's faults are (http-server serializer)'s `switch-fault`: an Upgrade
+> field missing or naming a protocol the request's did not, a framing field, a
+> Connection field that says anything but `upgrade`, and a response's field faults. The
+> head/body hand-off row above is retired: the parser's own hand-off on its pause
+> channel never comes, and the core refuses one, an assertion violation. A 101 a read
+> error cuts short closes as any write does, the take-over let go.
+> `tests/test-connection-table.sps` holds the rows (W1 to W7), and
+> `tests/test-connection-switch.sps` the flows at every delivery size.
 
 ### 4.5 Run-to-completion
 

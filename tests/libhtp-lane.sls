@@ -312,7 +312,12 @@
     (fold-right
      (lambda (a acc)
        (case (car a)
-         ((call-handler hand-off) (cons (list (car a) (render-request (cadr a))) acc))
+         ((call-handler) (cons (list 'call-handler (render-request (cadr a))) acc))
+         ;; A hand-off by the bytes it hands over (M8.2), though no libhtp
+         ;; stream's handler takes an upgrade, so none reaches it.
+         ((hand-off)
+          (cons (list 'hand-off (let ((r (caddr a))) (and r (utf8->string (piece (car r) (cadr r) (caddr r))))))
+                acc))
          ((deliver-body)
           (let ((text (utf8->string (piece (cadr a) (caddr a) (cadddr a)))))
             (if (and (pair? acc) (eq? (caar acc) 'body))

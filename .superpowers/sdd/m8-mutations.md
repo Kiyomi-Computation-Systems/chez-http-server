@@ -377,3 +377,64 @@ transport's (M8DR-4 to M8DR-13); the serializer's four on the 101 (M8DS-1
 to M8DS-4) and its nineteen fault rows, each reddened by the mutant of its
 rule (M8DS-5 to M8DS-22), the field rules' five by M8DS-22; and the headers
 suite's two on `field-elements` (M8DS-14, M8DS-17, M8DS-18, M8DS-20).
+
+### The second step: the core's door and the fake transport
+
+Forty-one mutants on the step's own tree: each reddens a check. M8DC-1 is
+plan §14's: the retained bytes starting a byte late redden the table's
+hand-off row, W2, and the contract at every delivery size, as the plan
+expects.
+
+| Mutant | Step | Where | Change | Reddens (suite, failures) |
+|---|---|---|---|---|
+| M8DC-1 | 2 | `connection` | the retained bytes start a byte late (plan §14's mutation) | connection-switch 3, connection-table 1, message-loop 1, outcome-lane 1 |
+| M8DC-2 | 2 | `connection` | the hand-off not disarmed | connection-switch 2, connection-table 3 |
+| M8DC-3 | 2 | `connection` | handed off as the 101 is asked for, not once written | connection-switch (raised, exit 2, 7 failed), connection-table 8, message-loop 1, outcome-lane 1 |
+| M8DC-4 | 2 | `connection` | an HTTP/1.0 request let through | connection-switch 1, connection-table 1 |
+| M8DC-5 | 2 | `connection` | a CONNECT let through | connection-switch 1, connection-table 1 |
+| M8DC-6 | 2 | `connection` | a request with a body let through | connection-switch 1, connection-table 1 |
+| M8DC-7 | 2 | `connection` | a request that does not upgrade let through | connection-switch 1, connection-table 1 |
+| M8DC-8 | 2 | `connection` | a switch's faults not looked for | connection-switch 1, connection-table 4 |
+| M8DC-9 | 2 | `connection` | a taken stream's close leaves it handed off | connection-switch 3, connection-table 1 |
+| M8DC-10 | 2 | `connection` | handed off, bytes fed | connection-table 1 |
+| M8DC-11 | 2 | `connection` | handed off, the client's end closes | connection-table 1 |
+| M8DC-12 | 2 | `connection` | handed off, a read error closes | connection-table 1 |
+| M8DC-13 | 2 | `connection` | handed off, a tick closes | connection-table 1 |
+| M8DC-14 | 2 | `connection` | handed off, told to finish closes | connection-table 1 |
+| M8DC-15 | 2 | `connection` | handed off, an answer is written | connection-table 1 |
+| M8DC-16 | 2 | `connection` | the parser's own hand-off taken again (T7) | connection-table 1 |
+| M8DC-17 | 2 | `connection` | the hand-off named otherwise | connection-switch (raised, exit 2, 7 failed), connection-table 4, message-loop 1, outcome-lane 1 |
+| M8DC-18 | 2 | `connection` | the take-over kept by a close | connection-table 1 |
+| M8DC-19 | 2 | `connection` | the input kept by the hand-off | connection-table 1 |
+| M8DC-20 | 2 | `connection` | the take-over kept by the hand-off | connection-table 1 |
+| M8DC-21 | 2 | `connection` | the switch's 101 not counted outstanding | connection-switch (raised, exit 2, 5 failed), connection-table 4, message-loop 1, outcome-lane 1 |
+| M8DC-22 | 2 | `connection` | no 100 before the 101 | connection-switch 1, connection-table 1 |
+| M8DF-1 | 2 | the fake shell | the fake's writes not kept for the client | connection-switch 2 |
+| M8DF-2 | 2 | the fake shell | the fake's write told 'done | connection-switch 1 |
+| M8DF-3 | 2 | the fake shell | the fake writes after its close | connection-switch 1 |
+| M8DF-4 | 2 | the fake shell | the fake's close not told to the taker | connection-switch 2 |
+| M8DF-5 | 2 | the fake shell | the fake's close not told to the core | connection-switch 3 |
+| M8DF-6 | 2 | the fake shell | the client's end to the core, not the taker | connection-switch 1 |
+| M8DF-8 | 2 | the fake shell | the fake's disarm ignored | connection-switch 1 |
+| M8DF-9 | 2 | the fake shell | the fake's drain call runs every time | connection-switch 1 |
+| M8DF-10 | 2 | the fake shell | the fake's deadline passes at once | connection-switch 2 |
+| M8DF-11 | 2 | the fake shell | a read error reaches the taker as the end | connection-switch 1 |
+| M8DF-12 | 2 | the fake shell | the fake's read-stop ignored | connection-switch 1 |
+| M8DF-13 | 2 | the fake shell | the fake's drain tells a connection not handed off nothing | connection-switch 1 |
+| M8DF-14 | 2 | the fake shell | the fake's drain call registered while draining waits | connection-switch 1 |
+| M8DF-15 | 2 | the fake shell | the fake arms a deadline on a closed stream | connection-switch 1 |
+| M8DF-16 | 2 | the fake shell | the fake's late close call waits | connection-switch 1 |
+| M8DT-2 | 2 | the table | a termination row dropped from the table | connection-table 1 |
+| M8DT-3 | 2 | the table | a switch row dropped from the table | connection-table 1 |
+| M8DX-1 | 2 | the outcome lane | the outcome lane renders a hand-off as nothing handed over | outcome-lane 1 |
+| M8DX-2 | 2 | the message loop | the message loop renders a hand-off as nothing handed over | message-loop 1 |
+
+The step adds or changes thirty-seven checks by name, each reddened by one of
+them: W1 to W7, their twenty instances each by its own (W3's five by M8DC-4
+to M8DC-7, W6's six by M8DC-10 to M8DC-15, W2's two by M8DC-1 and M8DC-2,
+W4's four by M8DC-8), the parser's hand-off refused (M8DC-16), what the door
+lets go of (M8DC-18 to M8DC-20), the two counts (M8DT-2, M8DT-3); the switch
+suite's twenty-three, the core's by the M8DC mutants and the fake
+transport's by the M8DF ones; and the message loop's and the outcome lane's
+hand-off (M8DX-2, M8DX-1). The libhtp lane renders a hand-off the same way,
+but no libhtp stream's handler takes an upgrade, so no check reaches it.

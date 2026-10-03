@@ -4375,3 +4375,19 @@ Watched to fail (m8-mutations.md, M8.2, the first step): thirty-three mutants on
 Size: src +263 −10; tests +210 −6.
 
 NEXT: the second step, the core's door and the fake transport, stacked on this one.
+
+M8.2 SECOND STEP: the core's door and the fake transport (feat/m8.2-door).
+- `src/http-server/connection.sls`: the door. A switch answered for an HTTP/1.1 upgrade kept alive, with no body and no CONNECT, has its 101 written, the 100 first when the request expects it (RFC 9110 §7.8; W7), and once the 101 is written the core hands the stream over, `(hand-off take-over retained)`: the take-over, and the pending input the message's pause kept. Any other switch, or one with a fault, is answered 500, logged `invalid-response`. Handed off, the core asks for nothing more and ends `closed` at the stream's close; a 101 a read error cuts short closes, its take-over let go. The parser's own hand-off, never reached, is refused, and T7 retired.
+- `tests/fake-shell.sls`: the fake transport: a write kept as the client reads it and its callback told on a later turn, or ECANCELED once the close has been asked for; reads routed to the taker, its end once; the close after the writes, then `closed` to the core and the close call, run at once when registered late; the deadline on the connection's wheel entry, none armed once closing; `fake-shell-drain!` and `fake-shell-armed`.
+- `tests/test-connection-table.sps`: W1 to W7; the parser's hand-off refused; what the door lets go of; the counts.
+- `tests/test-connection-switch.sps` (new): the hook's contract at every delivery size; the fake transport's verbs; the door closed, to a request that does not upgrade, HTTP/1.0, a CONNECT, one with a body, and a switch to a protocol not offered.
+- `tests/test-message-loop.sps`, `tests/test-outcome-lane.sps`, `tests/outcome-lane.sls` and `tests/libhtp-lane.sls`: a hand-off rendered by the bytes it hands over (the review's third).
+- Records: design §4.3's and §4.4's notes; decision 0006's amendment.
+
+Measured on the step's tree (2026-10-03, Darwin arm64): `make test` green, forty-eight suites, 1,775 expected passes (1,728 + 47), every pin ok.
+
+Watched to fail (m8-mutations.md, M8.2, the second step): forty-one mutants on the step's tree, plan §14's among them, each loading and reddening a check; every one of the thirty-seven checks the step added or changed by name, and each of the table's twenty instances, reddened by one.
+
+Size: src +117 −26; tests +685 −34.
+
+NEXT: the third step, the shell's transport and the facade, stacked on this one.

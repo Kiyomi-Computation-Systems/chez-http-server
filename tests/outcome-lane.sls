@@ -62,15 +62,24 @@
 
   ;; decisive : (Listof Action) -> (Listof Datum)
   ;; The actions that make the outcome, rendered: the others (feeds, reads,
-  ;; deadlines) follow the deliveries and differ by chunk size by design.
+  ;; deadlines) follow the deliveries and differ by chunk size by design.  A
+  ;; hand-off is rendered by the bytes it hands over, as text, or #f (M8.2).
   (define (decisive actions)
     (fold-right (lambda (a acc)
                   (case (car a)
-                    ((call-handler hand-off) (cons (list (car a) (render-request (cadr a))) acc))
+                    ((call-handler) (cons (list 'call-handler (render-request (cadr a))) acc))
+                    ((hand-off) (cons (list 'hand-off (retained-text (caddr a))) acc))
                     ((write) (cons (list 'write (written-status a)) acc))
                     ((close) (cons a acc))
                     (else acc)))
                 '() actions))
+
+  ;; retained-text : (U #f (List Bytevector Nat Nat)) -> (U #f String)
+  ;; The bytes a hand-off hands over, as UTF-8 text, or #f for none.
+  (define (retained-text r)
+    (and r (let ((o (make-bytevector (- (caddr r) (cadr r)))))
+             (bytevector-copy! (car r) (cadr r) o 0 (bytevector-length o))
+             (utf8->string o))))
 
   ;; outcome-at : Bytevector Nat [(Request -> Any)] -> Datum
   ;; What one connection did reading `bv` in `size`-byte deliveries, with

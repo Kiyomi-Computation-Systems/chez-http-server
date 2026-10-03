@@ -16,6 +16,7 @@
 ;;; (decision 0013; see (outcome-lane)).
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) getenv)
+        (only (http-server switch) switch-protocols)
         (trace-lane) (outcome-lane))
 
 (define selection
@@ -59,6 +60,19 @@
     (test-equal "a handler that reads no body: the POST answered, then the close, whole and a byte at a time"
                 (list spike-answered spike-answered)
                 (list (outcome-at spike 117 answers) (outcome-at spike 1 answers)))
+    ;; The lane renders a hand-off by the bytes handed over (M8.2): a
+    ;; WebSocket handshake taken by a handler's switch, read whole, with
+    ;; another protocol's 5 bytes after it.
+    (test-equal "the instrument renders a hand-off: a handshake taken, the bytes after it handed over"
+                '(((call-handler (GET "/chat" 1 1 (("Host" . "x") ("Connection" . "upgrade") ("Upgrade" . "websocket"))))
+                   (write 101)
+                   (hand-off "FRAME"))
+                  handed-off upgrade ())
+                (let ((in (string->utf8 "GET /chat HTTP/1.1\r\nHost: x\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\nFRAME")))
+                  (outcome-at in (bytevector-length in)
+                              (lambda (request)
+                                (switch-protocols (list (cons (string->utf8 "Upgrade") (string->utf8 "websocket")))
+                                                  (lambda (transport retained) #t))))))
     (for-each
      (lambda (handler name)
        (let* ((results (map (lambda (p) (cons (car p) (outcome-mismatch (cdr p) selection handler)))
