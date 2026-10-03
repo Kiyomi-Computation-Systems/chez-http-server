@@ -1,7 +1,8 @@
 #!r6rs
 ;;; (http-server headers): ASCII case-insensitive field-name operations over a
 ;;; header alist, the byte helpers a field value's list is read with, and
-;;; whether a field's list holds a token (M6.4).  Oracles: RFC 9110 §5.1
+;;; whether a field's list holds a token (M6.4), and its elements (M8.2's
+;;; review: the serializer reads a switch's Upgrade with them).  Oracles: RFC 9110 §5.1
 ;;; (field names are case-insensitive), §5.6.1 (lists) and §5.6.3 (OWS is SP
 ;;; and HTAB).  Names and values are bytevectors or spans: the
 ;;; connection core builds a request's headers as spans of the delivery
@@ -103,4 +104,22 @@
                (if (and (field-lists? (list (cons (sp 17 23) (sp 25 40))) (b "expect") (b "100-continue"))
                         (not (field-lists? (list (cons (sp 17 23) (sp 25 39))) (b "expect") (b "100-continue"))))
                    'in-bounds
-                   'out-of-bounds)))))
+                   'out-of-bounds)))
+
+    ;; --- a field's elements (M8.2's review) ------------------------------------------
+    ;; RFC 9110 §5.6.1: each element of every line of the field, in order,
+    ;; the OWS around it trimmed, an empty one none, each a copy of its own.
+    (let ((fields (lambda (pairs) (map (lambda (f) (cons (b (car f)) (b (cdr f)))) pairs)))
+          (texts (lambda (bvs) (map utf8->string bvs))))
+      (test-equal "field-elements: a list's elements, over every line of the field, in order, the OWS trimmed, empty ones none"
+                  '(("websocket" "IRC/6.9") ("a" "b" "c") () ("x"))
+                  (list (texts (field-elements (fields '(("Upgrade" . "websocket, IRC/6.9"))) (b "upgrade")))
+                        (texts (field-elements (fields '(("Upgrade" . " , a ,, b ") ("Host" . "h") ("upgrade" . "c")))
+                                               (b "Upgrade")))
+                        (texts (field-elements (fields '(("Upgrade" . " , ") ("Host" . "h"))) (b "Upgrade")))
+                        (texts (field-elements (fields '(("X-List" . "x"))) (b "x-list")))))
+      (let* ((wire (b "GET / HTTP/1.1\r\nUpgrade: h2c, websocket\r\n"))
+             (pairs (list (cons (make-span wire 16 23) (make-span wire 25 39)))))
+        (test-equal "field-elements reads a span's list within its bounds"
+                    '("h2c" "websocket")
+                    (texts (field-elements pairs (b "upgrade"))))))))

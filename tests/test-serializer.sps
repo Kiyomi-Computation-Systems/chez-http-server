@@ -22,12 +22,17 @@
 ;;; 8), whose head writes no body, and whose pieces and end are each the
 ;;; segments of one write of their own, chunked (RFC 9112 §7.1) or
 ;;; close-delimited (§6.3 rule 8), read back whole by the same parser.
+;;; And, since M8.2: the 101 a switch is written as (decision 0016 item 1),
+;;; its status line and its fields with `Connection: upgrade` (RFC 9110
+;;; §7.8), no Date and no framing (§6.6.1, §15.2), read back by the same
+;;; parser; and what a switch may not carry, each with its reason.
 ;;; Every slot is filled with RFC 9110 §5.6.7's example line, written out here,
 ;;; so the wire does not depend on the Date line under test.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) make-time time-utc->date
               date-week-day date-day date-month date-year date-hour date-minute date-second)
         (http-server serializer) (http-server response) (http-server span)
+        (http-server switch)
         (response-reader))
 
 (define (b s) (string->utf8 s))
@@ -341,6 +346,68 @@
                  (list (call-with-values (lambda () (serialize-end mode))
                                          (lambda (segments bytes) (wire segments)))))))
 
+;; --- the 101 a switch is written as (M8.2; decision 0016) ---------------------
+
+(define (take-over transport retained) 'taken)
+(define (switch headers) (switch-protocols headers take-over))
+(define accept (h "Sec-WebSocket-Accept" "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="))
+
+;; A WebSocket handshake's request fields, as RFC 6455 §1.2's example has
+;; them, less the ones no check here reads.
+(define offered (list (h "Host" "server.example.com") (h "Upgrade" "websocket") (h "Connection" "Upgrade")))
+
+;; (name switch offered fault): RFC 9110 §7.8 and §15.2's rules for a 101,
+;; and decision 0010 item 2's for the fields, one row per reason, then what
+;; is not a fault.
+(define switch-faults
+  (list
+   (list "a response is no switch" (response 101 (list (h "Upgrade" "websocket")) #f) offered 'not-a-switch)
+   (list "a take-over that is no procedure"
+         (switch-protocols (list (h "Upgrade" "websocket")) 'take-over) offered 'invalid-take-over)
+   (list "headers that are not a list" (switch (h "Upgrade" "websocket")) offered 'invalid-headers)
+   (list "a name with a space" (switch (list (h "Upgrade" "websocket") (h "X Y" "1"))) offered
+         'invalid-header-name)
+   (list "a value with a CR" (switch (list (h "Upgrade" "web\rsocket"))) offered 'invalid-header-value)
+   ;; §8.6: a 1xx carries neither; and the framing is the server's anyway.
+   (list "a Content-Length" (switch (list (h "Upgrade" "websocket") (h "Content-Length" "0"))) offered
+         'framing-field)
+   (list "a Transfer-Encoding" (switch (list (h "Upgrade" "websocket") (h "Transfer-Encoding" "chunked")))
+         offered 'framing-field)
+   ;; The server writes `Connection: upgrade`; a handler's may only say so.
+   (list "a Connection: close" (switch (list (h "Upgrade" "websocket") (h "Connection" "close"))) offered
+         'connection-field)
+   (list "a Connection: upgrade, close"
+         (switch (list (h "Upgrade" "websocket") (h "Connection" "upgrade, close"))) offered
+         'connection-field)
+   ;; §7.8: a 101 MUST send Upgrade, naming only what the request offered.
+   (list "no Upgrade" (switch (list accept)) offered 'invalid-upgrade)
+   (list "an Upgrade naming nothing" (switch (list (h "Upgrade" " , "))) offered 'invalid-upgrade)
+   (list "an Upgrade the request did not offer" (switch (list (h "Upgrade" "h2c"))) offered 'invalid-upgrade)
+   (list "an offered protocol and one not" (switch (list (h "Upgrade" "websocket, h2c"))) offered
+         'invalid-upgrade)
+   (list "a request that offered none" (switch (list (h "Upgrade" "websocket")))
+         (list (h "Host" "server.example.com")) 'invalid-upgrade)
+   ;; And what is not a fault.
+   (list "the protocol the request offered" (switch (list (h "Upgrade" "websocket") accept)) offered #f)
+   (list "in another case, compared without regard to it (§7.8's SHOULD)"
+         (switch (list (h "Upgrade" "WebSocket"))) offered #f)
+   (list "one of the request's list, and of its second line"
+         (switch (list (h "Upgrade" "IRC/6.9")))
+         (list (h "Upgrade" "websocket") (h "upgrade" "IRC/6.9, RTA/x11")) #f)
+   (list "a handler's own Connection: Upgrade"
+         (switch (list (h "Upgrade" "websocket") (h "Connection" " Upgrade "))) offered #f)
+   (list "a request's fields that are spans"
+         (switch (list (h "Upgrade" "websocket")))
+         (let ((bv (b "Upgrade: websocket"))) (list (cons (make-span bv 0 7) (make-span bv 9 18))))
+         #f)))
+
+;; switched : Switch -> (U (List String Nat Nat) 'refused)
+;; The switch's 101 as the wire, its segments and its byte count.
+(define (switched sw)
+  (guard (e ((assertion-violation? e) 'refused))
+    (let-values (((segments bytes) (serialize-switch sw)))
+      (list (wire segments) (length segments) bytes))))
+
 (run-suite "serializer"
   (lambda ()
     (for-each
@@ -528,4 +595,34 @@
                                                               'close-delimited #f)))
                       (assertion-raised?
                        (lambda () (serialize-checked-response (with-header (b "Connection") (b "close"))
-                                                              'content-length 'keep-alive)))))))
+                                                              'content-length 'keep-alive)))))
+
+    ;; --- the 101 a switch is written as (M8.2; decision 0016 item 1) ---
+    ;; The status line, the handler's fields in its order, `Connection:
+    ;; upgrade` (§7.8: a sender of Upgrade MUST list it), and the blank
+    ;; line: two segments, no Date slot (§6.6.1: a 1xx MAY carry one, and
+    ;; the 100 the server writes carries none) and no framing (§15.2: a 1xx
+    ;; has no content).  A handler's own Connection is not copied, and its
+    ;; own Date is, as any field.
+    (let ((ws "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\nConnection: upgrade\r\n\r\n"))
+      (test-equal "a WebSocket's 101: the status line, its fields, Connection: upgrade, the blank line; two segments"
+                  (list ws 2 (string-length ws))
+                  (switched (switch (list (h "Upgrade" "websocket") accept))))
+      (let ((dated (string-append "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                                  date-text "Connection: upgrade\r\n\r\n")))
+        (test-equal "a handler's Connection is not copied, and its Date is"
+                    (list dated 2 (string-length dated))
+                    (switched (switch (list (h "Upgrade" "websocket") (h "Connection" "Upgrade")
+                                            (h "Date" "Sun, 06 Nov 1994 08:49:37 GMT"))))))
+      (test-equal "what a client reads: a 101 and its fields, the server's Connection among them, nothing after"
+                  '(101 "Switching Protocols"
+                        (("Upgrade" . "websocket") ("Sec-WebSocket-Accept" . "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+                         ("Connection" . "upgrade"))
+                        "" complete)
+                  (let ((w (switched (switch (list (h "Upgrade" "websocket") accept)))))
+                    (if (pair? w) (read-response (text->bytes (car w)) #f #f) w))))
+    (test-eq "what is not a switch is not written as one" 'refused
+             (switched (response 101 (list (h "Upgrade" "websocket")) #f)))
+    (for-each
+     (lambda (f) (test-eq (string-append "a switch: " (car f)) (cadddr f) (switch-fault (cadr f) (caddr f))))
+     switch-faults)))

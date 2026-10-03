@@ -4317,3 +4317,61 @@ DONE and merged (71878db, PR #106; f2d256c, PR #107; 7bcfcb4, PR #108): **M8.1, 
 - Decided by form: SIGTERM and SIGINT; the drain's three log lines; review, then three stacked PRs; the review's 1, 2 and 6–9 fixed, 3–5 noted. A /code-review high found nine.
 
 NEXT: M8.2 (plan §14), the hand-off door, decided first, when the owner asks.
+
+M8.2: THE HAND-OFF DOOR, on the owner's "start M8.2". Built on feat/m8.2-door, cut from main at 70b7adf; 2026-10-03, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1.
+
+MEASURED FIRST, on main (`research/spike/m8-today-101.sps` and `m8-door-pending.sps`, through the fake shell with the real parser, adapter and core, two identical runs each):
+- today a handler cannot take an upgrade: a WebSocket handshake answered with a 101, with or without `Connection: upgrade`, is answered 500, logged `invalid-response invalid-status`; answered 200, it is served and the connection closed, close-after `upgrade`;
+- the core already holds what the door must hand over: when the handler is asked, its pending input is the rest of the last read from `parser-result-next`, reading having stopped at the message's end. Six inputs at every delivery size, 525 runs: the pending input began at the request's end every time, and it, with what was left unread, was exactly the bytes after the request (a WebSocket handshake alone, 72 sizes, and with a masked frame sent early, 80; an upgrade with a body and a frame, 93; a CONNECT with 6 bytes, 65; `Upgrade: h2c` with the HTTP/2 preface, 144; an HTTP/1.0 handshake with a frame, 71).
+Read beside them: the servers surveyed (h2o and hyper write the 101 and hand over the raw socket; Node and Go have the handler write it; Go's `Shutdown` "does not attempt to close nor wait for hijacked connections such as WebSockets", read in net/http's `server.go` that day; Kestrel counts upgraded connections under a limit of their own, read in its API reference that day); and RFC 9110 §7.8 and §15.2 and RFC 6455 §4.1, read that day.
+
+DECIDED on the owner's word (2026-10-03), by form, as decision 0016: **"The server (Recommended)"** writes the 101, for a handler that answers `(switch-protocols headers take-over)`; **"Tell it, then wait (Recommended)"** for the drain; **"Upgrades only (Recommended)"**: an HTTP/1.1 upgrade with no body. To the second question the owner answered "We need to discuss the tradeoffs. the reference servers use a raw handle and loop, what doe the server keeping it gain?", answered with what keeping the stream gains (the drain just chosen, `max-connections` bounding the read buffers, every close seen, a taker's bug closing only its stream, fake-transport tests, one timer, no chez-libuv pin for takers) and what the raw handle gains (all of libuv, less code and API, the peers' shape); then, on a second form, **"Transport; server keeps it (Recommended)"**. Weighed: the handler writing the 101; the raw handle and the loop; a drain that closes a taken stream at once, or waits for it untold; CONNECT tunnels too.
+
+M8.2 BUILT in one working tree, then measured (2026-10-03, Darwin arm64), before the walkthrough: `make test` green, forty-eight suites, 1,788 expected passes (main, re-measured: forty-seven suites, 1,689), every pin ok; and on Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Linux 6.12.76-linuxkit aarch64, Chez 10.4.1), from a copy of the tree made with `COPYFILE_DISABLE=1`: forty-eight suites, 1,788, and the switch, shell and serve suites green three more times each, 21, 187 and 16. Eighty-six mutants on frozen copies of the tree, each loading and reddening a check; every one of the eighty-four checks the slice added or changed reddened by one. Plan §14's mutation, the retained bytes starting a byte late, reddens the table's hand-off row, W2, and the contract at every delivery size, as the plan expects.
+
+Three steps, each proved green on a tree of its own, main's with the step's files: the switch, the transport and the 101 (forty-seven suites, 1,726; code +248 −8, tests +189 −4); the core's door and the fake transport (forty-eight suites, 1,769; code +117 −26, tests +610 −28); the shell's transport and the facade (1,788; code +197 −10, tests +458 −12).
+
+FOUND while building:
+- a taker's call that returned no values made chez-libuv's close callback raise, and the run loop with it: the shell drops what a taker's call returns (decision 0016's list);
+- RFC 9110 §7.8 has a server that receives Upgrade and an Expect of 100-continue send the 100 before the 101: the door's request has no body, so M6.4 sent it none, and the switch now writes it first (W7);
+- the parser's own hand-off row, T7, was unreachable: the core never resumes the parser onto an upgrade. Retired, a refusal now.
+
+The first mutation run left survivors, each settled: a deadline's call cleared after it passes, and a guard that reported a read's end once, were redundant (the wheel and libuv already do each once) and were taken out; letting the parser go at the hand-off had no check that could see it and was taken out; and four checks were added: a taker's close waiting for a 4 MiB write still under way, a deadline armed once the timer had stopped, a deadline disarmed leaving none armed, and a drain call registered again not run.
+
+NEXT: the plan-vs-landed walkthrough, then the review and the PRs, by form.
+
+DECIDED on the owner's word (2026-10-03), by form, after the plan-vs-landed walkthrough: **"Review, then 3 stacked PRs (Recommended)"**: a /code-review high of the uncommitted branch first, its findings fixed on the owner's word; then one PR a step: the switch, the transport and the 101 (code and tests +437 −12); the core's door and the fake transport (+727 −54); the shell's transport and the facade (+655 −22), each with its records. Weighed: the same review, then four PRs, the core's rows (+297 −40) apart from the fake transport (+430 −14); and three PRs with no review.
+
+M8.2's REVIEW (2026-10-03, on the owner's form): a /code-review high of the uncommitted branch found ten:
+1. a taken stream has no bound on its writes outstanding and no write deadline: measured, a client that sent 4 MiB to an echoing taker and read nothing left 28 and 107 writes outstanding in two runs (0.4 and 1.7 MiB), growing with what the client sends;
+2. a write the shell counts before `uv-write*!` stays counted when the call raises anything but a transport failure (`&uv-wrong-thread`, from another thread), so `transport-close!` never closes the stream;
+3. three test renderers (`outcome-lane.sls`, `libhtp-lane.sls`, `test-message-loop.sps`) still read a hand-off as `(hand-off request)`;
+4. a 101 that lists protocol layers, the one in use among them (RFC 2817's `Upgrade: TLS/1.0, HTTP/1.1`), is refused: HTTP/1.1 was not offered;
+5. the door reads the parser's upgrade flag from the close-after reason, a field other rows set;
+6. a taker's callbacks deferred to the next turn are lost when `serve` returns first;
+7. the fake transport arms a deadline on a stream that has closed, where the shell's does not;
+8. a close call registered after the stream has closed is never called, where the docs say it is called once the stream has closed;
+9. the serializer repeats `(http-server headers)`' scan of a field's list;
+10. a taker's writes are one write request each, never batched as the core's are under 4 KiB.
+
+DECIDED on the owner's word (2026-10-03), by form: **"Fix 2, 3, 7, 8, 9; note the rest (Recommended)"**, and for the first, **"The taker bounds them; document how (Recommended)"**: the done callbacks already let a taker count what is outstanding, and the docs show how, with a deadline for a client that stops reading. Weighed: the same without the ninth; all of 2–10; and for the first, an eighth verb giving what is outstanding, or the server closing a stream whose write waits past `write-timeout-ms`.
+
+FIXED as decided, before the first commit, each in the step it belongs to: the ninth, `field-elements` shared, in the first; the third, the renderers, and the seventh and eighth on the fake transport, in the second; the second, a write counted once libuv has taken it, the eighth on the shell, and the first's docs, in the third. Red first: the headers suite did not load, with no `field-elements`; the message loop's and the outcome lane's hand-off raised in their renderers; the fake armed a deadline on a stream that had closed, and called no close call registered late; on the shell, a write refused off the loop's thread left the taker's close waiting, its stream open and a handle on the loop at the suite's end, and a close call registered late was never called.
+
+M8.2 FIRST STEP: the switch, the transport and the 101 (feat/m8.2-switch).
+- `src/http-server/switch.sls` (new): `switch-protocols`, what a handler answers to take an upgrade: the 101's fields and the take-over.
+- `src/http-server/transport.sls` (new): the transport, a record of seven verbs, each checking what it is handed before its procedure is called; `make-transport`, with which a taker's tests make a fake.
+- `src/http-server/serializer.sls`: `serialize-switch`, the 101: its status line, the switch's fields but Connection, `Connection: upgrade`, no Date and no framing; `switch-fault`, a response's field faults, a Connection that says anything but `upgrade`, and an Upgrade missing or naming a protocol the request's did not (RFC 9110 §7.8).
+- `src/http-server/headers.sls`: `field-elements`, a field's list elements, which the serializer reads a switch's Upgrade with (the review's ninth).
+- `tests/test-records.sps`: the switch read back, and the transport: each verb's shape, and its refusals, none reaching its procedure.
+- `tests/test-serializer.sps`: a WebSocket's 101 on the wire, two segments, read back by chez-httparse's response parser; a handler's Connection not copied and its Date kept; a response not written as a 101; the switch's faults, nineteen rows.
+- `tests/test-headers.sps`: `field-elements`, over a field's lines, trimmed, within a span's bounds.
+- Records: decision 0016; the two spikes, their runs and the research README.
+
+Measured on the step's tree (2026-10-03, Darwin arm64): `make test` green, forty-seven suites, 1,728 expected passes (1,689 + 39), every pin ok.
+
+Watched to fail (m8-mutations.md, M8.2, the first step): thirty-three mutants on the step's tree, each loading and reddening a check; every one of the thirty-nine checks the step added reddened by one.
+
+Size: src +263 −10; tests +210 −6.
+
+NEXT: the second step, the core's door and the fake transport, stacked on this one.
