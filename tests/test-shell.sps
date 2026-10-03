@@ -37,6 +37,11 @@
 ;;;     itself answers, one that resolves a name libuv refuses at the call,
 ;;;     empty, with a NUL or too long, `invalid-name`, and one that resolves
 ;;;     a name with an empty label `EAI_NONAME`;
+;;;   - an idle connection carries no coroutine (decision 0003; the M7
+;;;     exit): once a handler that sleeps, looks a name up and meets a
+;;;     deadline, its reader's pieces and end and its producer sleeping too,
+;;;     is answered, and its connection is idle, a full collection leaves none
+;;;     of the coroutines they ran on;
 ;;;   - three requests in one write are answered in order, reading the clock
 ;;;     fewer times than they are answered (decision 0010: once a second), and
 ;;;     no action but the parser's reply runs at parser depth (design §6.4,
@@ -318,7 +323,11 @@
 ;; whose empty label the resolver refuses without asking a server, each
 ;; answering the reason it raised with; and `/await-none` waits and reads
 ;; the body with a reader whose piece ends with a sleep, answering no
-;; values, and answers its target at the body's end.
+;; values, and answers its target at the body's end.  And `/noted` waits at
+;; every call it makes into handler code, noting each coroutine it runs on
+;; in `noted`, weakly: its thunk sleeps, looks localhost up and meets a
+;; deadline of 0 ms; its reader's piece and end each sleep; and it streams
+;; two texts, its producer sleeping before each call.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -332,6 +341,12 @@
     (let spin () (when (< (monotonic-ms) until) (spin)))))
 (define parked #f)
 (define waker #f)
+;; The coroutines `/noted` ran on, newest first, each with what it ran:
+;; `(kind . weak-pair)`, the pair's car the coroutine.
+(define noted '())
+;; note! : Symbol -> Void — the coroutine running, noted weakly as `kind`.
+(define (note! kind)
+  (set! noted (cons (cons kind (weak-cons (current-coroutine) '())) noted)))
 ;; reason-for : String -> String — the reason `resolve` raised with for
 ;; `host`, or "resolved".
 (define (reason-for host)
@@ -438,6 +453,21 @@
                                (set! parked (current-coroutine))
                                (coroutine-park!)))
                            (lambda () (make-response 200 #f '() target)))))))
+          ((bytevector=? target (b "/noted"))
+           (awaiting
+            (lambda ()
+              (note! 'thunk)
+              (sleep-ms 0)
+              (resolve "localhost")
+              (guard (e ((deadline-passed? e) #f))
+                (with-deadline 0 (lambda () (sleep-ms 60000))))
+              (read-body (lambda (bv start end) (note! 'piece) (sleep-ms 0))
+                         (lambda ()
+                           (note! 'end)
+                           (sleep-ms 0)
+                           (let ((p (producer-of '("one " "two"))))
+                             (make-response 200 #f '()
+                                            (lambda () (note! 'producer) (sleep-ms 0) (p)))))))))
           ((bytevector=? target (b "/await-none"))
            (awaiting
             (lambda ()
@@ -1940,6 +1970,26 @@
                         '(200 "invalid-name") '(200 "invalid-name") '(200 "invalid-name") '(200 "EAI_NONAME"))
                   (cons (wait-for (lambda () (= 5 (length (responses (client-bytes cl))))))
                         (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))))
+      (client-close! cl))
+
+    ;; An idle connection carries no coroutine (decision 0003; design §5.2):
+    ;; once `/noted` is answered, each call into its code made on a
+    ;; coroutine and each waiting, and its connection is idle, a full
+    ;; collection leaves none of the coroutines it ran on.  The instrument
+    ;; is the weak pair's, calibrated above.
+    (set! noted '())
+    ;; Each reading is bound in turn: the collection comes after the wait.
+    (let* ((cl (open-client! (b "POST /noted HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")))
+           (waited (wait-for (lambda () (and (= 1 (length (responses (client-bytes cl))))
+                                             (connection? (newest)) (eq? (phase (newest)) 'idle)))))
+           (rs (responses (client-bytes cl)))
+           (kinds (fold-left (lambda (kinds e) (if (memq (car e) kinds) kinds (append kinds (list (car e)))))
+                             '() (reverse noted)))
+           (held (map car (filter (lambda (e) (eq? (state-after-collection (cdr e)) 'held))
+                                  (reverse noted)))))
+      (test-equal "a connection idle after its handler, its reader and its producer waited holds none of the coroutines they ran on"
+                  '(satisfied (200 "one two") (thunk piece end producer) ())
+                  (list waited (if (pair? rs) (list (status (car rs)) (body (car rs))) 'no-response) kinds held))
       (client-close! cl))
 
     ;; A shell that serves no more closes the timer of its loop's waits,

@@ -940,6 +940,20 @@ collection). An idle keep-alive connection carries no coroutine at all.
 > once costs 434 B (scratch, Darwin arm64); `with-exception-handler` and `dynamic-wind`
 > cost no stack.
 
+> *Measured 2026-10-02 (the M7 exit; Darwin arm64, Chez 10.4.1, libuv 1.52.1):* an idle
+> keep-alive connection carries no coroutine. `research/spike/m7-exit-budget.sps` holds
+> 100 and then 500 connections idle, each after 1, 10, 50 or 200 GETs answered by a
+> handler that waited on a coroutine, sleeping 0 ms or looking localhost up. Of
+> 1,252,800 coroutines made over two runs, none was in the heap after a full
+> collection, and a connection held 1,911 to 1,924 B of heap, as one whose handler
+> answered at once did, 1,875 to 1,971 B (§7.5's note). 2,000 coroutines parked at an
+> `await` held 3,637 to 3,639 B each. On Linux 6.12.76-linuxkit aarch64 in Docker
+> (libuv 1.44.2), one run: none of 626,400 in the heap, 1,917 to 1,929 B a connection
+> after waiting and 1,794 to 1,967 B after answers at once, and 3,644 B a parked
+> coroutine. The shell suite checks it: once a handler whose thunk, reader and producer
+> each wait has been answered, and its connection is idle, a full collection leaves
+> none of the coroutines they ran on.
+
 ### 5.3 The invariants, as checks
 
 Decision 0003 item 2 adopts R1–R5 of the two-level proposal as checks, not comments:
@@ -990,6 +1004,16 @@ resume cell; call a handler from inside `on-data`.
 > against scripted turns, and design §5.3's third mutation, the one-shot check
 > removed, reddens both its rows (M7W-1 in m7-mutations.md). The loop's waits are kept
 > by its scheduler, made with the log of the first shell on the loop.
+
+> *Noted 2026-10-03 (the M7 exit):* on the merged tree, against every suite, each
+> invariant's mutation reddens its rows: R1's refusals removed, and a handler called
+> from inside `on-data`; a wait on no coroutine let through, R2's; a coroutine's end
+> returning normally, R3's; the one-shot check removed, R4's; and R5's refusal removed
+> (m7-mutations.md, the M7 exit). R3's row now runs first in `tests/test-scheduler.sps`.
+> Since M7.2's first step a coroutine that returns normally breaks every drain after it:
+> Chez refuses its return into the continuation its park used, or its raise's handler
+> returns, and the coroutine running stays set. That came at the suite's first
+> coroutine that raised, or parked and ended, before R3's row.
 
 ### 5.4 What was rejected, and by what
 
@@ -1597,6 +1621,20 @@ passes the connection through the parser's user-context argument.
 > one bytevector), and the resident memory rose 9,952 to 33,200 KiB. The runs are
 > `out/m6-exit-sixteen.run{1,2}.txt`, and `out/m6-exit-sixteen.linux.run{1,2}.txt`.
 > `tests/test-clients.sps` holds the bounds, with curl at 16 MiB/s each way.
+
+> *Re-measured 2026-10-02 (the M7 exit; Darwin arm64, Chez 10.4.1, libuv 1.52.1):* a
+> connection held idle costs about **18.6 KB**, its heap unchanged by M7 but for 32 B.
+> `research/spike/m5-exit-budget.sps`, run in one session on the tree before M7
+> (4a7748b) and on M7's (3b1bb75), alternating, reads 1,803 to 1,969 B of heap a
+> connection before and 1,885 to 2,045 after, sixteen readings each, medians 1,880 and
+> 1,940. M7 adds three fields to a connection's record, which grows from 160 B to 192,
+> and they hold nothing while it is idle; the rest of the medians' difference is inside
+> the readings' spread. The parts priced fresh are the same on both, the core's state
+> among them at 400 B, where the M5 exit read 192. A connection idle after GETs whose
+> handlers waited reads what one answered at once reads, and carries no coroutine
+> (§5.2's note, `research/spike/m7-exit-budget.sps`). The runs are
+> `out/m7-exit-before.run{1,2}.txt`, `out/m7-exit-after.run{1,2}.txt` and
+> `out/m7-exit-budget.run{1,2}.txt`.
 
 Per request, allocation:
 

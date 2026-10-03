@@ -4166,3 +4166,23 @@ Watched to fail (m7-mutations.md, the M7 exit): M7Z-1 and M7Z-2, each shell's fi
 Size: 4 inserted lines of `src/` and 2 deleted; 33 inserted lines of tests and 12 deleted.
 
 NEXT: the second step, the exit's checks and records, stacked on this one.
+
+M7 EXIT, SECOND STEP: R3's row first, and an idle connection carries no coroutine (feat/m7-exit).
+- `tests/test-scheduler.sps`: R3's row runs first, and the header says why: a coroutine that returns normally breaks every drain after it, which since M7.2 comes at the first coroutine that raises, or parks and ends. Under M7S-B, R3's own, R3's row reads Chez's refusal, "attempt to invoke shot one-shot continuation", and the suite raises after it, as at M7.1.
+- `tests/test-shell.sps`: `/noted`, a handler that sleeps, looks localhost up and meets a deadline of 0 ms, its reader's piece and end each sleeping and its producer sleeping before each call, each coroutine it runs on noted in a weak pair: once it is answered and its connection is idle, a full collection leaves none of them. The weak-pair instrument is the suite's own, calibrated.
+- `.plans/research/spike/m7-exit-budget.sps`, new, with its runs, and two runs each of `m5-exit-budget.sps` on the tree before M7 and on M7's, in `out/`.
+- Records: plan §14's M7 exit note; design §5.2's, §5.3's and §7.5's notes; the research README; the README's status; `docs/handlers.org`: once a waiting handler has answered, its connection holds no more than any other.
+
+Measured on the finished tree (2026-10-03, Darwin arm64): `make test` green, forty-seven suites, 1,645 expected passes (1,644 + 1), every pin ok. The shell suite took 4.33 to 4.35 s with both new checks, main's 4.25 to 4.30 (three runs each, alternating). On Linux, in Docker's `chez-libuv-valgrind:10.4.1` image (698eba6; Linux 6.12.76-linuxkit aarch64, Chez 10.4.1, libuv 1.44.2), from a copy of the tree made with `COPYFILE_DISABLE=1`, curl, ab and python3 installed: `make test`, less its submodule and pin checks, forty-seven suites, 1,645 expected passes; the scheduler, shell and contract suites green three more times each; and the budget spike once, its 48 holds clean, none of 626,400 coroutines in the heap, a connection holding 1,917 to 1,929 B after waiting and 1,794 to 1,967 B after answers at once, a parked coroutine 3,644 B.
+
+Watched to fail (m7-mutations.md, the M7 exit): sixty-nine mutants on the finished tree, each loading: the eighteen of R1–R5 again, the scheduler suite's other fourteen, M7H-6 and M7X-1 for the idle check, and the first step's thirty-five. Each reddens a check but three: M7B-6 and M7F-10, the scope statements of M7.1 and M7.3, and M7X-1, a scheduler keeping a continuation already used, which holds no frame. Every check the steps added or changed, and every row of the scheduler suite, is reddened by one, 60 of 60: R3's by M7S-B, R3's own; the idle check by M7H-6, a coroutine kept in the heap's slot, which no other check in the shell suite sees. M7W-1's contract raised once, in the run before the review's fixes (exit 2, after 71 checks), and in none since, nine runs by hand and the run after the fixes passing all 187 checks: its red is the waits and shell suites'.
+
+Size, against the first step: 80 inserted lines of tests and 24 deleted (the scheduler suite's 30 and 23, R3's row moved and the header; the shell suite's 50 and 1); the spike, 161 lines, and its runs.
+
+M7 EXIT BUILT, the two steps proved each on its own tree (2026-10-03):
+- the first, main at 3b1bb75 with its four files: `make test` green, forty-seven suites and 1,644 expected passes; its thirty-five mutants there, 30 of 30 checks;
+- the second, the finished tree: forty-seven suites and 1,645, on Darwin and on Linux in Docker; sixty-nine mutants, 60 of 60 checks.
+
+No file under `src/` changes but the libuv shell, in the first step.
+
+NEXT: the owner's word on how it ships: two stacked PRs, the fix below the exit, as decided; then the closing ritual on "do closing ritual", and M8 when the owner asks.
