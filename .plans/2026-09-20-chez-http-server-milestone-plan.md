@@ -117,6 +117,13 @@ leniency, so it reads any `HTTP/` DIGIT `.` DIGIT and the core judges the versio
 (decision 0006's amendment of 2026-10-04, later). Every other flag stays off, and the one
 `request-lenient-version` fixture stays `deferred` with its class.
 
+*Decided 2026-10-04, later still ([0019](decisions/0019-the-outcome-lane-runs-all-167-request-fixtures-and-only-the-trace-lane-defers-the-32-lenient-and-finish-ones.md)):* the outcome lane runs
+all 167, the 32 among them, since it parses with the server's own parser and reads no
+log. The trace lane keeps the 32 deferred by class. It reads each fixture under its own
+init, which for a strict fixture is the server's but for the version flag, and that
+reads one of them differently: `invalid.md#19`, `GET / HTTP/5.6`, which a strict parser
+refuses at the version and the server's reads on, as `lenient-version.md#1` records.
+
 ### 2.2 What the strict lane costs to run
 
 Of the 135: **17** are `noScan` (whole-buffer only), **13** carry a `pause` naming the
@@ -939,8 +946,10 @@ document gets a dated section slicing M5–M8 against what M2–M4 measured.
 - **Anything M0 already shipped.** Re-planning merged work is how a ledger starts lying.
 - **Re-arguing decisions 0001–0008.** A slice that wants a different answer opens a
   decision record; it does not relitigate in a plan.
-- **The lenient corpus lane.** The 32 `request-lenient-*` fixtures are `deferred` by
-  class (§2.1). Promoting them is a decision record.
+- **The lenient corpus lane.** The 32 `request-lenient-*` and `request-finish` fixtures
+  are `deferred` by class (§2.1). Promoting them is a decision record. *Decided
+  2026-10-04 ([0019](decisions/0019-the-outcome-lane-runs-all-167-request-fixtures-and-only-the-trace-lane-defers-the-32-lenient-and-finish-ones.md)):* the outcome lane runs them, and the trace
+  lane keeps them deferred.
 - **HTTP/2, TLS, and a handler framework** — all three are outside the project by
   decision [0001](decisions/0001-the-project-is-the-composition-layer-and-where-it-stops.md).
 - **New upstream asks.** All fourteen filed asks landed before M0 and every pin is at a
@@ -1741,7 +1750,6 @@ on the way.
 ### Open, and not sliced
 
 - 0004 item 3's alternative: reading during a handler only to notice a client leave.
-- The 32 lenient llhttp fixtures stay `deferred` by class (§11).
 - M8.3's smuggler corpus, dropped from the slice (a safety classifier stopped the
   step that wrote its probe reader): the measurement stands in the ledger (all 3,536
   probes refused but 6 gadgets that are no Transfer-Encoding header), and guardian's

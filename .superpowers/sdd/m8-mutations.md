@@ -1198,3 +1198,47 @@ run through main's libhtp suite and the merged one, each pointed at the copy.
 The checks the change touched: the libhtp suite's "PROVENANCE lists LICENSE + the 102
 streams", its count now the shared checker's list: P-D; its gate, which ends the suite
 with status 3 and names no check: P-B and the witnesses above.
+
+## After M8 — the outcome lane runs all 167 (2026-10-04)
+
+Decision 0019, on the owner's "A": the outcome lane takes the 32 fixtures the trace lane
+defers. Platform: Darwin arm64, Chez 10.4.1 (`tarm64osx`), 2026-10-04, the library path
+as above.
+
+Tests first, against the tree before the change: the ratchet 7 passes and 2 failures
+("outcome lane: 167 passing", "outcome lane: 0 deferred"), the outcome suite 6 and 1
+("167 request fixtures in the lane"). With the manifest's 32 outcome entries `passing`
+and the split not yet per lane, the ratchet 8 and 1: "no ratchet violations", 32 of
+them, each "lenient, must be deferred, is passing".
+
+| mutant | the edit | red |
+|---|---|---|
+| L-A | the ratchet's outcome split derived from each fixture's meta again | ratchet 1: "no ratchet violations", 32, each "lenient, must be deferred, is passing" |
+| L-B | the outcome suite's list the strict 135 | outcome lane 1: "167 request fixtures in the lane" |
+| L-E | the ratchet's trace split lost, every request fixture in scope | ratchet 1: "no ratchet violations", 32, each the trace lane's "in-scope fixture marked deferred" |
+| L-F1 | `response-written` never feeds the input a message's pause kept | outcome lane 3: the instrument's whole-input row, and both handlers' rows (read: `connection.md#2`, `pipelining.md#1`, `lenient-headers.md#2`; unread: `connection.md#2`, `lenient-headers.md#2`); ratchet 1 (those three, and libhtp's 07); 14 other suites |
+| L-F2 | `answer-error` answers 500 for a parser error the head's feed met in the body | outcome lane 1, bodies read: `transfer-encoding.md#9`, #10, #12, #24, #25, #27 to #32; ratchet 1 (those 11, and libhtp's 64 and 65); 5 other suites |
+
+By hand on a scratch tree, since the ratchet reads `tests/ratchet.txt` from its working
+directory: the tree's files linked, the manifest a copy with one line changed. The
+unchanged copy: green, 9 passes.
+
+| mutant | `outcome/request/lenient-headers.md#2` | red |
+|---|---|---|
+| L-C | `deferred` | ratchet 3: "outcome lane: 167 passing", "outcome lane: 0 deferred", "no ratchet violations" ("in-scope fixture marked deferred") |
+| L-D | `not-yet` | ratchet 3: "outcome lane: 167 passing", "outcome lane: 0 not-yet", "no ratchet violations" ("marked not-yet but now passes") |
+| L-G | removed | ratchet 2: "outcome lane: 167 passing", "manifest covers every fixture in every lane" (RATCHET MISSING) |
+
+The checks the change touched:
+- the ratchet's "outcome lane: 167 passing": the tree before, L-C, L-D, L-G; its
+  "outcome lane: 0 deferred": the tree before, L-C;
+- its "no ratchet violations", the split now per lane: the flipped manifest before the
+  split, L-A, L-E, L-C, L-D, L-F1, L-F2;
+- the outcome suite's "167 request fixtures in the lane", counting the list it compares:
+  the tree before, L-B;
+- its two "every fixture has one outcome at every chunk size" rows, now over 167: L-F1
+  (both, through `lenient-headers.md#2` among strict fixtures) and L-F2 (bodies read,
+  through `transfer-encoding.md#28`, #30 and #32 among strict fixtures).
+
+No mutant fails a check through the 32 alone, as decision 0019's measured overlap
+predicted.

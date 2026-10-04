@@ -1,7 +1,7 @@
 #!r6rs
 ;;; (test-outcome-lane) — the outcome lane: design §8.1's property 2.  M2.4.
 ;;;
-;;; Every strict (type=request) fixture, fed to one fake connection at every
+;;; Every request fixture, fed to one fake connection at every
 ;;; scheduled chunk size, has one outcome: the handlers called and the
 ;;; requests they got, the responses written, the close and its reason, the
 ;;; state it ended in, and every action run from the outermost drain (see
@@ -13,7 +13,9 @@
 ;;; response, so the parser is never resumed onto its own hand-off (decision
 ;;; 0006's amendment, on the owner's word, 2026-09-25).  Since M6.1 it holds
 ;;; with two handlers, one that reads every body and one that reads none
-;;; (decision 0013; see (outcome-lane)).
+;;; (decision 0013; see (outcome-lane)).  Since decision 0019 it holds for all
+;;; 167: the 32 the trace lane defers, whose logs llhttp recorded under a
+;;; lenient flag or with the finish call, are bytes like any others here.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) getenv)
         (only (http-server switch) switch-protocols)
@@ -21,6 +23,10 @@
 
 (define selection
   (let ((v (getenv "CORPUS"))) (if (and (string? v) (string=? v "full")) 'full 'extremes)))
+
+;; The lane's fixtures, counted and compared: every request fixture (decision
+;; 0019).
+(define lane-fixtures request-fixtures)
 
 ;; The instrument, calibrated on an input whose outcome is known from
 ;; decision 0004 and the input's own bytes: research/spike/pipeline-pause.sps's
@@ -52,8 +58,8 @@
   (lambda ()
     (diag (string-append "outcome-lane: selection=" (symbol->string selection)
                          " scan-runs=" (number->string
-                                        (trace-scan-runs (map cdr strict-request-fixtures) selection))))
-    (test-eqv "135 strict fixtures in the lane" 135 (length strict-request-fixtures))
+                                        (trace-scan-runs (map cdr lane-fixtures) selection))))
+    (test-eqv "167 request fixtures in the lane" 167 (length lane-fixtures))
     (test-equal "the instrument: the spike's messages whole give two handlers, two responses, the close"
                 spike-outcome (outcome-at spike 117))
     (test-equal "and a byte at a time, the same" spike-outcome (outcome-at spike 1))
@@ -76,7 +82,7 @@
     (for-each
      (lambda (handler name)
        (let* ((results (map (lambda (p) (cons (car p) (outcome-mismatch (cdr p) selection handler)))
-                            strict-request-fixtures))
+                            lane-fixtures))
               (varied (filter cdr results)))
          (for-each (lambda (r) (diag (string-append "OUTCOME MISMATCH (" name ") " (car r) ": " (cdr r))))
                    varied)
