@@ -1,0 +1,7 @@
+Darwin 25.6.0 arm64, 10.4.1, oha 1.16.0; somaxconn 128, ports 49152-65535, msl 15000 ms
+round 1 c= 10: TIME_WAIT at most 16355 on the server side, 5694 on the client side; listen-queue overflows 0; codes {'200': 20000}  errors {}
+round 1 c=100: TIME_WAIT at most 16265 on the server side, 5587 on the client side; listen-queue overflows 0; codes {'200': 20000}  errors {}
+round 1 c=500: TIME_WAIT at most 16350 on the server side, 5873 on the client side; listen-queue overflows 0; codes {'200': 20000}  errors {}
+round 2 c= 10: TIME_WAIT at most 16356 on the server side, 5680 on the client side; listen-queue overflows 0; codes {'200': 20000}  errors {}
+round 2 c=100: TIME_WAIT at most 16260 on the server side, 5699 on the client side; listen-queue overflows 0; codes {'200': 20000}  errors {}
+round 2 c=500: TIME_WAIT at most 16305 on the server side, 5660 on the client side; listen-queue overflows 0; codes {'200': 20000}  errors {}

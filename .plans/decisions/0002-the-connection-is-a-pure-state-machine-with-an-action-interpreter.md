@@ -324,3 +324,36 @@ Still five fields, and a read allocates nothing more: curl's GET costs 1,840 B a
 and an error with a span open allocates one pair. Decided on the owner's word, by form, for
 the pin PR. Weighed: a sixth field beside the open span, 16 B more a read (curl's GET
 1,856 B), each result the tests build by hand gaining one.
+
+## Amendment (2026-10-04, M8.4) — v0.1.0 sets no throughput goal
+
+Item 4 waited for M8's load smoke, the first place a throughput goal could come from. M8.4
+measured it with `research/spike/m8-load.sh`. oha sent 50,000 GETs over kept-alive
+connections, with Node's `http` module beside the server on the same Apple M1. Two runs of
+three rounds, in thousands of requests a second:
+
+| connections | 1 | 10 | 50 | 100 | 500 |
+|---|---|---|---|---|---|
+| Darwin arm64, this server | 9.9–10.5 | 31.3–32.8 | 32.8–34.0 | 32.6–34.0 | 23.7–31.5 |
+| Darwin arm64, Node 20.10 | 10.3–10.7 | 34.0–35.5 | 35.4–36.1 | 34.4–36.1 | 31.1–32.0 |
+| Linux aarch64, this server | 14.0–14.4 | 61.5–64.4 | 82.8–86.8 | 78.3–88.0 | 62.4–72.8 |
+| Linux aarch64, Node 18.20 | 14.1–14.4 | 53.6–55.6 | 50.9–60.4 | 50.6–55.9 | 43.8–46.8 |
+
+The server runs on one core. At 10 connections or more it spent 28.4 to 31.6 µs of CPU a
+request on Darwin and 11.4 to 16.2 µs on Linux. Linux ran in Docker on the same machine.
+Through the whole server, a GET kept alive allocated about 10.4 KB at one connection and
+8.9 KB at 50, on both (`research/spike/m8-request-alloc.sps`). The gate's 1,840 B is the
+parser's, adapter's and core's part of it; the rest is the shell's and chez-libuv's.
+
+Decided on the owner's word, by form ("No goal; record a baseline"): v0.1.0 sets no
+throughput goal. CHANGELOG.md records these numbers, with their platforms, as its baseline.
+The 3 KiB gate stays a regression ratchet (item 1), with its shape checks. A goal waits for
+a need, such as a deployment that outgrows one core. What was weighed:
+- holding within 15% of Node's http, checked by hand before each release. Round by round,
+  Darwin is 2% to 10% under Node 20.10 at 10 connections or more, but for one round at 500
+  that was 25% under, and Linux is 12% to 66% over Node 18.20;
+- a floor on the smoke's rate in CI. Shared runners vary from run to run, so it would flake
+  or be set too low to catch much.
+
+The runs are `out/m8-load.{darwin,linux}.run{1,2}.txt` and
+`out/m8-request-alloc.{darwin,linux}.txt`.

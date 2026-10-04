@@ -23,7 +23,10 @@ shuts down gracefully: sent SIGTERM or SIGINT (Ctrl-C), it finishes the
 requests in flight, closes the rest after ~CHEZ_HTTP_DRAIN_TIMEOUT~, and
 ~serve~ returns (see [[file:docs/connections.org][docs/connections.org]]). Since
 M8.2 a handler can take an upgrade, a WebSocket's say, and speak the new
-protocol over the connection itself (see [[file:docs/handlers.org][docs/handlers.org]]). See
+protocol over the connection itself (see [[file:docs/handlers.org][docs/handlers.org]]). M8.3 held
+it to other servers' strict request tests, request-smuggling cases and vtest2's
+scripts, and M8.4 to a load test with oha. v0.1.0 is the first release:
+[[file:CHANGELOG.md][CHANGELOG.md]] has what it does and the numbers measured for it. See
 [[file:.plans/2026-09-19-chez-http-server-project-brief.md][the project brief]] for the milestone map.
 
 ** Quick start
@@ -50,9 +53,11 @@ Prerequisites:
   from source; CMake 3.26+ is only needed if libuv falls back to its vendored
   build
 - For ~make test~, the real clients the tests run against the server: *curl*,
-  *ab* (~apache2-utils~ on Linux), and vtest2, which ~make vtest~ builds from
+  *ab* (~apache2-utils~ on Linux), vtest2, which ~make vtest~ builds from
   source with *pcre2* that ~pkg-config~ can see and *zlib* (~brew install
-  pcre2~ or ~apt install libpcre2-dev zlib1g-dev~), *python3* and *awk*
+  pcre2~ or ~apt install libpcre2-dev zlib1g-dev~), *python3* and *awk*, and
+  oha, the load test's client, whose release binary ~make oha~ downloads and
+  checks (macOS and Linux, amd64 and arm64)
 
 Dependencies are pinned git submodules under ~vendor/~ (chez-libuv,
 chez-httparse, uriparse, chez-srfi and vtest2 for the tests; byte-machine
@@ -65,6 +70,7 @@ make build   # builds the chez-libuv shim and assembles the one library path
 make test    # runs every tests/test-*.sps
 #+end_src
 
+~make test~ builds vtest2 and downloads oha itself the first time.
 ~make help~ lists every target; ~make check-pins~ verifies each submodule sits
 at its pinned release commit.
 

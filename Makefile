@@ -3,8 +3,10 @@
 # Dependencies are pinned git submodules under vendor/ (global-constraints):
 # chez-libuv, chez-httparse, uriparse, and chez-srfi for the SRFI-64 test
 # framework; byte-machine arrives transitively under chez-httparse; vtest2,
-# the black-box lane's client, is built from its pin (decision 0017).  The
-# *_PIN lines below name each commit and its tag.  `make build` assembles them
+# the black-box lane's client, is built from its pin (decision 0017), and
+# oha, the load smoke's, is fetched at the version and sha256s that
+# tests/fetch-oha.sh pins (decision 0018).  The *_PIN lines below name each
+# submodule's commit and its tag.  `make build` assembles them
 # onto one library path.  A pin is
 # a gitlink; `make check-pins` is the fingerprint check the brief's M0 asks for.
 # It also holds uriparse to the byte-machine on the library path, and refuses a
@@ -61,7 +63,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps build vtest dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh
+.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -173,6 +175,16 @@ VTEST_COMMIT := $(strip $(VTEST_PIN))
 vtest: submodules ## Build vtest2, the black-box lane's .vtc client, at its pin into build/vtest
 	@sh tests/build-vtest.sh $(VTEST_DIR) $(VTEST_COMMIT) $(VTEST_BUILD) $(VTEST_BIN)
 
+# oha (decision 0018) is the release binary of the version tests/fetch-oha.sh
+# pins, for this machine, fetched into build/oha and kept only if its sha256
+# is the one pinned beside it.  OHA, in the environment or on the command
+# line, names another oha for tests/test-clients.sps; `make test` then
+# fetches none.
+OHA_BIN := $(BUILD_DIR)/oha
+
+oha: ## Fetch oha, the load smoke's client, at its pin into build/oha, sha256-checked
+	@sh tests/fetch-oha.sh $(OHA_BIN)
+
 dev: build ## Start a REPL with everything on the library path
 	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ)
 
@@ -182,12 +194,17 @@ run: build ## Run a program on the library path: make run PROGRAM=hello.sps
 
 # A vtest that does not build stops no suite but the clients suite, which
 # names it (status 2): vtest2 builds on POSIX systems only (decision 0017).
+# An oha not fetched, offline or on a platform with no pin, does the same
+# (decision 0018).
 test: build check-pins check-imports ## Run every tests/test-*.sps (status 0/1/2/3, keep-going)
 	@test -n "$(TESTS)" || { echo "test: empty selection — no tests/test-*.sps (failure)" >&2; exit 2; }
 	@test -n "$(TIMEOUT_BIN)" || echo "note: no timeout(1) on PATH; a hung suite will not be capped"
 	@if [ -n "$${VTEST:-}" ]; then echo "test: VTEST names the vtest to run, $$VTEST"; \
 	else sh tests/build-vtest.sh $(VTEST_DIR) $(VTEST_COMMIT) $(VTEST_BUILD) $(VTEST_BIN) || \
 	  echo "test: vtest did not build; the clients suite will name it (decision 0017)" >&2; fi
+	@if [ -n "$${OHA:-}" ]; then echo "test: OHA names the oha to run, $$OHA"; \
+	else sh tests/fetch-oha.sh $(OHA_BIN) || \
+	  echo "test: oha was not fetched; the clients suite will name it (decision 0018)" >&2; fi
 	@fail=0; \
 	for t in $(TESTS); do \
 	  echo "=== $$t ==="; \
@@ -225,7 +242,8 @@ corpus-refresh: ## Re-vendor a test corpus from a checkout: LIBHTP_ROOT, GUARDIA
 	@test -z "$(LIBHTP_ROOT)" || { test -f "$(LIBHTP_ROOT)/LICENSE" && test -d "$(LIBHTP_ROOT)/test/files"; } || { echo "corpus-refresh: LIBHTP_ROOT has no LICENSE or test/files" >&2; exit 2; }
 	@test -n "$(LIBHTP_ROOT)" || exit 0; \
 	dst=test/vendor/libhtp; \
-	sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$$1"; else shasum -a 256 "$$1"; fi | awk '{print $$1}'; }; \
+	sha() { sh "$(CURDIR)/tests/sha256.sh" "$$1"; }; \
+	sha Makefile > /dev/null || exit 2; \
 	rm -rf "$$dst/files"; mkdir -p "$$dst/files"; \
 	cp "$(LIBHTP_ROOT)/LICENSE" "$$dst/LICENSE"; \
 	cp "$(LIBHTP_ROOT)"/test/files/*.t "$$dst/files/"; \

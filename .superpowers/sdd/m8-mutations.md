@@ -943,3 +943,116 @@ Witnessed by hand, before and after each fix:
   build vtest: `git -C DIR archive -o build/vtest2.tar` took its path inside
   the submodule. Written through the shell now, `make vtest` from no binary
   builds it.
+
+## M8.4 — load, and the release (2026-10-04)
+
+Built from main at 28e0d77 on the owner's "Start m8.4", after measuring (progress.md,
+M8.4) and one form of three decisions. Platform: Darwin arm64, Chez 10.4.1 (`tarm64osx`),
+libuv 1.52.1, 2026-10-04, the library path as above.
+
+The slice adds `tests/fetch-oha.sh` and `make oha` (decision 0018). To
+`tests/test-clients.sps` it adds a reader of oha's JSON report and two load runs: 20,000
+GETs on 50 kept-alive connections, and 2,000 on a connection each. It changes no source
+under `src/`.
+
+Each mutant ran from a scratch copy of its edited file against the clients suite, the
+smoke's, two at a time. Each suite run opens about 2,300 connections, and four at a time
+would come near macOS's 16,384 client ports in TIME_WAIT. Every one loaded and matched
+once, with no `Exception` in any report, and every one reddened its checks.
+
+| mutant | the edit | the clients suite's failures |
+|---|---|---|
+| M84-A | the shell drops one write in a thousand, its completion reported (plan §14's mutation) | both oha runs; "curl: 16 MiB streamed to it, read at 16 MiB/s, arrive in order" |
+| M84-B | the report's reader drops a tally's last pair | the reader's check; both oha runs |
+| M84-C | the reader keeps an escape's backslash, not the character escaped | the reader's check |
+| M84-D | the serializer writes one status line in a thousand as 503's, the response otherwise whole | both oha runs |
+
+Plan §14's mutation reddens what it expects. Run by hand from M84-A's root, on
+`tests/serve-child.sps`, oha counted 19,980 responses and 20 timeouts of the 20,000 kept
+alive. Every response under M84-D arrives, so oha counts no failure, and M84-D reddens
+the status tally alone.
+
+Every check the slice added, and the mutants that redden it:
+
+| check | reddened by |
+|---|---|
+| oha: the report's reader reads each tally's pairs in order, an error's name with its quotes, and an empty one | M84-B, M84-C |
+| oha: 20,000 GETs, 50 connections kept alive, every one answered 200, none failed | M84-A, M84-B, M84-D |
+| oha: 2,000 GETs, 10 at a time, each on a connection of its own, every one answered 200, none failed | M84-A, M84-B, M84-D |
+
+Witnessed by hand:
+- `tests/fetch-oha.sh`:
+  - into an empty `build/`, it fetched oha in 0.56 s;
+  - at the next call it kept it;
+  - a binary with a byte appended was fetched again, at the pinned sum;
+  - a copy whose pin had one digit changed refused the download, exit 2, leaving no file;
+  - with `uname` faked as Plan9 mips, it named the platform and exited 2;
+  - with no argument, it printed its usage and exited 2;
+  - `make -n oha` printed its line and fetched nothing;
+  - in Docker, on Linux aarch64, `make oha` fetched the arm64 binary at its pin.
+- `make test`:
+  - with no oha it could fetch (the faked `uname`, `build/oha` moved aside), it said so
+    and ran on, and the clients suite named `build/oha`, status 2;
+  - with `OHA` named on the command line, it fetched none, and the clients suite passed
+    its 35.
+- The clients suite with no oha ended `HARNESS-ERROR`, status 2, naming `build/oha` on
+  standard error.
+
+### The review's fixes: seven mutants on the fixed tree
+
+A `/code-review high` found ten, all fixed on the owner's word ("Fix all ten";
+progress.md, M8.4). The fixes renamed the smoke's two checks, which now also hold the
+bodies' bytes, and added a check that an empty `OHA` or `VTEST` names the default. So
+the four mutants ran again on the fixed tree, with three new, two at a time. Every one
+loaded and matched once, and every one reddened its checks.
+
+| mutant | the edit | the clients suite's failures |
+|---|---|---|
+| M84-A | (as above) | both oha runs; curl's 16 MiB streamed to it |
+| M84-B | (as above) | the reader's check; both oha runs |
+| M84-C | (as above) | the reader's check |
+| M84-D | (as above) | both oha runs |
+| M84-E | the serializer frames one response in a thousand with an empty body, Content-Length 0 | both oha runs |
+| M84-F | an empty `OHA` or `VTEST` is taken as the client's name | "oha: OHA or VTEST unset or empty names the default, and any other value the client it names" |
+| M84-G | the report's reader drops a number's last character | the reader's check; both oha runs |
+
+Run by hand on `tests/serve-child.sps` from each mutant's root, whose bodies are the 6
+bytes "served":
+- under M84-E, oha counted 20,000 answered 200 and no failure, and 119,880 bytes of
+  bodies of the 120,000: only the new byte count reddens it;
+- under M84-D, 19,980 answered 200 and 20 answered 503, no failure, and 120,000 bytes:
+  the status tally reddens it.
+
+Every check the slice adds, and the mutants that redden it, on the fixed tree:
+
+| check | reddened by |
+|---|---|
+| oha: OHA or VTEST unset or empty names the default, and any other value the client it names | M84-F |
+| oha: the report's reader reads each tally's pairs in order, an error's name with its quotes, an empty one, and a number | M84-B, M84-C, M84-G |
+| oha: 20,000 GETs, 50 connections kept alive, every one answered 200 with its 4 bytes, none failed | M84-A, M84-B, M84-D, M84-E, M84-G |
+| oha: 2,000 GETs, 10 at a time, each on a connection of its own, every one answered 200 with its 4 bytes, none failed | M84-A, M84-B, M84-D, M84-E, M84-G |
+
+Witnessed by hand on the rewritten `tests/fetch-oha.sh`:
+- the paths above again: a fresh fetch, one kept, a corrupted binary fetched again, a
+  pin with a digit changed refused (exit 2, the directory left empty), an unpinned
+  platform and a missing argument, each exit 2;
+- with `PATH` holding `sh`, `dirname` and `uname` alone, it said "sha256: neither
+  sha256sum nor shasum is on PATH" and exited 2, before it made the directory or
+  fetched anything;
+- four fetches at once into one empty directory each said "fetched", and left the
+  pinned binary and no temporary file.
+- The old script, its download at the one name `oha.part`, run the same way, four at
+  once, three trials: in each, one fetched and three failed, their sum reading "No
+  such file or directory" after the first had renamed `oha.part` into place.
+
+Witnessed by hand on the shared `tests/sha256.sh`, which the corpus vendoring now calls
+too (the review's seventh):
+- it reproduces every sum the five vendored corpora's PROVENANCE files record, 123 of
+  123;
+- `tests/vendor-corpus.sh`, run with `PATH` holding everything in `/bin`, `/usr/bin`,
+  `/sbin`, `/usr/sbin` and `/opt/homebrew/bin` but `sha256sum` and `shasum`, on a git
+  copy of guardian's vendored files, said "sha256: neither sha256sum nor shasum is on
+  PATH" and exited 2, the vendored tree untouched;
+- run again with the tools, on the same copy, it rewrote PROVENANCE's
+  `upstream-commit` line alone, the copy's commit for upstream's: every sum it wrote
+  was the one recorded. The vendored tree was then restored.

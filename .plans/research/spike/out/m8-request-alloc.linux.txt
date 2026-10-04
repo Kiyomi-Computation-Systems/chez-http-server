@@ -1,0 +1,5 @@
+Linux 6.12.76-linuxkit aarch64, Chez Scheme Version 10.4.1 (tarm64le), libuv 1.44.2, oha 1.16.0
+round 1, 1 connection: 5,000 GETs 52220304 B in 10010 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 260888864 B in 49988 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 10433 B
+round 1, 50 connections: 5,000 GETs 44972448 B in 147 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 222890528 B in 602 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 8896 B
+round 2, 1 connection: 5,000 GETs 52216272 B in 10008 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 260900768 B in 50005 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 10434 B
+round 2, 50 connections: 5,000 GETs 44974800 B in 156 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 222873040 B in 574 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 8895 B

@@ -1,0 +1,5 @@
+Linux 6.12.76-linuxkit aarch64, Chez Chez Scheme Version 10.4.1 (tarm64le), libuv 1.44.2; max-connections 10000, read buffer 16384 B; holding 10000
+before the client: heap 23639008 B, resident 40132608 B
+holding: satisfied; 10000 open, TCP handles 10001, read buffers 10001, deadlines armed 10000; heap 43108880 B, resident 238731264 B
+after the client closed them: satisfied, client exit (0 #f); heap 23638680 B, resident 238768128 B
+a held connection: heap 1947 B, resident 19860 B; 10000 held: heap 19.5 MB, resident 198.6 MB
