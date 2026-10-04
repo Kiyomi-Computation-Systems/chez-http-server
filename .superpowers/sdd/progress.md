@@ -4986,3 +4986,9 @@ DONE and merged (fa9e745, PR #117), and tagged `v0.1.0`: **M8.4, load and the re
 **M8 COMPLETE**, and with it the brief's milestones, M0 to M8: v0.1.0 is tagged with the measured numbers in CHANGELOG.md.
 
 NEXT: plan §14's open list, or a new milestone, when the owner asks.
+
+**Plan §13's billing item settled, on `docs/ci-billing-settled` (2026-10-04),** on the owner's word ("yes, remove item 4 and amend §13"). Docs only; nothing under `src/` or `tests/` moved.
+- §13 gets a dated note: the billing block lifted between 2026-09-30T11:48Z and 2026-10-01T00:37Z, and PR #88's re-run, 36844511280, was the job's first green run.
+- §14's open list drops its fourth item, "CI's billing block is the owner's (§13)".
+- Measured 2026-10-04 from GitHub's run list, for the runs since the secret was added (2026-10-01T09:58Z): 91. All 47 pull-request runs passed. Of the 44 runs on pushes to `main`, 37 passed and 7 were cancelled, each by the ledger commit pushed one or two minutes behind it (the workflow cancels a run in progress on the same ref), whose own run passed.
+- `make test` green before the commit (Darwin arm64): fifty suites, 1,882 expected passes, every pin ok.

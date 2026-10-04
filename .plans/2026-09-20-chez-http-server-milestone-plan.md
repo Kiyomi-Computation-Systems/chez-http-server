@@ -972,6 +972,14 @@ first lane whose result could plausibly differ by platform — decoded byte coun
 ladders and trace rendering all go through string and bytevector paths that a different
 Chez build could disagree about. It is an account setting, not a repository change.
 
+*Settled 2026-10-01, by PR #88 (noted here 2026-10-04):* the billing block lifted
+between 2026-09-30T11:48Z and 2026-10-01T00:37Z. The job then ran, but could not check
+out the private sibling submodules ("Repository not found"). PR #88 (`3d006b0`) has
+`make submodules` clone them with the Actions secret `SUBMODULES_READ_TOKEN`, and its
+re-run, 36844511280, was the job's first green run on GitHub. The `linux` job now runs
+`make test` on ubuntu-24.04 for pull requests and pushes to `main`. Nothing is left open
+here, and §14's open list no longer carries the item.
+
 ---
 
 ## 14. M5–M8, sliced (amended 2026-09-27, the M4 exit)
@@ -1708,7 +1716,6 @@ on the way.
 - 0012's amendment: trimming a value's whitespace once, where the core records it,
   rather than where each reader reads it.
 - The 32 lenient llhttp fixtures stay `deferred` by class (§11).
-- CI's billing block is the owner's (§13).
 - M8.2's review, four findings noted and not changed, on the owner's word (decision
   0016):
   - a taker's `done` that the shell calls on its next turn, for a write asked for after
