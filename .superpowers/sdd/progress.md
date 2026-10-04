@@ -5027,3 +5027,11 @@ DECIDED on the owner's word, 2026-10-04: **a header value is trimmed where it is
 - **A correction to the discussion.** It named the tests' churn as a cost, unmeasured. M4's probe HW-P (the Host whitespace fix, above) trimmed every value where the core records it and kept every suite green, the allocation lane included. 0012's amendment records that instead.
 - **Records.** Decision 0012 gets the amendment "a value is trimmed where it is read", and plan §14's open list drops the item: five remain.
 - `make test` green before the commit (Darwin arm64): fifty suites, 1,881 expected passes, every pin ok.
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#121, decision 0012: a header value is trimmed where it is read** (the entry above). 3cf200d was squashed as daec4cc (tree 7f211e2, the tested tip's), whose parent is a045206.
+- **CI.** Its run, 37219916260, passed on 3cf200d: fifty suites, 1,881 expected passes on ubuntu-24.04.
+- **Branches.** `--delete-branch` deleted the branch, local and remote, switched this checkout to main and fast-forwarded it. No PR is open.
+
+`make test` green on main: fifty suites, 1,881 expected passes, every pin ok.
+
+NEXT: plan §14's open list (five items), a new milestone, or cutting 0.2.0, when the owner asks.
