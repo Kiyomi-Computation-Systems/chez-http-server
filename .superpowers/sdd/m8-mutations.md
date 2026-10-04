@@ -1340,3 +1340,41 @@ Found while mapping:
 - RP-A has one witness, the three requests that end early, whose end comes in the turn
   a handler's call waits in. When it comes a turn later, a fake drained after every
   event agrees too.
+
+## After M8 — the smuggling-framing lane (2026-10-04)
+
+Decision 0021, on the owner's forms ("Static fixtures only", then "Per-case verdict +
+gate"): plan §14's last open item, a hand-written fixed-vector lane for the request-
+smuggling framing families, not a vendored generator or a probe reader. Platform: Darwin
+arm64, Chez 10.4.1 (`tarm64osx`), 2026-10-04, the library path as above.
+
+The suite (`tests/test-smuggling-lane.sps`) is new; eight checks over the nineteen
+vectors of `tests/smuggling-corpus.sls`. Two code mutants are of the status table in
+`(http-server decisions)`, the rest of the corpus data, each watched red on the finished
+tree (by hand, reverted after; the lane is self-contained, no data file to redirect).
+
+| mutant | the edit | red |
+|---|---|---|
+| D-STATUS | `(unsupported-transfer-coding . 501)` → `. 400` | the verdict gate: `te-coding-before-chunked`, "verdict 400, recorded 501" |
+| D-PARSE400 | `parser-error-status` returns `500`, not `400` | the verdict gate: all twelve 400-refused cases (every hazard but `te-coding-before-chunked`) |
+| A-SEP | the request assembler joins lines with LF, not CRLF | "cl.te assembles to its exact bytes"; "te-ows-tab carries a tab, not a space, after the colon"; the verdict gate |
+| C-COUNT | a case dropped from `smuggling-cases` | "nineteen framing vectors"; "thirteen are hazards (refused)" |
+| C-CAT | a `hazard` case's category set to `safe` | "six are safe (served)"; "thirteen are hazards (refused)"; the policy check |
+| C-DUP | a case id repeated | "every case id is unique" |
+| P-POLICY | a `hazard` case's `expected` set to `served` | the policy check; the verdict gate |
+
+The checks the lane has, and their killers:
+- "nineteen framing vectors", counting the list the properties loop over: C-COUNT;
+- "six are safe (served)": C-CAT; "thirteen are hazards (refused)": C-COUNT, C-CAT;
+- "every case id is unique": C-DUP;
+- "cl.te assembles to its exact bytes" and "te-ows-tab carries a tab, not a space, after
+  the colon": A-SEP;
+- "every case's category and recorded verdict agree" (the security policy, read off the
+  corpus with no server): C-CAT, P-POLICY;
+- "every case meets its recorded verdict" (the gate, both ways): D-STATUS, D-PARSE400,
+  A-SEP, P-POLICY. D-STATUS and D-PARSE400 are server regressions — a status the core
+  originates moved — so the gate catches a real change, not only a data edit.
+
+Chunk invariance is not a check here (decision 0021): these vectors refuse at the head,
+so no mutant can make one size-dependent. The property is the outcome lane's (L-F1,
+L-F2) and the robustness lane's.
