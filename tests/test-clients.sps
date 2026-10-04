@@ -1,6 +1,7 @@
 #!r6rs
 ;;; Real clients: curl, ab and vtest against the server.  The M4 exit (plan
-;;; §8), and M8.3's black-box lane (plan §14): vtest2's scripts.
+;;; §8), and M8.3's black-box lane (plan §14): vtest2's scripts and curl's
+;;; own ways with a server it does not know.
 ;;;
 ;;; The brief's gate for M4: `curl` and `ab` get correct responses, and the
 ;;; counters return to zero.  A server is started through an environment, as
@@ -479,6 +480,32 @@
                   (list 'satisfied '(0 #f) "one two three200 1 13\n/b -\n200 1 5\n")
                   (run loop sh "curl" (list "-sS" "--http1.0" "-H" "Connection: keep-alive" "-w" curl-out
                                             (url "/stream") (url "/b"))))
+
+      ;; --- curl's own ways with a server it does not know (M8.3) ---
+      ;; `--http2` asks an http:// URL to upgrade to h2c (curl's manual): the
+      ;; upgrade is served over HTTP/1.1, then the connection closed
+      ;; (decision 0006's amendment of 2026-09-25), so the GET after it opens
+      ;; a connection of its own.
+      (test-equal "curl --http2: the h2c upgrade served over HTTP/1.1, then a GET on a connection of its own"
+                  (list 'satisfied '(0 #f) "/u -\n200 1.1 1\n/b -\n200 1.1 1\n")
+                  (run loop sh "curl" (list "-sS" "--http2" "-w" "%{http_code} %{http_version} %{num_connects}\\n"
+                                            (url "/u") (url "/b"))))
+      ;; A link with brackets and a pipe, as a browser sends it (-g: curl
+      ;; leaves the brackets alone), is redirected once, then served, its
+      ;; query encoded (decision 0009).
+      (test-equal "curl -g -L: a link with brackets and a pipe redirected once, then served, its query encoded"
+                  (list 'satisfied '(0 #f) "/a ids%5B%5D=1%7C2\n200 2 1\n")
+                  (run loop sh "curl" (list "-sS" "-g" "-L" "-w" "%{http_code} %{num_connects} %{num_redirects}\\n"
+                                            (url "/a?ids[]=1|2"))))
+      ;; A handler gets the target exactly as it arrived
+      ;; (docs/request-targets.org): `OPTIONS *` has the path "*"
+      ;; (docs/handlers.org), and dot segments stay.
+      (test-equal "curl: OPTIONS *, its path \"*\""
+                  (list 'satisfied '(0 #f) "* -\n200 1 4\n")
+                  (run loop sh "curl" (list "-sS" "-X" "OPTIONS" "--request-target" "*" "-w" curl-out (url "/"))))
+      (test-equal "curl --path-as-is: the target handed over as sent, its dot segments kept"
+                  (list 'satisfied '(0 #f) "/a/../b/./c -\n200 1 14\n")
+                  (run loop sh "curl" (list "-sS" "--path-as-is" "-w" curl-out (url "/a/../b/./c"))))
 
       ;; --- 16 MiB each way, against a slow peer (the M6 exit) ---
       ;; curl sends 16 MiB, chunked from its standard input, which the suite

@@ -1630,6 +1630,16 @@ black-box lane.
   reading of Kestrel's tables that missed one table's appended rows; the lane's own:
   Kestrel 230 of 237, httpd 70 of 79, lighttpd 35 of 41, 22 departures. Step 2's
   review found ten, all fixed on the owner's word ("Fix all ten").
+- **The black-box lane runs vtest2's scripts and curl against a port** (step 3).
+  vtest2 is pinned and built by decision 0017. Twelve scripts in `tests/vtc/`, written
+  from RFC 9112 and the decisions, run against a server of the lane's own whose
+  deadlines are a second each, each held to a manifest both ways, beside four curl
+  checks of curl's own ways. Brief risk 4 was answered in M6.3 (`tests/test-shell.sps`
+  reads a body close-delimited to HTTP/1.0 over a real socket, finished with
+  `parser-finish!`) and is recorded now with its mutant. One mutation per lane became
+  one per script client, since vtest stops a script at its first failure. Step 3's
+  review found ten, all fixed on the owner's word ("Fix all ten"), and the step went up
+  as three stacked PRs ("Three stacked PRs").
 
 **M8.4 — load, and the release.**
 - oha's load smoke gives the first throughput numbers. That is where 0002's amendment

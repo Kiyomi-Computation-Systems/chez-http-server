@@ -4710,3 +4710,117 @@ M8R-P1, gave the strictness suite exit 1, which found the defect above.
 
 NEXT: step 2's PR, stacked on #112, as decided; then the black-box lane (curl,
 vtest2), with a decision record for vtest2.
+
+### The third step: the black-box lane (feat/m8.3-blackbox, on #113)
+
+Stacked on #113, as the steps go. Built on the owner's form ("curl and vtest2"),
+measured first (scratch, the session scratchpad m83/co and m83/vtc):
+- vtest2 is the archived GitHub mirror, vtest/VTest2, tag `last`, 803dcd0
+  (2026-02-17); development moved to code.vinyl-cache.org. It builds with a C
+  compiler, pcre2 and zlib, python3 and awk generating two headers, under
+  `-Werror`: Darwin arm64 in 5.9 s; Ubuntu 24.04 amd64 (gcc 13.3.0, the CI
+  image's release, under emulation) in 25 s, no warning.
+- vtest exits 2 alike for a failed expectation and a script it cannot read;
+  its log's `----` lines name the failure; `vtest -h` exits 1.
+- curl's own ways (8.7.1 here): `--http2` sends the h2c upgrade, served over
+  HTTP/1.1, then closed; `--http2-prior-knowledge` fails at once on the 505
+  (exit 16 here; the check reads only that it fails, since the code is
+  curl's); `-g -L` follows the bracket redirect once.
+
+New:
+- Decision 0017: vtest2 a submodule at `last`, built out of its tree into
+  `build/vtest` by `make vtest` (stamp `build/vtest.pin`), `make test` building
+  it first; CI caches it keyed on the gitlink, the OS release and the arch.
+- `tests/vtc/`: twelve scripts, written from RFC 9112 and the decisions before
+  they first ran. Eleven passed at once; the twelfth, `timeouts.vtc`, waited
+  out vtest's 30 s, since the lane's server set its timeouts as milliseconds
+  where `CHEZ_HTTP_*_TIMEOUT` reads seconds (docs/configuration.org): the
+  harness's fault, not the server's.
+- `tests/test-clients.sps`: the lane, a server of its own on a loop of its own
+  (deadlines 1 s, bodies capped at 1 KiB), each script held to a manifest both
+  ways, the table emptied, the server's log and its loop read after a drain;
+  and five curl checks (`--http2`, `--http2-prior-knowledge`, `-g -L`,
+  `OPTIONS *`, `--path-as-is`).
+- README.org: the test tools among the prerequisites.
+
+Brief risk 4 was answered in M6.3 and is recorded now:
+`tests/test-shell.sps` reads a streamed body close-delimited to HTTP/1.0 over
+a real socket with `(response-reader)`, which finishes the read the close ends
+with `parser-finish!`; M8B-P1, no finish, reddens it. vtest reads one with its
+own code (`stream.vtc` c2).
+
+Found while building:
+- vtest stops a script at its first failure, so each client got a mutant of
+  its own (`framing.vtc` c2, the parser's duplicate Content-Length, with M8B-F2).
+- M8B-D1 found `head.vtc` blind to a HEAD answered with content: the GET after
+  it checked its body, not its status, and vtest read the stray body as the
+  status line. Every `rxresp` is now followed by a status check (37).
+
+Measured on the tree (2026-10-04, Darwin arm64): `make test` green, fifty
+suites, 1,875 expected passes (1,865 + the clients suite's ten: the lane's five
+and curl's five), every pin ok, vtest2's among them, in 41 s; the clients suite
+in 6.3 s, timed before its log check was added (28 checks then).
+
+Watched to fail (m8-mutations.md, M8.3, the third step): thirty-four mutants,
+every one loading and reddening its check; three behaviours by hand (the
+stamp, the pin check, a missing vtest).
+
+REVIEWED (2026-10-04): a `/code-review high` of the third step found ten.
+DECIDED on the owner's word, by form, after a walkthrough of the step against the
+plan: "Fix all ten" (weighed: fixing 1–7 and noting 8–10; fixing 1–5 and noting
+the rest), and "Three stacked PRs" (weighed: two; one).
+1. The Makefile named its binary VTEST, the name the suite reads for another
+   build: `make vtest VTEST=path` copied ours over the user's file there
+   (witnessed in scratch), and `VTEST=path make test` was overridden unseen. The
+   binary is VTEST_BIN now; both ways reach the suite, and nothing is written.
+2. The `--http2-prior-knowledge` check held only that curl failed, so a curl
+   without HTTP/2, or a server closing unanswered, passed it; curl's trace never
+   shows what its HTTP/2 layer read (measured), so no check of curl's can see
+   the 505. Dropped: `version.vtc` c3 reads it. Four curl checks remain.
+3. `make vtest` built from `git archive` through a pipe: a tree without its
+   `.git` (the Linux run in Docker) could not build it, and bsdtar took git's
+   failure for an empty archive (the pipe exited 0). `tests/build-vtest.sh`
+   builds it now: from the git store, else the files as they stand, saying so.
+4. `make -n` ran the build's `rm -rf`, its line holding `$(MAKE)` (45 objects
+   deleted, exit 2). The script runs it now, so a dry run only prints it.
+5. vtest had no test timeout, so a hung script waited for the suite's cap and
+   twelve would outlast its 120 s. It gives each 5 s now (`-t 5`), and a killed
+   script's verdict reads "TIMED OUT"; M8B-O3 ends with vtest's own verdict.
+6. The two rules the verdicts rest on, each rxresp checked for its status and
+   each client run, were held by nothing: a reader of the scripts' text holds
+   them, checked on a snippet.
+7. An editor's lock file (`.#name.vtc`) would have been taken for a script:
+   dotfiles are left out, checked.
+8. `make test` waited on a build only POSIX systems make: it tries the build and
+   runs on, so where vtest does not build only the clients suite fails, by name
+   (witnessed with `CC=false`).
+9. The records: M8B-H2's row miscounted, 0017's and the suite's timings were
+   underived, and head.vtc's comment named the wrong mechanism. Re-measured
+   (the twelve take 3.22 s) and corrected.
+10. `vtc-file?` re-implemented `(corpus-text)`'s `suffix?`, and `vtc-handler`
+   copied the clients' handler: it hands it all but a POST now.
+
+Each new check was watched red first, the rules' reader and the dotfile rule
+on a stub; the verdict reader, added after the re-run showed no mutant reaches
+its TIMED OUT, by M8B-S11 and S12; 1, 3, 4 and 8 by hand.
+
+Measured on the fixed tree (2026-10-04, Darwin arm64): `make test` green, fifty
+suites, 1,878 expected passes (1,865 + the clients suite's thirteen: the lane's
+nine and curl's four), every pin ok, in 40.65 s; the clients suite 31 checks in
+5.97 s, before the verdict reader's check made 32.
+
+Watched to fail (m8-mutations.md, M8.3, the third step's review): forty-one
+mutants on the fixed tree, every one loading and reddening its check.
+
+Found by the layers' proof in a scratch worktree: `tests/build-vtest.sh` wrote
+its archive with `git -C DIR archive -o build/vtest2.tar`, a path git took inside
+the submodule, so a tree with no binary yet could not build vtest ("could not
+open 'build/vtest2.tar' for writing"). This checkout never reached that line,
+its stamp matching, and the copy without `.git` was built with absolute paths.
+The archive is written through the shell now, and `make vtest` from no binary
+builds it; the second layer's clients suite had named the missing vtest, as
+the eighth fix has it.
+
+NEXT: the three PRs, stacked on #113, as decided: the pin and build, the vtest
+lane, then curl's checks and the step's records, each proved green alone in a
+scratch worktree first.
