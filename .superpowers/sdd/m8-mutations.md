@@ -1169,3 +1169,32 @@ Every check the change added or changed, and the mutants that redden it:
   V-E, V-K;
 - `version.vtc`: c4 by V-A, V-C and V-H, c5 by V-K, c6 by V-F; c1 and c2, unchanged,
   by V-E and V-D.
+
+## After M8 — one PROVENANCE checker (2026-10-04)
+
+M8.3's step 1 review, its tenth finding, settled on the owner's "merge for 3": libhtp's
+suite checks its PROVENANCE with the shared `(provenance)`. Platform: Darwin arm64, Chez
+10.4.1 (`tarm64osx`), libuv 1.52.1, 2026-10-04, the library path as above.
+
+A gate whose failure ends the suite cannot be reddened from the vendored tree, so its
+failures were witnessed by hand: a scratch copy of `test/vendor/libhtp`, one change each,
+run through main's libhtp suite and the merged one, each pointed at the copy.
+
+| the copy | main's suite | the merged suite |
+|---|---|---|
+| unchanged | exit 0 | exit 0 |
+| a stray `files/notes.txt` | exit 0 | exit 3, "vendored file not in the manifest: files/notes.txt" |
+| a stray `NOTICE` at the top | exit 0 | exit 3, "... not in the manifest: NOTICE" |
+| one sha256 corrupted (M1.3's mutation) | exit 3 | exit 3 |
+| a byte of `01-get.t` changed | exit 3 | exit 3 |
+| a listed file missing | exit 3 | exit 3 |
+| `file-count` one too many | exit 3 | exit 3 |
+
+| mutant | the edit to `(provenance)` | the merged tree | main's libhtp suite |
+|---|---|---|---|
+| P-B | it reads no sha256 line | libhtp exit 3; robustness exit 3; strictness exit 3 | green, 11 passes |
+| P-D | it returns no files listed | libhtp 1 ("PROVENANCE lists LICENSE + the 102 streams"); robustness 1; strictness 1 | green, 11 passes |
+
+The checks the change touched: the libhtp suite's "PROVENANCE lists LICENSE + the 102
+streams", its count now the shared checker's list: P-D; its gate, which ends the suite
+with status 3 and names no check: P-B and the witnesses above.

@@ -1357,7 +1357,7 @@ Every status the server can originate, and who decides it:
 
 | Status | Origin | Closes? |
 |---|---|---|
-| `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26); more than two empty lines' 4 bytes before a request line, more than one space between its parts, a chunk size of more than 16 hex digits (policy; the padding PR, since 2026-09-30); a method outside the parser's table of llhttp's 36, `get` or `FOO`, is its error too, where RFC 9110 §9.1 would answer 501 (kept on the owner's word, 2026-10-04) | yes |
+| `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26); more than two empty lines' 4 bytes before a request line, more than one space between its parts, a chunk size of more than 16 hex digits (policy; the padding PR, since 2026-09-30); a method outside the parser's table of llhttp's 36, `get` or `FOO`, is its error too, where RFC 9110 §9.1 would answer 501 (kept on the owner's word, 2026-10-04); and so is a space or tab around a chunk extension's `;` or `=`, which RFC 9112 §7.1.1's BWS allows (kept on the owner's word, the same day) | yes |
 | `408` | header or body-inactivity deadline (policy) | yes |
 | `413` | a body past `max-body-bytes`, or past a reader's own cap, `read-whole-body`'s 1 MiB by default (policy; decision 0013, since 2026-09-28) | yes |
 | `414` | request-target over `max-target-bytes` (policy) | yes |

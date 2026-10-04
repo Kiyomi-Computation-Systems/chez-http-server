@@ -1,7 +1,8 @@
 #!r6rs
 ;;; (provenance) — a vendored corpus's bytes are the bytes we fetched
-;;; (decision 0007).  M8.3, for the corpora tests/vendor-corpus.sh vendors;
-;;; libhtp's suite keeps its own check (M1.3).
+;;; (decision 0007).  M8.3, for the corpora tests/vendor-corpus.sh vendors,
+;;; and since 2026-10-04 for libhtp's too, whose suite had kept its own check
+;;; (M1.3) that looked for an unlisted file only among LICENSE and the streams.
 ;;;
 ;;; A corpus directory holds upstream's files and a PROVENANCE that lists a
 ;;; sha256 per file and how many there are.  Every listed file must exist and

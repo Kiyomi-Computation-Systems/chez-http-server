@@ -282,6 +282,12 @@ load and that the bytes are the bytes we fetched.
 - **Re-measure:** record the actual `.t` count at the retrieval commit in the ledger.
   The survey says 102 (§2.3); if it differs, the survey is what gets the dated note.
 
+*Noted 2026-10-04:* the gate is now `(provenance)`'s, the checker every vendored corpus
+shares (plan §14's open list, M8.3's tenth review finding; "merge for 3", on the owner's
+word). It keeps every failure this slice's own check had, this slice's mutation among
+them, and walks the whole directory: a stray file anywhere under `test/vendor/libhtp` is
+exit 3 too, where the suite's own check looked only among `LICENSE` and the streams.
+
 ### M1.4 — the fake shell, and the ratchet opened
 
 The fake shell delivers scripted events and records actions, with a **fake clock** —
@@ -1649,6 +1655,17 @@ are settled on the owner's word ("serve 1.x for 3d, keep 400 for 3c"). HTTP/1.2 
 are served as HTTP/1.1 and every version that is not 1.x is answered 505, HTTP/3.0 among
 them (decision 0006's amendment of that day, later). A method the parser does not know,
 `get` among them, stays its 400 (design §6.5).
+
+*Noted 2026-10-04, later still:* the lane's other three items are settled on the owner's
+word ("keep 400 for 1, keep for 2, merge for 3").
+- A space or tab around a chunk extension's `;` or `=`, which RFC 9112 §7.1.1's BWS
+  allows, stays the parser's 400 (design §6.5). The open list had placed the cases in
+  libhtp's streams 28 and 29; they are lighttpd's `request.t` blocks 28 and 29,
+  `a; comment` and `0; comment`.
+- `%00`, and every other percent-encoded octet, still reaches a handler as written. RFC
+  3986 §7.3 puts the check on the code that decodes, and `docs/request-targets.org` says
+  so.
+- libhtp's suite checks its PROVENANCE with the shared `(provenance)` (M1.3's note).
 - **The black-box lane runs vtest2's scripts and curl against a port** (step 3).
   vtest2 is pinned and built by decision 0017. Twelve scripts in `tests/vtc/`, written
   from RFC 9112 and the decisions, run against a server of the lane's own whose
@@ -1725,17 +1742,6 @@ on the way.
 
 - 0004 item 3's alternative: reading during a handler only to notice a client leave.
 - The 32 lenient llhttp fixtures stay `deferred` by class (§11).
-- M8.3's robustness lane, found by measuring the surveyed corpora and noted, not
-  changed, on the owner's word (progress.md, M8.3):
-  - the parser refuses a space before a chunk extension (`a; comment`), which RFC
-    9110 §5.6.3's BWS allows; measured on libhtp's `28`/`29` chunked streams;
-  - a percent-encoded octet in a target, `%00` among them, reaches a handler
-    undecoded: the server hands the target over as sent (`docs/request-targets.org`
-    says so), and whether it decodes is the handler's;
-  - step 1's review, its tenth finding, noted on the owner's word: two PROVENANCE
-    checkers hold one contract, `tests/provenance.sls` (M8.3's corpora, a walk of what
-    a refresh writes) and `tests/test-libhtp.sps`'s own (M1.3, LICENSE and
-    `files/*.t`). Merging them means editing M1.3's suite.
 - M8.3's smuggler corpus, dropped from the slice (a safety classifier stopped the
   step that wrote its probe reader): the measurement stands in the ledger (all 3,536
   probes refused but 6 gadgets that are no Transfer-Encoding header), and guardian's
