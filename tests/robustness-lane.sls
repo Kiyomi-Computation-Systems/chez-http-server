@@ -44,11 +44,14 @@
   ;;     `Transfer---Encoding` — which is an ordinary field, not a coding (§5.1);
   ;;   - a plainly valid request (rfc-compliant's first eight, the compliant
   ;;     PUT/POSTs), and a target carrying a percent-encoded CTL (%09, %20,
-  ;;     %0D, %0A), which is a valid pct-encoded octet (RFC 3986 §2.1).
+  ;;     %0D, %0A), which is a valid pct-encoded octet (RFC 3986 §2.1);
+  ;;   - a 1.x past 1.1, HTTP/1.2, served as HTTP/1.1 (RFC 9110 §6.2; decision
+  ;;     0006's amendment of 2026-10-04, later), which guardian rates
+  ;;     Acceptable.
   ;; Every other case is refused: a conflicting or malformed framing, a bad
   ;; target, a coding we do not implement before chunked (501), or HTTP/0.9.
   (define served-cases
-    '("acceptable#5" "acceptable#6"
+    '("acceptable#5" "acceptable#6" "acceptable#9"
       "ambiguous#8" "ambiguous#9" "ambiguous#13" "ambiguous#14" "ambiguous#15"
       "ambiguous#16" "ambiguous#34" "ambiguous#35"
       "more-compliant-tests#1" "more-compliant-tests#2" "more-compliant-tests#3"

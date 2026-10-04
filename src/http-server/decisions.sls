@@ -55,7 +55,7 @@
       (handler-failed . 500)
       (invalid-response . 500)               ; one the serializer cannot write (0010 item 2)
       (unsupported-transfer-coding . 501)    ; a coding before a final chunked (RFC 9112 §6.1)
-      (version-not-supported . 505)          ; not 1.x: HTTP/0.9, 2.0 (RFC 9110 §15.6.6; M8.3)
+      (version-not-supported . 505)          ; not 1.x: HTTP/0.9, 2.0, 3.0 (RFC 9110 §15.6.6; M8.3)
       (http2-preface . 505)))                ; nothing to hand HTTP/2 to (0006 item 2)
 
   ;; reason-status : Symbol -> Nat
@@ -175,8 +175,9 @@
 
   ;; http/1.1? : Nat Nat -> Boolean
   ;; llhttp's version gate, `major > 0 && minor > 0`, which
-  ;; should-keep-alive? applies too.  Of the versions the strict parser
-  ;; admits (0.9, 1.0, 1.1 and 2.0; measured 2026-09-25) only 1.1 passes,
-  ;; which is RFC 9112 §6.1's "HTTP/1.1 (or later minor revisions)".
+  ;; should-keep-alive? applies too.  Of the versions the core lets on, 1.0
+  ;; to 1.9 (the parser reads any digit pair; decision 0006's amendment of
+  ;; 2026-10-04, later), 1.1 to 1.9 pass, which is RFC 9112 §6.1's
+  ;; "HTTP/1.1 (or later minor revisions)".
   (define (http/1.1? http-major http-minor)
     (and (> http-major 0) (> http-minor 0))))

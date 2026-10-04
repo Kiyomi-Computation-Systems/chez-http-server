@@ -237,9 +237,9 @@
   ;;                           where the source refuses a decoded NUL;
   ;;   version-not-1.x         HTTP/2.0 or HTTP/0.9, answered 505 (decision
   ;;                           0006's amendment), where httpd serves it;
-  ;;   parser-version          HTTP/1.2: the parser's 400 (plan §14's open
-  ;;                           list), where httpd serves it as 1.1 (RFC 9112
-  ;;                           §2.3's SHOULD);
+  ;;   minor-version-served    HTTP/1.2, served as HTTP/1.1 (RFC 9110 §6.2's
+  ;;                           SHOULD; decision 0006's amendment of
+  ;;                           2026-10-04, later), where Kestrel answers 505;
   ;;   answers-not-drops       a line ended by CR alone: the parser's 400,
   ;;                           where httpd closes with no answer;
   ;;   reg-name-host           an absolute-form host that is an RFC 3986
@@ -270,8 +270,8 @@
       ("kestrel/TargetWithEncodedNullCharData#5" (served) pct-encoding-undecoded)
       ("kestrel/TargetWithEncodedNullCharData#6" (served) pct-encoding-undecoded)
       ("kestrel/TargetWithEncodedNullCharData#7" (served) pct-encoding-undecoded)
+      ("kestrel/UnrecognizedHttpVersionData#3" (served) minor-version-served)
       ("httpd/row-14" (refused) version-not-1.x)
-      ("httpd/row-15" (refused) parser-version)
       ("httpd/row-40" (refused) answers-not-drops)
       ("httpd/row-41" (refused) version-not-1.x)
       ("httpd/row-44" (served) reg-name-host)

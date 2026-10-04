@@ -111,6 +111,66 @@ answers HTTP/2's preface 505; it said nothing of other versions the parser reads
    1.x ("Refuse every non-1.x, 505", 2026-10-04). Go answers both so.
 2. **Every other version is the parser's to refuse**, and its error is a 400: HTTP/1.2,
    3.0 and the like, as Node and hyper answer them. nginx and Kestrel answer 505 there;
-   that difference is noted in plan §14's open list.
+   that difference is noted in plan §14's open list. (2026-10-04, later) Superseded by
+   the amendment below: every 1.x is served, and every other version answered 505. And
+   nginx serves HTTP/1.2, answering 505 only above major version 1; Kestrel answers 505
+   to both.
 3. **Item 2 is unchanged**: the HTTP/2 preface is not a request line, and is still
    answered 505 on the parser's error channel, as `http2-preface`.
+
+## Amendment (2026-10-04, later) — every 1.x is served, and every other version answered 505
+
+Decided on the owner's word on 2026-10-04 ("serve 1.x for 3d"), after a discussion of plan
+§14's open list: M8.3's robustness lane had noted HTTP/1.2 and HTTP/3.0 answered 400. It
+supersedes the amendment above's item 2.
+
+1. **The connection's parser runs one of llhttp's lenient flags, its version**
+   (`LENIENT_FLAGS.VERSION`, 1 << 4; `version` in chez-httparse's `(httparse modes)`),
+   which the adapter sets as it makes the parser. The parser then reads any `HTTP/`
+   DIGIT `.` DIGIT and leaves the version to the core. Every other flag stays off.
+2. **The core's rule is unchanged, and now meets every version.** One that is not 1.x is
+   refused as `version-not-supported`, answered 505 (RFC 9110 §15.6.6), HTTP/3.0 and
+   HTTP/0.8 among them. A 1.x past 1.1, HTTP/1.2 to 1.9, is served as HTTP/1.1, as RFC
+   9110 §6.2 asks: a recipient SHOULD process a higher minor version as the highest one
+   it implements. The Host rule, the framing and keep-alive are 1.1's, and the response
+   says HTTP/1.1.
+3. **A version the parser cannot read is still its error, a 400**: `HTTP/1.x`,
+   `HTTP/10.0`, `HTTP/1.11`, a bare `HTTP/`, and `http/1.1`, whose name is not HTTP's. The
+   flag admits any pair of digits and nothing more.
+
+Measured before the decision (2026-10-04, Darwin arm64), the same request line on a fresh
+connection to each server:
+
+| request line | this server, before | Node 20.10 | Apache 2.4.67 | nginx | Go `net/http` | lighttpd | Kestrel |
+|---|---|---|---|---|---|---|---|
+| `GET / HTTP/1.2` | 400 | 400 | served | served | served | 400 | 505 |
+| `GET / HTTP/3.0` | 400 | 400 | served | 505 | 505 | 400 | 505 |
+
+Node and Apache, with its defaults, answered on this machine. nginx's, Go's and lighttpd's
+answers are read from their request-line parsers' source, and Kestrel's from its source
+and its parsing tables. Go's `net/http` is what Caddy, the owner's front, runs on, so
+behind it a client's HTTP/1.2 or 3.0 should never reach this server: Caddy serves 1.x
+itself, speaks HTTP/1.1 upstream, and answers 505 to every other version. That is read
+from Go's source, not measured; Caddy is not installed here.
+
+**Weighed and not taken**, each prototyped in a scratch copy and run against all fifty
+suites (an unchanged copy: 1,883 passes):
+- *505 for every version but 1.0 and 1.1*, Kestrel's answer: the same flag, the core's
+  rule narrowed. Nothing would be newly served, but HTTP/1.2 is a major version the server
+  speaks, and §15.6.6 defines 505 for a major version. Two checks moved.
+- *Keep the parser's 400*, Node's and lighttpd's: no code, and the SHOULDs of §6.2 and
+  §15.6.6 still missed.
+
+**Consequences.**
+- HTTP/1.2 to 1.9 are served where they were refused. guardian's `acceptable#9`,
+  "Unknown but OK HTTP/1.2", which it rates no desync risk, joins the robustness lane's
+  served cases. The strictness lane's departure for HTTP/1.2 moves from httpd's row 15,
+  which now agrees, to Kestrel's `UnrecognizedHttpVersionData#3`, which answers 505.
+- llhttp's README asks for caution with this flag, since it lets unsupported versions
+  through. Here the core answers every one but 1.x with 505, at the head's end rather
+  than at the request line, as it does HTTP/0.9 and 2.0.
+- A connection's parser allocates 16 B more as it is made, 1,072 B against 1,056 B
+  (Darwin arm64): once a connection, not a request.
+- Plan §2.1's "the server runs strict" holds but for this flag. llhttp's one
+  `request-lenient-version` fixture stays `deferred` with its class; the head suite's rows
+  hold the flag (`tests/test-connection-head.sps`).

@@ -6,6 +6,14 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A request line in HTTP/1.2 to 1.9 is served as HTTP/1.1**, as RFC 9110 §6.2 asks,
+  where it was answered `400`. **Every other version that is not 1.x is answered `505`**,
+  HTTP/3.0 among them, where it was `400`; HTTP/0.9 and 2.0 already were. A version the
+  server cannot read at all, such as `HTTP/1.x`, is still `400`. The parser now runs
+  llhttp's version leniency and no other (decision 0006's amendment of 2026-10-04).
+
 ### Removed
 
 - **The pipeline cap**: `CHEZ_HTTP_PIPELINE_CAP`, and the limits field

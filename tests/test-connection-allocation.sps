@@ -53,7 +53,7 @@
 ;;; And what a connection costs to open (M4.1): its parser shares the one
 ;;; binding list the adapter makes (design §7.5), so it costs what
 ;;; byte-machine's make-parser does with a list of twenty-five bindings made
-;;; once, beforehand.
+;;; once, beforehand, and the adapter's field initials.
 ;;;
 ;;; Oracles: the 3,072 B ratchet and the shapes, from 0002's second amendment;
 ;;; Chez's cumulative allocation counter `sstats-bytes`, calibrated below and
@@ -66,7 +66,7 @@
         (http-server response) (http-server limits) (http-server body)
         (uri collect)
         (only (generated httparse-message) httparse-message-machine)
-        (only (httparse modes) httparse-message-type-value)
+        (only (httparse modes) httparse-message-type-value httparse-lenient-flags-value)
         (byte-machine runtime))
 
 (define (b s) (string->utf8 s))
@@ -483,7 +483,9 @@
 
     ;; A connection's parser shares the adapter's binding list, one for the
     ;; server (design §7.5; M4.1): it costs what make-parser does with a list
-    ;; of the twenty-five bindings made once, here, before either is measured.
+    ;; of the twenty-five bindings made once, here, before either is measured,
+    ;; and the adapter's two field initials, the message type and llhttp's
+    ;; version leniency (decision 0006's amendment of 2026-10-04, later).
     (let* ((ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f default-limits)
                                    (lambda (actions) #f)))
            (made-once (map (lambda (name)
@@ -491,7 +493,8 @@
                                             (lambda (p c bv from to) callback-continue)
                                             (lambda (p c) callback-continue))))
                            conn-parser-callbacks))
-           (inits (list (cons 'type (httparse-message-type-value 'request))))
+           (inits (list (cons 'type (httparse-message-type-value 'request))
+                        (cons 'lenient-flags (httparse-lenient-flags-value '(version)))))
            (shared (warmed (lambda () (make-parser httparse-message-machine made-once ctx inits))))
            (opened (warmed (lambda () (make-conn-parser ctx)))))
       (diag (string-append "connection-allocation: a connection's parser "
