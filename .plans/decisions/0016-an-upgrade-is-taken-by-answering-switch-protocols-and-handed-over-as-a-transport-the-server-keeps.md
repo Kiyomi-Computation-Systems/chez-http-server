@@ -216,3 +216,50 @@ form deciding which to fix, 2026-10-03):
 - **The fake shell drains** (`fake-shell-drain!`): the core told `shutdown-requested`,
   or a taker's drain call run.
 
+
+## Amendment (2026-10-04) — the four findings noted are settled
+
+Decided on the owner's word on 2026-10-04, after a discussion of each: "close all but 6,
+lets talk about what it would take to fix 6", then "build the targeted fix".
+
+- **Closed, not wanted: the fourth,** a 101 listing protocol layers refused. Only a taker
+  upgrading to TLS meets it, TLS is outside the project (decision 0001), the owner's
+  deployments end TLS at Caddy, and a WebSocket's 101 lists one protocol. It stays
+  refused: 500, logged `invalid-upgrade`.
+- **Closed, not wanted: the fifth,** the door reading the upgrade flag from the
+  close-after reason. Only the head's completion sets `upgrade`. Four other rows set a
+  reason only when none is set, and `respond` sets the core's refusal reasons or
+  `parser-error`, never `upgrade`. The switch suite holds the door shut for a request
+  that does not upgrade (`not-an-upgrade`), an HTTP/1.0 upgrade, a CONNECT and one with
+  a body.
+- **Closed, not wanted: the tenth,** a taker's writes not joined. Measured for the core's
+  response pieces (#79, Linux aarch64): 100-byte pieces went from 32.4 to 180.8 MB/s
+  joined by the server, and to 852.6 MB/s gathered by the handler into 16 KiB pieces.
+  Joining where the bytes are made does better, as `docs/handlers.org` asks of a taker.
+- **Fixed: the sixth.** A taker's calls deferred to a turn, each refused write's `done`,
+  wait in the shell's own queue, which the drain's calls take from, oldest first.
+  `serve`'s run (`run-until-stopped!`) makes those still waiting once its server has
+  stopped, before its loop is torn down (`shell-call-deferred!`): one pass, so a call
+  they defer in turn waits for a turn `serve` does not run. Nothing else the scheduler
+  holds is run. Weighed and not taken: draining the whole scheduler there, which would
+  resume a handler's coroutine woken in the last turn.
+
+Measured (2026-10-04, Darwin arm64, Chez 10.4.1, libuv 1.52.1):
+- **The request's path is not touched.** Through the whole server, a GET kept alive
+  allocates 10,433 B at one connection on main and with the fix, and at 50, 8,900 to
+  8,903 B on main and 8,902 to 8,904 B with the fix: the difference over 100,000 GETs,
+  two rounds each, the trees alternating (`research/spike/m8-request-alloc.sps`, given
+  its new LARGE; `out/taker-deferred-request-alloc-105k.darwin.txt`). Over M8.4's
+  20,000, the fix read 1 B more at one connection
+  (`out/taker-deferred-request-alloc.darwin.txt`), a step of the counter's over a run
+  that five times as many GETs leave out.
+- **A refused write costs a little more.** It allocates 96 B as it is asked for and 425 B
+  as its `done` is made, against 64 B and 409 B on main: three batches of 10,000 each,
+  the same each time (`research/spike/taker-deferred-cost.sps`;
+  `out/taker-deferred-cost.darwin.txt`).
+- **The checks:** `tests/test-serve.sps` runs `serve`'s run on a loop of its own, the
+  server shut down with a taker's writes refused as its stream closes. Each `done` is
+  told `ECANCELED` before the run returns, in order and once, and a `done`'s own write
+  waits. Red before the fix; six mutants each red (m8-mutations.md, "After M8").
+
+Plan §14's open list drops the item.

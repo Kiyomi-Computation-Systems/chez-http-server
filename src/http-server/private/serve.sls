@@ -35,7 +35,7 @@
 ;;; a line never spells out a connection's state; a string, a symbol, a
 ;;; number, a boolean or a character is displayed; anything else is written.
 (library (http-server private serve)
-  (export serve start-server log-line
+  (export serve start-server run-until-stopped! log-line
           &http-server-error http-server-error?
           &http-server-config-error http-server-config-error?)
   (import (rnrs)
@@ -44,7 +44,8 @@
           (only (http-server limits) limits-from-environment address-from-environment)
           (only (http-server server) server-phase)
           (only (http-server private shell)
-                make-shell shell-listen! shell-turn! shell-watch-signals! shell-server wall-clock))
+                make-shell shell-listen! shell-turn! shell-watch-signals! shell-call-deferred!
+                shell-server wall-clock))
 
   ;; &http-server-error : the condition type of the server's own errors.
   ;; http-server-error? : Any -> Boolean
@@ -62,7 +63,8 @@
   ;; SIGINT, or its listener fails, and `serve` returns when the drain ends,
   ;; whatever waits are still armed: the loop's teardown closes their timers
   ;; and cancels the lookups not yet begun, but one already running holds it
-  ;; until the lookup answers (M8.1's review).
+  ;; until the lookup answers (M8.1's review).  A taker's calls deferred to a
+  ;; turn are made before it returns (run-until-stopped!).
   ;; `lookup` stands in for the process's environment, as `getenv` does by
   ;; default.  A malformed setting raises &http-server-config-error before
   ;; anything listens.
@@ -74,9 +76,18 @@
         (lambda (loop)
           (let ((sh (start-server loop handler lookup log-line)))
             (shell-watch-signals! sh)
-            (let run ()
-              (when (and (shell-turn! sh) (not (eq? (server-phase (shell-server sh)) 'stopped)))
-                (run)))))))))
+            (run-until-stopped! sh)))))))
+
+  ;; run-until-stopped! : Shell -> Void
+  ;; Turn the shell's loop until its server stops, then make the taker's
+  ;; calls still deferred to a turn (shell-call-deferred!): `serve`'s run, on
+  ;; a loop its caller owns.  So the `done` of a taker's write refused as the
+  ;; server stops is told before the run returns (M8.2's review, its sixth).
+  (define (run-until-stopped! sh)
+    (let run ()
+      (when (and (shell-turn! sh) (not (eq? (server-phase (shell-server sh)) 'stopped)))
+        (run)))
+    (shell-call-deferred! sh))
 
   ;; start-server : UvLoop (Request -> Response) (String -> (U String #f))
   ;;                (Symbol (Listof Any) -> Any) -> Shell

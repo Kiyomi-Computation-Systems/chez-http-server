@@ -1714,18 +1714,6 @@ on the way.
 
 - 0004 item 3's alternative: reading during a handler only to notice a client leave.
 - The 32 lenient llhttp fixtures stay `deferred` by class (§11).
-- M8.2's review, four findings noted and not changed, on the owner's word (decision
-  0016):
-  - a taker's `done` that the shell calls on its next turn, for a write asked for after
-    the close or refused as it was asked for, is never called once `serve` has
-    returned. `docs/handlers.org` says so;
-  - a taker's writes are a write request each, not joined as the core's are under
-    4 KiB. `docs/handlers.org` says to join small ones;
-  - a 101 that lists protocol layers, the one in use among them (RFC 2817's
-    `Upgrade: TLS/1.0, HTTP/1.1`), is refused: no v1 taker upgrades to TLS;
-  - the door reads the parser's upgrade flag from the close-after reason, which only
-    the head's completion sets (`conn-headers-complete-step`): a row that set it
-    otherwise would open the door.
 - M8.3's robustness lane, found by measuring the surveyed corpora and noted, not
   changed, on the owner's word (progress.md, M8.3):
   - the parser refuses a space before a chunk extension (`a; comment`), which RFC

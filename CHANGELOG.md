@@ -15,6 +15,14 @@ All notable changes to chez-http-server are recorded here. The format follows
   it, which v0.1.0 allowed only as 1, starts as before. `make-limits` takes
   nineteen fields, not twenty.
 
+### Fixed
+
+- **A taker's `done` is no longer lost when `serve` returns.** The `done` of a
+  `transport-write!` refused, after `transport-close!` or as it is asked for,
+  comes on the server's next turn. If the server stopped first, it never came;
+  now it comes before `serve` returns. A write asked for in a `done` that comes
+  then gets no `done` (`docs/handlers.org`).
+
 ## [0.1.0] - 2026-10-04
 
 The first release: an HTTP/1.1 server for Chez Scheme on libuv. `serve` runs your

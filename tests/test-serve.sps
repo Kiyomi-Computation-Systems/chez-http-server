@@ -42,8 +42,9 @@
         (only (chezscheme) library-exports with-output-to-string putenv getenv)
         (libuv) (uv-testing) (shell-testing) (response-reader)
         (http-server)
-        (only (http-server private shell) shell-connections shell-listener shell-shutdown!)
-        (only (http-server private serve) start-server log-line))
+        (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-scheduler)
+        (only (http-server private scheduler) scheduler-call!)
+        (only (http-server private serve) start-server run-until-stopped! log-line))
 
 (define (b s) (string->utf8 s))
 
@@ -109,6 +110,57 @@
     (run-shell-until loop sh (lambda () (null? (shell-connections sh))) cap)
     (let ((r (read-response (client-bytes cl) #f #t)))
       (list (car r) (cadddr r) (list-ref r 4)))))
+
+;; dones-at-stop : Nat Boolean -> (List (Listof (List Nat Any)) (Listof (List Nat Any)) Boolean)
+;; A server whose handler takes an upgrade, and whose taker, once its stream
+;; has closed, asks for `writes` writes, numbered from 1, the `done` of each
+;; recording its number and what it is told; with `again?`, a `done` so told
+;; asks for one more, until three have been asked for.  As the stream
+;; closes, other work is queued on the scheduler too, which notes that it
+;; ran.  The taker's drain call closes its stream.  Once the client has been
+;; handed over, the server is shut down and run as `serve` runs it
+;; (run-until-stopped!): what the `done`s had been told when that run
+;; returned, and once the loop had turned on until only timers were left;
+;; and whether the other work had run when that run returned.
+(define (dones-at-stop writes again?)
+  (letrec* ((told '())
+            (other #f)
+            (asked 0)
+            (taken #f)
+            (loop (make-uv-loop))
+            (sh (start-server loop
+                              (lambda (r)
+                                (switch-protocols
+                                 (list (cons (b "Upgrade") (b "echo")))
+                                 (lambda (t retained)
+                                   (define (write-late!)
+                                     (set! asked (+ asked 1))
+                                     (let ((k asked))
+                                       (transport-write! t (b "late") 0 4
+                                                         (lambda (why)
+                                                           (set! told (append told (list (list k why))))
+                                                           (when (and again? (< asked 3))
+                                                             (write-late!))))))
+                                   (set! taken #t)
+                                   (transport-on-drain! t (lambda () (transport-close! t)))
+                                   (transport-on-close! t (lambda ()
+                                                            (scheduler-call! (shell-scheduler sh)
+                                                                             (lambda () (set! other #t)))
+                                                            (do ((i 0 (+ i 1))) ((= i writes))
+                                                              (write-late!)))))))
+                              (env '("CHEZ_HTTP_PORT" . "0"))
+                              (lambda (what details) #f)))
+            (cl (open-client loop (uv-tcp-getsockname-port (shell-listener sh))
+                             (b "GET / HTTP/1.1\r\nHost: h\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+                             #t)))
+    (run-shell-until loop sh (lambda () taken) cap)
+    (shell-shutdown! sh)
+    (run-until-stopped! sh)
+    (let ((at-stop told) (other-at-stop other))
+      (client-close! cl)
+      (run-shell-until loop sh (lambda () (for-all uv-timer? (uv-loop-live-handles loop))) cap)
+      (uv-loop-teardown! loop)
+      (list at-stop told other-at-stop))))
 
 ;; with-child : (Listof String) (UvLoop (-> String) (-> (U #f List)) UvProcess -> Any) -> Any
 ;; Start tests/serve-child.sps with `args` as a process of its own, with the
@@ -340,6 +392,16 @@
       (run-until-drained loop cap)
       (test-equal "shut down, the server leaves nothing on the loop" '() (uv-loop-live-handles loop))
       (uv-loop-teardown! loop))
+
+    ;; --- a taker's write refused as the server stops (M8.2's review, its
+    ;; sixth): its `done` waits for a turn, and `serve` runs no turn once its
+    ;; server has stopped.
+    (test-equal "two writes a taker asks for once its stream has closed: their dones are told ECANCELED before serve's run returns, in order, and once each, and nothing else the scheduler holds is run"
+                '(((1 ECANCELED) (2 ECANCELED)) ((1 ECANCELED) (2 ECANCELED)) #f)
+                (dones-at-stop 2 #f))
+    (test-equal "a done so told as serve's run returns that asks for a write: that write's done waits for a turn, which serve does not run"
+                '(((1 ECANCELED)) ((1 ECANCELED) (2 ECANCELED) (3 ECANCELED)) #f)
+                (dones-at-stop 1 #t))
 
     ;; --- a start that fails ---
     (test-equal "a malformed setting raises an &http-server-config-error naming it, from serve"

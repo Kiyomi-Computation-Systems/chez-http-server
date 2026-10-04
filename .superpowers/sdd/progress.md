@@ -5035,3 +5035,11 @@ MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#121, decisi
 `make test` green on main: fifty suites, 1,881 expected passes, every pin ok.
 
 NEXT: plan §14's open list (five items), a new milestone, or cutting 0.2.0, when the owner asks.
+
+**M8.2's four noted findings settled, on `fix/taker-deferred-done` (2026-10-04),** on the owner's word: "close all but 6, lets talk about what it would take to fix 6", then "build the targeted fix - lets get a good handle on its impact".
+- **Closed, not wanted:** the fourth (a 101 listing protocol layers, refused), the fifth (the door reading the close-after reason) and the tenth (a taker's writes not joined), each with its reason in decision 0016's amendment of this date. Plan §14's open list drops the item: four remain.
+- **Fixed, the sixth.** `serve`'s loop is `run-until-stopped!`, which, once the server has stopped, makes the taker's calls still deferred to a turn (`shell-call-deferred!`). The shell keeps them in a queue of its own, which the drain's calls take from, oldest first. One pass, and nothing else the scheduler holds runs. The shell exports `shell-scheduler` for the test that queues other work.
+- **Tests first.** The serve suite's two new checks, against `run-until-stopped!` before the call: 16 passes, 2 failures, the `done`s told nothing when the run returned and `ECANCELED` once the loop turned on. With the fix, 18. Six mutants, each red, are in m8-mutations.md ("After M8"); the sixth is the one-line drain the owner did not take.
+- **Impact, measured** (Darwin arm64): a request's path unchanged, the whole server's allocation per GET over 100,000 GETs 10,433 B at one connection on both trees, and at 50, 8,900 to 8,903 B on main and 8,902 to 8,904 B with the fix. A refused write allocates 96 B as it is asked for and 425 B as its `done` is made, against 64 B and 409 B. `research/spike/taker-deferred-cost.sps` is new and `m8-request-alloc.sps` takes LARGE; their runs are in `out/`.
+- **Docs.** `docs/handlers.org`'s caveat says the `done` comes before `serve` returns, and CHANGELOG.md's Unreleased gains Fixed.
+- `make test` green before the commit (Darwin arm64): fifty suites, 1,883 expected passes, every pin ok.
