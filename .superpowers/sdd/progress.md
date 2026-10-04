@@ -5061,3 +5061,11 @@ NEXT: plan §14's open list (four items), a new milestone, or cutting 0.2.0, whe
 - **Records.** Decision 0006 gets the amendment "every 1.x is served, and every other version answered 505", and its M8.3 amendment's item 2 a dated pointer, which also corrects it: nginx serves HTTP/1.2. Design §6.5's 400 row records 3c, and its 505 row the versions. Plan §2.1 and M8.3 get dated notes, and the open list drops the two items; the robustness lane's item keeps three. The strictness lane's old reason cited RFC 9112 §2.3 for serving 1.2 as 1.1; the rule is RFC 9110 §6.2, which the new reason cites.
 - **Docs.** `docs/connections.org` says HTTP/1.2 is served as 1.1 and HTTP/3.0 gets 505, `docs/handlers.org` which methods reach a handler, and CHANGELOG.md's Unreleased gains Changed.
 - `make test` green before the commit (Darwin arm64): fifty suites, 1,892 expected passes, every pin ok.
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#123, every 1.x served and every other version answered 505, and a method the parser does not know kept at 400** (the entry above). 5022bde was squashed as 9bd2718 (tree 9cbebc1, the tested tip's), whose parent is 31ab474.
+- **CI.** Its run, 37226685841, passed on 5022bde: fifty suites, 1,892 expected passes on ubuntu-24.04, the head suite's 66 among them, so its nine new rows hold on Linux amd64 too.
+- **Branches.** `--delete-branch` deleted the branch, local and remote, switched this checkout to main and fast-forwarded it. No PR is open.
+
+`make test` green on main: fifty suites, 1,892 expected passes, every pin ok.
+
+NEXT: plan §14's open list (four items: 0004 item 3's alternative, the 32 lenient fixtures, the robustness lane's three, the smuggler corpus), a new milestone, or cutting 0.2.0 (Unreleased holds Changed, Removed and Fixed), when the owner asks.
