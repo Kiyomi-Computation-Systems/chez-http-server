@@ -29,7 +29,10 @@ other, and then the server closes the connection. Anything the client sent
 after that request is ignored.
 
 A client that opens with HTTP/2's preface (~PRI * HTTP/2.0~) gets ~505 HTTP
-Version Not Supported~, and the connection closes.
+Version Not Supported~, and the connection closes. So does a request in any
+other version that is not 1.x: HTTP/0.9 (a request line with no version, such
+as ~GET /~) or a request line that says ~HTTP/2.0~. A version the server cannot
+read at all, such as ~HTTP/1.2~, is a ~400 Bad Request~.
 
 * Clients that stall
 

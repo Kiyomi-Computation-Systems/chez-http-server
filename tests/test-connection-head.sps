@@ -398,6 +398,31 @@
                 (list (refused 'invalid-host 400))
                 (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n")
                             default-limits))
+
+    ;; --- a version that is not 1.x: a 505 (M8.3) -------------------------------
+    ;; A request line with no version is HTTP/0.9's, as is one that says
+    ;; HTTP/0.9.  The parser reads either, and the lines after it as its
+    ;; fields, and it reads a request line that says HTTP/2.0 too (its
+    ;; preface is answered apart).  The server speaks HTTP/1.1 and 1.0 only,
+    ;; so it refuses each (RFC 9110 §15.6.6; decided on the owner's word, by
+    ;; form, 2026-10-03, and HTTP/2.0 after the review, 2026-10-04), before
+    ;; any other rule: a version it does not speak frames nothing.
+    (test-equal "a request line with no version: 505, then close"
+                (list (refused 'version-not-supported 505))
+                (every-size (b "GET /\r\n\r\n") minimal))
+    (test-equal "HTTP/0.9: 505, then close"
+                (list (refused 'version-not-supported 505))
+                (every-size (b "GET / HTTP/0.9\r\n\r\n") minimal))
+    (test-equal "the lines after a request line with no version are its fields: still 505"
+                (list (refused 'version-not-supported 505))
+                (every-size (b "GET /\r\nHost: x\r\n\r\n") minimal))
+    (test-equal "the version is judged before the Host and the framing: 505"
+                (list (refused 'version-not-supported 505))
+                (every-size (b "POST / HTTP/0.9\r\nHost: a\r\nHost: b\r\nTransfer-Encoding: chunked\r\n\r\n")
+                            minimal))
+    (test-equal "a request line that says HTTP/2.0, which the parser reads: 505, then close"
+                (list (refused 'version-not-supported 505))
+                (every-size (b "GET / HTTP/2.0\r\nHost: x\r\n\r\n") minimal))
     (test-equal "an invalid target is refused before the codings: 400"
                 (list (refused 'invalid-target 400))
                 (every-size (b "POST /a#b HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n")

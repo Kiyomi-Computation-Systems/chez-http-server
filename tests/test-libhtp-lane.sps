@@ -6,7 +6,9 @@
 ;;;
 ;;; The scope is what the streams carry, not their names (the owner's word,
 ;;; 2026-09-25): every stream whose client packets hold two or more requests,
-;;; or one request split across packets.  A plain strict request parser counts
+;;; or one request split across packets.  Since M8.3 the robustness lane adds
+;;; libhtp's invalid streams and its HTTP/0.9 streams, which plan §14 names,
+;;; so these are found by name.  A plain strict request parser counts
 ;;; that over all 102 streams, as the lane delivers them, so a stream that
 ;;; carries either with no expectation is red, and so is an expectation for
 ;;; one that carries neither.  Then each of those streams must meet its
@@ -96,9 +98,15 @@
 
 (run-suite "libhtp-lane"
   (lambda ()
-    (test-eqv "fourteen streams have an expectation" 14 (length libhtp-expected-files))
-    (test-equal "the streams that carry pipelining or a split request are the ones with one"
-                libhtp-expected-files (carrying-files))
+    (test-eqv "forty-two streams have an expectation" 42 (length libhtp-expected-files))
+    (test-equal "the streams that carry pipelining or a split request are the ones with one, but the robustness lane's"
+                (filter (lambda (f) (not (member f robustness-expected-files))) libhtp-expected-files)
+                (carrying-files))
+    ;; M8.3: the robustness lane's streams are named, not found by a parser.
+    (test-eqv "twenty-eight robustness streams: twenty-four invalid, four HTTP/0.9"
+              28 (length robustness-expected-files))
+    (test-equal "the robustness lane's streams are libhtp's invalid and HTTP/0.9 streams, by name"
+                (filter robustness-file? (all-files)) robustness-expected-files)
     (test-equal "every stream but the two Expect streams is delivered as libhtp's chunker cuts it"
                 '()
                 (filter (lambda (f) (not (or (member f crlf-files) (equal? (libhtp-packets f) (cut f)))))

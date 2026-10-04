@@ -1,0 +1,29 @@
+# PROVENANCE -- the vendored AWS http-desync-guardian test-case corpus (decision 0007).
+#
+# Upstream's bytes, verbatim and never hand-edited: a case we believe is
+# wrong becomes an expectation and a decision record, never a change to these
+# bytes. Every file is checksummed below and verified by tests/test-robustness-lane.sps
+# on every run, so drift or corruption is a status-3 failure, not a discovery.
+# Rewritten only by 'make corpus-refresh GUARDIAN_ROOT=<checkout>'.
+#
+# http-desync-guardian is Apache-2.0 (LICENSE and NOTICE beside this file). This is test data; it is
+# not part of the distributed library.
+upstream-url: https://github.com/aws/http-desync-guardian
+upstream-ref: main
+upstream-commit: f0b15a772926ca47cf6216c73df8cfeaae02cd75
+retrieved: 2026-10-04
+file-count: 13
+
+sha256 09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b LICENSE
+sha256 d4290ed64c2edd0fce1d84e3f9dfb2881240fe534def76b8cd29ed6af683e287 NOTICE
+sha256 95cace8c645e09ddd29dfc5983c07bcabd9b8873950e3e32e84f9a929ae2fddf tests/README.md
+sha256 af29433dc5c89fb5c1787df248de65ded008176bd50709223ae6848d92d0a46c tests/acceptable.yaml
+sha256 6a44ecde0e931ad25132c395b0864d31946e9b8b650b639ac19756fe3b4bc18f tests/ambiguous.yaml
+sha256 ce297434cf9dbc7e6661a0bc3438c2191f9b67bd55d103c04b706ed1a8cb69ac tests/bad-header-characters.yaml
+sha256 91d36032752119fadbc6a690f7051e74a1737b55c6351200926a111ad87fd584 tests/edge-cases.yaml
+sha256 69e526c6554f264e6945e6da8a34842cf964d39ab22d4143e405e70d232aceba tests/more-compliant-tests.yaml
+sha256 1bec0f488c910c492a0c7ee69668dcc037e778cca5c4dbc0b60cab4c5716455d tests/real-life-test-cases.yaml
+sha256 fd5d3a1392d196b1a1ed3969ebae1e6615f35f3f94a087d9843389cecc14cfc1 tests/rfc-compliant.yaml
+sha256 939230dc86483e4e8e6c929de236e562a3907677a19cc674c74ee8dbc40514ee tests/severe.yaml
+sha256 dcd8f966be5bf2e93045bd3ab304f647deb0141e7b8d676ce461463bb2554507 tests/single-case.yaml
+sha256 fd07cc91c5118148a280cb55e3e12b4731090503c89eb7ce685f401c3a500b21 tests/uri-specific-test-cases.yaml

@@ -1992,6 +1992,15 @@ speaks HTTP/1.0 and is why decision 0006 matters from M4), vtest2 `.vtc` scripts
 reg-tests, http-garden, HTTPWookiee, siege — is used as an external tool or by
 reference, never vendored (0007 item 4).
 
+*Noted 2026-10-04 (M8.3):* the robustness lane is `tests/test-robustness-lane.sps`.
+guardian's 162 cases are vendored under `test/vendor/http-desync-guardian/` by
+`tests/vendor-corpus.sh`, read by a loader that refuses any YAML shape it does not
+know, and each built as guardian's own harness builds it. Each is fed to one fake
+connection at the corpus lanes' sizes, and held to three properties: a serve manifest
+written from RFC 9112, gated both ways; no Severe case in it; and chunk invariance.
+libhtp's invalid and HTTP/0.9 streams joined the libhtp lane, found by name. smuggler's
+tables were dropped on the owner's word (plan §14's M8.3 note); hurl too, for vtest2.
+
 ---
 
 ## 9. Milestone sequence

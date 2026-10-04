@@ -679,3 +679,86 @@ Ninety-seven, by name, read from each mutant's own FAIL lines on the finished tr
   - a 101 cut short by a read error closes, its take-over let go: M8DC-3, and 5 more
   - design §4.4: 8 of the 9 termination and error rows have a test, T7 retired (M8.2), and M8.: M8DT-2
   - M8.2: all 7 switch rows have a test: M8DT-3
+
+## M8.3 — the black-box and robustness lanes (2026-10-04)
+
+Built from main at 3ab1934 on the owner's "Start m8.3", after measuring six
+surveyed corpora in a scratch tree (progress.md, M8.3) and two decisions by
+form: HTTP/0.9 is refused 505, and the black-box lane uses curl and vtest2.
+Platform: Darwin arm64, Chez 10.4.1 (`tarm64osx`), libuv 1.52.1, 2026-10-04,
+the library path as above. Each mutant ran from a scratch copy of its edited
+file against every suite, four at a time; every one loaded (no `Exception` in
+any report).
+
+### The first step: the robustness lane, and HTTP/0.9
+
+The step adds `(robustness-lane)` and `tests/test-robustness-lane.sps` over
+AWS http-desync-guardian's 162 vendored cases (decision 0007, through
+`tests/provenance.sls` and `tests/guardian-corpus.sls`), promotes libhtp's 24
+invalid streams and 4 HTTP/0.9 streams in the ratchet, and gives the core one
+new rule: a request with no version (HTTP/0.9) is refused 505,
+`version-not-supported`, judged first at on-headers-complete.
+
+Seven mutants, each named for what it breaks, every one reverted:
+
+| mutant | the edit | suites red (failures) |
+|---|---|---|
+| M8R-V1 | the HTTP/0.9 refusal removed from `conn-headers-complete-step` | head (4), originated (1), padding (1), cut-off (1), libhtp-lane (2), trace (1), ratchet (1), robustness (1) |
+| M8R-V2 | `version-not-supported` mapped to 400, not 505, in `(http-server decisions)` | head (4), originated (1), padding (1), cut-off (1), decisions (1), libhtp-lane (2), ratchet (1) |
+| M8R-V3 | the version judged after the Host, not before | head (1): "the version is judged before the Host and the framing" |
+| M8R-G1 | guardian's request built with LF, not CRLF, between fields | robustness (2): "severe.yaml#1 is read as its bytes", the property gate |
+| M8R-G2 | a served case dropped from `served-cases` | robustness (2): "30 cases reach the handler", the property gate |
+| M8R-G3 | a Severe case added to `served-cases` | robustness (3): the two above, and "no Severe case is in the serve manifest" |
+| M8R-L1 | a libhtp 0.9 stream's expectation set to served, not 505 | libhtp-lane (1), ratchet (1) |
+
+Two readings the table shows, each a check the slice relies on:
+- M8R-V2 leaves `robustness` and `trace` green where M8R-V1 reddens them: a
+  405-or-more status is still a refusal (the serve manifest holds), and the
+  trace lane gates the refusal's reason, not its status. So the status map
+  (decisions) and the refusal itself (head, originated) are witnessed apart.
+- M8R-V3 reddens only the one head check that asserts the version is judged
+  before the Host, so the order is tested, not just the refusal.
+
+Two more checks were witnessed by hand, not by `mut.py` (one mutates vendored
+data, the other needs the loader made lenient):
+- flipping one byte of a vendored guardian file reddened `robustness` with a
+  provenance failure, exit 3 (`test/vendor/http-desync-guardian/tests/single-case.yaml`:
+  "expected sha256 … but computed …");
+- making the YAML loader skip an unindented line it does not know, instead of
+  refusing it, reddened "the loader refuses an unindented line that is not a
+  case".
+
+### The first step's review, and its fixes: twelve mutants
+
+A `/code-review high` found ten (progress.md, M8.3). The owner chose by form to
+refuse every version that is not 1.x (the first), and to fix the second to the
+ninth and note the tenth. The fixes changed the version rule's line and the
+reason's comment, so the first step's seven were re-cut to the new text and
+run again on the fixed tree, beside five new ones; every one loaded and matched
+once.
+
+| mutant | the edit | suites red (failures) |
+|---|---|---|
+| M8R-V1 | the version refusal removed | head (5), originated (1), padding (1), cut-off (1), libhtp-lane (2), trace (1), ratchet (1), robustness (1) |
+| M8R-V2 | `version-not-supported` mapped to 400 | head (5), originated (1), padding (1), cut-off (1), decisions (1), libhtp-lane (2), ratchet (1) |
+| M8R-V3 | the version judged after the Host | head (1): "the version is judged before the Host and the framing" |
+| M8R-V4 | only major 0 refused, as before the review | head (1): "a request line that says HTTP/2.0, which the parser reads: 505" |
+| M8R-G1 | guardian's request built with LF between fields | robustness (3): the probe case's request, "severe.yaml#1 is read as its bytes", the property gate |
+| M8R-G2 | a served case dropped from `served-cases` | robustness (2) |
+| M8R-G3 | a Severe case added to `served-cases` | robustness (3), "no Severe case is in the serve manifest" among them |
+| M8R-G4 | the loader reads on past two spaces after a key's colon | robustness (1): "the loader refuses two spaces after a key's colon, …, and a plain scalar's comment" |
+| M8R-G5 | the loader reads a plain scalar's comment as its text | robustness (1): the same check |
+| M8R-L1 | a libhtp 0.9 stream's expectation set to served | libhtp-lane (1), ratchet (1) |
+| M8R-P1 | the provenance walk keeps dotfiles | robustness, exit 3 (1): "the files a refresh writes leave out every dotfile", then the manifest's failure |
+| M8R-S1 | the size scan ignores the selection, every size always | robustness (1): "the runs are the corpus lanes' schedule" |
+
+M8R-P1 first ran with the dotfile check after the manifest's, and reddened the
+suite only through `verify-provenance!`'s exit 3, the named check never reached
+(passes 2, failures 0): the tree's own `.gitattributes`, which the walk then
+kept, is unlisted. The check moved before the manifest's, and the re-run above
+names it.
+
+Witnessed by hand, beside these: one more file vendored with its sha256 line
+and the count raised to 14 reddened "PROVENANCE lists LICENSE, NOTICE, the
+README and the ten YAML files", now a `test-eqv` (the review's seventh); and
+the first step's two (a flipped vendored byte, exit 3; a lenient loader).

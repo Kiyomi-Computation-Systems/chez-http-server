@@ -1601,6 +1601,25 @@ HTTP/2 preface is still answered 505.
 - **Mutation:** one per lane, named as it is written. Each lane's expectations are
   ratcheted as M1's are, both ways.
 
+*Noted 2026-10-04 (M8.3):* the surveyed corpora were measured first, then the slice was
+cut into three steps, each its own PR: the robustness lane (guardian, and libhtp's
+invalid and HTTP/0.9 streams), the strictness lane (Kestrel, httpd, lighttpd), and the
+black-box lane.
+- **Decided on the owner's word, by form.** A version that is not 1.x is answered 505:
+  HTTP/0.9 ("Refuse with 505"), then HTTP/2.0 request lines, which the step's review
+  found served as 1.x ("Refuse every non-1.x, 505"); decision 0006's amendment of
+  2026-10-04. The black-box lane uses curl and vtest2 ("curl and vtest2"): hurl reads
+  responses through libcurl, as curl does. Step 1 went up as its own PR after a review
+  ("Review + PR step 1 now").
+- **smuggler's payload sets were dropped from the slice**, on a third form ("Drop it
+  from M8.3"): a safety classifier stopped the step that wrote its probe reader. Its
+  measurement stands in the ledger, and guardian's cases cover the same
+  Transfer-Encoding classes (the open list below).
+- **The robustness lane's oracle is ours.** guardian classifies a request for a proxy;
+  which of its cases reach the handler is a serve manifest written from RFC 9112 and
+  gated both ways, and no Severe case may be in it (guardian's own contract). The
+  survey's "668 cases" counted header rows: the corpus has 162.
+
 **M8.4 — load, and the release.**
 - oha's load smoke gives the first throughput numbers. That is where 0002's amendment
   says a goal can first be set, and where 0004 item 3's alternative can be weighed.
@@ -1632,3 +1651,24 @@ HTTP/2 preface is still answered 505.
   - the door reads the parser's upgrade flag from the close-after reason, which only
     the head's completion sets (`conn-headers-complete-step`): a row that set it
     otherwise would open the door.
+- M8.3's robustness lane, found by measuring the surveyed corpora and noted, not
+  changed, on the owner's word (progress.md, M8.3):
+  - the parser refuses a space before a chunk extension (`a; comment`), which RFC
+    9110 §5.6.3's BWS allows; measured on libhtp's `28`/`29` chunked streams;
+  - a percent-encoded octet in a target, `%00` among them, reaches a handler
+    undecoded: the server hands the target over as sent (`docs/request-targets.org`
+    says so), and whether it decodes is the handler's;
+  - a lowercase method is answered 400, not 501, since the parser refuses it as a
+    bad token before the core sees a method to call unimplemented;
+  - HTTP/1.2 and HTTP/3.0 are answered 400 (the parser's version error), where nginx
+    and Kestrel answer 505; the core refuses 505 only the versions the parser reads,
+    HTTP/0.9 and HTTP/2.0 (M8.3, decision 0006's amendment of 2026-10-04);
+  - step 1's review, its tenth finding, noted on the owner's word: two PROVENANCE
+    checkers hold one contract, `tests/provenance.sls` (M8.3's corpora, a walk of what
+    a refresh writes) and `tests/test-libhtp.sps`'s own (M1.3, LICENSE and
+    `files/*.t`). Merging them means editing M1.3's suite.
+- M8.3's smuggler corpus, dropped from the slice (a safety classifier stopped the
+  step that wrote its probe reader): the measurement stands in the ledger (all 3,536
+  probes refused but 6 gadgets that are no Transfer-Encoding header), and guardian's
+  cases cover the same Transfer-Encoding classes. A later slice may vendor it and
+  write the probe reader.

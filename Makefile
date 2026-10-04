@@ -186,15 +186,20 @@ clean: ## Remove our build artifacts and the vendored shim
 	rm -rf $(BUILD_DIR)
 	-$(MAKE) -C $(LIBUV_DIR) clean
 
-# The vendored libhtp corpus is upstream's bytes and is never hand-edited
+# The vendored corpora are upstream's bytes and are never hand-edited
 # (decision 0007). The initial vendor and every refresh run this one recipe, so
-# a refresh cannot drift from however the first copy was made; the source
-# checkout is named here, never committed. tests/test-libhtp.sps re-checksums
-# every file on each run, so a stale or corrupt vendor is a status-3 failure.
-corpus-refresh: ## Re-vendor the libhtp .t corpus (needs LIBHTP_ROOT=/path/to/libhtp)
-	@test -n "$(LIBHTP_ROOT)" || { echo "corpus-refresh: set LIBHTP_ROOT=/path/to/a/libhtp/checkout" >&2; exit 2; }
-	@test -f "$(LIBHTP_ROOT)/LICENSE" && test -d "$(LIBHTP_ROOT)/test/files" || { echo "corpus-refresh: LIBHTP_ROOT has no LICENSE or test/files" >&2; exit 2; }
-	@dst=test/vendor/libhtp; \
+# a refresh cannot drift from however the first copy was made; each source
+# checkout is named here, never committed, and only the corpora named are
+# refreshed. tests/test-libhtp.sps and tests/test-robustness-lane.sps
+# re-checksum every file on each run, so a stale or corrupt vendor is a
+# status-3 failure. M8.3's corpus is vendored by tests/vendor-corpus.sh;
+# libhtp's recipe is M1.3's, below.
+corpus-refresh: ## Re-vendor a test corpus from a checkout: LIBHTP_ROOT or GUARDIAN_ROOT=/path
+	@test -n "$(LIBHTP_ROOT)$(GUARDIAN_ROOT)" || { echo "corpus-refresh: set LIBHTP_ROOT or GUARDIAN_ROOT to a checkout" >&2; exit 2; }
+	@if [ -n "$(GUARDIAN_ROOT)" ]; then sh tests/vendor-corpus.sh http-desync-guardian "$(GUARDIAN_ROOT)"; fi
+	@test -z "$(LIBHTP_ROOT)" || { test -f "$(LIBHTP_ROOT)/LICENSE" && test -d "$(LIBHTP_ROOT)/test/files"; } || { echo "corpus-refresh: LIBHTP_ROOT has no LICENSE or test/files" >&2; exit 2; }
+	@test -n "$(LIBHTP_ROOT)" || exit 0; \
+	dst=test/vendor/libhtp; \
 	sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$$1"; else shasum -a 256 "$$1"; fi | awk '{print $$1}'; }; \
 	rm -rf "$$dst/files"; mkdir -p "$$dst/files"; \
 	cp "$(LIBHTP_ROOT)/LICENSE" "$$dst/LICENSE"; \

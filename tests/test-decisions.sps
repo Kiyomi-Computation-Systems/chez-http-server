@@ -161,12 +161,14 @@
                   (headers-too-large . 431) (too-many-headers . 431)
                   (header-field-too-large . 431) (header-value-too-large . 431)
                   (handler-failed . 500) (invalid-response . 500)
-                  (unsupported-transfer-coding . 501) (http2-preface . 505))
+                  (unsupported-transfer-coding . 501) (version-not-supported . 505)
+                  (http2-preface . 505))
                 (map (lambda (r) (cons r (reason-status r)))
                      '(target-redirect invalid-target invalid-host faulty-framing header-timeout
                        body-timeout target-too-large headers-too-large too-many-headers
                        header-field-too-large header-value-too-large handler-failed
-                       invalid-response unsupported-transfer-coding http2-preface)))
+                       invalid-response unsupported-transfer-coding version-not-supported
+                       http2-preface)))
     ;; A connection that closes with no response has no status to give, and
     ;; one that closes after the handler's response (an upgrade, M2.5; the
     ;; handler's own `Connection: close`, or a body the close ends, M3.2)

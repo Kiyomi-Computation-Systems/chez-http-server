@@ -95,3 +95,22 @@ as a transport the server keeps. What that changes here:
 3. **The amendment's item 1 stands for every upgrade not taken**: an upgrade a handler
    answers with a response is served, then closed. Only an HTTP/1.1 upgrade with no body
    can be taken (0016 item 4). Item 2 is unchanged: the HTTP/2 preface is answered 505.
+
+## Amendment (2026-10-04) — a version that is not 1.x is answered 505
+
+Decided on the owner's word, by form, in M8.3, after the robustness lane's corpora were
+measured (plan §14's M8.3 note). The decision above supports HTTP/1.0 beside 1.1 and
+answers HTTP/2's preface 505; it said nothing of other versions the parser reads.
+
+1. **A request whose version is not 1.x is refused as `version-not-supported`, answered
+   505** (RFC 9110 §15.6.6), then the staged close. The core judges it first at the
+   head's end, before the Host and the framing, since a version it does not speak frames
+   nothing. The parser reads two such versions: a request line with no version, or one
+   that says HTTP/0.9, as HTTP/0.9, the lines after it as its fields ("Refuse with 505",
+   2026-10-03); and a request line that says HTTP/2.0, which the review found served as
+   1.x ("Refuse every non-1.x, 505", 2026-10-04). Go answers both so.
+2. **Every other version is the parser's to refuse**, and its error is a 400: HTTP/1.2,
+   3.0 and the like, as Node and hyper answer them. nginx and Kestrel answer 505 there;
+   that difference is noted in plan §14's open list.
+3. **Item 2 is unchanged**: the HTTP/2 preface is not a request line, and is still
+   answered 505 on the parser's error channel, as `http2-preface`.

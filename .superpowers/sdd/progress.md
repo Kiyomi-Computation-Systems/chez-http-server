@@ -4465,3 +4465,139 @@ DONE and merged (a5cac4c, PR #109; 8d1d0af, PR #110; 20d8481, PR #111): **M8.2, 
 - Decided by form: the server writes the 101; the transport, the server keeping the stream; tell it, then wait; upgrades only; review, then three stacked PRs; the review's 2, 3 and 7–9 fixed, the first documented (the taker bounds its writes), 4–6 and 10 noted, two of them in the docs and all four in plan §14's open list. A /code-review high found ten.
 
 NEXT: M8.3 (plan §14), the black-box and robustness lanes, when the owner asks.
+
+---
+
+## M8.3 — the black-box and robustness lanes (started 2026-10-04)
+
+Started on the owner's "Start m8.3", from main at 3ab1934. Plan §14 and design
+§8.8: black-box clients against a port, and a robustness lane of libhtp's
+invalid streams, smuggler's payloads and the AWS desync-guardian tables, each
+vendored by decision 0007's rules, with brief risk 4 answered by the test
+client.
+
+**Measured first (scratch, the session scratchpad m83/).** Six surveyed corpora
+were fetched at pinned commits and every case run through one fake connection,
+whole and at size 1:
+- AWS http-desync-guardian: 162 cases (the survey's "668" counted header rows),
+  63 of them Severe; all 63 refused; 11 of 56 Ambiguous served, each valid by
+  the RFCs (e.g. `Transfer_Encoding` with an underscore, an ordinary field).
+- smuggler: 1,768 gadgets × 2 probes; all refused but 6 gadgets that are no
+  Transfer-Encoding header (e.g. `Content-Encoding: chunked`). An RFC rule
+  written apart from the parser predicted all 3,536.
+- Kestrel's literal tables: 214 rows; 197 match Kestrel's verdict.
+- httpd's `http_strict.t`: 80 request rows; 68 match its strict column.
+- lighttpd's `request.t`: 151 blocks, 30 parser-level; 15 match.
+- libhtp's 24 invalid streams: 15 refused, 9 served (valid requests).
+Every outcome was chunk-size invariant. The measurement is in m83/measure/.
+
+**Decided by form (2026-10-03), both recommended.**
+- "Refuse with 505": a request with no version, or `HTTP/0.9`, is refused 505,
+  `version-not-supported`, since the server speaks HTTP/1.1 and 1.0 only (RFC
+  9110 §15.6.6; Go answers so). Prototyped against the gated lanes before the
+  form: 6 of 4,167 cases change. HTTP/1.2 and 3.0 stay the parser's 400, as
+  Node and hyper answer them.
+- "curl and vtest2": the black-box lane (step 3) uses curl and vtest2 (the
+  archived GitHub tag `last`, built with pcre2 and zlib), pinned by a decision
+  record; hurl was dropped, since it reads responses through libcurl as curl
+  does.
+
+**Then, by a third form, smuggler was dropped from the slice** ("Drop it from
+M8.3"): a safety classifier stopped the step that wrote its probe reader, so
+`test/vendor/smuggler` was removed from the branch. guardian covers the same
+Transfer-Encoding classes, and the measurement above stands as the record.
+
+**Noted, not changed** (to plan §14's open list; the first also to
+`docs/request-targets.org`): the parser refuses BWS in a chunk extension
+(`a; comment`), which RFC 9110 §5.6.3 allows; `%00` and other percent-encoded
+octets reach a handler undecoded (the server hands the target over as sent); a
+lowercase method is 400, not 501; HTTP/1.2 and 3.0 are 400, not 505.
+
+### The first step: the robustness lane, and HTTP/0.9 (feat/m8.3-smuggling)
+
+Built in the working tree. New:
+- `(http-server decisions)`: `version-not-supported . 505`, a tenth originated
+  reason.
+- `(http-server connection)`: `conn-headers-complete-step` refuses
+  `version-not-supported` first, before the Host, when `http-major` is 0.
+- `tests/provenance.sls`: a vendored corpus's bytes are the bytes we fetched
+  (sha256 per file, both-way manifest, status 3 on drift), shared by any
+  corpus `tests/vendor-corpus.sh` vendors.
+- `tests/guardian-corpus.sls`: the YAML cases, read by a loader that refuses a
+  shape it does not know, and each case's request built as guardian's harness
+  builds it (both decoders, the raw request). Its requests are identical to a
+  PyYAML rendering of all 162 (checked in scratch).
+- `(robustness-lane)` and `tests/test-robustness-lane.sps`: three properties —
+  the serve manifest both ways (which cases reach the handler is ours, from
+  RFC 9112), the security property (no Severe case is in the manifest, so none
+  is served), and chunk invariance.
+- `test/vendor/http-desync-guardian/`: the corpus, with LICENSE, NOTICE and a
+  PROVENANCE, vendored by `tests/vendor-corpus.sh` (a `corpus-refresh` arm,
+  `GUARDIAN_ROOT=`).
+- libhtp's 24 invalid streams and 4 HTTP/0.9 streams promoted in the ratchet,
+  their expectations in `(libhtp-lane)`, found by name (plan §14 names them).
+
+Found and recorded:
+- The HTTP/0.9 rule changed two existing checks that encoded the old served
+  behaviour, now the new 505: `test-connection-padding`'s "a request line with
+  no version … 505", and `test-connection-cut-off`'s head's-end refusal, now
+  the version before the target. The positive 0.9 checks live in
+  `test-connection-head`, `-originated`, `-decisions` and the trace lane.
+
+Measured on the tree (2026-10-04, Darwin arm64): `make test` green,
+forty-nine suites, 1,843 expected passes (1,795 + the robustness lane's 13 and
+the 0.9 and libhtp checks), every pin ok.
+
+Watched to fail (m8-mutations.md, M8.3, the first step): seven mutants, each
+loading and reddening its target checks, plus two witnessed by hand (a flipped
+vendored byte → exit 3; a lenient loader). Every new or changed check is
+reddened by one.
+
+DECIDED on the owner's word (2026-10-04), by form, after a walkthrough: "Review
++ PR step 1 now": a review of this step, its fixes, and its own PR, then steps 2
+and 3 the same way. Weighed: building all three before one review (M8.1's and
+M8.2's way), and the two pure-Scheme lanes first with step 3 held.
+
+REVIEWED (2026-10-04): a `/code-review high` found ten.
+1. An HTTP/2.0 request line was served as 1.x: the parser reads one, and the
+   rule refused only major 0, though its comment said every other version is
+   the parser's. Probed: `GET / HTTP/2.0` answered 200; 1.9, 0.0 and 0.1 are
+   the parser's 400. DECIDED on the owner's word, by form: "Refuse every
+   non-1.x, 505" (weighed: "Keep serving HTTP/2.0", as httpd does). Prototyped
+   first against the gated lanes, all green; 1 of 4,167 surveyed cases changes,
+   httpd's `GET / HTTP/2.0` row, which httpd serves and Go answers 505. The rule
+   is now `(not (fx=? http-major 1))`.
+2. The user docs gave 505 for the preface only: `docs/responses.org` and
+   `docs/connections.org` now name HTTP/0.9 and HTTP/2.0, and that 1.2 is 400.
+3. The provenance walk failed on any unlisted file, so a Finder `.DS_Store` or
+   an AppleDouble `._` file would end the suite with exit 3: the walk now
+   leaves out every dotfile, the tree's own `.gitattributes` among them.
+4. The YAML loader, which promises to refuse a shape it does not know, read on
+   past two spaces after a key's colon (`GET  /x`, or `H:  "v"` with its
+   quotes) and kept a plain scalar's ` # comment` as text: each is refused now.
+   Probed first: all three were read so.
+5. The records: decision 0006 is amended (a version not 1.x is 505), and plan
+   §14's M8.3 section and design §8.8 have notes.
+6. `tests/vendor-corpus.sh` named the robustness suite as every corpus's
+   verifier: each arm names its own. Re-vendored, PROVENANCE byte-identical.
+7. The PROVENANCE count was a `test-assert` on a boolean: a `test-eqv` now.
+8. A comment credited 162 to the survey, which said 668: corrected.
+9. The size scan ran every size always, re-implementing the corpus lanes': it
+   takes `corpus-scan-sizes` and the CORPUS selection now, 324 runs by default
+   (two a case), 24,279 under CORPUS=full, with a check of the schedule.
+10. Two PROVENANCE checkers hold one contract (`tests/provenance.sls` and
+   `tests/test-libhtp.sps`'s own): noted in plan §14's open list, on the
+   owner's word ("Fix 2–9, note 10"), since merging them edits M1.3's suite.
+
+Each fix's check was watched red first. Twelve mutants on the fixed tree (the
+seven re-cut, five new), every one loading; one, M8R-P1, first reddened only
+through the manifest's exit 3, so the dotfile check moved ahead of it
+(m8-mutations.md, M8.3, the review).
+
+Measured on the fixed tree (2026-10-04, Darwin arm64): `make test` green,
+forty-nine suites, 1,848 expected passes (1,843 + the HTTP/2.0 check and four
+of the robustness lane's), every pin ok.
+
+NEXT: step 1's PR, as decided; then the strictness lane (Kestrel, httpd,
+lighttpd), then the black-box lane (curl, vtest2), each its own PR, with a
+decision record for vtest2.
