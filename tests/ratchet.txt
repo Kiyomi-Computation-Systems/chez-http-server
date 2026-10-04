@@ -5,14 +5,18 @@
 # it BOTH WAYS (decision 0008 item 6): a passing entry that fails is an error
 # and a not-yet entry that passes is an error, so every promotion is a reviewed
 # diff and no exit criterion is met by accident.  The deferred/in-scope split is
-# derived from each fixture's own meta and checked against this file, so a corpus
-# refresh cannot smuggle a lenient fixture in as not-yet.
+# derived per lane and checked against this file: the trace lane's from each
+# fixture's own meta, so a corpus refresh cannot smuggle a lenient fixture in as
+# not-yet.
 #
 #   trace   -- the rendered parser trace equals the recorded log (M1.2): the 135
-#              strict fixtures pass; the 32 lenient ones are deferred (0009).
+#              strict fixtures pass; the 32 whose logs llhttp recorded under a
+#              lenient flag, or with the finish call, are deferred (plan §2.1,
+#              decision 0019).
 #   outcome -- the connection-level outcome is chunk-size invariant (M2.4, design
 #              §8.1 property 2): the 135 strict fixtures pass, the 4 upgrades
-#              since M2.5; the 32 lenient ones are deferred.
+#              since M2.5; the other 32 since decision 0019, as the lane runs the
+#              server's own parser and reads no log.
 #   libhtp  -- our per-file expectations hold (tests/libhtp-lane.sls): the 12
 #              pipelining and multi-packet streams pass since the M2 exit, and
 #              the 2 Expect streams since M6.4, delivered with CRLF; since M8.3
@@ -188,20 +192,20 @@ passing trace/request/uri.md#11
 passing outcome/request/connection.md#1
 passing outcome/request/connection.md#2
 passing outcome/request/connection.md#3
-deferred outcome/request/connection.md#4
+passing outcome/request/connection.md#4
 passing outcome/request/connection.md#5
 passing outcome/request/connection.md#6
 passing outcome/request/connection.md#7
 passing outcome/request/connection.md#8
 passing outcome/request/connection.md#9
 passing outcome/request/connection.md#10
-deferred outcome/request/connection.md#11
+passing outcome/request/connection.md#11
 passing outcome/request/connection.md#12
-deferred outcome/request/connection.md#13
+passing outcome/request/connection.md#13
 passing outcome/request/connection.md#14
-deferred outcome/request/connection.md#15
+passing outcome/request/connection.md#15
 passing outcome/request/connection.md#16
-deferred outcome/request/connection.md#17
+passing outcome/request/connection.md#17
 passing outcome/request/connection.md#18
 passing outcome/request/connection.md#19
 passing outcome/request/connection.md#20
@@ -212,8 +216,8 @@ passing outcome/request/content-length.md#3
 passing outcome/request/content-length.md#4
 passing outcome/request/content-length.md#5
 passing outcome/request/content-length.md#6
-deferred outcome/request/content-length.md#7
-deferred outcome/request/content-length.md#8
+passing outcome/request/content-length.md#7
+passing outcome/request/content-length.md#8
 passing outcome/request/content-length.md#9
 passing outcome/request/content-length.md#10
 passing outcome/request/content-length.md#11
@@ -223,10 +227,10 @@ passing outcome/request/content-length.md#14
 passing outcome/request/content-length.md#15
 passing outcome/request/content-length.md#16
 passing outcome/request/content-length.md#17
-deferred outcome/request/content-length.md#18
-deferred outcome/request/finish.md#1
-deferred outcome/request/finish.md#2
-deferred outcome/request/finish.md#3
+passing outcome/request/content-length.md#18
+passing outcome/request/finish.md#1
+passing outcome/request/finish.md#2
+passing outcome/request/finish.md#3
 passing outcome/request/invalid.md#1
 passing outcome/request/invalid.md#2
 passing outcome/request/invalid.md#3
@@ -234,7 +238,7 @@ passing outcome/request/invalid.md#4
 passing outcome/request/invalid.md#5
 passing outcome/request/invalid.md#6
 passing outcome/request/invalid.md#7
-deferred outcome/request/invalid.md#8
+passing outcome/request/invalid.md#8
 passing outcome/request/invalid.md#9
 passing outcome/request/invalid.md#10
 passing outcome/request/invalid.md#11
@@ -248,19 +252,19 @@ passing outcome/request/invalid.md#18
 passing outcome/request/invalid.md#19
 passing outcome/request/invalid.md#20
 passing outcome/request/invalid.md#21
-deferred outcome/request/invalid.md#22
+passing outcome/request/invalid.md#22
 passing outcome/request/invalid.md#23
-deferred outcome/request/invalid.md#24
-deferred outcome/request/lenient-header-value-relaxed.md#1
+passing outcome/request/invalid.md#24
+passing outcome/request/lenient-header-value-relaxed.md#1
 passing outcome/request/lenient-header-value-relaxed.md#2
-deferred outcome/request/lenient-header-value-relaxed.md#3
-deferred outcome/request/lenient-header-value-relaxed.md#4
-deferred outcome/request/lenient-header-value-relaxed.md#5
-deferred outcome/request/lenient-headers.md#1
-deferred outcome/request/lenient-headers.md#2
+passing outcome/request/lenient-header-value-relaxed.md#3
+passing outcome/request/lenient-header-value-relaxed.md#4
+passing outcome/request/lenient-header-value-relaxed.md#5
+passing outcome/request/lenient-headers.md#1
+passing outcome/request/lenient-headers.md#2
 passing outcome/request/lenient-headers.md#3
-deferred outcome/request/lenient-headers.md#4
-deferred outcome/request/lenient-version.md#1
+passing outcome/request/lenient-headers.md#4
+passing outcome/request/lenient-version.md#1
 passing outcome/request/method.md#1
 passing outcome/request/method.md#2
 passing outcome/request/method.md#3
@@ -301,14 +305,14 @@ passing outcome/request/sample.md#7
 passing outcome/request/sample.md#8
 passing outcome/request/sample.md#9
 passing outcome/request/sample.md#10
-deferred outcome/request/sample.md#11
+passing outcome/request/sample.md#11
 passing outcome/request/sample.md#12
 passing outcome/request/sample.md#13
-deferred outcome/request/sample.md#14
+passing outcome/request/sample.md#14
 passing outcome/request/sample.md#15
 passing outcome/request/sample.md#16
 passing outcome/request/sample.md#17
-deferred outcome/request/sample.md#18
+passing outcome/request/sample.md#18
 passing outcome/request/transfer-encoding.md#1
 passing outcome/request/transfer-encoding.md#2
 passing outcome/request/transfer-encoding.md#3
@@ -323,24 +327,24 @@ passing outcome/request/transfer-encoding.md#11
 passing outcome/request/transfer-encoding.md#12
 passing outcome/request/transfer-encoding.md#13
 passing outcome/request/transfer-encoding.md#14
-deferred outcome/request/transfer-encoding.md#15
+passing outcome/request/transfer-encoding.md#15
 passing outcome/request/transfer-encoding.md#16
 passing outcome/request/transfer-encoding.md#17
 passing outcome/request/transfer-encoding.md#18
-deferred outcome/request/transfer-encoding.md#19
-deferred outcome/request/transfer-encoding.md#20
+passing outcome/request/transfer-encoding.md#19
+passing outcome/request/transfer-encoding.md#20
 passing outcome/request/transfer-encoding.md#21
 passing outcome/request/transfer-encoding.md#22
 passing outcome/request/transfer-encoding.md#23
 passing outcome/request/transfer-encoding.md#24
 passing outcome/request/transfer-encoding.md#25
-deferred outcome/request/transfer-encoding.md#26
+passing outcome/request/transfer-encoding.md#26
 passing outcome/request/transfer-encoding.md#27
-deferred outcome/request/transfer-encoding.md#28
+passing outcome/request/transfer-encoding.md#28
 passing outcome/request/transfer-encoding.md#29
-deferred outcome/request/transfer-encoding.md#30
+passing outcome/request/transfer-encoding.md#30
 passing outcome/request/transfer-encoding.md#31
-deferred outcome/request/transfer-encoding.md#32
+passing outcome/request/transfer-encoding.md#32
 passing outcome/request/uri.md#1
 passing outcome/request/uri.md#2
 passing outcome/request/uri.md#3

@@ -1,8 +1,8 @@
 #!r6rs
-;;; (outcome-lane) — the strict llhttp corpus through the fake shell's message
+;;; (outcome-lane) — the llhttp request corpus through the fake shell's message
 ;;; loop: design §8.1's property 2.  M2.4.
 ;;;
-;;; Every strict fixture is fed to one fake connection as `bytes-arrived`
+;;; Every request fixture is fed to one fake connection as `bytes-arrived`
 ;;; deliveries at every scheduled chunk size, and what the connection did must
 ;;; be what it did with the whole input in one delivery:
 ;;;
@@ -25,6 +25,10 @@
 ;;; what the outcome should be.  The lane checks that the pause protocol makes
 ;;; it independent of how the bytes were split.  It runs under the trace
 ;;; lane's `corpus-limits`, with no Host required, for the same reason.
+;;;
+;;; The connection parses with the server's own parser, and the lane reads no
+;;; log, so the flags a fixture's log was recorded under never enter it: since
+;;; decision 0019 it runs all 167, the 32 the trace lane defers among them.
 ;;;
 ;;; Two handlers (M6.1, decision 0013): `reads`, which reads every body,
 ;;; dropping it, then answers 200, as every handler answered before M6; and

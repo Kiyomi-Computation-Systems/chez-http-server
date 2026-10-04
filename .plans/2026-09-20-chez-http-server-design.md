@@ -1833,6 +1833,11 @@ chunk size, and **two** properties are gated:
    sequence, the keep-alive decision and the close reason are the same at size 1 as at
    whole-buffer.
 
+*Amended 2026-10-04 ([0019](decisions/0019-the-outcome-lane-runs-all-167-request-fixtures-and-only-the-trace-lane-defers-the-32-lenient-and-finish-ones.md)):* property 2 is gated over all
+167 request fixtures. It parses with the server's own parser and reads no log, so the
+lenient flag or the finish call the other 32's logs were recorded under never enters
+it. Property 1 compares those logs and stays with the 135.
+
 The `pr` / `release` split the brief asks for **is** `corpus-scan-sizes`'s `selection`
 argument, not something we build: `'extremes` runs size 1 and the whole buffer, `'full`
 runs every size from 1 to the input length, and a `noScan` fixture is whole-buffer only

@@ -34,6 +34,14 @@
 ;;; coverage they give.  Decided on the owner's word, with decision 0005's
 ;;; switch.  The other Host rules stay on; no fixture has two Host lines or
 ;;; an invalid Host value.
+;;;
+;;; Each fixture is parsed under its own init, the one llhttp recorded its log
+;;; under.  For a strict fixture that is the server's, but for the version
+;;; leniency the adapter has set since 2026-10-04 (decision 0006's amendment
+;;; of that date), and that reads one of them differently: `invalid.md#19`,
+;;; `GET / HTTP/5.6`, which a strict parser refuses at the version and the
+;;; server's reads on, as `lenient-version.md#1` records.  This lane checks
+;;; the corpus's parse; the outcome lane runs the server's (decision 0019).
 (library (trace-lane)
   (export request-fixtures strict-request-fixtures fixture-strict?
           trace-mismatch core-trace-mismatch core-refusal-mismatch trace-scan-runs
