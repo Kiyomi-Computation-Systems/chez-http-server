@@ -1,0 +1,32 @@
+vtest "HTTP/1.0 closes after its answer unless it asks to keep alive"
+# Decision 0006 item 1: a 1.0 connection closes unless the client sends
+# Connection: keep-alive.  Decision 0010 item 3: the server writes
+# Connection: close when it closes, and Connection: keep-alive to a 1.0
+# client that asked to keep it.  RFC 9110 §2.5: the answer is HTTP/1.1.
+client c1 -connect "${host} ${port}" {
+    txreq -proto HTTP/1.0 -url "/a"
+    rxresp
+    expect resp.status == 200
+    expect resp.proto == "HTTP/1.1"
+    expect resp.http.Connection == "close"
+    expect resp.body == "/a -\n"
+    expect_close
+} -run
+client c2 -connect "${host} ${port}" {
+    txreq -proto HTTP/1.0 -url "/b" -hdr "Connection: keep-alive"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Connection == "keep-alive"
+    expect resp.http.Content-Length == 5
+    expect resp.body == "/b -\n"
+    txreq -proto HTTP/1.0 -url "/c" -hdr "Connection: keep-alive"
+    rxresp
+    expect resp.status == 200
+    expect resp.body == "/c -\n"
+    txreq -proto HTTP/1.0 -url "/d"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Connection == "close"
+    expect resp.body == "/d -\n"
+    expect_close
+} -run

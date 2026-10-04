@@ -1,0 +1,32 @@
+vtest "HTTP/1.1 persists: two requests, a pipelined pair, then one asking to close"
+# RFC 9112 §9.3: an HTTP/1.1 connection persists; §9.3.2: pipelined
+# responses come in order; §9.6: Connection: close ends it after its answer.
+# Decision 0010: the server writes the framing and the Date of every final
+# response, and Connection: close only when it closes.
+client c1 -connect "${host} ${port}" {
+    txreq -url "/a?x=1"
+    rxresp
+    expect resp.status == 200
+    expect resp.proto == "HTTP/1.1"
+    expect resp.http.Content-Length == 7
+    expect resp.http.Connection == <undef>
+    expect resp.http.Date ~ "^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT$"
+    expect resp.body == "/a x=1\n"
+    txreq -url "/b"
+    rxresp
+    expect resp.status == 200
+    expect resp.body == "/b -\n"
+    send "GET /c HTTP/1.1\r\nHost: x\r\n\r\nGET /d HTTP/1.1\r\nHost: x\r\n\r\n"
+    rxresp
+    expect resp.status == 200
+    expect resp.body == "/c -\n"
+    rxresp
+    expect resp.status == 200
+    expect resp.body == "/d -\n"
+    txreq -url "/e" -hdr "Connection: close"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Connection == "close"
+    expect resp.body == "/e -\n"
+    expect_close
+} -run

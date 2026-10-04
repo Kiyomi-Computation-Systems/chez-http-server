@@ -1,0 +1,26 @@
+vtest "A streamed body: chunked to HTTP/1.1, close-delimited to 1.0"
+# Decision 0013 item 8 (M6.3): a body of unknown length is chunked to an
+# HTTP/1.1 client, the connection kept (RFC 9112 §7.1), and delimited by
+# the close to 1.0, Connection: close though it asked to keep it (RFC 9112
+# §6.3 rule 8; decision 0006 item 1).
+client c1 -connect "${host} ${port}" {
+    txreq -url "/stream"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Transfer-Encoding == "chunked"
+    expect resp.http.Content-Length == <undef>
+    expect resp.body == "one two three"
+    txreq -url "/b"
+    rxresp
+    expect resp.status == 200
+    expect resp.body == "/b -\n"
+} -run
+client c2 -connect "${host} ${port}" {
+    txreq -proto HTTP/1.0 -url "/stream" -hdr "Connection: keep-alive"
+    rxresp
+    expect resp.status == 200
+    expect resp.http.Transfer-Encoding == <undef>
+    expect resp.http.Content-Length == <undef>
+    expect resp.http.Connection == "close"
+    expect resp.body == "one two three"
+} -run

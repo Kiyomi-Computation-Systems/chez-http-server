@@ -1,0 +1,23 @@
+vtest "A target, a field value or a body past its limit is refused, then closed"
+# Decision 0005's defaults: 8,192 bytes of target (414) and of a field
+# value (431); the lane's server caps a body at 1,024 bytes
+# (CHEZ_HTTP_MAX_BODY_BYTES), 413 (decision 0013 item 5).
+client c1 -connect "${host} ${port}" {
+    txreq -url "/${string,repeat,8200,a}"
+    rxresp
+    expect resp.status == 414
+    expect resp.http.Connection == "close"
+    expect_close
+} -run
+client c2 -connect "${host} ${port}" {
+    txreq -url "/" -hdr "X: ${string,repeat,8200,v}"
+    rxresp
+    expect resp.status == 431
+    expect_close
+} -run
+client c3 -connect "${host} ${port}" {
+    txreq -req POST -url "/p" -bodylen 2000
+    rxresp
+    expect resp.status == 413
+    expect_close
+} -run

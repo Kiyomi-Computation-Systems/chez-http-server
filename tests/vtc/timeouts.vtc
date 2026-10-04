@@ -1,0 +1,27 @@
+vtest "A head or a body that stalls is answered 408; an idle connection is closed"
+# Decision 0005 and the core's deadline rows (M5.2): a head past the header
+# deadline, or a body past the body deadline, is answered 408, then closed;
+# an idle connection past the idle deadline is closed with no response.
+# The lane's server sets each to 1 s; the three run side by side.
+client c1 -connect "${host} ${port}" {
+    send "GET / HTTP/1.1\r\nHost: x\r\n"
+    rxresp
+    expect resp.status == 408
+    expect_close
+} -start
+client c2 -connect "${host} ${port}" {
+    txreq -req POST -url "/p" -nolen -hdr "Content-Length: 10"
+    send "abc"
+    rxresp
+    expect resp.status == 408
+    expect_close
+} -start
+client c3 -connect "${host} ${port}" {
+    txreq -url "/i"
+    rxresp
+    expect resp.status == 200
+    expect_close
+} -start
+client c1 -wait
+client c2 -wait
+client c3 -wait

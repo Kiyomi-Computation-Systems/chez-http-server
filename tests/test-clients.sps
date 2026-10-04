@@ -1,5 +1,6 @@
 #!r6rs
-;;; Real clients: curl and ab against the server.  The M4 exit (plan §8).
+;;; Real clients: curl, ab and vtest against the server.  The M4 exit (plan
+;;; §8), and M8.3's black-box lane (plan §14): vtest2's scripts.
 ;;;
 ;;; The brief's gate for M4: `curl` and `ab` get correct responses, and the
 ;;; counters return to zero.  A server is started through an environment, as
@@ -34,9 +35,13 @@
 ;;;     two full collections as the M4 exit read a connection's (its budget
 ;;;     spike), the client in a process of its own; and the bytes a
 ;;;     connection has written and not yet seen completed, against decision
-;;;     0005's water marks.
+;;;     0005's water marks;
+;;;   - vtest's verdict on each of tests/vtc/*.vtc (M8.3): a script is a
+;;;     client's exchanges and what it expects of each answer, written from
+;;;     RFC 9112 and the decisions before it first ran, and read by vtest's
+;;;     own HTTP/1 code, which is neither curl's nor chez-httparse's.
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) collect collect-maximum-generation bytes-allocated)
+        (only (chezscheme) collect collect-maximum-generation bytes-allocated getenv directory-list)
         (libuv) (uv-testing) (shell-testing)
         (http-server)
         (only (http-server limits) default-limits limits-read-buffer-size
@@ -46,7 +51,8 @@
               connection-state)
         (only (http-server private serve) start-server)
         (rename (only (libuv private native) live-counts) (live-counts debug-live-counts))
-        (producers))
+        (producers)
+        (only (corpus-text) prefix? suffix? split trim find-sub))
 
 (define (b s) (string->utf8 s))
 
@@ -277,6 +283,90 @@
 ;; live-count : Symbol -> Nat — chez-libuv's dev-build count of a kind.
 (define (live-count kind) (cdr (assq kind (debug-live-counts))))
 
+;; --- vtest (M8.3) ---
+;;
+;; vtest2 is built at its pin by `make vtest` (decision 0017); VTEST names
+;; another build.  Its scripts run against a server of the lane's own, on a
+;; loop of its own, whose deadlines are a second each and whose bodies are
+;; capped at 1 KiB, so its timeouts and limits act within a run.  vtest
+;; gives each script 5 s (`-t`), the longest taking 1.24 s, so twelve that
+;; hang end within the suite's 120 s, each with vtest's own verdict.
+(define vtest (or (getenv "VTEST") "build/vtest"))
+
+;; The scripts, each with the verdict it is held to: the lane's manifest,
+;; gated both ways against tests/vtc, as M1's ratchet gates its fixtures.
+(define vtc-manifest
+  '(("chunked-upload.vtc" . passed) ("expect.vtc" . passed) ("framing.vtc" . passed)
+    ("head.vtc" . passed) ("http10.vtc" . passed) ("keep-alive.vtc" . passed)
+    ("limits.vtc" . passed) ("redirect.vtc" . passed) ("stream.vtc" . passed)
+    ("timeouts.vtc" . passed) ("upgrade.vtc" . passed) ("version.vtc" . passed)))
+
+;; vtc-file? : String -> Boolean
+;; A script's name: one ending .vtc, but no dotfile, such as the lock file
+;; an editor keeps beside a script it has changed (the review's seventh).
+(define (vtc-file? name)
+  (and (not (prefix? "." name)) (suffix? ".vtc" name)))
+
+;; vtc-faults : String String -> (Listof String)
+;; What the script `name`, its text `text`, breaks of the two rules the
+;; lane's verdicts rest on: each rxresp is followed by a check of the
+;; answer's status, or vtest reads stray content as the next status line
+;; and checks the rest (M8B-D1); and each client is run, `-run` at its
+;; block's end, or `-start` there and `-wait` after it, or it never
+;; connects and its script passes having checked nothing (the review's
+;; sixth).
+(define (vtc-faults name text)
+  (let loop ((ls (map trim (split text #\newline))) (n 1) (client #f) (started '()) (faults '()))
+    (if (null? ls)
+        (append (reverse faults)
+                (map (lambda (c) (string-append name ": client " c " is started and never waited for"))
+                     (reverse started)))
+        (let ((l (car ls)) (rest (cdr ls)))
+          (define (word k) (list-ref (filter (lambda (w) (> (string-length w) 0)) (split l #\space)) k))
+          (cond
+           ((and (prefix? "client " l) (suffix? "{" l))
+            (loop rest (+ n 1) (word 1) started faults))
+           ((and client (prefix? "}" l))
+            (cond ((string=? l "} -run") (loop rest (+ n 1) #f started faults))
+                  ((string=? l "} -start") (loop rest (+ n 1) #f (cons client started) faults))
+                  (else (loop rest (+ n 1) #f started
+                              (cons (string-append name ": client " client " is never run") faults)))))
+           ((and (prefix? "client " l) (suffix? "-wait" l))
+            (loop rest (+ n 1) client (remove (word 1) started) faults))
+           ((and (or (string=? l "rxresp") (prefix? "rxresp " l))
+                 (not (and (pair? rest) (prefix? "expect resp.status" (car rest)))))
+            (loop rest (+ n 1) client started
+                  (cons (string-append name ": line " (number->string n) ": rxresp with no status check after it")
+                        faults)))
+           (else (loop rest (+ n 1) client started faults)))))))
+
+;; file-text : String -> String — a file's text, as UTF-8.
+(define (file-text path)
+  (let* ((p (open-file-input-port path)) (bv (get-bytevector-all p)))
+    (close-port p)
+    (if (eof-object? bv) "" (utf8->string bv))))
+
+;; vtc-handler : Request -> (U Response BodyReader)
+;; The clients' handler, but a POST's body is echoed whole, so a script
+;; reads back the body the server read.
+(define (vtc-handler r)
+  (if (eq? (request-method r) 'POST)
+      (read-whole-body (lambda (body) (make-response 200 #f '() body)))
+      (handler r)))
+
+;; vtc-verdict : (List Symbol (List Nat Any) String) -> (U 'passed List)
+;; A vtest run as its verdict: 'passed when vtest ran to its end and exited
+;; 0; else how the wait ended, the exit, and the lines vtest's log marks as
+;; a failure's, which begin "----", with "TIMED OUT" for a script vtest
+;; killed at its test timeout, which leaves none.
+(define (vtc-verdict run)
+  (if (equal? (list (car run) (cadr run)) '(satisfied (0 #f)))
+      'passed
+      (let ((log (lines (caddr run))))
+        (list (car run) (cadr run)
+              (append (filter (lambda (l) (starts? "----" l)) log)
+                      (if (exists (lambda (l) (find-sub l "TIMED OUT")) log) '("TIMED OUT") '()))))))
+
 (define curl-out "%{http_code} %{num_connects} %{size_download}\\n")
 
 (run-suite "clients"
@@ -287,6 +377,68 @@
            (url (lambda (path) (string-append "http://127.0.0.1:" (number->string port) path))))
       (require-client! loop sh "curl" "--version")
       (require-client! loop sh "ab" "-V")
+
+      ;; --- vtest (M8.3) ---
+      ;; Every script is run before any check, so a vtest that cannot be
+      ;; started raises outside them: the harness's status, 2.  The lane's
+      ;; loop is torn down before the suite's own handles are counted.
+      (let* ((vloop (make-uv-loop))
+             (vlogged '())
+             (vsh (start-server vloop vtc-handler
+                                (env '("CHEZ_HTTP_PORT" . "0")
+                                     '("CHEZ_HTTP_READ_HEADER_TIMEOUT" . "1")
+                                     '("CHEZ_HTTP_IDLE_TIMEOUT" . "1")
+                                     '("CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT" . "1")
+                                     '("CHEZ_HTTP_MAX_BODY_BYTES" . "1024"))
+                                (lambda (what details) (set! vlogged (append vlogged (list (cons what details)))))))
+             (port-macro (string-append "port=" (number->string (caddr (assq 'listening vlogged)))))
+             (files (list-sort string<? (filter vtc-file? (directory-list "tests/vtc"))))
+             (verdicts (map (lambda (f)
+                              (cons f (vtc-verdict
+                                       (run vloop vsh vtest
+                                            (list "-t" "5" "-D" "host=127.0.0.1" "-D" port-macro
+                                                  (string-append "tests/vtc/" f))))))
+                            files)))
+        ;; What the verdicts rest on, read off each script's text.
+        (test-equal "vtest: the lane leaves out a dotfile, as an editor's lock file is, and a backup's name"
+                    '(#t #f #f) (map vtc-file? '("keep-alive.vtc" ".#keep-alive.vtc" "keep-alive.vtc~")))
+        (test-equal "vtest: the rules' reader names an rxresp with no status check, a client never run, one never waited for"
+                    '("x.vtc: line 3: rxresp with no status check after it"
+                      "x.vtc: client c1 is never run"
+                      "x.vtc: client c2 is started and never waited for")
+                    (vtc-faults "x.vtc" (string-append "vtest \"x\"\nclient c1 -connect \"h p\" {\n    rxresp\n"
+                                                        "    expect resp.body == \"a\"\n}\n"
+                                                        "client c2 -connect \"h p\" {\n    txreq\n} -start\n")))
+        ;; How a run is read: vtest marks a failure's lines "----", and a
+        ;; script it kills at its test timeout only "TIMED OUT".
+        (test-equal "vtest: a run is passed only at exit 0; else its ---- lines, and TIMED OUT for one vtest killed"
+                    '(passed
+                      (satisfied (2 #f) ("---- c1    EXPECT resp.status (404) == \"200\" failed"))
+                      (satisfied (2 #f) ("TIMED OUT")))
+                    (map vtc-verdict
+                         (list (list 'satisfied '(0 #f) "#    top  TEST tests/vtc/x.vtc passed (0.131)\n")
+                               (list 'satisfied '(2 #f) (string-append "**** c1    EXPECT resp.status (404) == \"200\"\n"
+                                                                       "---- c1    EXPECT resp.status (404) == \"200\" failed\n"))
+                               (list 'satisfied '(2 #f) (string-append "#    top  TEST tests/vtc/x.vtc TIMED OUT (kill -9)\n"
+                                                                       "#    top  TEST tests/vtc/x.vtc FAILED (5.002) signal=9\n")))))
+        (test-equal "vtest: every script checks each answer's status and runs every client" '()
+                    (apply append (map (lambda (f) (vtc-faults f (file-text (string-append "tests/vtc/" f)))) files)))
+        (for-each (lambda (v)
+                    (unless (member v vtc-manifest)
+                      (let ((p (current-error-port)))
+                        (put-string p "VTEST ") (write v p) (newline p) (flush-output-port p))))
+                  verdicts)
+        (test-equal "vtest: the scripts in tests/vtc are the manifest's" (map car vtc-manifest) files)
+        (test-equal "vtest: each script meets the verdict the manifest lists" vtc-manifest verdicts)
+        (test-eq "and every connection the scripts opened leaves the table" 'satisfied
+                 (run-shell-until vloop vsh (lambda () (null? (shell-connections vsh))) cap))
+        (shell-shutdown! vsh)
+        (run-until-drained vloop cap)
+        (test-equal "the lane's server logged where it listens, then a drain with no connection open, and nothing else"
+                    '(listening (draining 0) (stopped))
+                    (map (lambda (e) (if (eq? (car e) 'listening) 'listening e)) vlogged))
+        (test-equal "shut down, nothing of the lane's server is left on its loop" '() (uv-loop-live-handles vloop))
+        (uv-loop-teardown! vloop))
 
       ;; --- curl ---
       (test-equal "curl: two GETs, the second on the first's connection"
