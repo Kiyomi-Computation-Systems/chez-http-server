@@ -191,9 +191,11 @@
     ;; The core's refusal comes before the parser's error and names the
     ;; response, not what the error leaves open.  A request line with no
     ;; version and no fields leaves the run after its target open at its
-    ;; head's end, where the core refuses the target.
-    (test-equal "a target the core refuses at the head's end, on a request line with no version and no fields, every delivery size: 400 for the target, not the run left open"
-                (refused-first 400 'invalid-target)
+    ;; head's end, where the core refuses the version it does not speak
+    ;; (HTTP/0.9, 505; M8.3), judged before the target it would otherwise
+    ;; refuse.
+    (test-equal "a request line with no version, refused at the head's end, every delivery size: 505 for the version, not the run left open"
+                (refused-first 505 'version-not-supported)
                 (every-size (b "GET /%zz\r\n\r\n") default-limits))
 
     ;; --- what a shell hands the core -------------------------------------------------

@@ -3,7 +3,8 @@
 ;;; streams, and for its two Expect streams, and the run they are held to
 ;;; (design §8.2).  The M2 exit; the Expect streams since M6.4; and since the
 ;;; M6 exit, 35-early-response.t run a second time, its handler answering at
-;;; the head, as its recorded origin did (below).
+;;; the head, as its recorded origin did (below).  Since M8.3, the robustness
+;;; lane's: libhtp's invalid streams and its HTTP/0.9 streams, by name.
 ;;;
 ;;; A stream's client chunks (`>>>`) are its packets.  Each is delivered to one
 ;;; fake connection as one `bytes-arrived`, while the connection reads, with
@@ -30,7 +31,8 @@
 (library (libhtp-lane)
   (export libhtp-expected-files libhtp-expectation libhtp-packets crlf-files
           libhtp-outcome libhtp-mismatch
-          early-response-expectation early-response-outcomes)
+          early-response-expectation early-response-outcomes
+          robustness-expected-files robustness-file?)
   (import (rnrs)
           (libhtp-corpus) (fake-shell)
           (http-server connection) (http-server response) (http-server request)
@@ -183,14 +185,146 @@
               (close unread-body))
              closed unread-body ()))))
 
+  ;; --- the robustness lane's streams (M8.3) ---------------------------------
+  ;;
+  ;; libhtp's invalid streams and its HTTP/0.9 streams, by name (plan §14's
+  ;; M8.3).  Each is one connection's client packets, then its eof.  A
+  ;; request the server refuses is answered with no handler asked, and the
+  ;; connection lingers until the eof (decision 0011).  Written from RFC
+  ;; 9112 and the decisions before the lane ran them, each with its reason.
+
+  ;; A refusal at the head: the status, and the reason the connection closes
+  ;; for.
+  (define (refused status reason)
+    `(((write ,status) (close ,reason)) closed ,reason ()))
+
+  ;; An HTTP/1.0 GET served, then closed (RFC 9112 §9.3; decision 0006).
+  (define (served-1.0 target headers)
+    `(((call-handler (GET ,target 1 0 ,headers)) (write 200) (close not-keep-alive))
+      closed not-keep-alive ()))
+
+  ;; A chunked POST with libhtp's head, its handler asked at the head
+  ;; (decision 0013).
+  (define chunked-post-asked
+    '(call-handler (POST "/" 1 1 (("Transfer-Encoding" . "chunked")
+                                  ("Content-Type" . "application/x-www-form-urlencoded")
+                                  ("User-Agent" . "Mozilla") ("Cookie" . "1")))))
+
+  ;; robustness-expectations : (Listof (Pair String Outcome)), by file name.
+  (define robustness-expectations
+    (list
+     ;; HTTP/0.9: a request line with no version.  The parser reads the lines
+     ;; after it as its fields, and only one CRLF came, so the head is not
+     ;; complete when the eof comes: nothing is answered.
+     (cons "21-http09.t" '(((close eof)) closed #f ()))
+     ;; The second line, read as a field, has no colon (RFC 9112 §5.1): 400.
+     (cons "23-http09-multiple.t" (refused 400 'parser-error))
+     ;; HTTP/0.9, named or with no version, is refused (RFC 9110 §15.6.6;
+     ;; decided on the owner's word, by form, 2026-10-03).
+     (cons "24-http09-explicit.t" (refused 505 'version-not-supported))
+     (cons "92-http_0_9-method_only.t" (refused 505 'version-not-supported))
+     ;; A Host with a space is no uri-host (RFC 9112 §3.2: any request with an
+     ;; invalid Host is a 400), judged before the target.
+     (cons "32-invalid-hostname.t" (refused 400 'invalid-host))
+     ;; A port must be digits (RFC 3986 §3.2.3).
+     (cons "33-invalid-hostname.t" (refused 400 'invalid-target))
+     ;; An empty port is a port (RFC 3986 §3.2.3: port = *DIGIT), so the Host
+     ;; is valid, and the request is served.
+     (cons "34-invalid-hostname.t"
+           (served-1.0 "/?p=%20" '(("Host" . "www.example.com:") ("User-Agent" . "Mozilla"))))
+     ;; A Content-Length that is not digits (RFC 9112 §6.3 rule 5).
+     (cons "36-invalid-request-1-invalid-c-l.t" (refused 400 'parser-error))
+     ;; Transfer-Encoding beside Content-Length: the server may refuse it (RFC
+     ;; 9112 §6.1), and the strict parser does.
+     (cons "37-invalid-request-2-t-e-and-c-l.t" (refused 400 'parser-error))
+     ;; A Transfer-Encoding whose last coding is not chunked (§6.3 rule 4).
+     (cons "38-invalid-request-3-invalid-t-e.t" (refused 400 'parser-error))
+     ;; An HTTP-version must be "HTTP/" DIGIT "." DIGIT (§2.3).
+     (cons "43-invalid-protocol.t" (refused 400 'parser-error))
+     ;; What an Authorization says is the handler's; its value is a valid
+     ;; field value.
+     (cons "44-auth-basic-invalid.t"
+           (served-1.0 "/" '(("Host" . "www.example.com")
+                             ("Authorization" . "Basic notBase64:EncodedStuff"))))
+     ;; A field value folded onto lines that begin with a space (obs-fold):
+     ;; a server must refuse it or unfold it (§5.2), and the strict parser
+     ;; refuses it.
+     (cons "46-auth-digest-invalid-username.t" (refused 400 'parser-error))
+     ;; libhtp's response tests: their requests are plain GETs.
+     (cons "48-invalid-response-headers-1.t" (served-1.0 "/?p=%20" '(("User-Agent" . "Mozilla"))))
+     (cons "49-invalid-response-headers-2.t" (served-1.0 "/?p=%20" '(("User-Agent" . "Mozilla"))))
+     ;; An IP-literal with no "]" (RFC 3986 §3.2.2).
+     (cons "51-get-ipv6-invalid.t" (refused 400 'invalid-target))
+     ;; A target that is no form a request may take (§3.2): it does not begin
+     ;; with "/", and its "scheme" has no "://".  The parser refuses it at the
+     ;; "/".
+     (cons "52-invalid-path.t" (refused 400 'parser-error))
+     ;; Percent-encoded octets are a path's to carry (RFC 3986 §2.1); whether
+     ;; they decode to UTF-8 is the handler's, as the server hands the path
+     ;; over undecoded.
+     (cons "58-path-utf8-invalid.t"
+           (served-1.0 "/Risti%C4%87%80.txt" '(("Host" . "www.example.com") ("User-Agent" . "Mozilla"))))
+     ;; A chunk of 0x80000000 bytes is a chunk size (§7.1), and no body
+     ;; limit is set by default (CHEZ_HTTP_MAX_BODY_BYTES), so what follows
+     ;; is the chunk's data, read to the eof, which comes first: the body is
+     ;; never complete, and nothing is answered.
+     (cons "63-post-chunked-invalid-1.t"
+           `((,chunked-post-asked
+              (body "p=012345678\r\n1\r\n9\r\n0\r\nCookie: 2\r\n\r\n")
+              (close eof))
+             closed #f ()))
+     ;; A chunk size must be hex digits (§7.1): "-1", then an empty line.
+     ;; The handler is asked at the head, and the 400 comes with the size.
+     (cons "64-post-chunked-invalid-2.t"
+           `((,chunked-post-asked (write 400) (close parser-error)) closed parser-error ()))
+     (cons "65-post-chunked-invalid-3.t"
+           `((,chunked-post-asked (write 400) (close parser-error)) closed parser-error ()))
+     ;; A field line with no colon (§5.1), before one with a NUL.
+     (cons "68-invalid-request-header.t" (refused 400 'parser-error))
+     ;; libhtp's response tests again: plain GETs.
+     (cons "70-response-invalid-chunk-length.t" (served-1.0 "/" '()))
+     (cons "75-response-invalid-cl.t" (served-1.0 "/" '()))
+     ;; A CONNECT to an IP-literal with no "]" (RFC 3986 §3.2.2).
+     (cons "79-connect-invalid-hostport.t" (refused 400 'invalid-target))
+     ;; A Host that is an IP-literal with no "]".
+     (cons "80-hostname-invalid-1.t" (refused 400 'invalid-host))
+     ;; A target whose host is an IP-literal with no "]".
+     (cons "81-hostname-invalid-2.t" (refused 400 'invalid-target))
+     ;; A quote with no close is a valid field value (RFC 9110 §5.5); what it
+     ;; says is the handler's.  HTTP/1.1, so the connection persists, and the
+     ;; eof closes it.
+     (cons "83-auth-digest-invalid-username-2.t"
+           '(((call-handler (GET "/" 1 1 (("Host" . "www.example.com")
+                                          ("Authorization" . "Digest username=\"ivanr"))))
+              (write 200)
+              (close eof))
+             closed #f ()))))
+
+  ;; robustness-file? : String -> Boolean
+  ;; One of libhtp's invalid streams or HTTP/0.9 streams, by name.
+  (define (robustness-file? name)
+    (exists (lambda (word) (contains? name word)) '("invalid" "http09" "http_0_9")))
+
+  ;; contains? : String String -> Boolean
+  (define (contains? s word)
+    (let ((n (string-length s)) (m (string-length word)))
+      (let loop ((i 0))
+        (and (<= (+ i m) n)
+             (or (string=? (substring s i (+ i m)) word) (loop (+ i 1)))))))
+
   ;; libhtp-expected-files : (Listof String) — the streams with an
   ;; expectation, in file-name order.
   (define libhtp-expected-files
-    (list-sort string<? (map car libhtp-expectations)))
+    (list-sort string<? (map car (append libhtp-expectations robustness-expectations))))
+
+  ;; robustness-expected-files : (Listof String) — the robustness lane's,
+  ;; in file-name order.
+  (define robustness-expected-files
+    (list-sort string<? (map car robustness-expectations)))
 
   ;; libhtp-expectation : String -> (U Outcome #f)
   (define (libhtp-expectation name)
-    (let ((e (assoc name libhtp-expectations)))
+    (let ((e (or (assoc name libhtp-expectations) (assoc name robustness-expectations))))
       (and e (cdr e))))
 
   ;; --- the run ---------------------------------------------------------------

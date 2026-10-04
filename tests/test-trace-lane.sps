@@ -26,9 +26,12 @@
 ;; The fixtures the core refuses by policy, with the reason it closes for.
 ;; Each target is outside RFC 9112 §3.2's forms as the owner decided them
 ;; (2026-09-24), so the core answers where llhttp parses on: 400, or a 301
-;; to the target encoded for the narrow case decision 0009 redirects.
+;; to the target encoded for the narrow case decision 0009 redirects.  And
+;; since M8.3, a request line with no version, HTTP/0.9's, answered 505
+;; (decided on the owner's word, by form, 2026-10-03).
 (define core-refusals
   '(("request/method.md#5" . invalid-target)             ; M-SEARCH *: asterisk-form is OPTIONS's
+    ("request/sample.md#10" . version-not-supported)     ; GET / with no version: HTTP/0.9
     ("request/transfer-encoding.md#21" . invalid-target) ; ?q=search#hey: a fragment
     ("request/transfer-encoding.md#22" . invalid-target) ; the same target
     ("request/transfer-encoding.md#23" . invalid-target) ; the same target

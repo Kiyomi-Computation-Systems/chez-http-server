@@ -15,8 +15,9 @@
 #              since M2.5; the 32 lenient ones are deferred.
 #   libhtp  -- our per-file expectations hold (tests/libhtp-lane.sls): the 12
 #              pipelining and multi-packet streams pass since the M2 exit, and
-#              the 2 Expect streams since M6.4, delivered with CRLF; the other
-#              88 are not-yet.
+#              the 2 Expect streams since M6.4, delivered with CRLF; since M8.3
+#              the robustness lane's 24 invalid and 4 HTTP/0.9 streams; the
+#              other 60 are not-yet.
 passing trace/request/connection.md#1
 passing trace/request/connection.md#2
 passing trace/request/connection.md#3
@@ -374,10 +375,10 @@ not-yet libhtp/files/17-multipart-1.t
 not-yet libhtp/files/18-compressed-response-deflate.t
 not-yet libhtp/files/19-urlencoded-test.t
 passing libhtp/files/20-ambiguous-host.t
-not-yet libhtp/files/21-http09.t
+passing libhtp/files/21-http09.t
 not-yet libhtp/files/22-php-param-processing.t
-not-yet libhtp/files/23-http09-multiple.t
-not-yet libhtp/files/24-http09-explicit.t
+passing libhtp/files/23-http09-multiple.t
+passing libhtp/files/24-http09-explicit.t
 not-yet libhtp/files/25-small-chunks.t
 not-yet libhtp/files/26-request-headers-raw.t
 passing libhtp/files/27-request-trailer-raw.t
@@ -385,58 +386,58 @@ not-yet libhtp/files/28-response-headers-raw.t
 not-yet libhtp/files/29-response-trailer-raw.t
 not-yet libhtp/files/30-get-ipv6.t
 not-yet libhtp/files/31-get-request-line-nul.t
-not-yet libhtp/files/32-invalid-hostname.t
-not-yet libhtp/files/33-invalid-hostname.t
-not-yet libhtp/files/34-invalid-hostname.t
+passing libhtp/files/32-invalid-hostname.t
+passing libhtp/files/33-invalid-hostname.t
+passing libhtp/files/34-invalid-hostname.t
 passing libhtp/files/35-early-response.t
-not-yet libhtp/files/36-invalid-request-1-invalid-c-l.t
-not-yet libhtp/files/37-invalid-request-2-t-e-and-c-l.t
-not-yet libhtp/files/38-invalid-request-3-invalid-t-e.t
+passing libhtp/files/36-invalid-request-1-invalid-c-l.t
+passing libhtp/files/37-invalid-request-2-t-e-and-c-l.t
+passing libhtp/files/38-invalid-request-3-invalid-t-e.t
 passing libhtp/files/39-auto-destroy-crash.t
 not-yet libhtp/files/40-auth-basic.t
 not-yet libhtp/files/41-auth-digest.t
 not-yet libhtp/files/42-unknown-method_only.t
-not-yet libhtp/files/43-invalid-protocol.t
-not-yet libhtp/files/44-auth-basic-invalid.t
+passing libhtp/files/43-invalid-protocol.t
+passing libhtp/files/44-auth-basic-invalid.t
 not-yet libhtp/files/45-auth-digest-unquoted-username.t
-not-yet libhtp/files/46-auth-digest-invalid-username.t
+passing libhtp/files/46-auth-digest-invalid-username.t
 not-yet libhtp/files/47-auth-unrecognized.t
-not-yet libhtp/files/48-invalid-response-headers-1.t
-not-yet libhtp/files/49-invalid-response-headers-2.t
+passing libhtp/files/48-invalid-response-headers-1.t
+passing libhtp/files/49-invalid-response-headers-2.t
 not-yet libhtp/files/50-util.t
-not-yet libhtp/files/51-get-ipv6-invalid.t
-not-yet libhtp/files/52-invalid-path.t
+passing libhtp/files/51-get-ipv6-invalid.t
+passing libhtp/files/52-invalid-path.t
 not-yet libhtp/files/53-path-utf8-none.t
 not-yet libhtp/files/54-path-utf8-valid.t
 not-yet libhtp/files/55-path-utf8-overlong-2.t
 not-yet libhtp/files/56-path-utf8-overlong-3.t
 not-yet libhtp/files/57-path-utf8-overlong-4.t
-not-yet libhtp/files/58-path-utf8-invalid.t
+passing libhtp/files/58-path-utf8-invalid.t
 not-yet libhtp/files/59-path-utf8-fullwidth.t
 not-yet libhtp/files/60-request-cookies.t
 passing libhtp/files/61-empty-line-between-requests.t
 not-yet libhtp/files/62-post-no-body.t
-not-yet libhtp/files/63-post-chunked-invalid-1.t
-not-yet libhtp/files/64-post-chunked-invalid-2.t
-not-yet libhtp/files/65-post-chunked-invalid-3.t
+passing libhtp/files/63-post-chunked-invalid-1.t
+passing libhtp/files/64-post-chunked-invalid-2.t
+passing libhtp/files/65-post-chunked-invalid-3.t
 passing libhtp/files/66-post-chunked-split-chunk.t
 passing libhtp/files/67-long-request-line.t
-not-yet libhtp/files/68-invalid-request-header.t
+passing libhtp/files/68-invalid-request-header.t
 not-yet libhtp/files/69-long-response-header.t
-not-yet libhtp/files/70-response-invalid-chunk-length.t
+passing libhtp/files/70-response-invalid-chunk-length.t
 not-yet libhtp/files/71-response-split-chunk.t
 not-yet libhtp/files/72-response-split-body.t
 not-yet libhtp/files/73-response-te-and-cl.t
 not-yet libhtp/files/74-response-multiple-cl.t
-not-yet libhtp/files/75-response-invalid-cl.t
+passing libhtp/files/75-response-invalid-cl.t
 not-yet libhtp/files/76-response-no-body.t
 not-yet libhtp/files/77-response-folded-headers.t
 not-yet libhtp/files/78-response-no-status-headers.t
-not-yet libhtp/files/79-connect-invalid-hostport.t
-not-yet libhtp/files/80-hostname-invalid-1.t
-not-yet libhtp/files/81-hostname-invalid-2.t
+passing libhtp/files/79-connect-invalid-hostport.t
+passing libhtp/files/80-hostname-invalid-1.t
+passing libhtp/files/81-hostname-invalid-2.t
 not-yet libhtp/files/82-put.t
-not-yet libhtp/files/83-auth-digest-invalid-username-2.t
+passing libhtp/files/83-auth-digest-invalid-username-2.t
 not-yet libhtp/files/84-response-no-status-headers-2.t
 not-yet libhtp/files/85-zero-byte-request-timeout.t
 not-yet libhtp/files/86-partial-request-timeout.t
@@ -445,7 +446,7 @@ not-yet libhtp/files/88-response-multiple-cl-mismatch.t
 not-yet libhtp/files/89-get-whitespace.t
 not-yet libhtp/files/90-request-uri-too-large.t
 not-yet libhtp/files/91-request-unexpected-body.t
-not-yet libhtp/files/92-http_0_9-method_only.t
+passing libhtp/files/92-http_0_9-method_only.t
 not-yet libhtp/files/93-compressed-response-deflateasgzip.t
 not-yet libhtp/files/94-compressed-response-multiple.t
 not-yet libhtp/files/95-compressed-response-gzipasdeflate.t

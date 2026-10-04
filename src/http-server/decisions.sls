@@ -55,6 +55,7 @@
       (handler-failed . 500)
       (invalid-response . 500)               ; one the serializer cannot write (0010 item 2)
       (unsupported-transfer-coding . 501)    ; a coding before a final chunked (RFC 9112 §6.1)
+      (version-not-supported . 505)          ; not 1.x: HTTP/0.9, 2.0 (RFC 9110 §15.6.6; M8.3)
       (http2-preface . 505)))                ; nothing to hand HTTP/2 to (0006 item 2)
 
   ;; reason-status : Symbol -> Nat

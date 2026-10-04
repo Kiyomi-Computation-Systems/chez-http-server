@@ -264,6 +264,11 @@
         answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
                                      "0\r\n\r\n" get))
         (refused 501 "Not Implemented" 'unsupported-transfer-coding (at epoch)))
+   ;; 505: HTTP/0.9, which the server does not speak (RFC 9110 §15.6.6;
+   ;; decided on the owner's word, by form, 2026-10-03, M8.3).
+   (row "505: an HTTP/0.9 request"
+        answers (sent (string-append "GET / HTTP/0.9\r\n\r\n" get))
+        (refused 505 "HTTP Version Not Supported" 'version-not-supported (at epoch)))
    ;; 505: HTTP/2's preface; there is nothing to hand it to (decision 0006
    ;; item 2).
    (row "505: the HTTP/2 preface"

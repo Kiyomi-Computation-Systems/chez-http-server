@@ -92,7 +92,17 @@
 ;;; browsers send unencoded, are answered 301 with the target encoded as the
 ;;; Location.
 ;;;
-;;; THE HOST IS JUDGED FIRST, at the same moment (RFC 9112 §3.2; decided on
+;;; THE VERSION IS JUDGED FIRST, at the same moment (M8.3; decided on the
+;;; owner's word, by form, 2026-10-03, and after the review, 2026-10-04): a
+;;; request whose version is not 1.x is refused as 'version-not-supported,
+;;; answered 505 (RFC 9110 §15.6.6).  The parser reads two such: a request
+;;; line with no version, or one that says HTTP/0.9, as HTTP/0.9, the lines
+;;; after it as its fields; and one that says HTTP/2.0, whose preface it
+;;; hands off apart.  The server speaks HTTP/1.1 and 1.0 only, and a version
+;;; it does not speak frames nothing.  The parser refuses every other
+;;; version itself (HTTP/1.2, 3.0, ...), and its error is a 400.
+;;;
+;;; THE HOST IS JUDGED NEXT, at the same moment (RFC 9112 §3.2; decided on
 ;;; the owner's word, 2026-09-25): two Host lines, a Host value that is not
 ;;; `uri-host [ ":" port ]`, and no Host on HTTP/1.1 unless the limits'
 ;;; switch is off, are refused as 'invalid-host, answered 400.  The 400 is a
@@ -1641,7 +1651,9 @@
   ;; this message's only from on-headers-complete on.  Nothing downstream
   ;; re-reads the parser.  The flags and the content-length say whether a
   ;; body follows (M6.1): one chunked, or with a Content-Length above 0.
-  ;; The Host lines are judged here first (RFC 9112 §3.2; see (http-server
+  ;; The version is judged here first (M8.3): one that is not 1.x, HTTP/0.9
+  ;; or HTTP/2.0, is refused as 'version-not-supported, answered 505.  Then
+  ;; the Host lines (RFC 9112 §3.2; see (http-server
   ;; host)): a request whose Host is missing on HTTP/1.1 (when the limits
   ;; require one), doubled or invalid is refused as 'invalid-host, answered
   ;; 400.  Then the framing: a request below HTTP/1.1 with Transfer-Encoding
@@ -1657,7 +1669,7 @@
   ;; Then the transfer codings (see (http-server transfer-coding)): when the
   ;; parser frames the body by a final chunked, another coding beside it is
   ;; refused as 'unsupported-transfer-coding, answered 501.
-  ;; A request accepted on all four moves head -> body: the request is built
+  ;; A request accepted on all five moves head -> body: the request is built
   ;; from the head, and the header deadline gives way to the body's.  The
   ;; connection is marked to close after the response unless the message
   ;; keeps it alive (decision 0006 item 1), or, when it does, if the parser
@@ -1678,6 +1690,7 @@
               (name (method-name method))
               (target (or (head-target h) empty-span)))
          (cond
+          ((not (fx=? http-major 1)) (refuse s 'version-not-supported))
           ((host-fault (head-fields h) http-major http-minor
                        (limits-require-host? (conn-limits s)))
            (refuse s 'invalid-host))

@@ -166,9 +166,11 @@
                          default-limits))
     ;; A request line with no version (HTTP/0.9) ends at the target, by CRLF
     ;; or by a bare LF, which the strict parser takes too: there are no
-    ;; spaces to refuse, and it is served, then the connection closes.
-    (test-equal "a request line with no version, ended by CRLF or a bare LF, with a field or none, every delivery size: served"
-                (list one-served one-served one-served one-served)
+    ;; spaces to refuse, the parser completes the head, and the core refuses
+    ;; the version it does not speak, 505 (M8.3; the lines after the request
+    ;; line, read as its fields, do not change the refusal).
+    (test-equal "a request line with no version, ended by CRLF or a bare LF, with a field or none, every delivery size: 505"
+                (let ((r (refused-first 505 'version-not-supported))) (list r r r r))
                 (list (every-size (b "GET /a\r\nHost: x\r\n\r\n") default-limits)
                       (every-size (b "GET /a\nHost: x\r\n\r\n") default-limits)
                       (every-size (b "GET /a\r\n\r\n") default-limits)

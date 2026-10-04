@@ -151,14 +151,15 @@
   (lambda ()
     ;; the per-lane counts: the plan's at the opening, moved only by a
     ;; reviewed promotion (M2.4: 131 outcomes; M2.5: the 4 upgrades; the M2
-    ;; exit: the 12 pipelining and multi-packet streams)
+    ;; exit: the 12 pipelining and multi-packet streams; M6.4: the 2 Expect
+    ;; streams; M8.3: the robustness lane's 28)
     (test-eqv "trace lane: 135 passing"   135 (lane-count "trace" 'passing))
     (test-eqv "trace lane: 32 deferred"    32 (lane-count "trace" 'deferred))
     (test-eqv "outcome lane: 135 passing" 135 (lane-count "outcome" 'passing))
     (test-eqv "outcome lane: 0 not-yet"     0 (lane-count "outcome" 'not-yet))
     (test-eqv "outcome lane: 32 deferred"  32 (lane-count "outcome" 'deferred))
-    (test-eqv "libhtp lane: 14 passing"    14 (lane-count "libhtp" 'passing))
-    (test-eqv "libhtp lane: 88 not-yet"    88 (lane-count "libhtp" 'not-yet))
+    (test-eqv "libhtp lane: 42 passing"    42 (lane-count "libhtp" 'passing))
+    (test-eqv "libhtp lane: 60 not-yet"    60 (lane-count "libhtp" 'not-yet))
     ;; every fixture in every lane is listed (no missing entry)
     (for-each (lambda (m) (diag (string-append "RATCHET MISSING " m))) missing)
     (test-equal "manifest covers every fixture in every lane" '() missing)
