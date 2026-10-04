@@ -1,0 +1,5 @@
+Darwin 25.6.0 arm64, Chez Chez Scheme Version 10.4.1 (tarm64osx), libuv 1.52.1; max-connections 10000, read buffer 16384 B; holding 10000
+before the client: heap 23646592 B, resident 38436864 B
+holding: satisfied; 10000 open, TCP handles 10001, read buffers 10001, deadlines armed 10000; heap 43132952 B, resident 240500736 B
+after the client closed them: satisfied, client exit (0 #f); heap 23689064 B, resident 238714880 B
+a held connection: heap 1949 B, resident 20206 B; 10000 held: heap 19.5 MB, resident 202.1 MB

@@ -8,6 +8,7 @@
 set -eu
 LC_ALL=C
 export LC_ALL
+here=$(cd "$(dirname "$0")" && pwd)
 
 name="${1:?usage: vendor-corpus.sh NAME ROOT}"
 root="${2:?usage: vendor-corpus.sh NAME ROOT}"
@@ -46,17 +47,16 @@ test -d "$root/.git" || { echo "vendor-corpus.sh: $root is not a git checkout" >
 commit=$(git -C "$root" rev-parse HEAD)
 dst="test/vendor/$name"
 
-sha() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
-}
+sha() { sh "$here/sha256.sh" "$1"; }
 
 # The globs expand inside the checkout, in C order, and every file must be
-# there before the vendored copy is touched: a checkout missing one leaves
-# the corpus as it was.
+# there, and a sha256 tool, before the vendored copy is touched: a checkout
+# missing one leaves the corpus as it was.
 listed=$(cd "$root" && ls -1d $files) || { echo "vendor-corpus.sh: $root lacks a file of $name" >&2; exit 2; }
 for f in $listed; do
   test -f "$root/$f" || { echo "vendor-corpus.sh: $root/$f is no file" >&2; exit 2; }
 done
+sha "$0" > /dev/null
 rm -rf "${dst:?}"
 mkdir -p "$dst"
 for f in $listed; do
@@ -85,6 +85,6 @@ count=$(printf '%s\n' $listed | wc -l | tr -d ' ')
   echo "retrieved: $(date -u +%Y-%m-%d)"
   echo "file-count: $count"
   echo ""
-  for f in $listed; do echo "sha256 $(sha "$dst/$f") $f"; done
+  for f in $listed; do s=$(sha "$dst/$f"); echo "sha256 $s $f"; done
 } > "$dst/PROVENANCE"
 echo "vendor-corpus.sh: vendored $count files of $name at $commit into $dst"

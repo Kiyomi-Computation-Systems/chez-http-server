@@ -1,7 +1,7 @@
 #!r6rs
-;;; Real clients: curl, ab and vtest against the server.  The M4 exit (plan
-;;; §8), and M8.3's black-box lane (plan §14): vtest2's scripts and curl's
-;;; own ways with a server it does not know.
+;;; Real clients: curl, ab, vtest and oha against the server.  The M4 exit
+;;; (plan §8), M8.3's black-box lane (plan §14): vtest2's scripts and curl's
+;;; own ways with a server it does not know, and M8.4's load smoke, oha's.
 ;;;
 ;;; The brief's gate for M4: `curl` and `ab` get correct responses, and the
 ;;; counters return to zero.  A server is started through an environment, as
@@ -11,7 +11,8 @@
 ;;; capped by an iteration count, a 1 ms ticker keeping the loop awake
 ;;; (design §8.5).  A client that cannot be started is the harness's failure,
 ;;; status 2, and named on standard error: curl, and ab, from Apache's
-;;; apache2-utils on Linux, are test tools.
+;;; apache2-utils on Linux, are test tools, and so are vtest and oha, which
+;;; `make test` builds and fetches at their pins.
 ;;;
 ;;; Oracles:
 ;;;   - what each client reports of its exchanges.  curl's --write-out gives
@@ -40,7 +41,11 @@
 ;;;   - vtest's verdict on each of tests/vtc/*.vtc (M8.3): a script is a
 ;;;     client's exchanges and what it expects of each answer, written from
 ;;;     RFC 9112 and the decisions before it first ran, and read by vtest's
-;;;     own HTTP/1 code, which is neither curl's nor chez-httparse's.
+;;;     own HTTP/1 code, which is neither curl's nor chez-httparse's;
+;;;   - oha's report of a load (M8.4): the responses it counted by status and
+;;;     the requests that failed by kind, so every request it sent was
+;;;     answered 200 and none failed, many connections at a time, kept alive
+;;;     and not.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation bytes-allocated getenv directory-list)
         (libuv) (uv-testing) (shell-testing)
@@ -284,6 +289,14 @@
 ;; live-count : Symbol -> Nat — chez-libuv's dev-build count of a kind.
 (define (live-count kind) (cdr (assq kind (debug-live-counts))))
 
+;; client-path : (String -> (U String #f)) String String -> String
+;; The client the variable `name` names, read through `lookup`, or `default`
+;; when it is unset or empty: the Makefile takes an empty VTEST or OHA as
+;; unset and builds or fetches the default, so the suite runs that one too.
+(define (client-path lookup name default)
+  (let ((v (lookup name)))
+    (if (and v (not (string=? v ""))) v default)))
+
 ;; --- vtest (M8.3) ---
 ;;
 ;; vtest2 is built at its pin by `make vtest` (decision 0017); VTEST names
@@ -292,7 +305,7 @@
 ;; capped at 1 KiB, so its timeouts and limits act within a run.  vtest
 ;; gives each script 5 s (`-t`), the longest taking 1.24 s, so twelve that
 ;; hang end within the suite's 120 s, each with vtest's own verdict.
-(define vtest (or (getenv "VTEST") "build/vtest"))
+(define vtest (client-path getenv "VTEST" "build/vtest"))
 
 ;; The scripts, each with the verdict it is held to: the lane's manifest,
 ;; gated both ways against tests/vtc, as M1's ratchet gates its fixtures.
@@ -368,6 +381,68 @@
               (append (filter (lambda (l) (starts? "----" l)) log)
                       (if (exists (lambda (l) (find-sub l "TIMED OUT")) log) '("TIMED OUT") '()))))))
 
+;; --- oha, the load smoke (M8.4) ---
+;;
+;; oha, the brief's load client, is fetched at its pin by `make oha`
+;; (decision 0018); OHA names another.  The smoke reads its report, the
+;; JSON it writes with `--output-format json`: two flat objects in it, the
+;; responses it counted by status and the requests that failed by kind, the
+;; bytes of their bodies, and the rate, which is printed and not checked.
+(define oha (client-path getenv "OHA" "build/oha"))
+
+;; The cap on an oha run's wait, in turns of the loop, which serves many
+;; requests a turn under load.  Measured on 2026-10-04, three runs each: the
+;; 20,000 kept alive took 1,470 to 1,636 turns on Darwin arm64 and 466 to
+;; 495 on Linux aarch64, the 2,000 on connections of their own 5,492 to
+;; 5,493 and 472 to 489.  The cap is four and a half times the most.  With
+;; nothing to serve, the 1 ms ticker turns the loop a thousand times a
+;; second at most, so a run that never ends is cut after 25 s, and both
+;; runs, cut, end within the suite's 120 s, each failing by name: a server
+;; that stops answering would keep oha's 20,000 requests timing out 50 at a
+;; time for half an hour.
+(define oha-cap 25000)
+
+;; json-string : String Nat -> (Values String Nat)
+;; The JSON string whose text begins at `i`, just past its opening quote,
+;; with \" and \\ read as the character escaped, and where it ends, just past
+;; its closing quote.
+(define (json-string s i)
+  (let loop ((i i) (acc '()))
+    (let ((c (string-ref s i)))
+      (cond ((char=? c #\") (values (list->string (reverse acc)) (+ i 1)))
+            ((char=? c #\\) (loop (+ i 2) (cons (string-ref s (+ i 1)) acc)))
+            (else (loop (+ i 1) (cons c acc)))))))
+
+;; oha-tally : String String -> (U (Listof (Pair String Nat)) #f)
+;; The flat object named `key` in oha's report `text`, its pairs in order,
+;; each a name and a count; #f when the report has no such object.
+(define (oha-tally text key)
+  (let ((at (find-sub text (string-append "\"" key "\":"))))
+    (and at
+         (let next ((i (+ at (string-length key) 3)) (acc '()))
+           (let ((c (string-ref text i)))
+             (cond ((char=? c #\}) (reverse acc))
+                   ((char=? c #\")
+                    (let-values (((name j) (json-string text (+ i 1))))
+                      (let* ((start (let skip ((j j))
+                                      (if (memv (string-ref text j) '(#\: #\space #\newline)) (skip (+ j 1)) j)))
+                             (end (let digits ((k start))
+                                    (if (char-numeric? (string-ref text k)) (digits (+ k 1)) k))))
+                        (next end (cons (cons name (string->number (substring text start end))) acc)))))
+                   (else (next (+ i 1) acc))))))))
+
+;; oha-number : String String -> (U Real #f)
+;; The number named `key` in oha's report `text`, the first such, as the
+;; rate, `requestsPerSec`, and the bodies' bytes, `totalData`; #f when the
+;; report has none.
+(define (oha-number text key)
+  (let ((at (find-sub text (string-append "\"" key "\":"))))
+    (and at
+         (let* ((start (+ at (string-length key) 3))
+                (end (let scan ((k start))
+                       (if (memv (string-ref text k) '(#\, #\newline #\})) k (scan (+ k 1))))))
+           (string->number (trim (substring text start end)))))))
+
 (define curl-out "%{http_code} %{num_connects} %{size_download}\\n")
 
 (run-suite "clients"
@@ -378,6 +453,7 @@
            (url (lambda (path) (string-append "http://127.0.0.1:" (number->string port) path))))
       (require-client! loop sh "curl" "--version")
       (require-client! loop sh "ab" "-V")
+      (require-client! loop sh oha "--version")
 
       ;; --- vtest (M8.3) ---
       ;; Every script is run before any check, so a vtest that cannot be
@@ -560,6 +636,43 @@
       (test-equal "ab -k: 200 requests, 8 at a time, kept alive, every one answered"
                   (list 'satisfied '(0 #f) '("200" "0" #f "200" "4 bytes"))
                   (ab-report (run loop sh "ab" (list "-k" "-n" "200" "-c" "8" (url "/")))))
+
+      ;; --- oha, the load smoke (M8.4) ---
+      ;; Which oha runs, and how its report is read, on a snippet with a
+      ;; failure of each kind.
+      (test-equal "oha: OHA or VTEST unset or empty names the default, and any other value the client it names"
+                  '("build/oha" "build/oha" "/x/oha")
+                  (map (lambda (v) (client-path (lambda (name) v) "OHA" "build/oha")) '(#f "" "/x/oha")))
+      (test-equal "oha: the report's reader reads each tally's pairs in order, an error's name with its quotes, an empty one, and a number"
+                  '((("200" . 19980) ("503" . 2)) (("timeout" . 18) ("Can't \"x\" (os error 49)" . 2)) () 31154.5 6)
+                  (let ((text (string-append "{\n  \"summary\": {\n    \"requestsPerSec\": 31154.5,\n    \"totalData\": 6\n  },\n"
+                                             "  \"statusCodeDistribution\": {\n    \"200\": 19980,\n    \"503\": 2\n  },\n"
+                                             "  \"errorDistribution\": {\n    \"timeout\": 18,\n"
+                                             "    \"Can't \\\"x\\\" (os error 49)\": 2\n  },\n  \"other\": {}\n}")))
+                    (list (oha-tally text "statusCodeDistribution") (oha-tally text "errorDistribution")
+                          (oha-tally text "other") (oha-number text "requestsPerSec") (oha-number text "totalData"))))
+      ;; 20,000 GETs, 50 at a time on connections kept alive, then 2,000, 10
+      ;; at a time, each on a connection of its own.  oha gives each request
+      ;; 5 s (`-t`), so one never answered is counted a timeout, and the run
+      ;; still ends.  Each answer's body is the 4 bytes "/ -\n", the path and
+      ;; no query, as ab's Document Length reads above.
+      (for-each
+       (lambda (smoke)
+         (let* ((r (run loop sh oha (append '("--no-tui" "--output-format" "json" "-t" "5s") (cadr smoke)
+                                            (list (url "/")))
+                        #f #f (lambda () #f) oha-cap))
+                (text (caddr r)))
+           (let ((p (current-output-port)) (rate (oha-number text "requestsPerSec")))
+             (put-string p (string-append "clients: oha, " (car smoke) ": "
+                                          (if rate (number->string (exact (round rate))) "no rate")
+                                          " requests a second\n"))
+             (flush-output-port p))
+           (test-equal (string-append "oha: " (car smoke) ", every one answered 200 with its 4 bytes, none failed")
+                       (list 'satisfied '(0 #f) (list (cons "200" (caddr smoke))) '() (* 4 (caddr smoke)))
+                       (list (car r) (cadr r) (oha-tally text "statusCodeDistribution")
+                             (oha-tally text "errorDistribution") (oha-number text "totalData")))))
+       '(("20,000 GETs, 50 connections kept alive" ("-n" "20000" "-c" "50") 20000)
+         ("2,000 GETs, 10 at a time, each on a connection of its own" ("-n" "2000" "-c" "10" "--disable-keepalive") 2000)))
 
       ;; --- the counters return to zero ---
       (test-eq "with every client gone, every connection leaves the table" 'satisfied

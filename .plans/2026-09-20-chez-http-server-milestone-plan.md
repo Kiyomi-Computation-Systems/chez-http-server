@@ -1651,6 +1651,55 @@ black-box lane.
 - **Mutation:** the shell drops one write in a thousand. Expect the smoke's own check,
   every response answered and none failed, red.
 
+*Noted 2026-10-04 (M8.4):* measured first, then built as written, with these settled
+on the way.
+- **Decided on the owner's word, by one form**, the recommended option each time:
+  - oha is v1.16.0's release binary, fetched by `make oha` and checked by sha256
+    ("Pinned binary, checked"; decision 0018);
+  - v0.1.0 sets no throughput goal, and its numbers are recorded as a baseline ("No
+    goal; record a baseline"; decision 0002's amendment of 2026-10-04);
+  - v0.1.0 is an annotated tag only ("Annotated tag only").
+- **The smoke is in the clients suite.** oha sends 20,000 GETs on 50 kept-alive
+  connections, then 2,000 on a connection each. Each run's check is that every request
+  was answered 200 with its 4-byte body and none failed. The plan's mutation reddens
+  both runs, oha counting 19,980 answered and 20 timeouts of the 20,000, and curl's
+  16 MiB stream besides. A 503 in a thousand reddens both runs too, and so does an
+  empty body in a thousand, by the bodies' bytes alone.
+- **The first throughput numbers** come from `research/spike/m8-load.sh`, beside Node's
+  http on the same Apple M1 (0002's amendment has the table):
+  - Darwin: 9.9 to 10.5 thousand requests a second at one connection, and 23.7 to
+    34.0 thousand at 10 to 500. That is level with Node 20.10 at one connection, and
+    2% to 10% under it at 10 or more, one round at 500 aside, 25% under.
+  - Linux in Docker: 14.0 to 14.4 thousand at one connection, and 61.5 to 88.0
+    thousand at 10 to 500. That is level with Node 18.20 at one, and 12% to 66% over it
+    at 10 or more.
+  - Through the whole server a GET allocates about 10.4 KB at one connection and
+    8.9 KB at 50; the gate's 1,840 B is the core's part
+    (`research/spike/m8-request-alloc.sps`).
+- **0004 item 3's alternative was weighed.** A shell that never stops reading saved
+  0.6 to 1.0 µs a request at 10 connections on Linux, and up to 0.8 µs on Darwin, at
+  most 6% of the requests a second: less than the alternative would cost, and no goal
+  asks for it (0004's note of 2026-10-04).
+- **The memory at `max-connections`:** 10,000 idle connections hold 199 to 202 MB,
+  about 20 KB each (design §7.5's note). `docs/configuration.org`'s figure moves from
+  about 180 MB to about 200 MB.
+- **Found while measuring:**
+  - Without keep-alive, a first matrix in scratch, its runs back to back, had oha's
+    connects fail at 100 and 500 connections (EADDRNOTAVAIL, and timeouts). Measured
+    apart (`research/spike/m8-no-keepalive.sh`), each run waiting for the last's
+    TIME_WAITs to clear, every one of 20,000 was answered at 10, 100 and 500, with no
+    listen-queue overflow. Each run leaves 5,587 to 5,873 of oha's own ports in
+    TIME_WAIT for 30 s, so three back to back pass macOS's 16,384: the testing
+    machine's limit, not the server's. The smoke's 2,000 leave far fewer.
+  - A macOS Bluetooth daemon was using about one core whenever it was checked through
+    the Darwin runs. The two servers ran alternately under it.
+- **The review**, a /code-review high, found ten, all fixed on the owner's word ("Fix
+  all ten"): the records' two claims measured (the above), the cap fitted to two stalled
+  runs, an empty `OHA` or `VTEST` taken as unset, the fetch's own temporary file, a
+  missing sum tool named, one sha256 helper for the fetch and the corpus vendoring, one
+  file of the spikes' shared parts, the Makefile's header, and the bodies' bytes
+  checked.
+
 **M8 exit:** the brief's. v0.1.0 is tagged with the measured numbers in `CHANGELOG.md`.
 
 ### Open, and not sliced

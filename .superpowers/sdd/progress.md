@@ -4843,3 +4843,128 @@ DONE and merged (88cdc07, PR #112; 375e2e4, PR #113; 064db95, PR #114; 1f74086, 
 - Decided by form: HTTP/0.9, then every non-1.x version, refused 505; curl and vtest2; smuggler dropped; each step reviewed and its own PR(s); the reviews' findings fixed (step 1's tenth noted), Kestrel's bare lines completed into heads, lighttpd's two HTTP sections, and step 3 as three stacked PRs. Three /code-review high passes found ten each.
 
 NEXT: M8.4 (plan §14), load and the release, when the owner asks.
+
+## M8.4 — load, and the release (started 2026-10-04)
+
+Started on the owner's "Start m8.4", from main at 28e0d77, on feat/m8.4-load. Plan §14:
+- oha's load smoke gives the first throughput numbers, where decision 0002's amendment
+  says a goal can first be set and 0004 item 3's alternative can be weighed;
+- the memory at `max-connections` is re-measured;
+- `CHANGELOG.md` gains v0.1.0, then the tag.
+
+All measured 2026-10-04 on an Apple M1, 8 cores and 16 GB: Darwin 25.6.0 arm64 (macOS
+26.6.2), and Linux 6.12.76-linuxkit aarch64 in Docker's `chez-libuv-valgrind:10.4.1`
+image (698eba6; Debian 12, libuv 1.44.2) on the same machine. oha 1.16.0, its release
+binary. A macOS Bluetooth daemon, BTLEServer, used about one core whenever it was
+checked, from before the first Darwin run to after the last.
+
+**Measured first, for the form (scratch, the session scratchpad m84/).**
+- oha against `tests/serve-child.sps` beside Node's http, kept alive, three rounds
+  alternating: Darwin 11.2–11.3 thousand a second at one connection and 31.1–34.3 at 10
+  to 500, against Node 20.10's 11.2–11.3 and 32.3–37.2; Linux 14.2–14.7 and 62.3–88.0,
+  against Node 18.20's 14.1–14.4 and 41.7–61.2. Every request answered 200.
+- 10,000 idle connections held 195–202 MB on Darwin, 199–205 MB on Linux.
+- A shell never stopping reading made no difference beyond the runs' spread.
+- The smoke in the clients suite: 1.2 to 1.3 s more a run; the plan's mutation reddened
+  both runs, oha counting 19,980 answered and 20 timeouts.
+- oha's binaries 10.3 to 13.4 MB, each with the sha256 GitHub records for it; built
+  from source with `cargo install --locked`, 133 s (440 s of CPU), 225 crates, 304 MB
+  downloaded, Rust 1.88 or later.
+
+**DECIDED on the owner's word (2026-10-04), by one form, the recommended option each
+time:**
+- "Pinned binary, checked": oha is v1.16.0's release binary, fetched by `make oha` and
+  kept only at its pinned sha256, decision 0018. Weighed: built from source as vtest2
+  is, and oha on `PATH` as curl and ab are.
+- "No goal; record a baseline": v0.1.0 sets no throughput goal, and CHANGELOG.md
+  records the numbers with their platforms. The 3 KiB gate stays a ratchet, as decision
+  0002's amendment of 2026-10-04 records. Weighed: within 15% of Node's http, checked by
+  hand per release; a floor in CI.
+- "Annotated tag only": v0.1.0 is an annotated tag, as chez-libuv, chez-httparse and
+  byte-machine tag, pushed at the closing ritual. Weighed: a GitHub release too, as
+  uriparse makes.
+
+**Built** (no source under `src/` changes):
+- `tests/fetch-oha.sh` and `make oha`. The script pins the version and the four
+  binaries' sums, for macOS and Linux on amd64 and arm64. `make test` fetches oha
+  unless `OHA` names one, and runs on where it cannot: the clients suite then names
+  it, status 2. CI fetches it in a step of its own.
+- `tests/test-clients.sps`, the load smoke: a reader of oha's JSON report, checked on a
+  snippet; 20,000 GETs on 50 kept-alive connections, then 2,000 on a connection each,
+  each held to every request answered 200 and none failed; each run's rate, printed and
+  not checked.
+- Records: decision 0018; 0002's amendment and 0004's note; design §7.5's and §8.8's
+  notes; plan §14's note; `docs/configuration.org`'s memory figure; README.org's status
+  and prerequisites; CHANGELOG.md's v0.1.0.
+- The spikes, with their runs under `out/`.
+
+**The review.** A /code-review high found ten. By a second form the owner chose "Fix
+all ten" and "One PR now". Fixed:
+1. The records blamed the no-keep-alive failures on client ports without measuring:
+   measured, below.
+2. CHANGELOG gave the gate's 1,840 B as what a request allocates: the whole server's is
+   measured, below, and both are given.
+3. Two stalled oha runs, each waiting out the 60,000-turn cap, would outlast the
+   suite's 120 s: the cap is 25,000, four and a half times the most measured.
+4. An empty `OHA` or `VTEST` named no client in the Makefile and "" in the suite: the
+   suite takes it as unset too, checked.
+5. Every fetch wrote the one file `oha.part`, so fetches at once interfered: each
+   writes a file of its own. Witnessed before the fix, four at once, three trials: one
+   fetched and three failed each time.
+6. With no sum tool the fetch reported a mismatch: `tests/sha256.sh` names the missing
+   tool, before anything is fetched.
+7. The sha256 helper was in three places: `tests/sha256.sh` is the one, for the fetch,
+   `tests/vendor-corpus.sh` and the Makefile's corpus-refresh. It reproduces all 123
+   vendored sums, and the vendoring stops before touching a corpus when no tool is
+   there.
+8. The spikes repeated their CPU reader and summary: `m8-load-common.sh` holds them.
+9. The Makefile's header implied a `*_PIN` line for oha: it names the script.
+10. The smoke checked no bytes: each run's bodies must come to 4 bytes a request.
+
+**Measured on the fixed tree, the committed spikes, for the records** (the outputs under
+`out/`):
+- **Throughput** (`m8-load.sh`, two runs of three rounds). In thousands a second, at 1,
+  10, 50, 100 and 500 connections:
+  - Darwin: 9.9–10.5, 31.3–32.8, 32.8–34.0, 32.6–34.0 and 23.7–31.5, against Node
+    20.10's 10.3–10.7, 34.0–35.5, 35.4–36.1, 34.4–36.1 and 31.1–32.0. Round by round,
+    level at one connection and 2% to 10% under at 10 or more, one round at 500 aside,
+    25% under.
+  - Linux: 14.0–14.4, 61.5–64.4, 82.8–86.8, 78.3–88.0 and 62.4–72.8, against Node
+    18.20's 14.1–14.4, 53.6–55.6, 50.9–60.4, 50.6–55.9 and 43.8–46.8. Level at one, 12%
+    to 66% over at 10 or more.
+  - Server CPU a request at 10 connections or more: Darwin 28.4 to 31.6 µs, Linux 11.4
+    to 16.2. At 50 connections the median latency was 1.1 to 1.7 ms on Darwin and 0.55
+    to 0.58 on Linux, the 99th percentile 2.2 to 2.6 and 0.71 to 0.81.
+  - Every request was answered 200, none failed.
+- **Allocation through the whole server** (`m8-request-alloc.sps`, two rounds): 10,431
+  to 10,434 B a GET at one connection, and 8,895 to 8,902 B at 50, on both platforms.
+- **Without keep-alive** (`m8-no-keepalive.sh`, Darwin, two rounds, each run waiting
+  for the last's TIME_WAITs to clear): every one of 20,000 was answered at 10, 100 and
+  500 connections, with no listen-queue overflow. Each run left 5,587 to 5,873 of oha's
+  ports in TIME_WAIT, and up to 16,355 of the server's. The first matrix ran its runs
+  back to back: three of them pass macOS's 16,384 ports, held 30 s, which is what its
+  failures at 100 and 500 were.
+- **The read-stop A/B** (`m8-read-stop.sh`, four rounds): never stopping saved 0.6 to
+  1.0 µs a request at 10 connections on Linux, 4% to 6%, and 0.2 to 0.8 µs at 10 and 50
+  on Darwin, up to 3%; at one connection, and at 50 on Linux, the two overlap (0004's
+  note has the table). The Linux run's `HEAD` is the container's own commit of the
+  tree's src and tests.
+- **Memory at `max-connections`** (`m8-max-connections.sps`, before the review, the
+  server's code unchanged since): the heap grew 1,949 to 1,950 B a connection on Darwin
+  and 1,945 to 1,947 on Linux, the resident set 20,020 to 20,206 B and 19,860 to 19,875,
+  199 to 202 MB in all.
+- **Set aside:** a first Darwin load run, which read lower for both servers, and the
+  load, read-stop and allocation runs made while a witness of the fixes ran beside them,
+  each run again alone.
+
+`make test` on the fixed tree, Darwin arm64: fifty suites, 1,882 expected passes
+(1,878 + the clients suite's four), every pin ok, in 42.97 s. On Linux in Docker, less
+its submodule and pin checks: fifty suites, 1,882, and the clients suite 36 twice more.
+
+Watched to fail (m8-mutations.md, M8.4): seven mutants on the fixed tree, each loading
+and reddening its checks. Plan §14's mutation, a write in a thousand dropped, reddens
+both runs, oha counting 19,980 answered and 20 timeouts of the 20,000. An empty body in
+a thousand reddens them by the bodies' bytes alone. The fetch script's paths, the shared
+sum and `make test`'s were witnessed by hand.
+
+NEXT: the PR, on the owner's "One PR now".

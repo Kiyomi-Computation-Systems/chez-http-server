@@ -92,9 +92,9 @@ server out of descriptors closes new connections at once, without a log. On
 Windows its listener stops: the server logs ~listener-failed~ and shuts down,
 so whatever supervises it can start it again.
 
-Each open connection also holds about 18 KB of memory: its read buffer
-(~CHEZ_HTTP_READ_BUFFER_SIZE~, 16 KB), about 1.5 KB of the server's own
-state, and libuv's socket. So 10,000 open connections hold about 180 MB.
+Each open connection also holds about 20 KB of memory: its read buffer
+(~CHEZ_HTTP_READ_BUFFER_SIZE~, 16 KB), about 2 KB of the server's own state,
+and libuv's socket. So 10,000 open connections hold about 200 MB.
 
 The two water marks bound a streamed response ([[file:handlers.org][handlers.org]]): the server
 asks its producer for the next piece only while at most

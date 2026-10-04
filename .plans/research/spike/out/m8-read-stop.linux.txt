@@ -1,0 +1,25 @@
+Linux 6.12.76-linuxkit aarch64, 10.4.1, oha 1.16.0: HEAD 0dd5cb0
+round 1 stops c=  1:   14356 req/s  p50  0.069 ms  p99   0.087 ms  server CPU  37.6 us/req  codes {'200': 50000}  errors {}
+round 1 reads c=  1:   14158 req/s  p50  0.069 ms  p99   0.091 ms  server CPU  38.0 us/req  codes {'200': 50000}  errors {}
+round 1 stops c= 10:   63109 req/s  p50  0.157 ms  p99   0.274 ms  server CPU  15.8 us/req  codes {'200': 50000}  errors {}
+round 1 reads c= 10:   66837 req/s  p50  0.146 ms  p99   0.250 ms  server CPU  14.8 us/req  codes {'200': 50000}  errors {}
+round 1 stops c= 50:   85447 req/s  p50  0.559 ms  p99   0.730 ms  server CPU  11.8 us/req  codes {'200': 50000}  errors {}
+round 1 reads c= 50:   87700 req/s  p50  0.542 ms  p99   0.725 ms  server CPU  11.6 us/req  codes {'200': 50000}  errors {}
+round 2 reads c=  1:   14088 req/s  p50  0.069 ms  p99   0.094 ms  server CPU  38.2 us/req  codes {'200': 50000}  errors {}
+round 2 stops c=  1:   14175 req/s  p50  0.069 ms  p99   0.087 ms  server CPU  38.4 us/req  codes {'200': 50000}  errors {}
+round 2 reads c= 10:   66844 req/s  p50  0.146 ms  p99   0.247 ms  server CPU  14.8 us/req  codes {'200': 50000}  errors {}
+round 2 stops c= 10:   63257 req/s  p50  0.156 ms  p99   0.275 ms  server CPU  15.6 us/req  codes {'200': 50000}  errors {}
+round 2 reads c= 50:   87130 req/s  p50  0.546 ms  p99   0.714 ms  server CPU  11.4 us/req  codes {'200': 50000}  errors {}
+round 2 stops c= 50:   87683 req/s  p50  0.556 ms  p99   0.674 ms  server CPU  11.6 us/req  codes {'200': 50000}  errors {}
+round 3 stops c=  1:   14238 req/s  p50  0.069 ms  p99   0.087 ms  server CPU  38.2 us/req  codes {'200': 50000}  errors {}
+round 3 reads c=  1:   14349 req/s  p50  0.069 ms  p99   0.079 ms  server CPU  37.8 us/req  codes {'200': 50000}  errors {}
+round 3 stops c= 10:   63006 req/s  p50  0.164 ms  p99   0.270 ms  server CPU  15.8 us/req  codes {'200': 50000}  errors {}
+round 3 reads c= 10:   65707 req/s  p50  0.150 ms  p99   0.241 ms  server CPU  15.2 us/req  codes {'200': 50000}  errors {}
+round 3 stops c= 50:   83165 req/s  p50  0.578 ms  p99   0.766 ms  server CPU  12.2 us/req  codes {'200': 50000}  errors {}
+round 3 reads c= 50:   88576 req/s  p50  0.549 ms  p99   0.661 ms  server CPU  11.4 us/req  codes {'200': 50000}  errors {}
+round 4 reads c=  1:   14301 req/s  p50  0.069 ms  p99   0.086 ms  server CPU  37.8 us/req  codes {'200': 50000}  errors {}
+round 4 stops c=  1:   13791 req/s  p50  0.070 ms  p99   0.106 ms  server CPU  39.4 us/req  codes {'200': 50000}  errors {}
+round 4 reads c= 10:   65454 req/s  p50  0.149 ms  p99   0.247 ms  server CPU  15.4 us/req  codes {'200': 50000}  errors {}
+round 4 stops c= 10:   62592 req/s  p50  0.162 ms  p99   0.272 ms  server CPU  16.0 us/req  codes {'200': 50000}  errors {}
+round 4 reads c= 50:   83761 req/s  p50  0.564 ms  p99   0.744 ms  server CPU  11.8 us/req  codes {'200': 50000}  errors {}
+round 4 stops c= 50:   87752 req/s  p50  0.546 ms  p99   0.710 ms  server CPU  11.2 us/req  codes {'200': 50000}  errors {}

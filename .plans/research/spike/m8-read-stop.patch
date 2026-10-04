@@ -1,0 +1,14 @@
+--- a/src/http-server/private/shell.sls
++++ b/src/http-server/private/shell.sls
+@@ -1002,10 +1002,7 @@
+   ;; stop races a close only if the handle is no longer open, and a closed
+   ;; handle reads nothing.
+   (define (read-stop! c)
+-    (when (connection-reading? c)
+-      (connection-reading?-set! c #f)
+-      (when (uv-handle-open? (connection-tcp c))
+-        (uv-read-stop! (connection-tcp c)))))
++    #f)
+ 
+   (define (read-start! c)
+     (unless (or (connection-reading? c) (connection-closing? c))

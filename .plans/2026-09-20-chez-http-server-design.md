@@ -1730,6 +1730,19 @@ passes the connection through the parser's user-context argument.
 > `out/m7-exit-before.run{1,2}.txt`, `out/m7-exit-after.run{1,2}.txt` and
 > `out/m7-exit-budget.run{1,2}.txt`.
 
+> *Re-measured 2026-10-04 (M8.4; Darwin arm64 and Linux aarch64, Chez 10.4.1):* at
+> `max-connections`, its default 10,000, the connections held idle cost about **20 KB**
+> each, 199 to 202 MB in all. `research/spike/m8-max-connections.sps` starts a server as
+> `serve` does, under the default limits, and the M4 exit's client, a process of its own,
+> opens 10,000 connections, sends a GET on each and holds them. While it holds them, the
+> server's heap has grown by 1,949 to 1,950 B a connection on Darwin and 1,945 to 1,947 B
+> on Linux, and its resident set by 20,020 to 20,206 B and 19,860 to 19,875 B, two runs
+> each. The heap is the M7 exit's; the resident set is the read buffer, which
+> chez-libuv's `uv-read-start!` zeroes as it allocates it, so all 16,384 B of it are
+> resident, `uv_tcp_t`, the heap and the allocators' own. `docs/configuration.org`'s
+> figure moves from about 180 MB to about 200 MB. The runs are
+> `out/m8-max-connections.{darwin,linux}.run{1,2}.txt`.
+
 Per request, allocation:
 
 | Prototype | Bytes/request |
@@ -1741,6 +1754,18 @@ Per request, allocation:
 **The gate for M2/M3 is ≤ 3 KiB per request** on the CPS spike's workload (decision
 0002; brief risk 1), met by the linear mutable accumulator and the retained spans of
 §7.1 rather than by a new allocator.
+
+> *Measured 2026-10-04 (M8.4; Darwin arm64 and Linux aarch64, Chez 10.4.1):* through
+> the whole server, the libuv shell and chez-libuv included, a GET kept alive allocates
+> about **10.4 KB** at one connection and **8.9 KB** at 50.
+> `research/spike/m8-request-alloc.sps` starts a server as `serve` does, its handler
+> answering with one response built once, and turns the loop as `serve` turns it. oha,
+> a process of its own, sends 5,000 GETs and then 25,000, and the server's allocation
+> over the 20,000 more is 10,431 to 10,434 B a request at one connection and 8,895 to
+> 8,902 B at 50, two rounds on each platform. At one connection the loop turns twice a
+> request; at 50 it serves many requests a turn, so what a turn costs is shared among
+> them. The gate's 1,840 B, curl's GET, is the parser's, adapter's and core's part.
+> The runs are `out/m8-request-alloc.{darwin,linux}.txt`.
 
 One request-path allocation was measured and then removed upstream. A validated
 request-target used to cost 3,680 bytes and ~1.58 µs on a 46-byte origin-form target
@@ -2007,6 +2032,14 @@ case held to its source's refused-or-served verdict or a listed departure.
 The black-box lane is `tests/test-clients.sps`: curl and ab since the M4 exit, and
 since M8.3 vtest2's scripts, `tests/vtc/*.vtc`, run against a server of the lane's own
 and held to a manifest both ways, vtest2 pinned and built by decision 0017.
+
+*Noted 2026-10-04 (M8.4):* oha's load smoke joined the black-box lane, in
+`tests/test-clients.sps`. oha is v1.16.0's release binary, fetched by `make oha` and
+kept only at its pinned sha256 (decision 0018). Its JSON report is read for two
+tallies: the responses by status and the failed requests by kind. 20,000 GETs on 50
+kept-alive connections, then 2,000 on a connection each, must all be answered 200 with
+none failed. The rate is printed and not checked, since v0.1.0 sets no throughput goal
+(decision 0002's amendment of 2026-10-04).
 
 ---
 

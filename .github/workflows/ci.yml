@@ -5,7 +5,7 @@ name: CI
 # hosted macOS runner bills at ~10x the Linux rate for coverage that is never
 # in doubt here. The one job builds the shim against system libuv, resolves all
 # four pinned dependencies onto one library path, builds vtest2 for the
-# black-box lane, and runs the suite.
+# black-box lane, fetches oha for the load smoke, and runs the suite.
 
 on:
   push:
@@ -181,6 +181,12 @@ jobs:
             build/vtest
             build/vtest.pin
           key: ${{ steps.vtest-cache.outputs.cache-primary-key }}
+
+      # oha, the load smoke's client (decision 0018): the release binary of
+      # the version tests/fetch-oha.sh pins, kept only if its sha256 is the
+      # one pinned beside it. It takes about a second, so it is not cached.
+      - name: Fetch oha
+        run: make oha
 
       - name: Build
         run: make build

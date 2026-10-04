@@ -88,3 +88,30 @@ What was weighed, measured 2026-09-25 on Darwin arm64, Chez 10.4.1 `tarm64osx`:
 - **The alternatives.** For item 2: plan the machinery for M7, the first milestone
   whose handlers can wait; or build it now, before M2.5. For the variable: remove the
   field; or leave it accepting any value, with the docs saying only 1 takes effect.
+
+## Note (2026-10-04, M8.4) — item 3's alternative, weighed against the load smoke
+
+Plan §14's M8.4 weighs item 3's alternative once oha gives the first throughput numbers.
+Reading during a handler would also spare each request item 1's stop and start of reading:
+`uv-read-stop!` at the message's end and `uv-read-start!` after the response.
+`research/spike/m8-read-stop.sh` measures the most that could save. It runs the shell as it
+is beside one patched never to stop reading (`m8-read-stop.patch`), which serves oha's
+requests as the other does, since oha does not pipeline. Each serves 50,000 GETs kept alive
+at 1, 10 and 50 connections, four rounds, the order alternating:
+
+| | 1 connection | 10 | 50 |
+|---|---|---|---|
+| Darwin arm64, stopping | 10,504–10,612 req/s, 37.6–38.0 µs | 32,265–32,956, 29.6–30.0 µs | 33,622–34,189, 28.6–29.0 µs |
+| Darwin arm64, never stopping | 10,522–10,576, 37.4–37.6 µs | 32,838–33,584, 29.0–29.6 µs | 34,228–34,492, 28.2–28.4 µs |
+| Linux aarch64, stopping | 13,791–14,356, 37.6–39.4 µs | 62,592–63,257, 15.6–16.0 µs | 83,165–87,752, 11.2–12.2 µs |
+| Linux aarch64, never stopping | 14,088–14,349, 37.8–38.2 µs | 65,454–66,844, 14.8–15.4 µs | 83,761–88,576, 11.4–11.8 µs |
+
+The µs are the server's CPU time a request. Linux ran in Docker on the same Apple M1. Round
+by round, never stopping saved 0.6 to 1.0 µs a request at 10 connections on Linux, 4% to 6%
+more requests a second, and 0.2 to 0.8 µs at 10 and 50 connections on Darwin, up to 3%. At
+one connection, and at 50 on Linux, the two overlap. That is the most reading during a
+handler could give back, before what it would cost: a bounded inbox, and a request's bytes
+held while its handler runs. So item 3's
+alternative stays what it is, a way to notice sooner that a client has left, unbuilt. The
+amendment's item 3, parse-ahead, waits for a throughput goal, and v0.1.0 sets none (decision
+0002's amendment of 2026-10-04). The runs are `out/m8-read-stop.{darwin,linux}.txt`.
