@@ -69,8 +69,20 @@
 ;;;     lookup, and the lookup's answer after it is logged as `late-resume`;
 ;;;   - `resolve` takes a string, and on waits with no resolver is an
 ;;;     assertion violation.
+;;;
+;;; The checks (decision 0020, a client's close), the notice the shell gives
+;;; each coroutine a request's code runs on, closed as a callback closes it:
+;;;   - a close ends the wait parked then: it raises `&client-closed`, and
+;;;     its sleep is taken out of the timer's keeping;
+;;;   - a close while the code is not parked makes its next wait raise at
+;;;     once, before anything is armed; and so for a close before the code
+;;;     begins;
+;;;   - only once: after the close has raised, the code waits as before, a
+;;;     coroutine given the notice later among it, and a second close ends
+;;;     nothing;
+;;;   - R4: a resume after a close ended its wait is logged as `late-resume`.
 (import (rnrs) (srfi :64) (testing)
-        (only (http-server awaiting) deadline-passed? resolve-error? resolve-error-reason)
+        (only (http-server awaiting) deadline-passed? client-closed? resolve-error? resolve-error-reason)
         (http-server private scheduler)
         (http-server private waits))
 
@@ -158,6 +170,11 @@
 ;; deadline's raise comes out of it.
 (define (passed-or thunk)
   (guard (e ((deadline-passed? e) 'passed)) (thunk)))
+
+;; closed-or : (-> Any) -> Any — what `thunk` returns, or `closed` if a
+;; client's close raises out of it.
+(define (closed-or thunk)
+  (guard (e ((client-closed? e) 'closed)) (thunk)))
 
 ;; waiting : (Listof (Listof (-> Any))) -> (values Scheduler (-> (Listof Any)))
 ;; A scheduler polling `batches`, with waits that log, and the log.
@@ -666,4 +683,123 @@
       (let* ((t (taken s 4)) (u (taken bare 4)))
         (test-equal "resolve takes a string, and on waits with no resolver is an assertion violation, its own"
           '((returned 1) (returned 1) ((assertion resolve) (assertion resolve)))
-          (list t u (seen)))))))
+          (list t u (seen)))))
+
+    ;; --- a client's close (decision 0020) ------------------------------------
+    (let* ((clock (vector 0)) (w #f) (n (make-notice)))
+      (let*-values (((note! seen) (recorder))
+                    ((s logged timer)
+                     (clocked (lambda () (vector-ref clock 0))
+                              (list (list (lambda () (vector-set! clock 0 5) (notice-close! n)))))))
+        (set! w (scheduler-waits s))
+        (notice-attach! (scheduler-spawn! s
+                          (lambda () (note! (closed-or (lambda () (sleep-ms 50) 'slept))))
+                          (lambda (kind v) #f))
+                        n)
+        (let ((t (taken s 8)))
+          (test-equal "a client's close ends the wait parked then: it raises &client-closed, and its sleep is taken out of the timer's keeping"
+            '((returned 2) (closed) ((start 50)) () 0)
+            (list t (seen) (timer) (logged) (waits-timed w))))))
+
+    (let* ((clock (vector 0)) (resume #f) (n (make-notice)))
+      (let*-values (((note! seen) (recorder))
+                    ((s logged timer)
+                     (clocked (lambda () (vector-ref clock 0))
+                              (list (list (lambda () (resume 'go) (notice-close! n)))))))
+        (notice-attach! (scheduler-spawn! s
+                          (lambda ()
+                            (note! (list 'got (await (lambda (r) (set! resume r)))))
+                            (note! (closed-or (lambda () (sleep-ms 1) 'slept))))
+                          (lambda (kind v) #f))
+                        n)
+        (let ((t (taken s 8)))
+          (test-equal "a close while the request's code is not parked makes its next wait raise at once, before anything is armed"
+            '((returned 2) ((got go) closed) ())
+            (list t (seen) (timer))))))
+
+    (let* ((clock (vector 0)) (n (make-notice)))
+      (notice-close! n)
+      (let*-values (((note! seen) (recorder))
+                    ((s logged timer) (clocked (lambda () (vector-ref clock 0)) '())))
+        (notice-attach! (scheduler-spawn! s
+                          (lambda () (note! (closed-or (lambda () (sleep-ms 1) 'slept))))
+                          (lambda (kind v) #f))
+                        n)
+        (let ((t (taken s 4)))
+          (test-equal "a close before the request's code begins makes its first wait raise, before anything is armed"
+            '((returned 1) (closed) ())
+            (list t (seen) (timer))))))
+
+    (let* ((clock (vector 0)) (w #f) (n (make-notice)))
+      (let*-values (((note! seen) (recorder))
+                    ((s logged timer)
+                     (clocked (lambda () (vector-ref clock 0))
+                              (list (list (lambda () (notice-close! n)))
+                                    (list (lambda () (vector-set! clock 0 5) (waits-fire! w)))))))
+        (set! w (scheduler-waits s))
+        (notice-attach! (scheduler-spawn! s
+                          (lambda ()
+                            (note! (closed-or (lambda () (sleep-ms 50) 'slept)))
+                            (sleep-ms 5)
+                            (note! 'slept-again))
+                          (lambda (kind v) #f))
+                        n)
+        (let ((t (taken s 8)))
+          (test-equal "only once: after the close has raised, the request's code waits as before"
+            '((returned 3) (closed slept-again) ((start 50) (start 5) (stop)))
+            (list t (seen) (timer))))))
+
+    ;; The shell gives the notice to each coroutine it runs the request's
+    ;; code on, starting the next once one has ended, from its end.
+    (let* ((clock (vector 0)) (w #f) (n (make-notice)))
+      (let*-values (((note! seen) (recorder))
+                    ((s logged timer)
+                     (clocked (lambda () (vector-ref clock 0))
+                              (list (list (lambda () (notice-close! n)))
+                                    (list (lambda () (vector-set! clock 0 5) (waits-fire! w)))))))
+        (set! w (scheduler-waits s))
+        (notice-attach! (scheduler-spawn! s
+                          (lambda () (note! (closed-or (lambda () (sleep-ms 50) 'slept))))
+                          (lambda (kind v)
+                            (notice-attach! (scheduler-spawn! s
+                                              (lambda () (note! (closed-or (lambda () (sleep-ms 5) 'slept))))
+                                              (lambda (kind v) #f))
+                                            n)))
+                        n)
+        (let ((t (taken s 8)))
+          (test-equal "once for the request: a coroutine given the notice after the close has raised waits as any other"
+            '((returned 3) (closed slept))
+            (list t (seen))))))
+
+    (let* ((clock (vector 0)) (w #f) (n (make-notice)))
+      (let*-values (((note! seen) (recorder))
+                    ((s logged timer)
+                     (clocked (lambda () (vector-ref clock 0))
+                              (list (list (lambda () (notice-close! n)))
+                                    (list (lambda () (notice-close! n)))
+                                    (list (lambda () (vector-set! clock 0 5) (waits-fire! w)))))))
+        (set! w (scheduler-waits s))
+        (notice-attach! (scheduler-spawn! s
+                          (lambda ()
+                            (note! (closed-or (lambda () (sleep-ms 50) 'slept)))
+                            (sleep-ms 5)
+                            (note! 'slept-again))
+                          (lambda (kind v) #f))
+                        n)
+        (let ((t (taken s 8)))
+          (test-equal "a second close, while the code waits again after the first raised, ends nothing"
+            '((returned 4) (closed slept-again))
+            (list t (seen))))))
+
+    (let* ((resume #f) (n (make-notice)))
+      (let*-values (((note! seen) (recorder))
+                    ((s logged) (waiting (list (list (lambda () (notice-close! n)))
+                                               (list (lambda () (resume 'late)))))))
+        (notice-attach! (scheduler-spawn! s
+                          (lambda () (note! (closed-or (lambda () (await (lambda (r) (set! resume r)))))))
+                          (lambda (kind v) #f))
+                        n)
+        (let ((t (taken s 8)))
+          (test-equal "R4: a resume after a close ended its wait is logged as late-resume"
+            '((returned 2) (closed) ((late-resume await)))
+            (list t (seen) (logged))))))))

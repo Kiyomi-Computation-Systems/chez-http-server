@@ -35,6 +35,15 @@
 ;;; or a lookup, cancelled if it has not begun; anything that still comes
 ;;; for it is a late resume (R4).
 ;;;
+;;; A CLIENT'S CLOSE (decision 0020): the shell makes a NOTICE for a request
+;;; whose code runs on coroutines, gives it to each coroutine it runs that
+;;; code on (`notice-attach!`), and closes it once the core says the client
+;;; has closed or reset the connection (`notice-close!`).  ONCE (decided by
+;;; form, 2026-10-04): the wait the code is parked in then, or else the next
+;;; wait any of those coroutines makes, raises `&client-closed`, what it
+;;; waited on taken back as a deadline takes it back; after that, waits work
+;;; as before.
+;;;
 ;;; A LOOKUP (decision 0015 item 1): `(resolve host)` parks the coroutine
 ;;; until the loop's resolver answers for `host`, through `uv-getaddrinfo!`
 ;;; in the libuv shell: the addresses, as strings, in the resolver's order;
@@ -60,10 +69,11 @@
 ;;; coroutine a stack of its own (M7.2's first step, design §5.2's note).
 (library (http-server private waits)
   (export make-waits waits? waits-clock! waits-fire! waits-timed waits-resolver!
+          make-notice notice? notice-attach! notice-close! notice-closed?
           await sleep-ms with-deadline resolve)
   (import (rnrs)
           (http-server heap)
-          (only (http-server awaiting) make-deadline-passed make-resolve-error)
+          (only (http-server awaiting) make-deadline-passed make-client-closed make-resolve-error)
           (only (http-server private scheduler)
                 waiting-coroutine coroutine-scheduler coroutine-park! coroutine-wake!
                 coroutine-waits coroutine-waits-set! coroutine-suspending?
@@ -122,10 +132,22 @@
     (fields who coroutine waits (mutable state) (mutable value) (mutable pending))
     (sealed #t))
 
-  ;; A coroutine's context, from its first deadline: the wait it is parked
-  ;; on, or #f, and how many of its deadlines in force have passed.
+  ;; A coroutine's context, from its first deadline or its notice: the wait
+  ;; it is parked on, or #f, how many of its deadlines in force have passed,
+  ;; and the notice of the request whose code it runs, or #f.
   (define-record-type context
-    (fields (mutable cell) (mutable passed))
+    (fields (mutable cell) (mutable passed) (mutable notice))
+    (sealed #t))
+
+  ;; make-notice : -> Notice — a request's, before its client has closed.
+  ;; notice? : Any -> Boolean
+  ;; Its state, and the context of the coroutine given it last, or #f:
+  ;;   open    the client has not closed
+  ;;   closed  it has, and no wait has raised it yet
+  ;;   raised  a wait has
+  (define-record-type (notice make-notice notice?)
+    (fields (mutable state) (mutable context))
+    (protocol (lambda (new) (lambda () (new 'open #f))))
     (sealed #t))
 
   ;; A deadline: its coroutine's context, its time, its entry in the heap
@@ -137,6 +159,52 @@
   ;; What a passed deadline resumes the wait in progress with, which no one
   ;; else can give: the wait raises as it resumes.
   (define passed-token (list 'deadline-passed))
+
+  ;; What a client's close resumes the wait it ends with, as a deadline's.
+  (define closed-token (list 'client-closed))
+
+  ;; notice-attach! : Coroutine Notice -> Void
+  ;; `c` runs the code of the request `n` is for: its waits raise the close
+  ;; once, as `n` says, and a close ends the wait it is parked in.
+  (define (notice-attach! c n)
+    (let ((x (or (coroutine-waits c)
+                 (let ((x (make-context #f 0 #f)))
+                   (coroutine-waits-set! c x)
+                   x))))
+      (context-notice-set! x n)
+      (notice-context-set! n x)))
+
+  ;; notice-close! : Notice -> Void
+  ;; The client has closed: the wait the coroutine given `n` last is parked
+  ;; in ends, what it waited on taken back, raising `&client-closed` as it
+  ;; resumes; with none parked, the next wait raises.  A notice closed before
+  ;; is left as it is.
+  (define (notice-close! n)
+    (when (eq? (notice-state n) 'open)
+      (notice-state-set! n 'closed)
+      (let ((x (notice-context n)))
+        (when x
+          (let ((cell (context-cell x)))
+            (when (and cell (eq? (cell-state cell) 'parked))
+              (take-back! cell)
+              (resume! cell closed-token)))))))
+
+  ;; notice-closed? : Notice -> Boolean — the client has closed.
+  (define (notice-closed? n) (not (eq? (notice-state n) 'open)))
+
+  ;; owed? : Context -> Boolean — the client has closed, and no wait has
+  ;; raised it.
+  (define (owed? x)
+    (let ((n (context-notice x)))
+      (and n (eq? (notice-state n) 'closed))))
+
+  ;; client-closed! : Context Symbol -> [raises] — the close's one raise,
+  ;; from `who`.
+  (define (client-closed! x who)
+    (notice-state-set! (context-notice x) 'raised)
+    (raise (condition (make-client-closed)
+                      (make-who-condition who)
+                      (make-message-condition "the client has closed"))))
 
   ;; deadline-passed! : Symbol -> [raises] — a deadline's raise, from `who`.
   (define (deadline-passed! who)
@@ -220,10 +288,12 @@
   ;; One wait of `c`'s: `start!` called with its cell, then a park until it
   ;; is resumed, unless it was resumed while `start!` ran.  A deadline that
   ;; has passed, in force, makes it raise before `start!` runs, and one that
-  ;; passes while it is parked, as it resumes.
+  ;; passes while it is parked, as it resumes; and so a client's close no
+  ;; wait has raised yet, and one that comes while it is parked.
   (define (wait! who w c start!)
     (let ((x (coroutine-waits c)))
       (when (and x (> (context-passed x) 0)) (deadline-passed! who))
+      (when (and x (owed? x)) (client-closed! x who))
       (let ((cell (make-cell who c w 'registering #f #f)))
         (start! cell)
         (if (eq? (cell-state cell) 'early)
@@ -233,7 +303,9 @@
               (when x (context-cell-set! x cell))
               (let ((v (coroutine-park!)))
                 (when x (context-cell-set! x #f))
-                (if (eq? v passed-token) (deadline-passed! who) v)))))))
+                (cond ((eq? v passed-token) (deadline-passed! who))
+                      ((eq? v closed-token) (client-closed! x who))
+                      (else v))))))))
 
   ;; await : ((Any -> Void) -> Any) -> Any
   ;; Call `register` with `resume`, a procedure of one argument, then park
@@ -298,7 +370,7 @@
     (let* ((c (waiting-coroutine 'with-deadline))
            (w (clocked-waits 'with-deadline c))
            (x (or (coroutine-waits c)
-                  (let ((x (make-context #f 0)))
+                  (let ((x (make-context #f 0 #f)))
                     (coroutine-waits-set! c x)
                     x)))
            (now ((waits-now w)))

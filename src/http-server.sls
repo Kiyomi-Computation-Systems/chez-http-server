@@ -26,7 +26,9 @@
 ;;; among them; with `sleep-ms`; inside `with-deadline`, whose wait raises
 ;;; &deadline-passed once its time has passed; and with `resolve`, which
 ;;; looks a name up, or raises &resolve-error (decision 0015; see
-;;; (http-server private waits)).  A handler takes a request that asks to
+;;; (http-server private waits)).  Once its client has closed or reset the
+;;; connection, the wait it is in, or else its next, raises &client-closed,
+;;; once (decision 0020).  A handler takes a request that asks to
 ;;; switch protocols, an HTTP/1.1 upgrade with no body, by answering
 ;;; `(switch-protocols headers take-over)`: the server writes the 101 and
 ;;; then calls `take-over` with the stream, as a transport whose verbs
@@ -52,7 +54,7 @@
     transport-close! transport-deadline! transport-on-drain! transport-on-close!
     ;; what a handler that waits waits with, and what a wait raises
     await sleep-ms with-deadline resolve
-    &deadline-passed deadline-passed?
+    &deadline-passed deadline-passed? &client-closed client-closed?
     &resolve-error resolve-error? resolve-error-reason
     ;; what a start raises
     &http-server-error http-server-error?
@@ -64,7 +66,7 @@
           (only (http-server switch) switch-protocols)
           (http-server transport)
           (only (http-server awaiting) awaiting &deadline-passed deadline-passed?
-                &resolve-error resolve-error? resolve-error-reason)
+                &client-closed client-closed? &resolve-error resolve-error? resolve-error-reason)
           (only (http-server private waits) await sleep-ms with-deadline resolve)
           (only (http-server private serve)
                 serve
