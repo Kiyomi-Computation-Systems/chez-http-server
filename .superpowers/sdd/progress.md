@@ -4992,3 +4992,11 @@ NEXT: plan §14's open list, or a new milestone, when the owner asks.
 - §14's open list drops its fourth item, "CI's billing block is the owner's (§13)".
 - Measured 2026-10-04 from GitHub's run list, for the runs since the secret was added (2026-10-01T09:58Z): 91. All 47 pull-request runs passed. Of the 44 runs on pushes to `main`, 37 passed and 7 were cancelled, each by the ledger commit pushed one or two minutes behind it (the workflow cancels a run in progress on the same ref), whose own run passed.
 - `make test` green before the commit (Darwin arm64): fifty suites, 1,882 expected passes, every pin ok.
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#118, plan §13's billing item settled** (the entry above). 2267371 was squashed as 821df6f (tree 99dfe63, the tested tip's), whose parent is f0672fd.
+- **CI.** Its run, 37216930111, passed on 2267371: fifty suites, 1,882 expected passes on ubuntu-24.04.
+- **Branches.** `--delete-branch` deleted the branch, local and remote, switched this checkout to main and fast-forwarded it. No PR is open.
+
+`make test` green on main: fifty suites, 1,882 expected passes, every pin ok.
+
+NEXT: plan §14's open list, or a new milestone, when the owner asks.
