@@ -4,7 +4,8 @@ name: CI
 # the development platform and is exercised by `make test` on the laptop; a
 # hosted macOS runner bills at ~10x the Linux rate for coverage that is never
 # in doubt here. The one job builds the shim against system libuv, resolves all
-# four pinned dependencies onto one library path, and runs the suite.
+# four pinned dependencies onto one library path, builds vtest2 for the
+# black-box lane, and runs the suite.
 
 on:
   push:
@@ -49,14 +50,15 @@ jobs:
 
       # libuv for the shim (pkg-config path); the X11/ncurses/uuid headers are
       # what Chez's from-source build needs; curl and ab (apache2-utils) are
-      # the real clients tests/test-clients.sps runs against the server.
+      # the real clients tests/test-clients.sps runs against the server, and
+      # pcre2, zlib and python3 what `make vtest` builds the third with.
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config libuv1-dev \
             libx11-dev libncurses-dev uuid-dev git \
-            curl apache2-utils
+            curl apache2-utils libpcre2-dev zlib1g-dev python3
 
       # The OS release for the Chez cache key, read off the machine rather than
       # restated from runs-on (which a bump could forget), so a new image misses
@@ -134,7 +136,7 @@ jobs:
       # to every clone, a nested one included, and a clone never reads the
       # superproject's .git/config. Build and Test run `make submodules` again
       # (deps needs it) without the token; every gitlink is at its pin by
-      # then, so git fetches nothing.
+      # then, so git fetches nothing. chez-srfi and vtest2 are public.
       - name: Init submodules
         env:
           GIT_CONFIG_COUNT: "1"
@@ -144,6 +146,41 @@ jobs:
 
       - name: Check dependency pins
         run: make check-pins
+
+      # vtest2, the black-box lane's client (decision 0017), is built from its
+      # pin and cached as Chez is, keyed on the gitlink read off the tree, the
+      # OS release and the arch, so a pin or an image change misses. Its
+      # stamp, build/vtest.pin, names the commit it was built from, so `make
+      # test` takes a restored binary as built.
+      - name: Identify the vtest2 pin
+        id: vtest-pin
+        run: |
+          commit="$(git rev-parse HEAD:vendor/vtest2)"
+          echo "commit=${commit:?}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore cached vtest
+        id: vtest-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            build/vtest
+            build/vtest.pin
+          key: vtest-${{ runner.os }}-${{ steps.os.outputs.release }}-${{ runner.arch }}-${{ steps.vtest-pin.outputs.commit }}
+
+      - name: Build vtest
+        if: steps.vtest-cache.outputs.cache-hit != 'true'
+        run: make vtest
+
+      # Saved here, not by the cache action's post-step, as Chez is: only a
+      # build that finished is saved under the key.
+      - name: Save built vtest
+        if: steps.vtest-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/vtest
+            build/vtest.pin
+          key: ${{ steps.vtest-cache.outputs.cache-primary-key }}
 
       - name: Build
         run: make build

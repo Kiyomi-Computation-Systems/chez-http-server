@@ -10,3 +10,6 @@
 [submodule "vendor/chez-srfi"]
 	path = vendor/chez-srfi
 	url = https://github.com/arcfide/chez-srfi.git
+[submodule "vendor/vtest2"]
+	path = vendor/vtest2
+	url = https://github.com/vtest/VTest2.git
