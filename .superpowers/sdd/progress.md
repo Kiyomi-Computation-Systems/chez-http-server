@@ -5043,3 +5043,11 @@ NEXT: plan §14's open list (five items), a new milestone, or cutting 0.2.0, whe
 - **Impact, measured** (Darwin arm64): a request's path unchanged, the whole server's allocation per GET over 100,000 GETs 10,433 B at one connection on both trees, and at 50, 8,900 to 8,903 B on main and 8,902 to 8,904 B with the fix. A refused write allocates 96 B as it is asked for and 425 B as its `done` is made, against 64 B and 409 B. `research/spike/taker-deferred-cost.sps` is new and `m8-request-alloc.sps` takes LARGE; their runs are in `out/`.
 - **Docs.** `docs/handlers.org`'s caveat says the `done` comes before `serve` returns, and CHANGELOG.md's Unreleased gains Fixed.
 - `make test` green before the commit (Darwin arm64): fifty suites, 1,883 expected passes, every pin ok.
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#122, a taker's deferred `done` made before `serve` returns, and M8.2's other three noted findings closed** (the entry above). ea93f39 was squashed as 15a3d78 (tree c87bb41, the tested tip's), whose parent is 5797d66.
+- **CI.** Its run, 37222739116, passed on ea93f39: fifty suites, 1,883 expected passes on ubuntu-24.04, the serve suite's eighteen among them, so the two new checks hold on Linux amd64 too.
+- **Branches.** `--delete-branch` deleted the branch, local and remote, switched this checkout to main and fast-forwarded it. No PR is open.
+
+`make test` green on main: fifty suites, 1,883 expected passes, every pin ok.
+
+NEXT: plan §14's open list (four items), a new milestone, or cutting 0.2.0, when the owner asks.
