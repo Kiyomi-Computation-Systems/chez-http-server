@@ -5012,3 +5012,12 @@ DECIDED on the owner's word, 2026-10-04: **parse-ahead is not wanted** ("record 
 - **Tests first.** The limits suite's new checks, run against the code before the change: 49 passes, 3 failures, each its own row's. The serve suite's malformed-setting check uses `CHEZ_HTTP_REQUIRE_HOST=yes` where it used `CHEZ_HTTP_PIPELINE_CAP=2`. Four mutants, each red, are in m8-mutations.md ("After M8").
 - **Docs and records.** `docs/configuration.org` drops the variable, and CHANGELOG.md lists the removal under Unreleased. Decision 0005 gets the amendment "the pipeline cap is removed", with dated pointers from 0004's and 0005's notes of the day, the design's pipelining note and §9.4, and the brief's items 3 and 4.
 - `make test` green before the commit (Darwin arm64): fifty suites, 1,881 expected passes, every pin ok: one fewer, three checks of the cap gone and two of its absence added.
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#119 and #120, stacked: parse-ahead not wanted, and the pipeline cap removed.**
+- **#119, decision 0004: parse-ahead is not wanted,** as 5196c9f. Its squash tree is the tested tip's, 74ae973's (b6c9e5d), and its parent is 0f43524. CI passed on 74ae973 (run 37218010771: fifty suites, 1,882 expected passes). It merged without `--delete-branch`, since #120 was based on it.
+- **#120, the pipeline cap removed,** retargeted to main and rebased from 74ae973 onto 5196c9f: adcc863 became 519f149 (tree a517af2, the tested one's), pushed with the lease. CI passed on both heads (37218775215 on adcc863, 37218965415 on 519f149), each fifty suites and 1,881 expected passes. It merged as da63738, whose parent is 5196c9f.
+- **Branches.** #119's was deleted by hand, local and remote, once #120 was on main. #120's `--delete-branch` deleted its own, local and remote, switched this checkout to main and fast-forwarded it. No PR is open.
+
+`make test` green on main: fifty suites, 1,881 expected passes, every pin ok.
+
+NEXT: plan §14's open list, or a new milestone, when the owner asks. CHANGELOG.md's Unreleased holds the removal, a change to v0.1.0's API, so the next release is 0.2.0 by semantic versioning.
