@@ -1,0 +1,32 @@
+vtest "A version that is not 1.x is answered 505; one the parser cannot read, 400"
+# Decision 0006's amendment of 2026-10-04 (M8.3): a request line with no
+# version reads as HTTP/0.9, its head ended by an empty line, and is
+# answered 505, as is HTTP/2.0; the HTTP/2 preface is answered 505 on the
+# parser's error channel (item 2); HTTP/1.2 is the parser's error, 400.
+# Every status the server originates closes the connection (design §6.5).
+client c1 -connect "${host} ${port}" {
+    send "GET /\r\n\r\n"
+    rxresp
+    expect resp.status == 505
+    expect resp.http.Connection == "close"
+    expect_close
+} -run
+client c2 -connect "${host} ${port}" {
+    send "GET / HTTP/2.0\r\nHost: x\r\n\r\n"
+    rxresp
+    expect resp.status == 505
+    expect_close
+} -run
+client c3 -connect "${host} ${port}" {
+    send "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    rxresp
+    expect resp.status == 505
+    expect resp.http.Connection == "close"
+    expect_close
+} -run
+client c4 -connect "${host} ${port}" {
+    send "GET / HTTP/1.2\r\nHost: x\r\n\r\n"
+    rxresp
+    expect resp.status == 400
+    expect_close
+} -run

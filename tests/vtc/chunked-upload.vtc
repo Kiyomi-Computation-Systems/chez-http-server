@@ -1,0 +1,16 @@
+vtest "A chunked upload, read whole, then a request on its connection"
+# RFC 9112 §7.1: the body is the chunks' data, in order; the connection
+# persists after it.
+client c1 -connect "${host} ${port}" {
+    txreq -req POST -url "/p" -nolen -hdr "Transfer-Encoding: chunked"
+    chunked "k=v"
+    chunked "&w=xy"
+    chunkedlen 0
+    rxresp
+    expect resp.status == 200
+    expect resp.body == "k=v&w=xy"
+    txreq -url "/after"
+    rxresp
+    expect resp.status == 200
+    expect resp.body == "/after -\n"
+} -run

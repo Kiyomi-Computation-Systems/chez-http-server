@@ -1,0 +1,36 @@
+vtest "Framing a server cannot trust is refused, then closed"
+# RFC 9112 §6.3 rule 3: Transfer-Encoding with Content-Length "ought to be
+# handled as an error"; rule 5: differing Content-Lengths are; §6.1: a
+# coding before a final chunked is unsupported (501) and Transfer-Encoding
+# below HTTP/1.1 is faulty framing (400); §3.2: an HTTP/1.1 request without
+# Host is 400.
+client c1 -connect "${host} ${port}" {
+    send "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+    rxresp
+    expect resp.status == 400
+    expect_close
+} -run
+client c2 -connect "${host} ${port}" {
+    send "POST /p HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\nabcd"
+    rxresp
+    expect resp.status == 400
+    expect_close
+} -run
+client c3 -connect "${host} ${port}" {
+    send "POST /p HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n"
+    rxresp
+    expect resp.status == 501
+    expect_close
+} -run
+client c4 -connect "${host} ${port}" {
+    send "POST /p HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+    rxresp
+    expect resp.status == 400
+    expect_close
+} -run
+client c5 -connect "${host} ${port}" {
+    send "GET / HTTP/1.1\r\n\r\n"
+    rxresp
+    expect resp.status == 400
+    expect_close
+} -run
