@@ -5092,3 +5092,11 @@ NEXT: plan §14's open list (three items: 0004 item 3's alternative, the 32 leni
 - **Impact** (Darwin arm64). The outcome lane's runs go from 253 to 317 at size 1 and whole, and from 9,394 to 14,070 at every size, which ran in 0.97 s. The outcome suite and the ratchet took 0.60 to 1.01 s each, two runs each, against 0.63 to 0.86 s on a4c5191.
 - **Records.** Decision 0019, new. Plan §2.1 and §11 get dated notes, and the open list drops the item: two remain. Design §8.1 says property 2 runs all 167. Since #123 the trace lane's init is the server's but for the version flag, and `invalid.md#19` (`GET / HTTP/5.6`) is the one strict fixture the server's parser reads differently: `(trace-lane)` and plan §2.1 say so. `ratchet.txt`'s "(0009)" was chez-httparse's decision 0009, written before this repository's 0009; it now cites plan §2.1 and 0019. No CHANGELOG entry: nothing a client or an embedder meets changes.
 - `make test` green before the commit (Darwin arm64): fifty suites, 1,892 expected passes, every pin ok.
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#125, the outcome lane runs all 167 request fixtures** (the entry above). 5b92367 was squashed as b303b84 (tree 51bbc3e, the tested tip's), whose parent is a4c5191.
+- **CI.** Its run, 37230775068, passed on 5b92367: fifty suites, 1,892 expected passes on ubuntu-24.04, the outcome lane's seven (317 runs) and the ratchet's nine among them. It was still running when the ritual began, and had passed by the next read.
+- **Branches.** `--delete-branch` deleted the remote branch and left this checkout on the local one, so main was fast-forwarded and the branch deleted by hand. No PR is open.
+
+`make test` green on main: fifty suites, 1,892 expected passes, every pin ok.
+
+NEXT: plan §14's open list (two items: 0004 item 3's alternative, the smuggler corpus), a new milestone, or cutting 0.2.0 (Unreleased holds Changed, Removed and Fixed), when the owner asks.
