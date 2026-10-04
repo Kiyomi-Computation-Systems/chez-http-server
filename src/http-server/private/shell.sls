@@ -228,7 +228,13 @@
 ;;; deadlines, one a loop, closed with the tick timer by a shell that serves
 ;;; no more (loop-clock!), and the loop's resolver (loop-resolver!).  A wait
 ;;; goes on when its connection closes (0015 item 4): what it then answers
-;;; is dropped, and the connection makes no more calls.
+;;; is dropped, and the connection makes no more calls.  But a close the
+;;; client makes, its end or a reset, the core tells as `client-closed`
+;;; (decision 0020): the request's notice, given to each coroutine its code
+;;; runs on, is closed, so the wait its code is in, or else its next, raises
+;;; `&client-closed`, once.  A raise of it that the code lets out is no
+;;; failure: `handler-failed` is dispatched for the core, which answers
+;;; nothing, and is not logged.
 ;;;
 ;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
 ;;; chez-libuv catches whatever a callback raises, and raises it again from
@@ -260,7 +266,7 @@
           (only (byte-machine private conditions) byte-machine-contract-condition?)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole?)
-          (only (http-server awaiting) awaiting? awaiting-thunk)
+          (only (http-server awaiting) awaiting? awaiting-thunk client-closed?)
           (only (http-server limits)
                 limits-read-buffer-size limits-backlog limits-tick-ms limits-deadline-ms)
           (http-server wheel)
@@ -268,7 +274,8 @@
                 make-scheduler scheduler-turn! scheduler-call! scheduler-spawn!
                 scheduler-phase scheduler-feed-begin! scheduler-feed-end! scheduler-waits)
           (only (http-server private waits)
-                make-waits waits-clock! waits-fire! waits-timed waits-resolver!)
+                make-waits waits-clock! waits-fire! waits-timed waits-resolver!
+                make-notice notice-attach! notice-close! notice-closed?)
           (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
           (only (http-server transport) make-transport)
@@ -453,6 +460,7 @@
             (mutable waits?)                  ; whether the request's handler answered awaiting
             (mutable calls)                   ; its calls on coroutines to make, in order
             (mutable calling?)                ; whether one of them runs
+            (mutable notice)                  ; the request's notice of its client's close, or #f
             (mutable taker)))                 ; once handed off, its taker's (THE DOOR)
 
   ;; connection-state : Connection -> ConnState — the core's state.
@@ -655,7 +663,7 @@
   ;; option has already failed, which reading will report.  A start that
   ;; raises goes on to shell-adopt!, which closes the handle.
   (define (serve! sh tcp)
-    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f #f)))
+    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f #f #f)))
       (connection-entry-set! c (make-wheel-entry c))
       (connection-ctx-set! c (make-conn-context
                               (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
@@ -749,7 +757,10 @@
     (trace! c 'action a)
     (case (car a)
       ((feed-parser) (feed! c (cadr a) (caddr a) (cadddr a)))
-      ((resume-parser) (parser-resume! (connection-parser c)))
+      ((resume-parser)
+       ;; The request answered, its code runs no more: its notice goes.
+       (connection-notice-set! c #f)
+       (parser-resume! (connection-parser c)))
       ((call-handler) (call-handler! c (cadr a)))
       ((deliver-body) (deliver-body! c (cadr a) (caddr a) (cadddr a)))
       ((deliver-body-end) (deliver-body-end! c))
@@ -767,7 +778,20 @@
       ((arm-deadline) (arm! c (cadr a)))
       ((disarm-deadline) (disarm! c))
       ((hand-off) (hand-off! c (cadr a) (caddr a)))
+      ((client-closed) (notice-close! (request-notice c)))
       (else (values))))
+
+  ;; request-notice : Connection -> Notice
+  ;; The notice of the request in flight, which tells its code the client
+  ;; has closed (decision 0020): the one its code's coroutines were given,
+  ;; or else a new one, given to those its code starts later.  It goes as
+  ;; the parser resumes for the next request, so an idle connection holds
+  ;; none.
+  (define (request-notice c)
+    (or (connection-notice c)
+        (let ((n (make-notice)))
+          (connection-notice-set! c n)
+          n)))
 
   (define (trace! c kind datum)
     (let ((trace (shell-trace (connection-shell c))))
@@ -828,10 +852,12 @@
      (else (list 'handler-responded a))))
 
   ;; call-waiting! : Connection (-> Any) (Any -> (U Event #f)) -> Void
-  ;; Call `thunk` on a coroutine, after the connection's calls before it:
-  ;; once it has ended, the event `->event` makes of its value is
-  ;; dispatched, from the drain, or `handler-failed`, logged, if either
-  ;; raised; then the next call starts.  A connection closing makes no more.
+  ;; Call `thunk` on a coroutine, after the connection's calls before it,
+  ;; the request's notice given to it (decision 0020): once it has ended,
+  ;; the event `->event` makes of its value is dispatched, from the drain,
+  ;; or `handler-failed`, logged, if either raised, unless what it raised is
+  ;; the close the notice told; then the next call starts.  A connection
+  ;; closing makes no more.
   ;; A raise out of the dispatch goes to the turn's guard (shell-turn!),
   ;; having closed the connection, whose calls then matter no more.
   (define (call-waiting! c thunk ->event)
@@ -849,16 +875,24 @@
         (let ((call (car calls)) (sh (connection-shell c)))
           (connection-calls-set! c (cdr calls))
           (connection-calling?-set! c #t)
-          (scheduler-spawn! (shell-scheduler sh) (car call)
-            (lambda (kind v)
-              (let ((event (guard (e (#t (log! sh 'handler-failed (list e))
-                                         (list 'handler-failed e)))
-                             (if (eq? kind 'raised)
-                                 (raise v)
-                                 ((cdr call) v)))))
-                (when (and event (not (connection-closing? c)))
-                  (dispatch! c event)))
-              (next-call! c))))))))
+          (notice-attach!
+           (scheduler-spawn! (shell-scheduler sh) (car call)
+             (lambda (kind v)
+               (let ((event (guard (e (#t (unless (told-close? c e) (log! sh 'handler-failed (list e)))
+                                          (list 'handler-failed e)))
+                              (if (eq? kind 'raised)
+                                  (raise v)
+                                  ((cdr call) v)))))
+                 (when (and event (not (connection-closing? c)))
+                   (dispatch! c event)))
+               (next-call! c)))
+           (request-notice c)))))))
+
+  ;; told-close? : Connection Any -> Boolean
+  ;; `e` is the raise of the close the request's notice told (decision 0020).
+  (define (told-close? c e)
+    (and (client-closed? e)
+         (let ((n (connection-notice c))) (and n (notice-closed? n)))))
 
   ;; deliver-body! : Connection Bytevector Nat Nat -> Void
   ;; Hand bv[start, end) to the reader the core is handing the body to; if

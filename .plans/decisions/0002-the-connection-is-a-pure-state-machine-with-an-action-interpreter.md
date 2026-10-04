@@ -357,3 +357,11 @@ a need, such as a deployment that outgrows one core. What was weighed:
 
 The runs are `out/m8-load.{darwin,linux}.run{1,2}.txt` and
 `out/m8-request-alloc.{darwin,linux}.txt`.
+
+## Amendment (2026-10-04) — the seventeenth action
+
+[0020](0020-a-clients-close-is-noticed-while-its-request-is-answered-and-the-wait-its-code-is-in-raises-client-closed-once.md) has the core emit `(client-closed)` where the client closes or resets
+its connection while its request is answered: the shell tells the request's code. The
+closed action set is seventeen, `conn-actions` in `src/http-server/connection.sls`,
+and `tests/test-connection-table.sps` checks that its rows use all seventeen. The
+fifteen events are unchanged.

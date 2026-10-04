@@ -354,6 +354,8 @@
 (define waiting-scripts
   (append
    '(("a handler that sleeps" (send "GET /sleep HTTP/1.1\r\nHost: x\r\n\r\n"))
+     ("a handler that sleeps, its client ending its stream as it sleeps: told, and answered nothing"
+      (send "GET /sleep HTTP/1.1\r\nHost: x\r\n\r\n") (end-early))
      ("a deadline that passes while its handler sleeps" (send "GET /deadline HTTP/1.1\r\nHost: x\r\n\r\n"))
      ("a handler that resolves localhost" (send "GET /resolve HTTP/1.1\r\nHost: x\r\n\r\n"))
      ("a handler that resolves a name that does not resolve"

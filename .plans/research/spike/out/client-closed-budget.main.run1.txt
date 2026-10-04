@@ -1,0 +1,75 @@
+Chez Chez Scheme Version 10.4.1, libuv 1.52.1, the listener on 127.0.0.1:60819
+One held connection's heap, (heap with 500 - heap with 100) / 400:
+  response, held 100 after 1 GET each: satisfied, heap 23852960 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+  response, held 500 after 1 GET each: satisfied, heap 24623616 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+response, after 1 GET each, first: 1926.64 B
+  sleep, held 100 after 1 GET each: satisfied, heap 23841896 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 100, in the heap 0; then satisfied, client exit (0 #f)
+  sleep, held 500 after 1 GET each: satisfied, heap 24617888 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 500, in the heap 0; then satisfied, client exit (0 #f)
+sleep, after 1 GET each, first: 1939.98 B
+  resolve, held 100 after 1 GET each: satisfied, heap 23842280 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 100, in the heap 0; then satisfied, client exit (0 #f)
+  resolve, held 500 after 1 GET each: satisfied, heap 24616344 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 500, in the heap 0; then satisfied, client exit (0 #f)
+resolve, after 1 GET each, first: 1935.16 B
+  response, held 100 after 1 GET each: satisfied, heap 23890488 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+  response, held 500 after 1 GET each: satisfied, heap 24658216 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+response, after 1 GET each, again: 1919.32 B
+  sleep, held 100 after 1 GET each: satisfied, heap 23841816 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 100, in the heap 0; then satisfied, client exit (0 #f)
+  sleep, held 500 after 1 GET each: satisfied, heap 24617808 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 500, in the heap 0; then satisfied, client exit (0 #f)
+sleep, after 1 GET each, again: 1939.98 B
+  resolve, held 100 after 1 GET each: satisfied, heap 23842200 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 100, in the heap 0; then satisfied, client exit (0 #f)
+  resolve, held 500 after 1 GET each: satisfied, heap 24619928 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 500, in the heap 0; then satisfied, client exit (0 #f)
+resolve, after 1 GET each, again: 1944.32 B
+  response, held 100 after 10 GETs each: satisfied, heap 23869072 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+  response, held 500 after 10 GETs each: satisfied, heap 24662296 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+response, after 10 GETs each, first: 1983.06 B
+  sleep, held 100 after 10 GETs each: satisfied, heap 23841904 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 1000, in the heap 0; then satisfied, client exit (0 #f)
+  sleep, held 500 after 10 GETs each: satisfied, heap 24617760 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 5000, in the heap 0; then satisfied, client exit (0 #f)
+sleep, after 10 GETs each, first: 1939.64 B
+  resolve, held 100 after 10 GETs each: satisfied, heap 23842264 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 1000, in the heap 0; then satisfied, client exit (0 #f)
+  resolve, held 500 after 10 GETs each: satisfied, heap 24616344 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 5000, in the heap 0; then satisfied, client exit (0 #f)
+resolve, after 10 GETs each, first: 1935.2 B
+  response, held 100 after 10 GETs each: satisfied, heap 23869048 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+  response, held 500 after 10 GETs each: satisfied, heap 24659560 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+response, after 10 GETs each, again: 1976.28 B
+  sleep, held 100 after 10 GETs each: satisfied, heap 23843688 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 1000, in the heap 0; then satisfied, client exit (0 #f)
+  sleep, held 500 after 10 GETs each: satisfied, heap 24615936 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 5000, in the heap 0; then satisfied, client exit (0 #f)
+sleep, after 10 GETs each, again: 1930.62 B
+  resolve, held 100 after 10 GETs each: satisfied, heap 23842184 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 1000, in the heap 0; then satisfied, client exit (0 #f)
+  resolve, held 500 after 10 GETs each: satisfied, heap 24616264 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 5000, in the heap 0; then satisfied, client exit (0 #f)
+resolve, after 10 GETs each, again: 1935.2 B
+  response, held 100 after 50 GETs each: satisfied, heap 23863664 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+  response, held 500 after 50 GETs each: satisfied, heap 24618528 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+response, after 50 GETs each, first: 1887.16 B
+  sleep, held 100 after 50 GETs each: satisfied, heap 23841896 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 5000, in the heap 0; then satisfied, client exit (0 #f)
+  sleep, held 500 after 50 GETs each: satisfied, heap 24617760 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 25000, in the heap 0; then satisfied, client exit (0 #f)
+sleep, after 50 GETs each, first: 1939.66 B
+  resolve, held 100 after 50 GETs each: satisfied, heap 23842288 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 5000, in the heap 0; then satisfied, client exit (0 #f)
+  resolve, held 500 after 50 GETs each: satisfied, heap 24616344 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 25000, in the heap 0; then satisfied, client exit (0 #f)
+resolve, after 50 GETs each, first: 1935.14 B
+  response, held 100 after 50 GETs each: satisfied, heap 23863480 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+  response, held 500 after 50 GETs each: satisfied, heap 24623904 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+response, after 50 GETs each, again: 1901.06 B
+  sleep, held 100 after 50 GETs each: satisfied, heap 23843680 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 5000, in the heap 0; then satisfied, client exit (0 #f)
+  sleep, held 500 after 50 GETs each: satisfied, heap 24615936 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 25000, in the heap 0; then satisfied, client exit (0 #f)
+sleep, after 50 GETs each, again: 1930.64 B
+  resolve, held 100 after 50 GETs each: satisfied, heap 23842032 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 5000, in the heap 0; then satisfied, client exit (0 #f)
+  resolve, held 500 after 50 GETs each: satisfied, heap 24616264 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 25000, in the heap 0; then satisfied, client exit (0 #f)
+resolve, after 50 GETs each, again: 1935.58 B
+  response, held 100 after 200 GETs each: satisfied, heap 23853832 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+  response, held 500 after 200 GETs each: satisfied, heap 24630840 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+response, after 200 GETs each, first: 1942.52 B
+  sleep, held 100 after 200 GETs each: satisfied, heap 23841864 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 20000, in the heap 0; then satisfied, client exit (0 #f)
+  sleep, held 500 after 200 GETs each: satisfied, heap 24615984 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 100000, in the heap 0; then satisfied, client exit (0 #f)
+sleep, after 200 GETs each, first: 1935.3 B
+  resolve, held 100 after 200 GETs each: satisfied, heap 23842080 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 20000, in the heap 0; then satisfied, client exit (0 #f)
+  resolve, held 500 after 200 GETs each: satisfied, heap 24616312 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 100000, in the heap 0; then satisfied, client exit (0 #f)
+resolve, after 200 GETs each, first: 1935.58 B
+  response, held 100 after 200 GETs each: satisfied, heap 23852400 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+  response, held 500 after 200 GETs each: satisfied, heap 24623832 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 0, in the heap 0; then satisfied, client exit (0 #f)
+response, after 200 GETs each, again: 1928.58 B
+  sleep, held 100 after 200 GETs each: satisfied, heap 23841808 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 20000, in the heap 0; then satisfied, client exit (0 #f)
+  sleep, held 500 after 200 GETs each: satisfied, heap 24617496 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 100000, in the heap 0; then satisfied, client exit (0 #f)
+sleep, after 200 GETs each, again: 1939.22 B
+  resolve, held 100 after 200 GETs each: satisfied, heap 23842176 B; TCP handles 101, read buffers 101; deadlines armed 100, waits timed 0; coroutines made 20000, in the heap 0; then satisfied, client exit (0 #f)
+  resolve, held 500 after 200 GETs each: satisfied, heap 24616240 B; TCP handles 501, read buffers 501; deadlines armed 500, waits timed 0; coroutines made 100000, in the heap 0; then satisfied, client exit (0 #f)
+resolve, after 200 GETs each, again: 1935.16 B
+A coroutine parked at an await, 2,000 parked at once, less a list's pair (3999/250 B): 3632.152 B

@@ -6,7 +6,23 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A waiting handler is told when its client closes the connection.** If the
+  client closes or resets it while a handler, a reader or a producer waits, the wait
+  it is in, or else its next, raises `&client-closed` (`client-closed?`), once. A
+  handler that lets it raise is answered nothing, and the connection closes; one that
+  catches it may answer anyway, and a client that only half-closed reads it. Behind
+  Caddy, a client that leaves makes Caddy close its connection, so the handler is
+  told then (decision 0020).
+
 ### Changed
+
+- **The server reads while a handler runs, only to notice the client close.** A
+  client that closes is seen at once, not when the handler answers. A request the
+  client sends meanwhile is held, reading stops, and it is answered after, in order,
+  as before. A client that closes after sending more requests still gets every
+  answer; the connection then closes at once, with no linger (decision 0020).
 
 - **A request line in HTTP/1.2 to 1.9 is served as HTTP/1.1**, as RFC 9110 §6.2 asks,
   where it was answered `400`. **Every other version that is not 1.x is answered `505`**,
