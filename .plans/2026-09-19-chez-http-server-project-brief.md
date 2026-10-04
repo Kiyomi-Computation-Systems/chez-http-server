@@ -38,7 +38,9 @@ Each of these is a decision record; the one-line form is here so the brief reads
 3. **Pipelining is strictly serial in v1** (decision 0004): pause the parser at `on-message-complete`, stop reading, run the handler, write, resume. The cap is a config value in the core so a parse-ahead policy is a setting and a test later, not a redesign.
    *Amended 2026-09-25 (decision 0004):* serial by design. The cap accepts only 1, and a parse-ahead policy would be a new decision with its own design, not a setting.
    *Amended 2026-10-04 (decision 0004):* parse-ahead is not wanted, on the owner's word: no client the server meets pipelines.
+   *Amended 2026-10-04, later (decision 0005):* the cap is removed, field and variable: requests are answered one at a time by design, not by a limit.
 4. **Bounded, nginx-style defaults; one tick timer and a timing wheel per loop** (decision 0005). Header read 60 s, idle 75 s, body inactivity 60 s, header bytes 16 KiB → 431, header count 100, target 8 KiB → 414, bodies stream unbounded, pipeline cap 1. Every limit is overridable from the environment.
+   *Amended 2026-10-04 (decision 0005):* the pipeline cap is removed (item 3).
 5. **HTTP/1.0 is supported; an h2c preface is answered 505 and closed; upgrades hand off through one hook** (decision 0006).
    *Amended 2026-09-25 (decision 0006):* v1 serves an upgrade request and closes the connection after the response; the hook is M8's door for a handler that takes upgrades, and only the HTTP/2 preface gets 505.
 6. **Corpora are vendored as data with provenance** (decision 0007): llhttp reached through chez-httparse's harness, libhtp's 102 connection streams first, the rest by tier.

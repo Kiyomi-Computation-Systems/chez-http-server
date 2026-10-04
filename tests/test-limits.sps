@@ -24,7 +24,10 @@
 ;;; bytes outstanding, arrive in M6.3 (its amendment of 2026-09-25; plan §14):
 ;;; sizes, given in bytes, a low water above the high water refused.  0005's
 ;;; drain timeout, 10 s after a shutdown is asked for, arrives in M8.1 (plan
-;;; §3), given in whole seconds as the other timeouts are.
+;;; §3), given in whole seconds as the other timeouts are.  There is no
+;;; pipeline cap: 0005's amendment of 2026-10-04 removes the field, and
+;;; CHEZ_HTTP_PIPELINE_CAP is read no more, since the server answers one
+;;; request at a time by design (decision 0004).
 (import (rnrs) (srfi :64) (testing) (http-server limits))
 
 ;; env : (Pair String String) ... -> (String -> (U String #f))
@@ -52,7 +55,6 @@
         (cons 'max-header-value-bytes limits-max-header-value-bytes)
         (cons 'max-target-bytes limits-max-target-bytes)
         (cons 'max-body-bytes limits-max-body-bytes)
-        (cons 'pipeline-cap limits-pipeline-cap)
         (cons 'read-buffer-size limits-read-buffer-size)
         (cons 'max-connections limits-max-connections)
         (cons 'backlog limits-backlog)
@@ -89,7 +91,6 @@
     (test-eqv "max target bytes 8 KiB"    8192  (limits-max-target-bytes default-limits))
     (test-eq  "bodies stream unbounded"   'unbounded
               (or (limits-max-body-bytes default-limits) 'unbounded))
-    (test-eqv "pipeline cap 1"            1     (limits-pipeline-cap default-limits))
     (test-eqv "read buffer 16 KiB"        16384 (limits-read-buffer-size default-limits))
     (test-eqv "max connections 10 000"    10000 (limits-max-connections default-limits))
     (test-eqv "listen backlog 511"        511   (limits-backlog default-limits))
@@ -114,7 +115,7 @@
                   "CHEZ_HTTP_MAX_HEADER_BYTES"
                   "CHEZ_HTTP_MAX_HEADER_COUNT" "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES"
                   "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES" "CHEZ_HTTP_MAX_TARGET_BYTES"
-                  "CHEZ_HTTP_MAX_BODY_BYTES" "CHEZ_HTTP_PIPELINE_CAP"
+                  "CHEZ_HTTP_MAX_BODY_BYTES"
                   "CHEZ_HTTP_READ_BUFFER_SIZE" "CHEZ_HTTP_MAX_CONNECTIONS"
                   "CHEZ_HTTP_BACKLOG" "CHEZ_HTTP_REQUIRE_HOST"
                   "CHEZ_HTTP_WRITE_HIGH_WATER" "CHEZ_HTTP_WRITE_LOW_WATER"
@@ -215,23 +216,20 @@
                          'no-fault))
                      '("0" "no" "False")))
 
-    ;; --- the pipeline cap: 1 and nothing else.  The server answers one
-    ;; request at a time by design (decision 0004's amendment of
-    ;; 2026-09-25), so a larger cap would be ignored; it is refused instead.
-    (let ((cap (lambda (value)
-                 (guard (e (#t 'faulted))
-                   (limits-pipeline-cap
-                    (limits-from-environment
-                     (lambda (name) (and (string=? name "CHEZ_HTTP_PIPELINE_CAP") value))))))))
-      (test-equal "a pipeline cap of 1 is accepted; 2 and 8 are refused"
-                  '(1 faulted faulted) (map cap '("1" "2" "8"))))
+    ;; --- no pipeline cap (0005's amendment of 2026-10-04): the variable
+    ;; that set one is not read, whatever it holds, a value v0.1.0 refused
+    ;; among them.
+    (let ((defaults (map (lambda (field) (field default-limits)) all-fields)))
+      (test-equal "CHEZ_HTTP_PIPELINE_CAP is not read: whatever it holds, the limits are default-limits, field by field"
+                  (list defaults defaults defaults defaults)
+                  (map (lambda (value)
+                         (guard (e (#t 'faulted))
+                           (let ((L (limits-from-environment
+                                     (env (cons "CHEZ_HTTP_PIPELINE_CAP" value)))))
+                             (map (lambda (field) (field L)) all-fields))))
+                       '("1" "2" "-3" "many"))))
 
     ;; --- a malformed value faults rather than silently defaulting ---
-    (test-eq "a negative pipeline cap is refused" 'faulted
-             (guard (e (#t 'faulted))
-               (limits-from-environment
-                 (lambda (name) (if (string=? name "CHEZ_HTTP_PIPELINE_CAP") "-3" #f)))
-               'no-fault))
     (let ((backlog (lambda (value)
                      (guard (e (#t 'faulted))
                        (limits-backlog
@@ -292,7 +290,7 @@
                 '(read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
                   linger-timeout-ms write-timeout-ms tick-ms
                   max-header-bytes max-header-count max-header-field-bytes
-                  max-header-value-bytes max-target-bytes max-body-bytes pipeline-cap
+                  max-header-value-bytes max-target-bytes max-body-bytes
                   read-buffer-size max-connections backlog require-host?
                   write-high-water write-low-water drain-timeout-ms)
                 (map car (filter alone? named-fields)))
@@ -304,4 +302,8 @@
     (test-eq "a name that is not a field is refused" 'refused
              (guard (e ((assertion-violation? e) 'refused))
                (limits-with default-limits '((max-conections . 1)))
+               'accepted))
+    (test-eq "pipeline-cap is a field no more: limits-with refuses it" 'refused
+             (guard (e ((assertion-violation? e) 'refused))
+               (limits-with default-limits '((pipeline-cap . 1)))
                'accepted))))

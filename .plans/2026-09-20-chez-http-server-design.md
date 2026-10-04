@@ -106,6 +106,10 @@ rather than a redesign.
 > owner's word, parse-ahead is not wanted, since no client the server meets pipelines.
 > §4.3's states, one message at a time, stay the design.
 
+> *Amended 2026-10-04, later (decision 0005's amendment "the pipeline cap is removed"):*
+> the cap is a field no more, and `CHEZ_HTTP_PIPELINE_CAP` is not read. Requests are
+> answered one at a time by design, not by a limit.
+
 Limits and timeouts are **bounded, nginx-style, and data** (0005). Deadlines live in
 the pure state as `deadline` and `deadline-kind`; the shell keeps a hashed timing
 wheel keyed by `(deadline div tick-ms)` and dispatches `(tick now)` only to
@@ -2118,6 +2122,8 @@ into the record in place, which is the shape the decision README prescribes
    names `max-pipeline` in prose rather than in 0005's table. **The shipped names are
    the ones this document uses.** The fix is a dated amendment on 0004 and 0005, which
    is the owner's call, not M1's.
+   *Noted 2026-10-04:* `pipeline-cap` is shipped no more (0005's amendment "the pipeline
+   cap is removed").
 2. **Decision 0005's table is fifteen rows naming eighteen limits; `(http-server
    limits)` has nine fields.** The nine that are not fields yet — `write-timeout-ms`,
    `drain-timeout-ms`, `max-header-field-bytes`, `max-header-value-bytes`,
@@ -2127,3 +2133,5 @@ into the record in place, which is the shape the decision README prescribes
    saying out loud so nobody reads the nine-field record as the whole of decision 0005.
    *Noted 2026-10-03 (M8.1):* the last of them, `drain-timeout-ms`, has arrived; the
    record has twenty fields, decision 0011's linger and the Host switch among them.
+   *Noted 2026-10-04:* nineteen, with `pipeline-cap` removed (0005's amendment of that
+   date).

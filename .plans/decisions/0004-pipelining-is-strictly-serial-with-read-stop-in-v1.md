@@ -157,6 +157,7 @@ Weighed and not taken:
 Consequences:
 - `pipeline-cap` and `CHEZ_HTTP_PIPELINE_CAP` are unchanged, and accept only 1 (decision
   0005's amendment of 2026-09-25). No design waits for the field's name any more; removing
-  it would be a change of its own.
+  it would be a change of its own. (2026-10-04, later) It is removed: 0005's amendment "the
+  pipeline cap is removed".
 - Item 3's alternative, reading during a handler only to notice a client leave, is
   untouched: it stays on plan §14's open list.

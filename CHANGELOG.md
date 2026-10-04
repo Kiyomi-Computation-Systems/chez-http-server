@@ -6,6 +6,15 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- **The pipeline cap**: `CHEZ_HTTP_PIPELINE_CAP`, and the limits field
+  `pipeline-cap` with its accessor `limits-pipeline-cap`. It accepted only 1: the
+  server answers the requests on a connection one at a time, and is not to parse
+  ahead (decision 0004). The variable is no longer read, so a deployment that sets
+  it, which v0.1.0 allowed only as 1, starts as before. `make-limits` takes
+  nineteen fields, not twenty.
+
 ## [0.1.0] - 2026-10-04
 
 The first release: an HTTP/1.1 server for Chez Scheme on libuv. `serve` runs your

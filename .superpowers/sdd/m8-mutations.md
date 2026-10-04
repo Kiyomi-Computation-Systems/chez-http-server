@@ -1056,3 +1056,38 @@ too (the review's seventh):
 - run again with the tools, on the same copy, it rewrote PROVENANCE's
   `upstream-commit` line alone, the copy's commit for upstream's: every sum it wrote
   was the one recorded. The vendored tree was then restored.
+
+## After M8 — the pipeline cap removed (2026-10-04)
+
+Built on `docs/parse-ahead-not-wanted` (decision 0004's amendment "parse-ahead is not
+wanted") on the owner's "lets remove `pipeline-cap` in its own PR". Platform: Darwin
+arm64, Chez 10.4.1 (`tarm64osx`), libuv 1.52.1, 2026-10-04, the library path as above.
+
+`(http-server limits)` loses the field `pipeline-cap`, its accessor, `env-pipeline-cap`
+and `CHEZ_HTTP_PIPELINE_CAP` (0005's amendment "the pipeline cap is removed"). The new
+checks were written first and run against the code before the change, their mutant. The
+checks that changed have mutants of their own: a field gone from a positional
+constructor is where arguments slip out of order.
+
+| mutant | the edit | the failures |
+|---|---|---|
+| the code before the change | `pipeline-cap` a field, `CHEZ_HTTP_PIPELINE_CAP` read, any value but 1 refused | the limits suite: "the environment variables, one per field"; "CHEZ_HTTP_PIPELINE_CAP is not read: whatever it holds, the limits are default-limits, field by field"; "pipeline-cap is a field no more: limits-with refuses it" (49 passes, 3 failures) |
+| env-boolean keeps the default for any other value | `CHEZ_HTTP_REQUIRE_HOST=yes` read as unset, not refused | the serve suite: "a malformed setting raises an &http-server-config-error naming it, from serve" (15 passes, 1 failure) |
+| default-limits' read buffer and connection cap swapped | `make-limits` given 10000 and 16384 where pipeline-cap's removal left 16384 and 10000 | the limits suite: "read buffer 16 KiB"; "max connections 10 000"; "empty env == default-limits, field by field"; "CHEZ_HTTP_PIPELINE_CAP is not read" (48 passes, 4 failures) |
+| limits-with drops an override of read-buffer-size | the field after the one removed keeps its base value | the limits suite: "limits-with replaces each field alone, by name" (51 passes, 1 failure) |
+
+Run by hand against the code before the change, the variable at "1" left the limits as
+they were, and at "2", "-3" and "many" each faulted; `limits-with` accepted
+`pipeline-cap`. Each failure above is its own row's.
+
+Every check the change added or changed, and the mutant that reddens it:
+- the limits suite's "CHEZ_HTTP_PIPELINE_CAP is not read" and "pipeline-cap is a field no
+  more", both new, and "the environment variables, one per field", changed: the code
+  before the change;
+- the serve suite's "a malformed setting raises an &http-server-config-error naming it,
+  from serve", whose second setting is now `CHEZ_HTTP_REQUIRE_HOST=yes` for
+  `CHEZ_HTTP_PIPELINE_CAP=2`: env-boolean keeping the default;
+- the limits suite's "empty env == default-limits, field by field", over nineteen fields
+  now: the swap;
+- its "limits-with replaces each field alone, by name", over nineteen names now: the
+  dropped override.

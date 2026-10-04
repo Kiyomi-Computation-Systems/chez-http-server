@@ -87,7 +87,8 @@ can raise. Decision 0004's amendment of the same day makes v1 serial by design, 
 malformed value is refused. The field stays in the record, so a future parse-ahead
 design keeps its name. (2026-10-04) Decision 0004's amendment of this date records
 parse-ahead as not wanted, so no design waits for the name; the field is unchanged and
-accepts only 1.
+accepts only 1. (2026-10-04, later) The field is removed: the amendment "the pipeline
+cap is removed" below.
 
 ## Amendment (2026-09-25) — the write watermarks arrive in M6
 
@@ -530,3 +531,20 @@ connection table, so these limits hold it as they hold any connection, and none 
   it, within [D, D + `tick-ms`], as the connections' deadlines are: no timer a stream;
 - `drain-timeout-ms` closes it, as any connection, if its taker has not closed it when
   the drain's deadline comes.
+
+## Amendment (2026-10-04) — the pipeline cap is removed
+
+Decided on the owner's word on 2026-10-04 ("lets remove `pipeline-cap` in its own PR"),
+once decision 0004's amendment of the same day recorded parse-ahead as not wanted: the
+field kept a name for a design no one wants.
+
+- **Removed:** the table's `max-pipeline` row, shipped as `pipeline-cap`. The field goes,
+  with its accessor `limits-pipeline-cap` and `CHEZ_HTTP_PIPELINE_CAP`, so `make-limits`
+  takes nineteen fields.
+- **The variable is not read.** Whatever it holds, the limits are `default-limits`. v0.1.0
+  refused any value but 1 at startup, so a deployment that sets it sets 1, and starts as
+  before. `tests/test-limits.sps` holds both: the variable not read, and `limits-with`
+  refusing the name as no field.
+- **What stands:** the server answers the requests on a connection one at a time by
+  design (0004's amendment of 2026-09-25), not by a limit.
+- **CHANGELOG.md** records it under Unreleased, a change to v0.1.0's API.

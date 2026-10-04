@@ -14,12 +14,10 @@
 ;;; listens, CHEZ_HTTP_HOST and CHEZ_HTTP_PORT (decision 0012).  A malformed
 ;;; setting is refused before anything listens, as an
 ;;; &http-server-config-error composed with what refused it, whose irritants
-;;; name the variable (design §6.4).  That includes a pipeline cap other than
-;;; 1: the facade builds limits only from the environment, which refuses it
-;;; (M2.4).  A host that is not an IPv4 or IPv6 literal is refused by the
-;;; listener's bind, and is a config error too; the shell has closed the
-;;; listener by then.  A server that listens logs `listening`, with its host
-;;; and port, the kernel's choice for port 0.
+;;; name the variable (design §6.4).  A host that is not an IPv4 or IPv6
+;;; literal is refused by the listener's bind, and is a config error too; the
+;;; shell has closed the listener by then.  A server that listens logs
+;;; `listening`, with its host and port, the kernel's choice for port 0.
 ;;;
 ;;; THE CONDITIONS (design §6.4):
 ;;;

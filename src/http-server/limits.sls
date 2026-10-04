@@ -15,7 +15,7 @@
 ;;; often deadlines are checked: the timing wheel's bucket width; M5.1,
 ;;; milestone plan §3), header bytes 16 KiB (-> 431), header count 100,
 ;;; header field and header value 8 KiB each (-> 431; M2, milestone plan §3),
-;;; target 8 KiB (-> 414), bodies stream unbounded (#f), pipeline cap 1, read buffer
+;;; target 8 KiB (-> 414), bodies stream unbounded (#f), read buffer
 ;;; 16 KiB (standing risk 2), 10 000 connections at once (a connection over
 ;;; them is refused as it arrives), a listen backlog of 511, the kernel's
 ;;; queue of connections not yet accepted (M4.3, milestone plan §3), and the
@@ -28,9 +28,10 @@
 ;;; server waits that long for its connections to finish, then closes the
 ;;; rest.  The
 ;;; backlog reaches libuv's uv_listen as a C int, so it is at most 2147483647,
-;;; the largest a C int holds on every platform the project targets.  The pipeline cap accepts only 1: the server
-;;; answers one request at a time by design (decision 0004's amendment of
-;;; 2026-09-25), so any other value is refused rather than ignored.  Durations are stored in milliseconds;
+;;; the largest a C int holds on every platform the project targets.  There
+;;; is no pipeline cap: the server answers one request at a time by design
+;;; (decision 0004), and CHEZ_HTTP_PIPELINE_CAP, removed (0005's amendment of
+;;; 2026-10-04), is not read.  Durations are stored in milliseconds;
 ;;; sizes and buffers in bytes.  Timeout overrides are given in whole
 ;;; seconds; size and count overrides in their stored unit.  The tick is the
 ;;; one duration given in milliseconds, CHEZ_HTTP_TICK_MS: 250 ms has no
@@ -63,7 +64,6 @@
     limits-max-header-value-bytes
     limits-max-target-bytes
     limits-max-body-bytes
-    limits-pipeline-cap
     limits-read-buffer-size
     limits-max-connections
     limits-backlog
@@ -76,13 +76,13 @@
   (import (rnrs))
 
   ;; make-limits :
-  ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Nat Nat Boolean
+  ;;   Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat Nat (U Nat #f) Nat Nat Nat Boolean
   ;;   Nat Nat Nat -> Limits
-  ;; The twenty fields, in declaration order:
+  ;; The nineteen fields, in declaration order:
   ;;   read-header-timeout-ms idle-timeout-ms body-inactivity-timeout-ms
   ;;   linger-timeout-ms write-timeout-ms tick-ms max-header-bytes max-header-count
   ;;   max-header-field-bytes max-header-value-bytes max-target-bytes
-  ;;   max-body-bytes pipeline-cap read-buffer-size max-connections backlog
+  ;;   max-body-bytes read-buffer-size max-connections backlog
   ;;   require-host? write-high-water write-low-water drain-timeout-ms
   ;; (make-limits, limits? and the accessors are generated below.)
   (define-record-type limits
@@ -99,7 +99,6 @@
       (immutable max-header-value-bytes     limits-max-header-value-bytes)
       (immutable max-target-bytes           limits-max-target-bytes)
       (immutable max-body-bytes             limits-max-body-bytes)
-      (immutable pipeline-cap               limits-pipeline-cap)
       (immutable read-buffer-size           limits-read-buffer-size)
       (immutable max-connections            limits-max-connections)
       (immutable backlog                    limits-backlog)
@@ -132,7 +131,7 @@
   ;; default-limits : Limits — decision 0005's nginx-style defaults, and
   ;; decision 0011's linger.
   (define default-limits
-    (make-limits 60000 75000 60000 30000 60000 250 16384 100 8192 8192 8192 #f 1 16384 10000 511 #t
+    (make-limits 60000 75000 60000 30000 60000 250 16384 100 8192 8192 8192 #f 16384 10000 511 #t
                  262144 65536 10000))
 
   ;; limits-environment-variables : (Listof String)
@@ -151,7 +150,6 @@
       "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES"
       "CHEZ_HTTP_MAX_TARGET_BYTES"
       "CHEZ_HTTP_MAX_BODY_BYTES"
-      "CHEZ_HTTP_PIPELINE_CAP"
       "CHEZ_HTTP_READ_BUFFER_SIZE"
       "CHEZ_HTTP_MAX_CONNECTIONS"
       "CHEZ_HTTP_BACKLOG"
@@ -199,17 +197,6 @@
             ((string=? s "unbounded") #f)
             (else (parse-exact 'limits-from-environment name s 0 #f)))))
 
-  ;; env-pipeline-cap : Lookup String -> Nat
-  ;; 1, the only cap the server serves; a value that parses but is not 1
-  ;; faults with who/name, as a malformed one does, rather than being
-  ;; accepted and ignored.
-  (define (env-pipeline-cap lookup name)
-    (let ((n (env-integer lookup name 1 1)))
-      (unless (= n 1)
-        (assertion-violation 'limits-from-environment
-          "the pipeline cap must be 1: requests are answered one at a time" name n))
-      n))
-
   ;; env-boolean : Lookup String Boolean -> Boolean
   ;; Exactly "true" or "false"; anything else faults with who/name, as a
   ;; malformed size does, rather than guessing.
@@ -252,7 +239,6 @@
       (env-integer     lookup "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES"  8192  1)
       (env-integer     lookup "CHEZ_HTTP_MAX_TARGET_BYTES"        8192  1)
       (env-max-body    lookup "CHEZ_HTTP_MAX_BODY_BYTES"          #f)
-      (env-pipeline-cap lookup "CHEZ_HTTP_PIPELINE_CAP")
       (env-integer     lookup "CHEZ_HTTP_READ_BUFFER_SIZE"        16384 1)
       (env-integer     lookup "CHEZ_HTTP_MAX_CONNECTIONS"         10000 1)
       (env-integer     lookup "CHEZ_HTTP_BACKLOG"                 511   1 c-int-max)

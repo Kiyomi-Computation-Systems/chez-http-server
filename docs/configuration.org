@@ -40,7 +40,6 @@ with the port it got: ~listening 127.0.0.1 8080~.
 | ~CHEZ_HTTP_MAX_HEADER_VALUE_BYTES~  | 8192      | one header value                         |
 | ~CHEZ_HTTP_MAX_TARGET_BYTES~        | 8192      | size of the request-target               |
 | ~CHEZ_HTTP_MAX_BODY_BYTES~          | unbounded | every request body (~unbounded~: none)   |
-| ~CHEZ_HTTP_PIPELINE_CAP~            | 1         | must be 1: one request at a time         |
 | ~CHEZ_HTTP_READ_BUFFER_SIZE~        | 16384     | per-connection read buffer               |
 | ~CHEZ_HTTP_MAX_CONNECTIONS~         | 10000     | connections open at once                 |
 | ~CHEZ_HTTP_BACKLOG~                 | 511       | connections waiting to be accepted       |
@@ -107,10 +106,6 @@ counts are fixed. A low water above the high water is refused at startup.
 ~CHEZ_HTTP_BACKLOG~ is how many connections the kernel keeps waiting for the
 server to accept them, at most 2147483647; the kernel may cap it lower
 (~somaxconn~).
-
-~CHEZ_HTTP_PIPELINE_CAP~ must be 1; any other value is refused at startup.
-The server answers the requests on a connection one at a time, in order (see
-[[file:connections.org][connections.org]]), so a larger value would have nothing to do.
 
 ~CHEZ_HTTP_REQUIRE_HOST~ is ~true~ or ~false~, nothing else. With ~false~, an
 HTTP/1.1 request with no ~Host~ is served instead of getting ~400~. The other
