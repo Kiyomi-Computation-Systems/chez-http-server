@@ -4968,3 +4968,21 @@ a thousand reddens them by the bodies' bytes alone. The fetch script's paths, th
 sum and `make test`'s were witnessed by hand.
 
 NEXT: the PR, on the owner's "One PR now".
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **M8.4, as one PR.**
+- **#117, the load smoke, the first throughput numbers and v0.1.0's CHANGELOG,** as fa9e745. Its squash tree is the tested tip's, 9737119's, and its parent is 28e0d77.
+- **CI.** It merged on `linux` SUCCESS at its head (run 37210696001), whose log holds fifty suites and 1,882 expected passes, as local. There, on GitHub's ubuntu-24.04 runner, `make oha` fetched and checked the amd64 binary, and the smoke's in-process server took 34,011 requests a second kept alive and 6,441 a connection each. Main's own run on fa9e745 (37215807182) was green too, fifty suites and 1,882.
+- **Branch.** Deleted, local and remote, and refs pruned. No PR is open.
+- **The tag.** On the owner's word, by form ("Tag once main's run is green"): `v0.1.0`, an annotated tag (4e17b91) on fa9e745, pushed once main's run was green.
+
+`make test` green on main: fifty suites, 1,882 expected passes, every pin ok.
+
+DONE and merged (fa9e745, PR #117), and tagged `v0.1.0`: **M8.4, load and the release.**
+- oha's load smoke is in the clients suite: 20,000 GETs kept alive and 2,000 on a connection each, every one answered 200 with its body, none failed. oha is its release binary, fetched by `make oha` and kept at its pinned sha256 (decision 0018).
+- The first throughput numbers, measured beside Node's http on an Apple M1, are v0.1.0's baseline, with no throughput goal (decision 0002's amendment). 0004 item 3's alternative was weighed and left unbuilt (0004's note). 10,000 idle connections hold about 200 MB, and a request allocates about 10.4 KB through the whole server.
+- CHANGELOG.md has v0.1.0, with the numbers and the platforms they were measured on.
+- Decided by form: the pinned binary, no goal, an annotated tag only; the review's ten fixed and one PR; the tag once main's run was green.
+
+**M8 COMPLETE**, and with it the brief's milestones, M0 to M8: v0.1.0 is tagged with the measured numbers in CHANGELOG.md.
+
+NEXT: plan §14's open list, or a new milestone, when the owner asks.
