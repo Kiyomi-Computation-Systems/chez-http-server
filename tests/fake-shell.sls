@@ -151,7 +151,8 @@
           make-fake-connection fake-shell-conn-state fake-shell-reading? drops-body
           fake-shell-deliver-later! fake-shell-settle! fake-shell-feed-input!
           fake-shell-writes fake-shell-date-writes! written-status write-wire
-          fake-shell-fire-waits! fake-shell-answer-lookup! fake-shell-drain! fake-shell-armed)
+          fake-shell-fire-waits! fake-shell-answer-lookup! fake-shell-drain! fake-shell-armed
+          fake-shell-hold! fake-shell-schedule!)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
@@ -159,7 +160,8 @@
           (only (http-server awaiting) awaiting? awaiting-thunk)
           (only (http-server private scheduler)
                 make-scheduler scheduler-call! scheduler-spawn! scheduler-drain!)
-          (only (http-server private waits) make-waits waits-clock! waits-fire! waits-resolver!)
+          (only (http-server private waits) make-waits waits-clock! waits-fire! waits-resolver!
+                make-notice notice-attach! notice-close!)
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server serializer) date-line)
@@ -201,11 +203,13 @@
             (mutable timed)                   ; a connection's waits, scripted (fake-waits)
             (mutable lookup)                  ; the lookup they asked for: (host . answer!), or #f
             (mutable taker)                   ; once handed off, the taker's calls (THE DOOR)
-            (mutable draining?))              ; whether the shell has drained
+            (mutable draining?)               ; whether the shell has drained
+            (mutable notice)                  ; the request's notice of its client's close, or #f
+            (mutable held?))                  ; whether its scheduler waits to be drained (fake-shell-hold!)
     (protocol (lambda (new)
                 (define (make step state0 now0 perform trace)
                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
-                       #f #f '() #f #f #f '() #f #f #f #f #f #f))
+                       #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f))
                 (case-lambda
                   ((step state0 now0) (make step state0 now0 #f #f))
                   ((step state0 now0 perform) (make step state0 now0 perform #f))
@@ -268,8 +272,22 @@
        (enqueue! s actions)
        (when (= (fake-shell-depth s) 0)
          (drain! s)
-         (schedule! s))
+         (unless (fake-shell-held? s) (schedule! s)))
        actions)))
+
+  ;; fake-shell-hold! : FakeShell Boolean -> Void
+  ;; Held, the connection's scheduler is drained only when asked
+  ;; (fake-shell-schedule!), or as its waits fire or its lookup is answered,
+  ;; not after each event: as the libuv shell drains its own once a turn of
+  ;; the loop, after every event the turn brought (decision 0014).  The
+  ;; contract test holds a fake it gives the libuv shell's events, and drains
+  ;; it where a turn of the libuv shell's began (decision 0020: a client's
+  ;; end can come in the turn a handler's call waits in).
+  (define (fake-shell-hold! s held?) (fake-shell-held?-set! s held?))
+
+  ;; fake-shell-schedule! : FakeShell -> Void — drain the connection's
+  ;; scheduler now.
+  (define (fake-shell-schedule! s) (schedule! s))
 
   ;; schedule! : FakeShell -> Void
   ;; Drain the connection's scheduler: what is ready, handler calls and
@@ -438,7 +456,7 @@
   (define (perform-connection! s a handler limits)
     (case (car a)
       ((feed-parser) (feed! s (cadr a) (caddr a) (cadddr a)))
-      ((resume-parser) (parser-resume! (fake-shell-parser s)))
+      ((resume-parser) (fake-shell-notice-set! s #f) (parser-resume! (fake-shell-parser s)))
       ((call-handler)
        (let ((request (cadr a)))
          (fake-shell-waits?-set! s #f)
@@ -480,7 +498,17 @@
       ((arm-deadline) (arm! s limits (cadr a)))
       ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
       ((hand-off) (hand-off! s (cadr a) (caddr a)))
+      ((client-closed) (notice-close! (request-notice s)))
       (else (values))))
+
+  ;; request-notice : FakeShell -> Notice
+  ;; The notice of the request in flight (decision 0020), as the libuv
+  ;; shell's: the one its code's coroutines were given, or else a new one.
+  (define (request-notice s)
+    (or (fake-shell-notice s)
+        (let ((n (make-notice)))
+          (fake-shell-notice-set! s n)
+          n)))
 
   ;; --- the door (M8.2) ----------------------------------------------------------
 
@@ -634,7 +662,8 @@
   ;; once it has ended, the event `->event` makes of its value is
   ;; dispatched, or `handler-failed` if either raised; then the next call
   ;; starts.  A connection closing makes no more, and drops what one that
-  ;; ends then answers.
+  ;; ends then answers.  Each coroutine is given the request's notice, as the
+  ;; libuv shell's (decision 0020).
   (define (call-waiting! s thunk ->event)
     (fake-shell-waiting-set! s (append (fake-shell-waiting s) (list (cons thunk ->event))))
     (unless (fake-shell-calling? s) (next-call! s)))
@@ -650,13 +679,15 @@
         (let ((call (car calls)))
           (fake-shell-waiting-set! s (cdr calls))
           (fake-shell-calling?-set! s #t)
-          (scheduler-spawn! (fake-shell-scheduler s) (car call)
-            (lambda (kind v)
-              (let ((event (guard (e (#t (list 'handler-failed e)))
-                             (if (eq? kind 'raised) (raise v) ((cdr call) v)))))
-                (when (and event (not (fake-shell-closing? s)))
-                  (fake-shell-deliver! s event)))
-              (next-call! s))))))))
+          (notice-attach!
+           (scheduler-spawn! (fake-shell-scheduler s) (car call)
+             (lambda (kind v)
+               (let ((event (guard (e (#t (list 'handler-failed e)))
+                              (if (eq? kind 'raised) (raise v) ((cdr call) v)))))
+                 (when (and event (not (fake-shell-closing? s)))
+                   (fake-shell-deliver! s event)))
+               (next-call! s)))
+           (request-notice s)))))))
 
   ;; fake-shell-date-writes! : FakeShell (Listof Nat) -> Void
   ;; Date the connection's next writes at `instants`, one each, in order,

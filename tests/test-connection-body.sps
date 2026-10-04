@@ -438,12 +438,15 @@
 
     ;; A reader answered with no word of credit, as v1's shells answer every
     ;; one, takes each piece as it is handed over and never makes reading
-    ;; wait: reading stops at each message's end (decision 0004's pause),
-    ;; and, where the POST's head arrives before the end of its body, once
-    ;; more as the request waits on its handler, which answers after the
-    ;; drain that asks it (decision 0014; M7.1), and never for credit.
-    (test-equal "a reader answered with no word of credit never makes reading wait: a read-stop per message, and one as the POST waits on its handler with its body still to come, every delivery size"
-                '(3 2)
+    ;; wait: reading stops only where the POST's head arrives before the end
+    ;; of its body, as the request waits on its handler, which answers after
+    ;; the drain that asks it (decision 0014; M7.1), and never for credit.
+    ;; Past each message's end reading goes on (decision 0020), and nothing
+    ;; is held: each response is written before the next delivery.  So 1,
+    ;; unless the delivery that ends the head, at byte 49, ends the 10-byte
+    ;; body too, at 59: at sizes 20, 30 and 59 to 87, among others, 0.
+    (test-equal "a reader answered with no word of credit never makes reading wait: one read-stop as the POST waits on its handler with its body still to come, every delivery size"
+                '(1 0)
                 (every-size post-then-get default-limits streaming
                             (seen-by (lambda (sh)
                                        (length (filter (lambda (a) (eq? (car a) 'read-stop))
