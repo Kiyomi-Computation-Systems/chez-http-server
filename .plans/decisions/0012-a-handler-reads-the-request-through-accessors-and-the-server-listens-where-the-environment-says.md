@@ -88,3 +88,26 @@ the recommendations"). `tests/test-view.sps` holds each.
   asked for: 3,904 B, measured on curl's GET in absolute-form (Darwin arm64). The
   cost is accepted, as CONNECT's fresh parse is (design §7.5): absolute-form is a
   proxy's, rare at an origin server, and a handler that does not ask pays nothing.
+
+## Amendment (2026-10-04) — a value is trimmed where it is read
+
+Decided on the owner's word on 2026-10-04 ("close it"), after a discussion of the
+amendment above: trimming once, where the core records a value, will not come. A value
+stays recorded as it arrived, and each reader trims it.
+
+- **No reader misses the trim.** Two readers take a value whole and trim it: the view,
+  behind `request-header` and `request-host`, a handler's only way to read a value, and
+  the Host judge. Three read a value as a list, Expect, Upgrade and Transfer-Encoding,
+  and trim each element, as they must, since whitespace may sit around any comma. The
+  facade exports no span, so a handler never sees a value untrimmed.
+- **Trimming where a value is read allocates nothing.** `trim-ows` moves the bounds,
+  and a field nobody reads is never trimmed.
+- **Trimming where the core records a value costs every field a check,** and a new span
+  for each value that ends in whitespace, since spans are immutable. M4's probe of it
+  (HW-P, progress.md) kept every suite green, the allocation lane included: the cost is
+  the hot path's, not the tests'.
+- **RFC 9110 §5.5 is met where a value is evaluated.** It has the whitespace excluded
+  before a field value is evaluated, and each reader excludes it before it evaluates. A
+  future reader of a whole value calls `trim-ows`, as the Host judge does.
+
+Plan §14's open list drops the item.

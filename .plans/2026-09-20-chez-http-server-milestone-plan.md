@@ -1713,8 +1713,6 @@ on the way.
 ### Open, and not sliced
 
 - 0004 item 3's alternative: reading during a handler only to notice a client leave.
-- 0012's amendment: trimming a value's whitespace once, where the core records it,
-  rather than where each reader reads it.
 - The 32 lenient llhttp fixtures stay `deferred` by class (§11).
 - M8.2's review, four findings noted and not changed, on the owner's word (decision
   0016):
