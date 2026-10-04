@@ -234,7 +234,9 @@
   ;;   pct-encoding-undecoded  a percent-encoded octet, `%00` among them, is
   ;;                           a valid target (RFC 3986 §2.1); the server hands
   ;;                           it over undecoded (docs/request-targets.org),
-  ;;                           where the source refuses a decoded NUL;
+  ;;                           where the source refuses a decoded NUL: RFC 3986
+  ;;                           §7.3 puts that check on the code that decodes
+  ;;                           (kept on the owner's word, 2026-10-04);
   ;;   version-not-1.x         HTTP/2.0 or HTTP/0.9, answered 505 (decision
   ;;                           0006's amendment), where httpd serves it;
   ;;   minor-version-served    HTTP/1.2, served as HTTP/1.1 (RFC 9110 §6.2's
@@ -256,8 +258,9 @@
   ;;                           name is still the request's to send (RFC 9110
   ;;                           §6.6.2: Trailer is advisory), where lighttpd
   ;;                           refuses it;
-  ;;   chunk-extension-space   a space before a chunk extension (`a; comment`):
-  ;;                           the parser's 400 (plan §14's open list), where
+  ;;   chunk-extension-space   a space after a chunk extension's `;`
+  ;;                           (`a; comment`): the parser's 400 (design §6.5;
+  ;;                           kept on the owner's word, 2026-10-04), where
   ;;                           lighttpd reads RFC 9110 §5.6.3's BWS;
   ;;   empty-lines-allowed     two empty lines before a request line are
   ;;                           ignored (RFC 9112 §2.2; the padding PR, by
