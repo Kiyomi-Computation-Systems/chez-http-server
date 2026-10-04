@@ -115,3 +115,48 @@ held while its handler runs. So item 3's
 alternative stays what it is, a way to notice sooner that a client has left, unbuilt. The
 amendment's item 3, parse-ahead, waits for a throughput goal, and v0.1.0 sets none (decision
 0002's amendment of 2026-10-04). The runs are `out/m8-read-stop.{darwin,linux}.txt`.
+
+## Amendment (2026-10-04) — parse-ahead is not wanted
+
+Decided on the owner's word on 2026-10-04 ("record parse-ahead as not wanted"), after a
+discussion of the 2026-09-25 amendment's item 3. That item is closed: v1 answers the
+requests on a connection one at a time, and no parse-ahead design waits for a throughput
+goal. Wanting it later would take a new decision reversing this one.
+
+- **No client the server meets pipelines.** Browsers turned pipelining off, and libcurl
+  disabled it in 7.62.0 (the 2026-09-25 amendment). The owner's servers sit behind Caddy,
+  whose reverse proxy uses Go's `net/http` transport: it sends a connection's next request
+  only once the last response has been read, and opens more connections instead.
+- **The gain would be a pipelining client's alone.** Pipelined requests are answered in
+  order today, each once the previous response's writes have completed
+  (`response-written`), and each response is a write of its own. Parse-ahead would take
+  that wait away. TechEmpower's plaintext test, which pipelines, is the one client of note
+  that would see it.
+- **Serial costs other clients little.** Pausing at each message's end costs the parser 47
+  to 69 ns a request, 3–5% (the 2026-09-25 amendment), and stopping and starting reading
+  at most a microsecond (the note above). v0.1.0's baseline, taken with oha, which does not
+  pipeline, has this server ahead of Node 18.20, which parses ahead, on Linux aarch64 from
+  10 connections up (decision 0002's amendment of 2026-10-04).
+- **The cost stands as the 2026-09-25 amendment weighed it:** about half the connection
+  table's rows, request ids in handler events, a deadline per request, a delivery held by
+  each request in flight, read-stop's backpressure given up, bodies read through to reach
+  the next request, and the flood throttling Node needed after CVE-2013-4450.
+
+Weighed and not taken:
+- **Measuring first.** A client pipelining 16 deep, against this server and Node's, would
+  size what serial costs a pipelining client; oha does not pipeline, so it has never been
+  measured. Not taken: no client the owner's servers meet would see the number.
+- **A middle way**, kept here for whoever reopens the question. Still one request at a
+  time, but a next request already in the remainder is started once the previous response
+  has been handed to the shell, without waiting for its writes to complete. Reading starts
+  again only once every write has completed, and the write high-water mark bounds how far
+  it runs ahead. A delivery's pipeline would go out as one write, with no request ids, no
+  ordering queue, and memory still bounded by one read buffer, but the core's `responding`
+  rows and the write deadline would change. Unbuilt and unmeasured.
+
+Consequences:
+- `pipeline-cap` and `CHEZ_HTTP_PIPELINE_CAP` are unchanged, and accept only 1 (decision
+  0005's amendment of 2026-09-25). No design waits for the field's name any more; removing
+  it would be a change of its own.
+- Item 3's alternative, reading during a handler only to notice a client leave, is
+  untouched: it stays on plan §14's open list.

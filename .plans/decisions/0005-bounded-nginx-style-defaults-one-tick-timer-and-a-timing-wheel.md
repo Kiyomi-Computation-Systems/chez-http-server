@@ -85,7 +85,9 @@ The table's `max-pipeline` row, shipped as `pipeline-cap`, is no longer a bound 
 can raise. Decision 0004's amendment of the same day makes v1 serial by design, so
 `CHEZ_HTTP_PIPELINE_CAP` accepts 1 and refuses any other value at startup, as a
 malformed value is refused. The field stays in the record, so a future parse-ahead
-design keeps its name.
+design keeps its name. (2026-10-04) Decision 0004's amendment of this date records
+parse-ahead as not wanted, so no design waits for the name; the field is unchanged and
+accepts only 1.
 
 ## Amendment (2026-09-25) — the write watermarks arrive in M6
 

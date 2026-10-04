@@ -5000,3 +5000,9 @@ MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#118, plan �
 `make test` green on main: fifty suites, 1,882 expected passes, every pin ok.
 
 NEXT: plan §14's open list, or a new milestone, when the owner asks.
+
+DECIDED on the owner's word, 2026-10-04: **parse-ahead is not wanted** ("record parse-ahead as not wanted"), after a discussion of decision 0004's 2026-09-25 amendment, item 3. Recorded on `docs/parse-ahead-not-wanted`; docs only, nothing under `src/` or `tests/` moved.
+- **Why.** No client the server meets pipelines: browsers turned it off, libcurl in 7.62.0, and Caddy's reverse proxy, Go's `net/http` transport, sends a connection's next request only once the last response is read. The gain would be a pipelining client's alone, and the cost is 0004's 2026-09-25 list.
+- **Weighed, not taken.** Measuring a client pipelining 16 deep first; and a middle way, kept in the amendment: start a next request already in the remainder once the previous response is handed to the shell, without waiting for its writes, reading only once every write completes.
+- **Records.** Decision 0004 gets the amendment "parse-ahead is not wanted". The brief's item 3 and the design's pipelining note get a dated line each, and 0005's pipeline-cap amendment a dated sentence: no design waits for the field's name. `pipeline-cap` and `CHEZ_HTTP_PIPELINE_CAP` are unchanged and accept only 1. Item 3's alternative, reading during a handler only to notice a client leave, stays on plan §14's open list.
+- `make test` green before the commit (Darwin arm64): fifty suites, 1,882 expected passes, every pin ok.
