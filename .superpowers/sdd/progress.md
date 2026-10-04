@@ -5021,3 +5021,9 @@ MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#119 and #12
 `make test` green on main: fifty suites, 1,881 expected passes, every pin ok.
 
 NEXT: plan §14's open list, or a new milestone, when the owner asks. CHANGELOG.md's Unreleased holds the removal, a change to v0.1.0's API, so the next release is 0.2.0 by semantic versioning.
+
+DECIDED on the owner's word, 2026-10-04: **a header value is trimmed where it is read** ("close it"), after a discussion of decision 0012's 2026-09-27 amendment, which plan §14's open list carried. Recorded on `docs/trim-where-read`; docs only, nothing under `src/` or `tests/` moved.
+- **Why.** No reader misses the trim: the view and the Host judge trim a whole value, and the Expect, Upgrade and Transfer-Encoding readers trim each element, as they must. The facade exports no span. Trimming where a value is read allocates nothing; trimming where it is recorded costs every field a check, and a new span for each value that ends in whitespace.
+- **A correction to the discussion.** It named the tests' churn as a cost, unmeasured. M4's probe HW-P (the Host whitespace fix, above) trimmed every value where the core records it and kept every suite green, the allocation lane included. 0012's amendment records that instead.
+- **Records.** Decision 0012 gets the amendment "a value is trimmed where it is read", and plan §14's open list drops the item: five remain.
+- `make test` green before the commit (Darwin arm64): fifty suites, 1,881 expected passes, every pin ok.
