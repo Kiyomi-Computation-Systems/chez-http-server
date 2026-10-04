@@ -5130,3 +5130,13 @@ NEXT: plan §14's open list (one item: the smuggler corpus), a new milestone, or
 - **Tests first.** Eight checks; each watched to fail under a mutant (`m8-mutations.md`, "After M8"). Two are code mutants of the status table in `(http-server decisions)` — a 501 moved, the parser-error 400 moved — so the verdict gate catches a server regression, not only a data edit; the rest are corpus-data mutants (count, category, id, assembler, policy).
 - **Records.** Decision 0021, new. Plan §14's open list is now empty (its last item settled); design §8.8 gets a note. No CHANGELOG entry: nothing a client or an embedder meets changes (test-only), as for the outcome and robustness lanes.
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,949 expected passes, every pin ok.
+
+MERGED to main on 2026-10-04, on the owner's "CI is green, do closing ritual": **the smuggling corpus, a hand-written fixed-vector lane** (the entry above). 687eee2 was squashed as 58e27ba (tree the tested tip's, parent e425eb3).
+- **CI.** Its run, 37241392166, passed on 687eee2: fifty-one suites, 1,949 expected passes on ubuntu-24.04, the new smuggling lane's eight among them.
+- **Branches.** `--delete-branch` deleted the remote branch and left this checkout on the local one, so main was fast-forwarded and the branch deleted by hand. No PR is open.
+
+`make test` green on main: fifty-one suites, 1,949 expected passes, every pin ok.
+
+**Plan §14's open list is now empty: every item is settled.** Decision 0021 recorded that the smuggler corpus is this hand-written lane, not the vendored-generator/probe path (stopped by a safety classifier, and covered by guardian) — a future session should not re-open that step.
+
+NEXT: a new milestone, or cutting 0.2.0 (CHANGELOG.md's Unreleased holds Added, Changed, Removed and Fixed, the removal breaking, so 0.2.0 by semantic versioning), when the owner asks.
