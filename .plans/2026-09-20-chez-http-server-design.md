@@ -351,6 +351,10 @@ violation, a test-caught bug and never a runtime path):
 `read-start` · `call-handler` · `deliver-body` · `deliver-body-end` ·
 `notify-producer` · `arm-deadline` · `disarm-deadline` · `shutdown` · `close` · `log`
 
+> *Amended 2026-10-04 ([0020](decisions/0020-a-clients-close-is-noticed-while-its-request-is-answered-and-the-wait-its-code-is-in-raises-client-closed-once.md)):* and `client-closed`, which
+> tells the request's code its client has closed or reset the connection; with 0006's
+> `hand-off`, seventeen (0002's amendments).
+
 ### 4.2 The twenty-five parser callbacks
 
 Every one of chez-httparse's callbacks arrives as a `parser-event`. They are all
@@ -462,7 +466,14 @@ being read:
 
 Two notes. `handling` carries no deadline because decision 0005's table has no
 handler-timeout row: a slow handler is the application's problem, and a client that
-disappears during one is seen when reading resumes (0004 item 3). And `responding`
+disappears during one is seen when reading resumes (0004 item 3).
+
+> *Amended 2026-10-04 ([0020](decisions/0020-a-clients-close-is-noticed-while-its-request-is-answered-and-the-wait-its-code-is-in-raises-client-closed-once.md)):* `handling` and `responding`
+> read too, from a request's end until its response is written, only to notice the
+> client close: the first delivery that arrives is held, and reading stops. So a client
+> that disappears during a handler is seen at once: its FIN tells the request's code,
+> `(client-closed)`, unless requests are held behind it, and the connection closes once
+> the response, if any, is written; a reset closes, as before. H6's `read-stop` is gone. And `responding`
 is entered even for an error response, with a `close-after?` flag in the state rather
 than a separate `failing` state, because every error path in §6 ends the same way —
 write a status, then close.
@@ -1112,6 +1123,12 @@ resume cell; call a handler from inside `on-data`.
 > from inside `on-data`; a wait on no coroutine let through, R2's; a coroutine's end
 > returning normally, R3's; the one-shot check removed, R4's; and R5's refusal removed
 > (m7-mutations.md, the M7 exit). R3's row now runs first in `tests/test-scheduler.sps`.
+
+> *Noted 2026-10-04 ([0020](decisions/0020-a-clients-close-is-noticed-while-its-request-is-answered-and-the-wait-its-code-is-in-raises-client-closed-once.md)):* a request's code is told its
+> client has closed through a notice (`(http-server private waits)`), which the shell
+> gives each coroutine the code runs on and closes at the core's `(client-closed)`. The
+> wait parked then, or else the next, raises `&client-closed`, once, what it waited on
+> taken back as a deadline takes it back; a resume after it is R4's `late-resume`.
 > Since M7.2's first step a coroutine that returns normally breaks every drain after it:
 > Chez refuses its return into the continuation its park used, or its raise's handler
 > returns, and the coroutine running stays set. That came at the suite's first
@@ -1750,6 +1767,20 @@ passes the connection through the parser's user-context argument.
 > resident, `uv_tcp_t`, the heap and the allocators' own. `docs/configuration.org`'s
 > figure moves from about 180 MB to about 200 MB. The runs are
 > `out/m8-max-connections.{darwin,linux}.run{1,2}.txt`.
+
+> *Measured 2026-10-04 ([0020](decisions/0020-a-clients-close-is-noticed-while-its-request-is-answered-and-the-wait-its-code-is-in-raises-client-closed-once.md); Darwin arm64, Chez 10.4.1,
+> libuv 1.52.1):* a connection held idle is a field a side larger: the core's state
+> remembers the client's end, and the shell's connection record a request's notice,
+> which it lets go as the parser resumes, so an idle connection holds none.
+> `research/spike/m7-exit-budget.sps`, two runs each on main (d784013) and on 0020's
+> tree, alternating, reads 1,926 to 1,944 B of heap a connection after waits on main and
+> 1,942 to 1,956 B on 0020's, medians 1,935 and 1,946 to 1,949; no coroutine is left in
+> the heap on either. After answers at once the readings spread over 1,832 to 2,051 B
+> on both, and `research/spike/client-closed-budget-small.sps`, run on main, on 0020's
+> tree and on it with H6's `read-stop` put back, puts them in two bands about 95 B
+> apart on all three, flipping between runs: those rows do not show the change. The
+> runs are `out/client-closed-budget.{main,branch}.run{1,2}.txt` and
+> `out/client-closed-budget-small.{main,branch,branch-ka}.txt`.
 
 Per request, allocation:
 

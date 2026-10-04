@@ -161,3 +161,14 @@ Consequences:
   pipeline cap is removed".
 - Item 3's alternative, reading during a handler only to notice a client leave, is
   untouched: it stays on plan §14's open list.
+
+## Amendment (2026-10-04, later) — item 3's alternative is taken
+
+Decided on the owner's word on 2026-10-04 ("lets do C"), recorded as
+[0020](0020-a-clients-close-is-noticed-while-its-request-is-answered-and-the-wait-its-code-is-in-raises-client-closed-once.md). Item 3's first sentence no longer holds: past a request's end the
+connection reads, only to notice the client close or reset it, and the first delivery
+that arrives, the next request's, is held after the pause's rest and reading stops. So
+a client that pipelines is noticed no more, and every request it sends is still
+answered one at a time, in order. The client's end tells the code of the request it
+waits on; one that comes with requests held tells no one, and they are answered before
+the connection closes. The open list's item is closed.

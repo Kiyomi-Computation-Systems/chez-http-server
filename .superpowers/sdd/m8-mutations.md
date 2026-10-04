@@ -1242,3 +1242,101 @@ The checks the change touched:
 
 No mutant fails a check through the 32 alone, as decision 0019's measured overlap
 predicted.
+
+## After M8 — a client's close noticed while its request is answered (2026-10-04)
+
+Decision 0020, on the owner's word ("lets do C"), and by form ("Once", "Close quietly"):
+the core reads past a request's end to notice the client close, and the wait a
+request's code is in raises `&client-closed`, once. Platform: Darwin arm64, Chez 10.4.1
+(`tarm64osx`), libuv 1.52.1, 2026-10-04, the library path as above. Three stacked PRs:
+the waits and the API; the core and the fake shell; the libuv shell.
+
+Tests first: the wait suite's seven checks and the connection table's rows were written
+before the code. The wait suite did not load (`client-closed?` unbound), and the table
+failed seventeen: the new rows, H6, B8 and B9 without their `read-stop`, T2's two
+instances, the vocabulary. The other suites' checks came as the build found their
+cases; each was watched to fail by a mutant below. Every mutant ran against all fifty
+suites, the contract and message-loop suites again after their last changes.
+
+| mutant | the edit | red |
+|---|---|---|
+| K-A | a request's end stops reading again | connection-body, connection-table, message-loop, shell |
+| K-A2 | a streaming reader's end stops reading again | connection-body, connection-table |
+| K-A3 | a whole reader's end stops reading again | connection-table |
+| K-B | bytes past a request's end are dropped, not held | connection-head, connection-table, message-loop, shell |
+| K-C | a delivery held replaces the pause's rest | connection-table |
+| K-D | a held delivery is not the parser's last | message-loop |
+| K-E | a held delivery's base is left the last one's | message-loop |
+| K-F | the client's end past a request's end changes nothing | connection-table, contract, message-loop, shell |
+| K-G | the client's end tells the code with requests held | connection-table, contract, message-loop |
+| K-H | the client's end is not remembered | connection-table, contract, message-loop |
+| K-I | a read error past a request's end tells no one | connection-table, contract |
+| K-J | a response after the client's end lingers | connection-table, message-loop |
+| K-K | reading starts again after the client's end | connection-table, contract |
+| K-L | a read wanting more after the end, in head or body, does not close | message-loop |
+| K-L2 | a read wanting more after the end, in idle, does not close | message-loop |
+| K-M | any raise of the close is quiet, the client closed or not | connection-table, shell |
+| K-N | no raise is quiet: every one a failure | connection-table, message-loop |
+| K-O | an originated status forgets the client closed | connection-table |
+| K-P | the vocabulary leaves client-closed out | connection-table |
+| K-Q | a message's end does not pause the parser | message-loop (exit 2) |
+| RP-A | the replay drains the fake after every event | contract |
+| RP-B | the replay drains after the clock moves | contract |
+| RP-C | a script's client ends its stream without waiting for its answers | contract |
+| SH-A | the libuv shell ignores client-closed | contract, shell |
+| SH-B | each coroutine gets a notice of its own | contract, shell |
+| SH-C | the notice is kept past the request | shell |
+| SH-D | every raise of the close is logged | shell |
+| SH-E | a raise of the close is quiet though the client did not close | shell |
+| SR-A | bytes past a request's end are fed at once | connection-head, connection-table, message-loop (exit 2), shell |
+| TM-A | the table's N1 row loses its instance | connection-table |
+| W-A | a close never ends the wait parked then | contract, message-loop, shell, waits |
+| W-B | a wait does not raise a close no wait has raised yet | waits |
+| W-C | every wait after the close raises (sticky) | waits |
+| W-D | a second close ends a wait again | waits |
+| W-E | a close takes back nothing | shell, waits |
+| W-F | a notice keeps no coroutine's context | contract, message-loop, shell, waits |
+| W-G | a close raises a deadline's condition | contract, message-loop, shell, waits |
+| W-H | the facade exports no client-closed names | serve |
+| M7B-14 | a reader's answer reads again though its message has ended (the message loop's serial?, which M7.1 taught a wait from a message's end) | connection-body, connection-table, contract, shell (exit 2) |
+| M7B-15 | after a response, reading starts again before the parser is resumed (re-cut on 0020's tree) | connection-table, message-loop |
+
+The checks the slice touched, and their killers:
+- the wait suite's seven: W-A to W-G, each as its row says (W-B the two raised before a
+  park, W-C and W-D the once rows, W-E the sleep taken back); the serve suite's export
+  list: W-H;
+- the connection table: H6, K-A; B8, K-A2; B9, K-A3; T2's two instances, K-I; P3, K-B and SR-A; N1 and N3, K-B
+  and SR-A; N2, K-B, K-C and SR-A; N4 and N5, K-F; N6, K-F, K-G, K-H, K-J; N7, K-F,
+  K-N; N8, K-O; N9, K-M; N10, K-F, K-G; N11, K-F, K-G, K-H, K-K; the vocabulary and
+  "no row emits an action outside the vocabulary", K-P; the row count, TM-A;
+- the head suite's bytes-arrived row, K-B and SR-A; the body suite's read-stop count,
+  K-A and K-A2;
+- the message loop's order row, K-A and M7B-15; its eight: told, K-F, K-N, W-A, W-F,
+  W-G; caught and answered, K-F, K-H, K-J, W-A, W-F, W-G; held and served, K-B; two
+  held together, K-B, K-D; judged where the parser stopped, K-B, K-E; an end with a
+  request held, K-F, K-G, K-H; the cut, K-F, K-G, K-H, K-L; the empty line, K-F, K-G,
+  K-H, K-L2;
+- the contract: the reset while a call sleeps, K-I, W-A, W-F, W-G; the sleep that ends
+  early, SH-A, SH-B (the shells part), K-F, W-A; the three requests that end early,
+  RP-A (its traces), K-F, K-H, K-K; the lookup in a pipeline, K-G, K-H, K-K, RP-B;
+  every script that waits read an answer, RP-C; the waiting scripts' traces and bytes,
+  RP-B;
+- the shell suite: the close noticed, K-A, K-F, SH-A, SH-B, SH-D, W-A, W-F, W-G; the
+  half-close answered, K-A, K-F, SH-A, SH-B, W-A, W-F, W-G; held and answered, K-B,
+  SR-A; the condition raised by a handler itself, K-M, SH-E; the retention check,
+  extended to what the waits kept, SH-C.
+
+Found while mapping:
+- The contract's waiting scripts had half-closed as soon as they sent, which before
+  0020 the server saw only after its answer. With 0020 their handlers were told,
+  answered nothing, and both shells agreed on writing nothing. So a script's client now
+  ends its stream once answered, two scripts end early on purpose, and a check holds
+  every other to having read an answer (RP-C).
+- `serial?` keys a message's end on the paused result, since no `read-stop` marks it
+  now. Nothing reaches its "no feed until the resume" clause: a feed to a paused parser
+  raises in byte-machine (SR-A, exit 2) and a parser not paused raises in the core
+  (K-Q, exit 2), before any check. M7's two `serial?` mutants, run again on this tree,
+  are still killed: M7B-14 as it was, M7B-15 re-cut on the new `response-written`.
+- RP-A has one witness, the three requests that end early, whose end comes in the turn
+  a handler's call waits in. When it comes a turn later, a fake drained after every
+  event agrees too.

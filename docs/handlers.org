@@ -199,11 +199,37 @@ answer: a response or a reader. There it can wait with ~await~.
 - Only a handler that answered ~awaiting~ can wait, and so can the reader or
   the producer it answers with. A wait anywhere else fails the handler: the
   client gets ~500~, and the server logs ~handler-failed~.
-- While a handler waits, the server reads nothing more from its connection,
-  so the next request on it waits too. Other connections go on.
-- A waiting handler holds about 3.6 KB until its wait ends, even if its
-  client has gone: the server only notices a client leave when it reads or
-  writes. Once it has answered, its connection holds no more than any other.
+- While a handler waits, the next request on its connection waits too. Other
+  connections go on.
+- A waiting handler holds about 3.6 KB until its wait ends. Once it has
+  answered, its connection holds no more than any other.
+
+If the client closes or resets the connection while your handler waits:
+
+- The wait it is in raises ~&client-closed~ (check with ~client-closed?~). If
+  it is not waiting just then, its next wait does. This happens once: after
+  it, waits work as before. A reader or a producer that waits is told the
+  same way.
+- Let it raise, and the server answers nothing and closes the connection,
+  logging nothing.
+- Catch it to clean up, such as to drop a ~resume~ you kept, or to answer
+  anyway: a client that only half-closed its side still reads your answer.
+- A ~resume~ called after the close ended its wait wakes nothing, and the
+  server logs ~late-resume await~, as after a deadline.
+- Behind a proxy such as Caddy, a client that leaves makes the proxy close
+  its connection to this server, so your handler is told then too.
+
+#+begin_src scheme
+;; a long poll that forgets a client that left
+(awaiting
+ (lambda ()
+   (let ((mine #f))
+     (guard (e ((client-closed? e) (set! waiting (remq mine waiting)) (raise e)))
+       (make-response 200 #f '()
+                      (await (lambda (resume)
+                               (set! mine resume)
+                               (set! waiting (cons resume waiting)))))))))
+#+end_src
 
 To wait for a time, or to stop waiting after one:
 

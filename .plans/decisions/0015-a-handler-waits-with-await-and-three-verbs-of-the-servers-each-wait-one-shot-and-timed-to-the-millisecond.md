@@ -183,3 +183,14 @@ are under its name.
   EINVAL came out of `resolve` as chez-libuv's (M7.2's review). Anything else refused at
   the call is raised as chez-libuv raises it.
 - **`&resolve-error` carries the host among its irritants**, beside its reason.
+
+## Amendment (2026-10-04) — a client's close ends the wait, once
+
+Decided on the owner's word on 2026-10-04, recorded as [0020](0020-a-clients-close-is-noticed-while-its-request-is-answered-and-the-wait-its-code-is-in-raises-client-closed-once.md). Item 4 holds
+for every close but the client's own: a drain's force, a deadline, the shell's. A
+handler's wait can now see the client's close, since the connection reads past the
+request's end: the wait the request's code is in, or else its next, raises
+`&client-closed`, once ("Once", by form), and a handler that lets it out is answered
+nothing ("Close quietly", by form). The alternative weighed above, a wait that raises
+when its connection closes, is taken for the client's close alone, and once, so code
+after a caught raise still runs and may wait again.

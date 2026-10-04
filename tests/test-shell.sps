@@ -182,9 +182,10 @@
         (only (httparse modes) httparse-message-type-value)
         (http-server private shell)
         (only (http-server private scheduler)
-              scheduler-phase current-coroutine coroutine-park! coroutine-wake! coroutine-yield!
+              scheduler-phase current-coroutine coroutine-waits coroutine-park! coroutine-wake! coroutine-yield!
               scheduler-invariant? scheduler-invariant-name)
-        (only (http-server awaiting) awaiting deadline-passed? resolve-error? resolve-error-reason)
+        (only (http-server awaiting) awaiting deadline-passed? client-closed? make-client-closed
+              resolve-error? resolve-error-reason)
         (only (http-server private waits) await sleep-ms with-deadline resolve)
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
@@ -385,12 +386,20 @@
     (let spin () (when (< (monotonic-ms) until) (spin)))))
 (define parked #f)
 (define waker #f)
+;; How far the handlers of `/leave`, `/half-close` and `/held-wait` have
+;; come: 'waiting once they wait, 'told once a close raised in the wait.
+(define leave-state #f)
 ;; The coroutines `/noted` ran on, newest first, each with what it ran:
-;; `(kind . weak-pair)`, the pair's car the coroutine.
+;; `(kind . weak-pair)`, the pair's car the coroutine.  And what each one's
+;; waits kept of it, its context, which its request's notice points to
+;; (decision 0020), the same way.
 (define noted '())
-;; note! : Symbol -> Void — the coroutine running, noted weakly as `kind`.
+(define noted-waits '())
+;; note! : Symbol -> Void — the coroutine running, noted weakly as `kind`,
+;; and its waits' context.
 (define (note! kind)
-  (set! noted (cons (cons kind (weak-cons (current-coroutine) '())) noted)))
+  (set! noted (cons (cons kind (weak-cons (current-coroutine) '())) noted))
+  (set! noted-waits (cons (cons kind (weak-cons (coroutine-waits (current-coroutine)) '())) noted-waits)))
 ;; reason-for : String -> String — the reason `resolve` raised with for
 ;; `host`, or "resolved".
 (define (reason-for host)
@@ -517,6 +526,30 @@
             (lambda ()
               (read-body (lambda (bv start end) (sleep-ms 0))
                          (lambda () (make-response 200 #f '() target))))))
+          ;; A client's close while the handler waits (decision 0020).
+          ((bytevector=? target (b "/leave"))
+           (awaiting
+            (lambda ()
+              (set! leave-state 'waiting)
+              (guard (e ((client-closed? e) (set! leave-state 'told) (raise e)))
+                (sleep-ms 60000))
+              (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/half-close"))
+           (awaiting
+            (lambda ()
+              (set! leave-state 'waiting)
+              (make-response 200 #f '()
+                             (guard (e ((client-closed? e) (b "told, answered")))
+                               (sleep-ms 60000)
+                               (b "slept"))))))
+          ((bytevector=? target (b "/raise-closed"))
+           (awaiting (lambda () (raise (make-client-closed)))))
+          ((bytevector=? target (b "/held-wait"))
+           (awaiting
+            (lambda ()
+              (set! leave-state 'waiting)
+              (sleep-ms 50)
+              (make-response 200 #f '() target))))
           ((bytevector=? target (b "/await-stream"))
            (awaiting
             (lambda ()
@@ -1161,6 +1194,51 @@
                         (let ((rs (responses (client-bytes cl))))
                           (if (= 2 (length rs)) (list (status (cadr rs)) (body (cadr rs))) 'no-response))
                         (shell-waits-timed shell)))
+      (client-close! cl))
+    ;; A client's close while its handler waits (decision 0020): past the
+    ;; request's end the connection reads only to notice it.  The handlers
+    ;; sleep a minute, past the wait's cap, so a close noticed only at the
+    ;; answer would leave the checks unsatisfied.
+    (set! logged '())
+    (set! leave-state #f)
+    (let ((cl (open-client! (b "GET /leave HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (wait-for (lambda () (eq? leave-state 'waiting)))
+      (let ((c (newest)))
+        (client-close! cl)
+        (test-equal "a waiting handler whose client closes is told: its wait raises &client-closed, nothing is answered or logged, and the connection closes"
+                    '(satisfied told () closed)
+                    (list (wait-for (lambda () (and (eq? leave-state 'told) (connection? c)
+                                                    (not (memq c (shell-connections shell))))))
+                          leave-state
+                          (filter (lambda (e) (memq (car e) '(handler-failed read-error))) logged)
+                          (and (connection? c) (phase c))))))
+    (set! leave-state #f)
+    (let ((cl (open-client! (b "GET /half-close HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (wait-for (lambda () (eq? leave-state 'waiting)))
+      (client-shut! cl)
+      (test-equal "one whose client only half-closes, catching the close, answers: the client reads the answer, then the stream's end"
+                  '(satisfied ((200 "told, answered")))
+                  (list (wait-for (lambda () (eq? (client-end cl) 'eof)))
+                        (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))))
+      (client-close! cl))
+    ;; Only a close the client made is quiet: a waiting handler that raises
+    ;; the condition itself, its client still there, has failed.
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /raise-closed HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a waiting handler that raises &client-closed itself, its client still there, has failed: logged, and answered 500"
+                  '(satisfied (500) (handler-failed))
+                  (list (wait-for (lambda () (= 1 (length (responses (client-bytes cl))))))
+                        (map status (responses (client-bytes cl)))
+                        (map car (filter (lambda (e) (eq? (car e) 'handler-failed)) logged))))
+      (client-close! cl))
+    (set! leave-state #f)
+    (let ((cl (open-client! (b "GET /held-wait HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (wait-for (lambda () (eq? leave-state 'waiting)))
+      (client-send! cl (b "GET /second HTTP/1.1\r\nHost: x\r\n\r\n"))
+      (test-equal "a request that arrives while a handler waits is held, and answered after it, in order"
+                  '(satisfied ((200 "/held-wait") (200 "/second")))
+                  (list (wait-for (lambda () (= 2 (length (responses (client-bytes cl))))))
+                        (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))))
       (client-close! cl))
     ;; A piece of a waiting handler's reader may answer no values, as an
     ;; ordinary reader's may: one that ends with a sleep does.
@@ -2699,9 +2777,12 @@
     ;; An idle connection carries no coroutine (decision 0003; design §5.2):
     ;; once `/noted` is answered, each call into its code made on a
     ;; coroutine and each waiting, and its connection is idle, a full
-    ;; collection leaves none of the coroutines it ran on.  The instrument
-    ;; is the weak pair's, calibrated above.
+    ;; collection leaves none of the coroutines it ran on, nor what their
+    ;; waits kept of them, which the request's notice points to: the notice
+    ;; goes with the request (decision 0020).  The instrument is the weak
+    ;; pair's, calibrated above.
     (set! noted '())
+    (set! noted-waits '())
     ;; Each reading is bound in turn: the collection comes after the wait.
     (let* ((cl (open-client! (b "POST /noted HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")))
            (waited (wait-for (lambda () (and (= 1 (length (responses (client-bytes cl))))
@@ -2710,10 +2791,13 @@
            (kinds (fold-left (lambda (kinds e) (if (memq (car e) kinds) kinds (append kinds (list (car e)))))
                              '() (reverse noted)))
            (held (map car (filter (lambda (e) (eq? (state-after-collection (cdr e)) 'held))
-                                  (reverse noted)))))
-      (test-equal "a connection idle after its handler, its reader and its producer waited holds none of the coroutines they ran on"
-                  '(satisfied (200 "one two") (thunk piece end producer) ())
-                  (list waited (if (pair? rs) (list (status (car rs)) (body (car rs))) 'no-response) kinds held))
+                                  (reverse noted))))
+           (held-waits (map car (filter (lambda (e) (and (car (cdr e)) (eq? (state-after-collection (cdr e)) 'held)))
+                                        (reverse noted-waits)))))
+      (test-equal "a connection idle after its handler, its reader and its producer waited holds none of the coroutines they ran on, nor what their waits kept of them"
+                  '(satisfied (200 "one two") (thunk piece end producer) () ())
+                  (list waited (if (pair? rs) (list (status (car rs)) (body (car rs))) 'no-response) kinds held
+                        held-waits))
       (client-close! cl))
 
     ;; A shell that serves no more closes the timer of its loop's waits,

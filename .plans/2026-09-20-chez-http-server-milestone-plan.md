@@ -1724,7 +1724,10 @@ on the way.
 - **0004 item 3's alternative was weighed.** A shell that never stops reading saved
   0.6 to 1.0 µs a request at 10 connections on Linux, and up to 0.8 µs on Darwin, at
   most 6% of the requests a second: less than the alternative would cost, and no goal
-  asks for it (0004's note of 2026-10-04).
+  asks for it (0004's note of 2026-10-04). *Decided 2026-10-04, later
+  ([0020](decisions/0020-a-clients-close-is-noticed-while-its-request-is-answered-and-the-wait-its-code-is-in-raises-client-closed-once.md)):* built for the notice alone: past a
+  request's end the connection reads only to notice the client close, and the wait a
+  handler's code is in raises `&client-closed`, once. The open list drops the item.
 - **The memory at `max-connections`:** 10,000 idle connections hold 199 to 202 MB,
   about 20 KB each (design §7.5's note). `docs/configuration.org`'s figure moves from
   about 180 MB to about 200 MB.
@@ -1749,7 +1752,6 @@ on the way.
 
 ### Open, and not sliced
 
-- 0004 item 3's alternative: reading during a handler only to notice a client leave.
 - M8.3's smuggler corpus, dropped from the slice (a safety classifier stopped the
   step that wrote its probe reader): the measurement stands in the ledger (all 3,536
   probes refused but 6 gadgets that are no Transfer-Encoding header), and guardian's
