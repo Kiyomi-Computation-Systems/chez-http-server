@@ -829,3 +829,117 @@ Readings the re-run gave:
 Witnessed by hand: the refresh script, run against a checkout without the
 corpus's files, emptied a scratch copy of `test/vendor/kestrel` (exit 1) before
 the fix, and kept it, exit 2 by name, after.
+
+### The third step: the black-box lane, thirty-four mutants
+
+The step adds vtest2 (decision 0017: a submodule at the archived mirror's `last`
+tag, built by `make vtest`), twelve scripts under `tests/vtc/`, a section of
+`tests/test-clients.sps` that runs each against a server of the lane's own and
+holds it to a manifest both ways, and five curl checks. It changes no source
+under `src/`. Each mutant ran against the clients suite, the lane's (M8B-P1
+against the shell suite, whose check it is); a mutant in `src/` reddens other
+suites too, which the first two steps' runs already cover. Every one loaded and
+matched once. A script's failure is read off the suite's `VTEST` line, its
+first `----` line naming the client and the expectation; vtest stops a script
+at its first failure, so each client was given a mutant of its own.
+
+| mutant | the edit | the clients suite's failures (the script, its client) |
+|---|---|---|
+| M8B-K1 | every request closes after its response | the verdicts (keep-alive, http10 c2, head, chunked-upload, stream c1); five M4 curl checks; ab -k |
+| M8B-H1 | no `Connection: keep-alive` to a 1.0 client kept | the verdicts (http10 c2); ab -k |
+| M8B-H2 | no `Connection: close` on a last response | the verdicts (http10 c1 and six others: five on their `Connection` lines, stream c2 on an incomplete head); both servers' log checks; the M4 1.0 stream check |
+| M8B-D1 | a HEAD's answer framed as a GET's, content written | the verdicts (head c1: status `-`, the stray body read as a status line); the M4 HEAD check |
+| M8B-E1 | no 100 to a request expecting it | the verdicts (expect c1: 408); the M4 Expect check |
+| M8B-E2 | a 100 to HTTP/1.0 too | the verdicts (expect c2: 100) |
+| M8B-W1 | `read-whole-body` hands on an empty body | the verdicts (chunked-upload c1, expect c1) |
+| M8B-T1 | a streamed body close-delimited to 1.1 | the verdicts (stream c1); the M4 chunked stream check |
+| M8B-T2 | a streamed body chunked to 1.0 | the verdicts (stream c2); the M4 1.0 stream check |
+| M8B-V1 | a version not 1.x served | the verdicts (version c1: 200) |
+| M8B-V4 | HTTP/0.9 refused, HTTP/2.0 served | the verdicts (version c2: 200) |
+| M8B-V2 | the HTTP/2 preface ignored | the verdicts (version c3: 408, the lane's header deadline); curl --http2-prior-knowledge, killed at the cap |
+| M8B-V3 | the parser's refusal answered 500 | the verdicts (framing c1, version c4) |
+| M8B-U1 | an upgrade not taken keeps its connection | the verdicts (upgrade c1); curl --http2 |
+| M8B-R1 | a bracket or pipe target refused 400 | the verdicts (redirect c1: 400); curl -g -L |
+| M8B-R2 | a POST's bracket target redirected too | the verdicts (redirect c2: 301) |
+| M8B-L1 | no target limit | the verdicts (limits c1: 200) |
+| M8B-L2 | no field-value limit in a head | the verdicts (limits c2: 200) |
+| M8B-L3 | no server body cap, at the head or as it arrives | the verdicts (limits c3: 200) |
+| M8B-O1 | a head past its deadline closed with no 408 | the verdicts (timeouts c1) |
+| M8B-O2 | a body past its deadline closed with no 408 | the verdicts (timeouts c2) |
+| M8B-O3 | an idle connection never closed | the verdicts (timeouts: vtest killed at the cap) |
+| M8B-F2 | a duplicate Content-Length's refusal, the parser's `unexpected-content-length`, answered 500 | the verdicts (framing c2: 500) |
+| M8B-F3 | a coding before a final chunked served | the verdicts (framing c3: 200) |
+| M8B-F4 | Transfer-Encoding below HTTP/1.1 served | the verdicts (framing c4: 200) |
+| M8B-F5 | an HTTP/1.1 request without Host served | the verdicts (framing c5: 200) |
+| M8B-S1 | one script not run | "the scripts in tests/vtc are the manifest's"; the verdicts |
+| M8B-S2 | the manifest lists a passing script as failing | the verdicts (`version.vtc` passed, listed failed) |
+| M8B-S3 | a closed connection never leaves the table | the lane's table, log and nothing-left checks; the M4 table and nothing-left checks |
+| M8B-S4 | the lane's handler raises for `/h` | the verdicts (head c1: 500); the lane's log check |
+| M8B-S5 | the lane's server never shut down | the lane's log and nothing-left checks |
+| M8B-C4 | `OPTIONS *` read as the path `/` | curl: OPTIONS * |
+| M8B-C5 | the path a handler reads has its dot segments removed (uriparse's `remove-dot-segments`) | curl --path-as-is |
+| M8B-P1 | the test client never finishes a read the close ends | the shell suite: "a 200 with Connection: close and no framing field, the body read whole at the close" (brief risk 4) |
+
+M8B-D1 first left `head.vtc` green: the GET after the HEAD checked its body
+and its length, not its status, and vtest read the stray body as that
+response's status line, the rest following as fields. Every `rxresp` in the
+lane is now followed by a status check (37), and the re-run above names the
+script.
+
+`framing.vtc`'s c1 and c2 are the parser's refusals, so M8B-V3 reddens c1 and
+the script stops there. Their codes differ, `invalid-transfer-encoding` and
+`unexpected-content-length` (read off the parser in scratch), so M8B-F2 answers
+the second alone 500. Witnessed by hand as well: each request with its fault
+removed (c1 without its Content-Length, c2 with one length) is served.
+
+Witnessed by hand: `make vtest` rebuilds a binary whose stamp names another
+commit; `make check-pins` names `vendor/vtest2` moved to another commit
+(PIN MISMATCH); and the clients suite with `VTEST` naming no file ends
+`HARNESS-ERROR`, status 2, the client named on standard error.
+
+### The third step's review, and its fixes: forty-one mutants on the fixed tree
+
+A `/code-review high` found ten, all fixed on the owner's word ("Fix all ten";
+progress.md, M8.3). The fixes rewrote the lane's part of the clients suite, so
+every M8B mutant ran again on the fixed tree against the clients suite (M8B-P1
+against the shell suite): the thirty-four, M8B-S4 re-cut for the handler that
+now hands all but a POST to the clients' handler, and seven new. Every one
+loaded and matched once, and every one reddened its check.
+
+| new mutant | the edit | the clients suite's failures |
+|---|---|---|
+| M8B-S6 | the rules' reader lets an rxresp go unchecked | "the rules' reader names an rxresp with no status check, a client never run, one never waited for" |
+| M8B-S7 | the rules' reader lets a client go unrun | the same |
+| M8B-S8 | the rules' reader forgets a started client | the same |
+| M8B-S9 | the rules' reader asks each rxresp for a check no script has | "every script checks each answer's status and runs every client" |
+| M8B-S10 | the lane takes a dotfile for a script | "the lane leaves out a dotfile, as an editor's lock file is, and a backup's name" |
+| M8B-S11 | a killed script's verdict loses its TIMED OUT | "a run is passed only at exit 0; else its ---- lines, and TIMED OUT for one vtest killed" |
+| M8B-S12 | any run that ends is read as passed | the same |
+
+Readings the re-run gave:
+- M8B-O3, an idle connection never closed, ends with vtest's own verdict now,
+  `----` c3 "Expected close: timeout", its whole mutant run 7.4 s, where the cap
+  killed it after about 20 s with an empty one.
+- M8B-V2 reddens `version.vtc` c3 alone: the curl check it reddened was
+  dropped (the review's second finding).
+- The rules' two snippet faults and the scripts' own check redden apart: S6 to
+  S8 leave every script clean, and S9 leaves the snippet's faults named.
+
+Witnessed by hand, before and after each fix:
+- `make vtest VTEST=path` copied our build over the user's file at `path` and
+  wrote a stamp beside it; now nothing is written there, and
+  `make test VTEST=path` and `VTEST=path make test` both reach the suite, which
+  names the missing `path` (status 2).
+- `make -n vtest` with a stale stamp deleted `build/vtest2`'s 45 objects and
+  exited 2; now it prints the script's line, nothing deleted, exit 0, as does
+  `make -n test`.
+- On a copy of the submodule without its `.git`, the old pipe exited 0 though
+  git had failed ("not a git repository"); `tests/build-vtest.sh` builds the
+  copy's files, saying so.
+- With `CC=false` and no binary, `make test` said vtest did not build and ran
+  on: the clients suite named `build/vtest` (status 2), and the decisions
+  suite passed its 52.
+- In the layers' scratch worktree, which had no binary, `make test` could not
+  build vtest: `git -C DIR archive -o build/vtest2.tar` took its path inside
+  the submodule. Written through the shell now, `make vtest` from no binary
+  builds it.

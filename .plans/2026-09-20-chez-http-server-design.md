@@ -2004,6 +2004,9 @@ The strictness lane is `tests/test-strictness-lane.sps`: Kestrel's parsing table
 httpd's `http_strict.t` and lighttpd's `request.t`, vendored the same way and read as
 data by readers of their own (C#'s string literals, Perl's lists and heredocs), each
 case held to its source's refused-or-served verdict or a listed departure.
+The black-box lane is `tests/test-clients.sps`: curl and ab since the M4 exit, and
+since M8.3 vtest2's scripts, `tests/vtc/*.vtc`, run against a server of the lane's own
+and held to a manifest both ways, vtest2 pinned and built by decision 0017.
 
 ---
 
