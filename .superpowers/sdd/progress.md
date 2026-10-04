@@ -5076,3 +5076,11 @@ NEXT: plan §14's open list (four items: 0004 item 3's alternative, the 32 lenie
 - **The merge.** `tests/test-libhtp.sps` calls `(provenance)`'s `verify-provenance!` and `read-file-bytes`, outside any test form so a failure still ends it with status 3, and its own copy goes: 12 lines in, 70 out. Its eleven checks pass. On scratch copies of the corpus, a stray file under `files/` or at the top is exit 0 in main's suite and exit 3 in the merged one; M1.3's mutation, a changed byte, a missing file and a miscount are exit 3 in both. Two mutants of `(provenance)` redden the merged suite and leave main's green (m8-mutations.md, "After M8").
 - **Records.** Plan: dated notes in M1.3 and M8.3, and the open list drops the robustness lane's item; three remain. The open list had placed item 1's cases in libhtp's streams 28 and 29: they are lighttpd's `request.t` blocks 28 and 29. Design §6.5's 400 row records item 1, and the strictness lane's reasons cite both kept decisions. No CHANGELOG entry: nothing a client or an embedder meets changes.
 - `make test` green before the commit (Darwin arm64): fifty suites, 1,892 expected passes, every pin ok.
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **#124, libhtp's corpus checked by the shared PROVENANCE checker, and the robustness lane's other two items kept** (the entry above). f36afd5 was squashed as 61e8f40 (tree a2c9723, the tested tip's), whose parent is 4402a0a.
+- **CI.** Its run, 37228361288, passed on f36afd5: fifty suites, 1,892 expected passes on ubuntu-24.04, the libhtp suite's eleven among them, with no PROVENANCE error.
+- **Branches.** `--delete-branch` deleted the branch, local and remote, switched this checkout to main and fast-forwarded it. No PR is open.
+
+`make test` green on main: fifty suites, 1,892 expected passes, every pin ok.
+
+NEXT: plan §14's open list (three items: 0004 item 3's alternative, the 32 lenient fixtures, the smuggler corpus), a new milestone, or cutting 0.2.0 (Unreleased holds Changed, Removed and Fixed), when the owner asks.
