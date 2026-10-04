@@ -2069,6 +2069,18 @@ connection at the corpus lanes' sizes, and held to three properties: a serve man
 written from RFC 9112, gated both ways; no Severe case in it; and chunk invariance.
 libhtp's invalid and HTTP/0.9 streams joined the libhtp lane, found by name. smuggler's
 tables were dropped on the owner's word (plan §14's M8.3 note); hurl too, for vtest2.
+
+*Noted 2026-10-04 (decision 0021):* plan §14's last open item, the smuggler corpus, is
+settled as a sibling lane, `tests/test-smuggling-lane.sps` — not by vendoring the
+generators (a safety classifier stopped the probe reader, and guardian covers the same
+classes). `tests/smuggling-corpus.sls` holds nineteen hand-written request-framing
+vectors, one per canonical smuggling family, each recording the server's measured verdict
+and a `safe`/`hazard` category; `tests/smuggling-lane.sls` feeds each to one fake
+connection (reusing `(outcome-lane)`) and gates two properties: the verdict, both ways,
+and the security policy that no hazard is served. Chunk invariance is not re-gated (these
+refuse at the head; it is the outcome and robustness lanes'). The server refuses every
+conflicting or obfuscated-coding gadget, serving only the obfuscations whose framing
+stays unambiguous.
 The strictness lane is `tests/test-strictness-lane.sps`: Kestrel's parsing tables,
 httpd's `http_strict.t` and lighttpd's `request.t`, vendored the same way and read as
 data by readers of their own (C#'s string literals, Perl's lists and heredocs), each

@@ -1752,8 +1752,19 @@ on the way.
 
 ### Open, and not sliced
 
-- M8.3's smuggler corpus, dropped from the slice (a safety classifier stopped the
-  step that wrote its probe reader): the measurement stands in the ledger (all 3,536
-  probes refused but 6 gadgets that are no Transfer-Encoding header), and guardian's
-  cases cover the same Transfer-Encoding classes. A later slice may vendor it and
-  write the probe reader.
+*Nothing. The list's last item was settled on 2026-10-04 (decision 0021).*
+
+- ~~M8.3's smuggler corpus~~, **settled 2026-10-04 (decision 0021)** as a hand-written
+  fixed-vector lane, on the owner's form ("Static fixtures only", then "Per-case verdict
+  + gate"). `tests/smuggling-corpus.sls` holds nineteen request-framing vectors, one per
+  canonical smuggling family (CL.TE / TE.CL, duplicate or malformed Content-Length, an
+  obfuscated Transfer-Encoding, a look-alike field name), each recording the server's
+  measured verdict (`served`, or a refusal status) and a `safe`/`hazard` category;
+  `tests/smuggling-lane.sls` gates the verdict both ways and holds every hazard refused.
+  Measured first: the server already refuses every conflicting or obfuscated-coding
+  gadget (400, or 501 for an unimplemented coding), serving only the obfuscations whose
+  framing stays unambiguous. The M8.3 attempt — vendoring `defparam/smuggler`'s and
+  PortSwigger's generators and writing a probe reader — is **deliberately not taken** (a
+  safety classifier stopped it, and it duplicates guardian's classes); its measurement
+  stands in the ledger (3,536 probes, all refused but 6 gadgets that are no
+  Transfer-Encoding header).
