@@ -14,12 +14,16 @@
 ;;; What a wait raises is here too, so that a handler can catch it: once a
 ;;; deadline has passed, a wait inside it raises `&deadline-passed`; and a
 ;;; name that does not resolve raises `&resolve-error` (decision 0015;
-;;; `with-deadline` and `resolve`, the private waits library's).
+;;; `with-deadline` and `resolve`, the private waits library's).  Once the
+;;; request's client has closed or reset its connection, the wait its code
+;;; is in, or else the next one, raises `&client-closed`, once (decision
+;;; 0020).
 ;;;
 ;;; PURE: imports only (rnrs).
 (library (http-server awaiting)
   (export awaiting awaiting? awaiting-thunk
           &deadline-passed make-deadline-passed deadline-passed?
+          &client-closed make-client-closed client-closed?
           &resolve-error make-resolve-error resolve-error? resolve-error-reason)
   (import (rnrs))
 
@@ -29,6 +33,13 @@
   ;; deadline-passed? : Any -> Boolean
   (define-condition-type &deadline-passed &error
     make-deadline-passed deadline-passed?)
+
+  ;; &client-closed : what a wait raises, once, after the request's client
+  ;; has closed or reset its connection (decision 0020), an `&error`.
+  ;; make-client-closed : -> ClientClosed
+  ;; client-closed? : Any -> Boolean
+  (define-condition-type &client-closed &error
+    make-client-closed client-closed?)
 
   ;; &resolve-error : what `resolve` raises when a name does not resolve, an
   ;; `&error`.  Its reason is the resolver's error, such as EAI_NONAME, or
