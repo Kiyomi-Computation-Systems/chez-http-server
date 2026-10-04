@@ -1122,3 +1122,50 @@ Every check the fix added, and the mutants that redden it:
   scheduler holds is run": M6-A, M6-C, M6-D, M6-E, M6-F;
 - "a done so told as serve's run returns that asks for a write: that write's done waits
   for a turn, which serve does not run": M6-A, M6-B, M6-C, M6-E, M6-F.
+
+## After M8 — every 1.x served, and every other version answered 505 (2026-10-04)
+
+Plan §14's open list, M8.3's robustness lane, item 3d, decided on the owner's "serve 1.x
+for 3d" (decision 0006's amendment of 2026-10-04, later). Platform: Darwin arm64, Chez
+10.4.1 (`tarm64osx`), libuv 1.52.1, 2026-10-04, the library path as above.
+
+The checks were written first and run against the code before the change: the head
+suite 59 passes and 7 failures, its two rows of versions the parser cannot read passing,
+as they must; the allocation suite 25 and 1; the robustness lane 15 and 2; the
+strictness lane 16 and 1; the clients suite 35 and 1, `version.vtc` failing at c4. Then
+the change: the adapter's field initials gain llhttp's version leniency.
+
+| mutant | the edit | the suites it reddens, failures |
+|---|---|---|
+| V-A | the parser strict again (the leniency 0) | head 7 (the pin, 3.0, 0.8, 1.2, the pipelined pair, the Host rule, the framing); robustness 1; strictness 1; clients 1 (c4) |
+| V-B | a second leniency, `headers`, beside the version's | head 1 (the pin); libhtp lane 1 and the ratchet 1 (`46-auth-digest-invalid-username.t`); robustness 1; strictness 1 |
+| V-C | the core refuses every version but 1.0 and 1.1 | head 4 (1.2, the pipelined pair, the Host rule, the framing); robustness 1; strictness 1; clients 1 (c4, 505) |
+| V-D | the core refuses only 0.x | head 2 (2.0, 3.0); strictness 1; clients 1 (c2) |
+| V-E | the core refuses only a major above 1 | head 5 (four of HTTP/0.9's rows, 0.8); cut-off 1; originated 1; padding 1; libhtp lane 2 and the ratchet 1 (HTTP/0.9's streams); trace lane 1 (`sample.md#10`'s listed refusal); robustness 1; strictness 1; clients 1 (c1) |
+| V-F | `invalid-version` answered 505 | head 1 (the versions the parser cannot read); decisions 1 ("every code but the hand-off is a 400"); clients 1 (c6) |
+| V-G | `invalid-constant` answered 505 | head 1 (`http/1.1`); decisions 1; libhtp lane 1 and the ratchet 1 (`43-invalid-protocol.t`) |
+| V-H | llhttp's version gate, `http/1.1?`, narrowed to exactly 1.1 | head 1 (the framing); clients 1 (c4: `Connection: keep-alive` written) |
+| V-I | the Host rule for exactly 1.1, not 1.2 | head 1 (the Host rule) |
+| V-J | the adapter makes its field initials for each parser, not once | allocation 1 |
+| V-K | the core refuses only 0.x and 2.x, so 3.0 is served | head 1 (3.0); strictness 1; clients 1 (c5) |
+| V-T | (a test mutant) `acceptable#9` dropped from the serve manifest | robustness 2 (the count, the manifest) |
+
+Every check the change added or changed, and the mutants that redden it:
+- the head suite's "a connection's parser runs llhttp's version leniency and no other":
+  V-A, V-B;
+- "HTTP/3.0, a major version the server does not speak": V-A, V-D, V-K;
+- "HTTP/0.8, a 0.x that is not HTTP/0.9": V-A, V-E;
+- "HTTP/1.2, a minor version past 1.1: served as HTTP/1.1, kept alive" and "HTTP/1.9,
+  then HTTP/1.2, pipelined": V-A, V-C;
+- "HTTP/1.2 is HTTP/1.1 to the Host rule": V-A, V-C, V-I;
+- "HTTP/1.2 is HTTP/1.1 to the framing": V-A, V-C, V-H;
+- "a version the parser cannot read stays its error, a 400": V-F;
+- "a protocol name in lowercase, http/1.1, stays the parser's error, a 400": V-G;
+- the allocation suite's "a connection's parser costs what one on a binding list made
+  once does", its initials mirrored: V-J, and the code before the change;
+- the robustness lane's manifest check, `acceptable#9` served: V-A, V-B, V-C, V-E, V-T;
+  its count, "31 cases reach the handler": V-T;
+- the strictness lane's departures, HTTP/1.2's moved to Kestrel: V-A, V-B, V-C, V-D,
+  V-E, V-K;
+- `version.vtc`: c4 by V-A, V-C and V-H, c5 by V-K, c6 by V-F; c1 and c2, unchanged,
+  by V-E and V-D.

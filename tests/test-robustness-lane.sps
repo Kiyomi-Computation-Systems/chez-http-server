@@ -134,9 +134,10 @@
       (for-each (lambda (m) (diag (string-append "ROBUSTNESS MISMATCH " (car m) ": " (cdr m))))
                 mismatches)
       ;; The lane is not vacuous: 162 cases, 63 of them Severe (measured on
-      ;; the vendored corpus, 2026-10-04).
+      ;; the vendored corpus, 2026-10-04), and 31 served, HTTP/1.2's
+      ;; acceptable#9 among them since decision 0006's amendment of that day.
       (test-eqv "63 Severe cases" 63 (length (filter severe? cases)))
-      (test-eqv "30 cases reach the handler" 30 (length served-cases))
+      (test-eqv "31 cases reach the handler" 31 (length served-cases))
       ;; Property 3 + the serve manifest's "refused" half: every case is
       ;; served iff it is in served-cases, and every case is chunk-invariant.
       (test-equal "every case meets the serve-manifest and invariance properties"

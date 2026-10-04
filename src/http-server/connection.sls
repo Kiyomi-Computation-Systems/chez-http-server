@@ -93,14 +93,17 @@
 ;;; Location.
 ;;;
 ;;; THE VERSION IS JUDGED FIRST, at the same moment (M8.3; decided on the
-;;; owner's word, by form, 2026-10-03, and after the review, 2026-10-04): a
-;;; request whose version is not 1.x is refused as 'version-not-supported,
-;;; answered 505 (RFC 9110 §15.6.6).  The parser reads two such: a request
-;;; line with no version, or one that says HTTP/0.9, as HTTP/0.9, the lines
-;;; after it as its fields; and one that says HTTP/2.0, whose preface it
-;;; hands off apart.  The server speaks HTTP/1.1 and 1.0 only, and a version
-;;; it does not speak frames nothing.  The parser refuses every other
-;;; version itself (HTTP/1.2, 3.0, ...), and its error is a 400.
+;;; owner's word, by form, 2026-10-03, after the review, 2026-10-04, and
+;;; for every version later that day): a request whose version is not 1.x
+;;; is refused as 'version-not-supported, answered 505 (RFC 9110 §15.6.6).
+;;; The parser reads a request line with no version, or one that says
+;;; HTTP/0.9, as HTTP/0.9, the lines after it as its fields; and, running
+;;; llhttp's version leniency (the adapter's), any other HTTP/D.D, HTTP/2.0
+;;; and 3.0 among them, HTTP/2.0's preface handed off apart.  The server
+;;; speaks HTTP/1.1 and 1.0 only, and a version it does not speak frames
+;;; nothing.  A 1.x past 1.1, HTTP/1.2 say, is served as HTTP/1.1, as RFC
+;;; 9110 §6.2 asks.  A version the parser cannot read, HTTP/1.x or
+;;; HTTP/10.0, is its error, a 400.
 ;;;
 ;;; THE HOST IS JUDGED NEXT, at the same moment (RFC 9112 §3.2; decided on
 ;;; the owner's word, 2026-09-25): two Host lines, a Host value that is not
@@ -1651,8 +1654,9 @@
   ;; this message's only from on-headers-complete on.  Nothing downstream
   ;; re-reads the parser.  The flags and the content-length say whether a
   ;; body follows (M6.1): one chunked, or with a Content-Length above 0.
-  ;; The version is judged here first (M8.3): one that is not 1.x, HTTP/0.9
-  ;; or HTTP/2.0, is refused as 'version-not-supported, answered 505.  Then
+  ;; The version is judged here first (M8.3): one that is not 1.x, HTTP/0.9,
+  ;; 2.0 or 3.0 say, is refused as 'version-not-supported, answered 505, and
+  ;; a 1.x past 1.1 goes on as HTTP/1.1 (RFC 9110 §6.2).  Then
   ;; the Host lines (RFC 9112 §3.2; see (http-server
   ;; host)): a request whose Host is missing on HTTP/1.1 (when the limits
   ;; require one), doubled or invalid is refused as 'invalid-host, answered

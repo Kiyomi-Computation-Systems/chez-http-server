@@ -42,15 +42,25 @@
 ;;;     owner's word, 2026-09-26);
 ;;;   - a Transfer-Encoding that lists a coding before a final chunked, which
 ;;;     the parser lets through, is the core's own refusal: 501 (RFC 9112
-;;;     §6.1), judged after the Host and the target.
+;;;     §6.1), judged after the Host and the target;
+;;;   - the version (M8.3; decision 0006's amendments of 2026-10-04): the
+;;;     connection's parser runs llhttp's version leniency and no other, so
+;;;     it reads any HTTP/D.D, and the core judges it first.  One that is not
+;;;     1.x is refused with 505; a 1.x past 1.1 is served as HTTP/1.1, to the
+;;;     Host rule and the framing too; one the parser cannot read at all is
+;;;     its error, a 400.
 ;;;
 ;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
 ;;; rows; design §6.5's 431, 414, 400 and 501; RFC 9112 §3.2's target forms
-;;; and §6.1's 501; the limits each row sets.
+;;; and §6.1's 501; RFC 9110 §6.2's minor versions and §15.6.6's 505;
+;;; llhttp's LENIENT_FLAGS.VERSION, 1 << 4 (its src/llhttp/constants.ts);
+;;; the limits each row sets.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection)
         (http-server request) (http-server response) (http-server span)
-        (http-server limits) (fake-shell))
+        (http-server limits) (fake-shell)
+        (only (http-server private adapter) make-conn-context make-conn-parser)
+        (only (byte-machine runtime) parser-field-ref))
 
 (define (b s) (string->utf8 s))
 
@@ -403,10 +413,20 @@
     ;; A request line with no version is HTTP/0.9's, as is one that says
     ;; HTTP/0.9.  The parser reads either, and the lines after it as its
     ;; fields, and it reads a request line that says HTTP/2.0 too (its
-    ;; preface is answered apart).  The server speaks HTTP/1.1 and 1.0 only,
-    ;; so it refuses each (RFC 9110 §15.6.6; decided on the owner's word, by
-    ;; form, 2026-10-03, and HTTP/2.0 after the review, 2026-10-04), before
-    ;; any other rule: a version it does not speak frames nothing.
+    ;; preface is answered apart).  The connection's parser runs llhttp's
+    ;; version leniency, so it reads any other HTTP/D.D as well and leaves
+    ;; the version to the core.  The server speaks HTTP/1.1 and 1.0 only, so
+    ;; it refuses every version that is not 1.x (RFC 9110 §15.6.6; decided on
+    ;; the owner's word, by form, 2026-10-03, HTTP/2.0 after the review,
+    ;; 2026-10-04, and every other version later that day), before any other
+    ;; rule: a version it does not speak frames nothing.  A 1.x past 1.1 is
+    ;; served as HTTP/1.1 (RFC 9110 §6.2; the owner's word, 2026-10-04).
+    (test-eqv "a connection's parser runs llhttp's version leniency and no other: LENIENT_FLAGS.VERSION, 1 << 4"
+              16
+              (parser-field-ref (make-conn-parser
+                                 (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f minimal)
+                                                    (lambda (actions) #f)))
+                                'lenient-flags))
     (test-equal "a request line with no version: 505, then close"
                 (list (refused 'version-not-supported 505))
                 (every-size (b "GET /\r\n\r\n") minimal))
@@ -423,6 +443,40 @@
     (test-equal "a request line that says HTTP/2.0, which the parser reads: 505, then close"
                 (list (refused 'version-not-supported 505))
                 (every-size (b "GET / HTTP/2.0\r\nHost: x\r\n\r\n") minimal))
+    (test-equal "HTTP/3.0, a major version the server does not speak: 505, then close"
+                (list (refused 'version-not-supported 505))
+                (every-size (b "GET / HTTP/3.0\r\nHost: x\r\n\r\n") minimal))
+    (test-equal "HTTP/0.8, a 0.x that is not HTTP/0.9: 505, then close"
+                (list (refused 'version-not-supported 505))
+                (every-size (b "GET / HTTP/0.8\r\nHost: x\r\n\r\n") minimal))
+    (test-equal "HTTP/1.2, a minor version past 1.1: served as HTTP/1.1, kept alive"
+                (list (ok (list (req 'GET "/" 1 2 '("Host" . "x"))) 'idle #f))
+                (every-size (b "GET / HTTP/1.2\r\nHost: x\r\n\r\n") minimal))
+    (test-equal "HTTP/1.9, then HTTP/1.2, pipelined: each served, the connection kept alive"
+                (list (ok (list (req 'GET "/a" 1 9 '("Host" . "x")) (req 'GET "/b" 1 2 '("Host" . "x")))
+                          'idle #f))
+                (every-size (b "GET /a HTTP/1.9\r\nHost: x\r\n\r\nGET /b HTTP/1.2\r\nHost: x\r\n\r\n")
+                            minimal))
+    (test-equal "HTTP/1.2 is HTTP/1.1 to the Host rule: no Host, 400"
+                (list (refused 'invalid-host 400))
+                (every-size (b "GET / HTTP/1.2\r\n\r\n") default-limits))
+    (test-equal "HTTP/1.2 is HTTP/1.1 to the framing: a chunked body is read, the connection kept alive"
+                (list (ok (list (req 'POST "/" 1 2 '("Transfer-Encoding" . "chunked"))) 'idle #f))
+                (every-size (b "POST / HTTP/1.2\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n")
+                            minimal))
+    ;; The leniency admits any pair of digits and nothing else: the parser
+    ;; still refuses a version it cannot read (chez-httparse's bad-major,
+    ;; expected-dot, bad-minor and no-crlf, each llhttp's code 9), and a
+    ;; protocol name that is not HTTP's (its code 8).
+    (test-equal "a version the parser cannot read stays its error, a 400: HTTP/, HTTP/10.0, HTTP/1.x, HTTP/1.11"
+                (let ((e (list (list '() (list 'invalid-version (list (status-write 400)))
+                                     'lingering 'parser-error))))
+                  (list e e e e))
+                (map (lambda (v) (every-size (b (string-append "GET / " v "\r\nHost: x\r\n\r\n")) minimal))
+                     '("HTTP/" "HTTP/10.0" "HTTP/1.x" "HTTP/1.11")))
+    (test-equal "a protocol name in lowercase, http/1.1, stays the parser's error, a 400"
+                (list (list '() (list 'invalid-constant (list (status-write 400))) 'lingering 'parser-error))
+                (every-size (b "GET / http/1.1\r\nHost: x\r\n\r\n") minimal))
     (test-equal "an invalid target is refused before the codings: 400"
                 (list (refused 'invalid-target 400))
                 (every-size (b "POST /a#b HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n")

@@ -1357,14 +1357,14 @@ Every status the server can originate, and who decides it:
 
 | Status | Origin | Closes? |
 |---|---|---|
-| `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26); more than two empty lines' 4 bytes before a request line, more than one space between its parts, a chunk size of more than 16 hex digits (policy; the padding PR, since 2026-09-30) | yes |
+| `400` | parser error, whatever the code; a request below HTTP/1.1 with `Transfer-Encoding` (RFC 9112 §6.1) (both since 2026-09-26); more than two empty lines' 4 bytes before a request line, more than one space between its parts, a chunk size of more than 16 hex digits (policy; the padding PR, since 2026-09-30); a method outside the parser's table of llhttp's 36, `get` or `FOO`, is its error too, where RFC 9110 §9.1 would answer 501 (kept on the owner's word, 2026-10-04) | yes |
 | `408` | header or body-inactivity deadline (policy) | yes |
 | `413` | a body past `max-body-bytes`, or past a reader's own cap, `read-whole-body`'s 1 MiB by default (policy; decision 0013, since 2026-09-28) | yes |
 | `414` | request-target over `max-target-bytes` (policy) | yes |
 | `431` | header bytes or header count (policy); a value's bytes count the whitespace before it, and a refusal names the limit its bytes passed first (the padding PR and its review, since 2026-09-30) | yes |
 | `500` | handler raise | yes |
 | `501` | a transfer coding before a final `chunked`, which the server does not implement (RFC 9112 §6.1; since 2026-09-26) | yes |
-| `505` | the HTTP/2 preface (decision 0006 item 2; `Upgrade: h2c` only until its 2026-09-25 amendment) | yes |
+| `505` | the HTTP/2 preface (decision 0006 item 2; `Upgrade: h2c` only until its 2026-09-25 amendment); a request whose version is not 1.x, HTTP/0.9 and 2.0 (0006's amendment, M8.3, since 2026-10-04), and every other, HTTP/3.0 say, once the parser reads any digit pair (its amendment of the same day, later; a 1.x past 1.1 is served as 1.1) | yes |
 
 Every originated status closes the connection. That is not a simplification to revisit:
 each of them means either the framing is untrustworthy or a bound was exceeded, and in

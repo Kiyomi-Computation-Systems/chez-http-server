@@ -112,6 +112,11 @@ strict one, which is why M1.1 reads `fixture-meta-ref` and asserts the split.
 with their type as the class word, exactly as chez-httparse's own manifest defers by
 class. Promoting any of them is a decision record, not a milestone.
 
+*Noted 2026-10-04:* strict but for one flag. The server's parser runs llhttp's version
+leniency, so it reads any `HTTP/` DIGIT `.` DIGIT and the core judges the version
+(decision 0006's amendment of 2026-10-04, later). Every other flag stays off, and the one
+`request-lenient-version` fixture stays `deferred` with its class.
+
 ### 2.2 What the strict lane costs to run
 
 Of the 135: **17** are `noScan` (whole-buffer only), **13** carry a `pause` naming the
@@ -1638,6 +1643,12 @@ black-box lane.
   reading of Kestrel's tables that missed one table's appended rows; the lane's own:
   Kestrel 230 of 237, httpd 70 of 79, lighttpd 35 of 41, 22 departures. Step 2's
   review found ten, all fixed on the owner's word ("Fix all ten").
+
+*Noted 2026-10-04, later (the open list below):* two of the robustness lane's noted items
+are settled on the owner's word ("serve 1.x for 3d, keep 400 for 3c"). HTTP/1.2 to 1.9
+are served as HTTP/1.1 and every version that is not 1.x is answered 505, HTTP/3.0 among
+them (decision 0006's amendment of that day, later). A method the parser does not know,
+`get` among them, stays its 400 (design §6.5).
 - **The black-box lane runs vtest2's scripts and curl against a port** (step 3).
   vtest2 is pinned and built by decision 0017. Twelve scripts in `tests/vtc/`, written
   from RFC 9112 and the decisions, run against a server of the lane's own whose
@@ -1721,11 +1732,6 @@ on the way.
   - a percent-encoded octet in a target, `%00` among them, reaches a handler
     undecoded: the server hands the target over as sent (`docs/request-targets.org`
     says so), and whether it decodes is the handler's;
-  - a lowercase method is answered 400, not 501, since the parser refuses it as a
-    bad token before the core sees a method to call unimplemented;
-  - HTTP/1.2 and HTTP/3.0 are answered 400 (the parser's version error), where nginx
-    and Kestrel answer 505; the core refuses 505 only the versions the parser reads,
-    HTTP/0.9 and HTTP/2.0 (M8.3, decision 0006's amendment of 2026-10-04);
   - step 1's review, its tenth finding, noted on the owner's word: two PROVENANCE
     checkers hold one contract, `tests/provenance.sls` (M8.3's corpora, a walk of what
     a refresh writes) and `tests/test-libhtp.sps`'s own (M1.3, LICENSE and

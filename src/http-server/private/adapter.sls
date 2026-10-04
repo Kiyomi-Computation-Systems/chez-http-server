@@ -139,9 +139,13 @@
                  (cons (parser-error-span e) (parser-error-span-offset e))))))
 
   ;; make-conn-parser : ConnContext -> Parser
-  ;; A request parser for one connection, strict (no lenient flags), carrying
-  ;; the context to every callback.
+  ;; A request parser for one connection, carrying the context to every
+  ;; callback.  It is strict but for one of llhttp's lenient flags, its
+  ;; version: it reads any HTTP/D.D, and leaves the version to the core,
+  ;; which serves 1.x and refuses every other version 505 (decision 0006's
+  ;; amendment of 2026-10-04, later).
   (define make-conn-parser
-    (let ((inits (list (cons 'type (httparse-message-type-value 'request)))))
+    (let ((inits (list (cons 'type (httparse-message-type-value 'request))
+                       (cons 'lenient-flags (httparse-lenient-flags-value '(version))))))
       (lambda (ctx)
         (make-parser httparse-message-machine adapter-bindings ctx inits)))))
