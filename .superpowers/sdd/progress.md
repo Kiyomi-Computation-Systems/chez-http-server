@@ -4824,3 +4824,22 @@ the eighth fix has it.
 NEXT: the three PRs, stacked on #113, as decided: the pin and build, the vtest
 lane, then curl's checks and the step's records, each proved green alone in a
 scratch worktree first.
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **M8.3, as five stacked PRs.**
+- **#112, the robustness lane and the version rule,** as 88cdc07. Its squash tree is the tested tip's, 8185355's, and its parent is 3ab1934. It merged first and kept its branch, since #113 was based on it.
+- **#113, the strictness lane,** as 375e2e4. It was retargeted to main and rebased from #112's tip, 8185355. The rebased tip, 1d15943, has the tested tree (e4cbabc's), and so does the squash, whose parent is 88cdc07. It kept its branch, since #114 was based on it.
+- **#114, vtest2 pinned and built,** as 064db95. It was retargeted to main and rebased from #113's first tip, e4cbabc. The rebased tip, 0afcdb4, has the tested tree (0673d32's), and so does the squash, whose parent is 375e2e4. It kept its branch, since #115 was based on it.
+- **#115, the vtest lane,** as 1f74086. It was retargeted to main and rebased from #114's first tip, 0673d32. The rebased tip, 78f2720, has the tested tree (cd53f18's), and so does the squash, whose parent is 064db95. It kept its branch, since #116 was based on it.
+- **#116, curl's own ways and the step's records,** as 9df037f. It was retargeted to main and rebased from #115's first tip, cd53f18. The rebased tip, c0b3871, has the tested tree (0c13def's), and so does the squash, whose parent is 1f74086.
+- **CI.** Each merged on `linux` SUCCESS at its head: #112 on 8185355 (run 37169875089); #113 on 1d15943 (run 37202921918); #114 on 0afcdb4 (run 37203043893); #115 on 78f2720 (run 37203170626); #116 on c0b3871 (run 37203289322). Each log holds its step's count: forty-nine suites and 1,848 expected passes, then fifty and 1,865, 1,865, 1,874 and 1,878. vtest2 built on CI in 5 to 7 s.
+- **Branches.** All five deleted, local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: fifty suites, 1,878 expected passes, every pin ok, vtest2's among them.
+
+DONE and merged (88cdc07, PR #112; 375e2e4, PR #113; 064db95, PR #114; 1f74086, PR #115; 9df037f, PR #116): **M8.3, the black-box and robustness lanes.**
+- The robustness lane holds AWS http-desync-guardian's 162 cases to a serve manifest written from RFC 9112, gated both ways, with no Severe case served; libhtp's 24 invalid and 4 HTTP/0.9 streams joined the ratchet. A version that is not 1.x is answered 505 (decision 0006's amendment of 2026-10-04).
+- The strictness lane holds Kestrel's, httpd's and lighttpd's strict request tests, 357 cases, to their sources' refused-or-served verdicts or to 22 departures pinned to this server's own.
+- The black-box lane runs vtest2's twelve scripts against a server of its own (decision 0017: vtest2 a submodule at the archived mirror's `last`, built by `make vtest`) beside curl and ab, and brief risk 4 is recorded as answered since M6.3.
+- Decided by form: HTTP/0.9, then every non-1.x version, refused 505; curl and vtest2; smuggler dropped; each step reviewed and its own PR(s); the reviews' findings fixed (step 1's tenth noted), Kestrel's bare lines completed into heads, lighttpd's two HTTP sections, and step 3 as three stacked PRs. Three /code-review high passes found ten each.
+
+NEXT: M8.4 (plan §14), load and the release, when the owner asks.
