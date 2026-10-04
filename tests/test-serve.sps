@@ -25,8 +25,8 @@
 ;;;   - decision 0012: where the server listens, and what a handler reads;
 ;;;   - design §6.4: a malformed setting at startup is an
 ;;;     &http-server-config-error, which is an &http-server-error, an &error;
-;;;   - the M2.4 note: a facade that builds limits refuses a pipeline cap
-;;;     other than 1, as the environment's path does;
+;;;   - decision 0005's amendment of 2026-09-25: CHEZ_HTTP_REQUIRE_HOST is
+;;;     "true" or "false", and any other value is refused;
 ;;;   - chez-libuv's bind, which refuses a host that is not an IPv4 or IPv6
 ;;;     literal ('bad-address);
 ;;;   - decision 0001: the handler contract is request -> response, so the
@@ -349,7 +349,7 @@
                                   (serve handler (env setting (cons "CHEZ_HTTP_HOST" unbound-host))))
                                 (car setting)))
                      '(("CHEZ_HTTP_PORT" . "http")
-                       ("CHEZ_HTTP_PIPELINE_CAP" . "2")
+                       ("CHEZ_HTTP_REQUIRE_HOST" . "yes")
                        ("CHEZ_HTTP_MAX_CONNECTIONS" . "0"))))
     (let ((loop (make-uv-loop)))
       (test-equal "a host that is no IP literal is refused by the bind, as a config error naming CHEZ_HTTP_HOST, and nothing is left open"
