@@ -1,0 +1,12 @@
+== main (5797d66)
+Darwin 25.6.0 arm64, Chez Scheme Version 10.4.1 (tarm64osx), libuv 1.52.1, oha 1.16.0
+round 1, 1 connection: 5,000 GETs 52266704 B in 10032 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 260951152 B in 50028 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 10434 B
+round 1, 50 connections: 5,000 GETs 45686912 B in 1057 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 223732592 B in 1611 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 8902 B
+round 2, 1 connection: 5,000 GETs 52261264 B in 10030 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 260947952 B in 50027 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 10434 B
+round 2, 50 connections: 5,000 GETs 45646752 B in 1017 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 223818304 B in 1641 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 8909 B
+== the fix (main 5797d66 and this branch's working tree)
+Darwin 25.6.0 arm64, Chez Scheme Version 10.4.1 (tarm64osx), libuv 1.52.1, oha 1.16.0
+round 1, 1 connection: 5,000 GETs 52237712 B in 10020 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 260934864 B in 50022 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 10435 B
+round 1, 50 connections: 5,000 GETs 45664816 B in 1021 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 223698304 B in 1561 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 8902 B
+round 2, 1 connection: 5,000 GETs 52255360 B in 10027 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 260945968 B in 50018 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 10435 B
+round 2, 50 connections: 5,000 GETs 45677008 B in 1051 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25,000 223742160 B in 1626 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 8903 B

@@ -1,0 +1,8 @@
+== main (5797d66): (writes, B a write as it is asked for, B a write as its done is made, dones told)
+(10000 64.0944 409.1488 10000)
+(10000 64.016 409.1552 10000)
+(10000 64.016 409.2208 10000)
+== the fix (main 5797d66 and this branch's working tree): (writes, B a write as it is asked for, B a write as its done is made, dones told)
+(10000 96.016 425.1552 10000)
+(10000 96.016 425.2272 10000)
+(10000 96.016 425.1552 10000)

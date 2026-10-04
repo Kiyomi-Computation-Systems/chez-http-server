@@ -11,11 +11,13 @@
 ;;; as oha starts and once it has ended.  The loop is turned as `serve` turns
 ;;; it, `shell-turn!` after `shell-turn!` with nothing else on the loop, so
 ;;; what a turn costs is counted as `serve` pays it.  Each load is run with
-;;; 5,000 GETs and with 25,000, alternating, so the difference over the
-;;; 20,000 more leaves out what does not grow with the requests: starting
-;;; oha, its connections and its report.
+;;; 5,000 GETs and with LARGE, 25,000 unless given, alternating, so the
+;;; difference over the LARGE less 5,000 more leaves out what does not grow
+;;; with the requests: starting oha, its connections and its report.  (LARGE
+;;; added after M8, 2026-10-04: a larger difference reads a request's cost
+;;; finer than the counter's own step over a run.)
 ;;;
-;;;   chez --program m8-request-alloc.sps OHA [ROUNDS]
+;;;   chez --program m8-request-alloc.sps OHA [ROUNDS [LARGE]]
 ;;;
 ;;; Run on the project's library path, from the repository's root.
 (import (rnrs)
@@ -28,6 +30,7 @@
 
 (define oha (cadr (command-line)))
 (define rounds (if (> (length (command-line)) 2) (string->number (caddr (command-line))) 2))
+(define large-count (if (> (length (command-line)) 3) (string->number (cadddr (command-line))) 25000))
 (define response (make-response 200 #f '() (string->utf8 "ok")))
 (define loop (make-uv-loop))
 (define logged '())
@@ -93,11 +96,11 @@
    (lambda (k)
      (for-each
       (lambda (c)
-        (let* ((small (load c 5000)) (large (load c 25000))
+        (let* ((small (load c 5000)) (large (load c large-count))
                (bytes (- (car large) (car small))))
-          (printf "round ~a, ~a connection~a: 5,000 GETs ~a B in ~a turns, ~a; 25,000 ~a B in ~a turns, ~a; a request ~a B\n"
+          (printf "round ~a, ~a connection~a: 5,000 GETs ~a B in ~a turns, ~a; ~a ~a B in ~a turns, ~a; a request ~a B\n"
                   k c (if (= c 1) "" "s")
-                  (car small) (cadr small) (caddr small) (car large) (cadr large) (caddr large)
-                  (round (/ bytes 20000)))))
+                  (car small) (cadr small) (caddr small) large-count (car large) (cadr large) (caddr large)
+                  (round (/ bytes (- large-count 5000))))))
       '(1 50)))
    (let count ((k rounds) (acc '())) (if (= k 0) acc (count (- k 1) (cons k acc)))))

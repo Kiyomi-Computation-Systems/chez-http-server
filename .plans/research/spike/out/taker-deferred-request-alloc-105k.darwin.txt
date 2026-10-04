@@ -1,0 +1,16 @@
+== main (5797d66), chez --program m8-request-alloc.sps build/oha 1 105000
+Darwin 25.6.0 arm64, Chez Scheme Version 10.4.1 (tarm64osx), libuv 1.52.1, oha 1.16.0
+round 1, 1 connection: 5,000 GETs 52219328 B in 10009 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 105000 1095547840 B in 209987 turns, "statusCodeDistribution": { "200": 105000 } "errorDistribution": {}; a request 10433 B
+round 1, 50 connections: 5,000 GETs 45700864 B in 956 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 105000 935975872 B in 4036 turns, "statusCodeDistribution": { "200": 105000 } "errorDistribution": {}; a request 8903 B
+== the fix (main 5797d66 and this branch's working tree), chez --program m8-request-alloc.sps build/oha 1 105000
+Darwin 25.6.0 arm64, Chez Scheme Version 10.4.1 (tarm64osx), libuv 1.52.1, oha 1.16.0
+round 1, 1 connection: 5,000 GETs 52279040 B in 10040 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 105000 1095618672 B in 209968 turns, "statusCodeDistribution": { "200": 105000 } "errorDistribution": {}; a request 10433 B
+round 1, 50 connections: 5,000 GETs 45518672 B in 782 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 105000 935935136 B in 3975 turns, "statusCodeDistribution": { "200": 105000 } "errorDistribution": {}; a request 8904 B
+== main (5797d66), chez --program m8-request-alloc.sps build/oha 1 105000
+Darwin 25.6.0 arm64, Chez Scheme Version 10.4.1 (tarm64osx), libuv 1.52.1, oha 1.16.0
+round 1, 1 connection: 5,000 GETs 52267360 B in 10034 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 105000 1095602512 B in 209977 turns, "statusCodeDistribution": { "200": 105000 } "errorDistribution": {}; a request 10433 B
+round 1, 50 connections: 5,000 GETs 45673712 B in 1036 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 105000 935629120 B in 3579 turns, "statusCodeDistribution": { "200": 105000 } "errorDistribution": {}; a request 8900 B
+== the fix (main 5797d66 and this branch's working tree), chez --program m8-request-alloc.sps build/oha 1 105000
+Darwin 25.6.0 arm64, Chez Scheme Version 10.4.1 (tarm64osx), libuv 1.52.1, oha 1.16.0
+round 1, 1 connection: 5,000 GETs 52268544 B in 10036 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 105000 1095587552 B in 209975 turns, "statusCodeDistribution": { "200": 105000 } "errorDistribution": {}; a request 10433 B
+round 1, 50 connections: 5,000 GETs 45704208 B in 1064 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 105000 935887984 B in 3914 turns, "statusCodeDistribution": { "200": 105000 } "errorDistribution": {}; a request 8902 B

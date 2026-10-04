@@ -1091,3 +1091,34 @@ Every check the change added or changed, and the mutant that reddens it:
   now: the swap;
 - its "limits-with replaces each field alone, by name", over nineteen names now: the
   dropped override.
+
+## After M8 — a taker's deferred `done` made as `serve` returns (2026-10-04)
+
+M8.2's review's sixth finding, fixed on the owner's "build the targeted fix". Platform:
+Darwin arm64, Chez 10.4.1 (`tarm64osx`), libuv 1.52.1, 2026-10-04, the library path as
+above.
+
+`serve`'s loop became `run-until-stopped!`, a test's to run on a loop of its own, with
+no change of behavior; then the checks were written and run red; then the fix: the
+shell's queue of a taker's deferred calls (`taker-later!`, `call-deferred!`) and
+`shell-call-deferred!`, which the run calls once its server has stopped.
+
+Red before the fix, the serve suite's two new checks, on `run-until-stopped!` without
+the call: 16 passes, 2 failures. Printed, the `done`s had been told nothing when the run
+returned, and `ECANCELED` once the loop turned on: `(() (ECANCELED))`.
+
+| mutant | the edit | the serve suite's failures |
+|---|---|---|
+| M6-A | `run-until-stopped!` makes no deferred call | both checks (16 passes, 2 failures) |
+| M6-B | the pass runs until the queue is empty | "a done so told as serve's run returns that asks for a write" (17, 1) |
+| M6-C | `call-deferred!` leaves the call it makes in the queue, so it is made again | both (16, 2) |
+| M6-D | `call-deferred!` makes the newest first | "two writes … in order, and once each" (17, 1) |
+| M6-E | `taker-later!` defers through the scheduler alone, as before the fix | both (16, 2) |
+| M6-F | the one-line drain: `shell-call-deferred!` drains the whole scheduler | both (16, 2): the other work queued as the stream closed ran |
+
+Every check the fix added, and the mutants that redden it:
+- "two writes a taker asks for once its stream has closed: their dones are told
+  ECANCELED before serve's run returns, in order, and once each, and nothing else the
+  scheduler holds is run": M6-A, M6-C, M6-D, M6-E, M6-F;
+- "a done so told as serve's run returns that asks for a write: that write's done waits
+  for a turn, which serve does not run": M6-A, M6-B, M6-C, M6-E, M6-F.

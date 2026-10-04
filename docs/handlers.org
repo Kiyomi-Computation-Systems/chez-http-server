@@ -297,8 +297,8 @@ What the transport does:
   slower than one, so join small pieces into one bytevector first.
 - A write after ~transport-close!~ is not sent: its ~done~ gets ~ECANCELED~.
   That ~done~, and the one for a write refused as you ask for it, comes on
-  the server's next turn, so it never comes if the server stops first. Free
-  what you hold in your close call: it comes before ~serve~ returns.
+  the server's next turn, or, if the server stops first, before ~serve~
+  returns. A write you ask for in a ~done~ that comes then gets no ~done~.
 - One deadline at a time: a new one replaces the last. It is checked every
   ~CHEZ_HTTP_TICK_MS~ (250 ms), so it can pass up to that late.
 - When the server shuts down, your drain call is your chance to say goodbye

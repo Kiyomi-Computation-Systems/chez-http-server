@@ -133,8 +133,9 @@
 ;;; a write is one uv-write*! of its own, copied at the call, never held for
 ;;; the turn's write, its callback told #f or the errno once it completes;
 ;;; one asked for once the close has been, or the handle's, is not written,
-;;; and its callback is told ECANCELED after the turn.  Reading starts libuv's
-;;; reads again with the taker's callbacks, its end reported once.  The
+;;; and its callback is told ECANCELED after the turn, or, the server
+;;; stopping first, as `serve` returns (shell-call-deferred!).  Reading starts
+;;; libuv's reads again with the taker's callbacks, its end reported once.  The
 ;;; close waits for the writes outstanding, then closes the handle.  The
 ;;; deadline is the connection's one entry in the wheel, armed at the loop's
 ;;; time brought up to date, as a connection's are, and the timer, as it
@@ -242,9 +243,10 @@
 ;;; failure's place: a log that raises there is ignored.
 (library (http-server private shell)
   (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run! shell-turn!
-          shell-watch-signals!
+          shell-watch-signals! shell-call-deferred!
           loop-turn!
           shell-connections shell-server shell-listener shell-timer shell-signals shell-deadlines
+          shell-scheduler
           shell-waits-timed
           connection? connection-state connection-tcp connection-violations
           connection-deadline
@@ -301,6 +303,7 @@
   ;; shell-signals : Shell -> (Listof UvSignal)
   ;;   the signal handles it watches the process's signals through, from
   ;;   shell-watch-signals! until it serves no more; open or closed
+  ;; shell-scheduler : Shell -> Scheduler — its loop's (loop-scheduler)
   ;; The limits' tick-ms is its wheel's bucket, and one below 1 is an
   ;; assertion violation (make-wheel's).
   (define-record-type (shell %make-shell shell?)
@@ -311,7 +314,8 @@
             (mutable signals)                   ; the signal handles it watches through
             (mutable timer) (mutable ticking?)  ; the timer, and whether it runs
             (mutable read-at) (mutable read-ms)       ; the clock's last reading, and when
-            (mutable date-second) (mutable date-line)))
+            (mutable date-second) (mutable date-line)
+            (mutable deferred-front) (mutable deferred-back))) ; a taker's calls deferred to a turn
 
   (define make-shell
     (case-lambda
@@ -322,7 +326,7 @@
               (kept (hashtable-ref waits-timers loop #f)))
          (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
                       (make-wheel (limits-tick-ms limits)) s kept
-                      (make-server-state 'listening 0 limits #f) #f '() #f #f #f #f #f #f)))))
+                      (make-server-state 'listening 0 limits #f) #f '() #f #f #f #f #f #f '() '())))))
 
   ;; loop-scheduler : UvLoop [(Symbol (Listof Any) -> Any)] -> Scheduler
   ;; The loop's scheduler, made the first time it is asked for: its poll is
@@ -1062,9 +1066,38 @@
 
   ;; taker-later! : Connection (-> Any) -> Void
   ;; Call into the taker's code after libuv's turn, from the scheduler's
-  ;; drain, guarded as taker-call! guards it.
+  ;; drain, guarded as taker-call! guards it.  The call waits in the shell's
+  ;; own queue, and each call the drain makes takes the oldest there, so one
+  ;; that no drain reaches, the server having stopped first, is still there
+  ;; for shell-call-deferred! (M8.2's review, its sixth).
   (define (taker-later! c thunk)
-    (scheduler-call! (shell-scheduler (connection-shell c)) (lambda () (taker-call! c thunk))))
+    (let ((sh (connection-shell c)))
+      (shell-deferred-back-set! sh (cons (lambda () (taker-call! c thunk))
+                                         (shell-deferred-back sh)))
+      (scheduler-call! (shell-scheduler sh) (lambda () (call-deferred! sh)))))
+
+  ;; call-deferred! : Shell -> Void — the oldest call deferred, if one waits.
+  (define (call-deferred! sh)
+    (when (null? (shell-deferred-front sh))
+      (shell-deferred-front-set! sh (reverse (shell-deferred-back sh)))
+      (shell-deferred-back-set! sh '()))
+    (let ((front (shell-deferred-front sh)))
+      (when (pair? front)
+        (shell-deferred-front-set! sh (cdr front))
+        ((car front)))))
+
+  ;; shell-call-deferred! : Shell -> Void
+  ;; The taker's calls still deferred to a turn, made now, oldest first:
+  ;; those waiting as it is called, not those they defer in turn, so it
+  ;; ends.  `serve` calls it once its server has stopped, before its loop is
+  ;; torn down, so the `done` of a write refused as the server stops is told
+  ;; all the same.
+  (define (shell-call-deferred! sh)
+    (let each ((n (fx+ (length (shell-deferred-front sh))
+                       (length (shell-deferred-back sh)))))
+      (when (fx>? n 0)
+        (call-deferred! sh)
+        (each (fx- n 1)))))
 
   ;; connection-transport : Connection Taker -> Transport — the verbs (THE
   ;; DOOR, the header).
