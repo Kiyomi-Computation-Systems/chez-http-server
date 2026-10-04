@@ -102,6 +102,10 @@ rather than a redesign.
 > parse-ahead would be a new decision with its own design, since this document's
 > states (§4.3) serve one message at a time.
 
+> *Amended 2026-10-04 (decision 0004's amendment "parse-ahead is not wanted"):* on the
+> owner's word, parse-ahead is not wanted, since no client the server meets pipelines.
+> §4.3's states, one message at a time, stay the design.
+
 Limits and timeouts are **bounded, nginx-style, and data** (0005). Deadlines live in
 the pure state as `deadline` and `deadline-kind`; the shell keeps a hashed timing
 wheel keyed by `(deadline div tick-ms)` and dispatches `(tick now)` only to
