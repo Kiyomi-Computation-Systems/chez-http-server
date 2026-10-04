@@ -6,6 +6,15 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-04
+
+The second release. A handler that waits is now told when its client leaves, a
+request in HTTP/1.2 to 1.9 is served as 1.1, and every version that is not 1.x is
+answered `505`. One change breaks 0.1.0's API: the pipeline cap is removed, so
+`make-limits` takes nineteen fields, not twenty. The
+pinned libraries are 0.1.0's: chez-libuv v0.7.3, chez-httparse v0.4.5 with
+byte-machine v0.7.0, and uriparse v0.6.2.
+
 ### Added
 
 - **A waiting handler is told when its client closes the connection.** If the
@@ -141,5 +150,6 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/releases/tag/v0.1.0
