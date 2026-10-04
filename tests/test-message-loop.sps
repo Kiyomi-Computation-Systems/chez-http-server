@@ -3,10 +3,12 @@
 ;;;
 ;;; Decision 0004 item 1's cycle, and the whole of serial pipelining, with
 ;;; chez-httparse driving the core through the adapter: at on-message-complete
-;;; the core pauses the parser, stops reading and calls the handler; the rest
-;;; of the delivery is kept from `parser-result-next`; after the response the
-;;; parser resumes, the rest is fed, and reading starts again.  After a
-;;; close-marked message nothing more is fed (0004 item 4).
+;;; the core pauses the parser and calls the handler; the rest of the
+;;; delivery is kept from `parser-result-next`; after the response the
+;;; parser resumes and the rest is fed.  Reading goes on past the message's
+;;; end only to notice the client close (decision 0020): what arrives before
+;;; the response is held, never fed until the resume, and reading stops.
+;;; After a close-marked message nothing more is fed (0004 item 4).
 ;;;
 ;;; The fake shell runs every action the core asks for after the outermost
 ;;; dispatch, from one queue (design §4.5).  Only `reply-parser` is answered
@@ -23,9 +25,18 @@
 ;;;   - after a close-marked message the next one is never fed, and the
 ;;;     parser's "Data after `Connection: close`" error never fires;
 ;;;   - one message at a time: from a message's end to the resume after its
-;;;     response, the parser is not fed and the socket is not read, and one
-;;;     handler is asked from one resume to the next (the spike's POST is
-;;;     read by its handler, whose head announces a body: decision 0013);
+;;;     response, the parser is not fed, and one handler is asked from one
+;;;     resume to the next (the spike's POST is read by its handler, whose
+;;;     head announces a body: decision 0013);
+;;;   - a client's close (decision 0020): a waiting handler whose client ends
+;;;     while it waits is told, its wait raising `&client-closed`, and, letting
+;;;     it out, is answered nothing; one that catches it and answers is
+;;;     written to, a client that only half-closed reading on, then the close,
+;;;     at once; a request that arrives while a handler waits is held and
+;;;     served after, two that arrive together among them, and judged where
+;;;     the parser stopped; an end that comes with requests held behind tells
+;;;     no one, and they are answered before the close, which a request it
+;;;     cut short has at its cut, and an empty line held once it is read;
 ;;;   - a handler that raises is answered 500, then close;
 ;;;   - an upgrade (a WebSocket handshake, a CONNECT, `Upgrade: h2c`) is
 ;;;     served, then the connection closes, and the bytes after it are never
@@ -45,7 +56,9 @@
 ;;; decision 0006 as amended on the owner's word, 2026-09-25; decision 0013.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
-        (http-server span) (http-server limits) (http-server switch) (fake-shell))
+        (http-server span) (http-server limits) (http-server switch) (fake-shell)
+        (only (http-server awaiting) awaiting client-closed?)
+        (only (http-server private waits) sleep-ms))
 
 (define (b s) (string->utf8 s))
 
@@ -168,38 +181,54 @@
 (define (fed sh) (fold-left (lambda (n f) (+ n (- (cadr f) (car f)))) 0 (feeds sh)))
 
 ;; serial? : FakeShell -> Boolean
-;; One message at a time: from each message's end, where reading stops, to
-;; the resume after its response, no feed-parser and no read-start; and one
-;; handler asked from one resume to the next.  A message's end is the
-;; read-stop after a paused `parser-result`.  Any other read-stop is a
-;; request waiting on its handler with its body still to come, which stops
-;; reading until the handler's reader answers and reading starts again
-;; (decision 0014; M7.1): nothing is fed meanwhile.  A response that closes
-;; the connection has no resume: its staged close begins with the shutdown
-;; (M3.5), after which the socket is read again, to drop what arrives, but
-;; nothing is fed, handled or resumed.  (The handler of a request whose head
-;; announces a body is asked once the head is in, and its body read after:
-;; decision 0013.)
+;; One message at a time: from each message's end, a paused
+;; `parser-result`, to the resume after its response, no feed-parser; and
+;; one handler asked from one resume to the next.  Reading goes on past the
+;; end only to notice the client close (decision 0020): what arrives is
+;; held, and its read-stop changes nothing here.  A read-stop with no
+;; message ended is a request waiting on its handler with its body still to
+;; come, which stops reading until the handler's reader answers and reading
+;; starts again (decision 0014; M7.1): nothing is fed meanwhile.  A response
+;; that closes the connection has no resume: its staged close begins with
+;; the shutdown (M3.5), after which the socket is read again, to drop what
+;; arrives, but nothing is fed, handled or resumed.  (The handler of a
+;; request whose head announces a body is asked once the head is in, and
+;; its body read after: decision 0013.)
 (define (serial? sh)
-  (let loop ((t (trace-of sh)) (paused #f) (stopped #f) (asked #f))
+  (let loop ((t (trace-of sh)) (ended #f) (waiting #f) (closed #f) (asked #f))
     (cond ((null? t) #t)
           ((eq? (caar t) 'event)
            (let ((e (cdar t)))
              (loop (cdr t)
-                   (or (and (eq? (car e) 'parser-result) (eq? (cadr e) 'paused)) paused)
-                   stopped asked)))
+                   (or (and (eq? (car e) 'parser-result) (eq? (cadr e) 'paused)) ended)
+                   waiting closed asked)))
           (else
            (let ((kind (car (cdar t))))
              (case kind
-               ((read-stop) (loop (cdr t) #f (or stopped (if paused 'ended 'waiting)) asked))
-               ((call-handler) (and (not asked) (loop (cdr t) paused stopped #t)))
-               ((resume-parser) (and (not (eq? stopped 'closed)) (loop (cdr t) #f #f #f)))
-               ((feed-parser) (and (not stopped) (loop (cdr t) paused stopped asked)))
-               ((read-start)
-                (and (not (eq? stopped 'ended))
-                     (loop (cdr t) paused (if (eq? stopped 'waiting) #f stopped) asked)))
-               ((shutdown) (loop (cdr t) paused 'closed asked))
-               (else (loop (cdr t) paused stopped asked))))))))
+               ((read-stop) (loop (cdr t) ended (or waiting (not ended)) closed asked))
+               ((call-handler) (and (not asked) (loop (cdr t) ended waiting closed #t)))
+               ((resume-parser) (and (not closed) (loop (cdr t) #f #f #f #f)))
+               ((feed-parser) (and (not ended) (not waiting) (loop (cdr t) ended waiting closed asked)))
+               ((read-start) (loop (cdr t) ended #f closed asked))
+               ((shutdown) (loop (cdr t) ended waiting #t asked))
+               (else (loop (cdr t) ended waiting closed asked))))))))
+
+;; --- a client's close (decision 0020) -----------------------------------------
+
+;; get-bytes : String -> Bytevector — a GET of `path` with a Host.
+(define (get-bytes path) (b (string-append "GET " path " HTTP/1.1\r\nHost: x\r\n\r\n")))
+
+;; deliver : FakeShell Bytevector -> Void — one delivery of all of `bv`.
+(define (deliver sh bv) (fake-shell-deliver! sh (list 'bytes-arrived bv 0 (bytevector-length bv))))
+
+;; waits-then : Nat (-> Any) -> (Request -> Answer)
+;; A handler that, for /a, waits `ms` then answers `resp` (what `then` does
+;; with the wait's raise aside), and answers every other request at once.
+(define (waits-then ms on-close)
+  (lambda (request)
+    (if (string=? (utf8->string (span->bytevector (request-target request))) "/a")
+        (awaiting (lambda () (guard (e ((client-closed? e) (on-close e))) (sleep-ms ms) resp)))
+        resp)))
 
 (run-suite "message-loop"
   (lambda ()
@@ -212,7 +241,7 @@
                   `((feed-parser ,input 0 28)
                     (disarm-deadline) (arm-deadline header)
                     (disarm-deadline) (arm-deadline body)
-                    (read-stop) (disarm-deadline) (call-handler (GET "/a" 1 1 (("Host" . "x"))))
+                    (disarm-deadline) (call-handler (GET "/a" 1 1 (("Host" . "x"))))
                     (write 200) (arm-deadline write)
                     (resume-parser) (read-start) (arm-deadline idle))
                   (map render-action (fake-shell-actions sh)))
@@ -357,4 +386,107 @@
                 (every-size spike default-limits fake-shell-violations reading))
     (test-equal "a WebSocket handshake too"
                 '(())
-                (every-size websocket default-limits fake-shell-violations))))
+                (every-size websocket default-limits fake-shell-violations))
+
+    ;; --- a client's close (decision 0020) -----------------------------------------
+    ;; GET /a's handler waits 1000 ms; the client's end comes meanwhile.
+    (let* ((told #f)
+           (sh (make-fake-connection default-limits
+                                     (waits-then 1000 (lambda (e) (set! told #t) (raise e))))))
+      (deliver sh (get-bytes "/a"))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
+      (test-equal "a waiting handler whose client ends while it waits is told, and letting the raise out is answered nothing: the connection closes for the client"
+                  '(told (((call-handler (GET "/a" 1 1 (("Host" . "x")))) (close client-closed)) closed))
+                  (list (if told 'told 'not-told) (outcome sh))))
+
+    (let ((sh (make-fake-connection default-limits (waits-then 1000 (lambda (e) resp)))))
+      (deliver sh (get-bytes "/a"))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
+      (test-equal "one that catches it and answers is written to, a client that only half-closed reading on, then closes for the client at once, with no linger"
+                  '((((call-handler (GET "/a" 1 1 (("Host" . "x")))) (write 200) (close client-closed)) closed)
+                    no-shutdown)
+                  (list (outcome sh)
+                        (if (memq 'shutdown (map car (fake-shell-actions sh))) 'shutdown 'no-shutdown))))
+
+    ;; GET /b arrives while GET /a's handler waits 10 ms.  (Fed before the
+    ;; resume, its bytes would meet a paused parser, which byte-machine
+    ;; refuses by raising.)
+    (let ((sh (make-fake-connection default-limits (waits-then 10 (lambda (e) (raise e))))))
+      (deliver sh (get-bytes "/a"))
+      (deliver sh (get-bytes "/b"))
+      (let ((reading (fake-shell-reading? sh)))
+        (fake-shell-advance! sh 10)
+        (fake-shell-fire-waits! sh)
+        (fake-shell-settle! sh)
+        (test-equal "a request that arrives while a handler waits is held, reading stopped, and served after the response, in order"
+                    '(#f (((call-handler (GET "/a" 1 1 (("Host" . "x")))) (write 200)
+                           (call-handler (GET "/b" 1 1 (("Host" . "x")))) (write 200))
+                          idle)
+                         #t)
+                    (list reading (outcome sh) (fake-shell-reading? sh)))))
+
+    ;; GET /a and GET /b in one delivery, then the client's end, while /a's
+    ;; handler waits 10 ms.
+    (let ((sh (make-fake-connection default-limits (waits-then 10 (lambda (e) (raise e))))))
+      (deliver sh (b (string-append "GET /a HTTP/1.1\r\nHost: x\r\n\r\n" "GET /b HTTP/1.1\r\nHost: x\r\n\r\n")))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-advance! sh 10)
+      (fake-shell-fire-waits! sh)
+      (fake-shell-settle! sh)
+      (test-equal "an end that comes with a request held behind the one answered tells no one: both are answered, then the connection closes"
+                  '(((call-handler (GET "/a" 1 1 (("Host" . "x")))) (write 200)
+                     (call-handler (GET "/b" 1 1 (("Host" . "x")))) (write 200) (close eof))
+                    closed)
+                  (outcome sh)))
+
+    (let ((sh (make-fake-connection default-limits (waits-then 10 (lambda (e) (raise e))))))
+      (deliver sh (b (string-append "GET /a HTTP/1.1\r\nHost: x\r\n\r\n" "GET /b HT")))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-advance! sh 10)
+      (fake-shell-fire-waits! sh)
+      (fake-shell-settle! sh)
+      (test-equal "and with a request held that the end cut short, the one before it is answered, then the connection closes at the cut"
+                  '(((call-handler (GET "/a" 1 1 (("Host" . "x")))) (write 200) (close eof)) closed)
+                  (outcome sh)))
+
+    ;; GET /b and GET /c arrive together while GET /a's handler waits 10 ms:
+    ;; held as one, the parser fed them from where it stopped.
+    (let ((sh (make-fake-connection default-limits (waits-then 10 (lambda (e) (raise e))))))
+      (deliver sh (get-bytes "/a"))
+      (deliver sh (b (string-append "GET /b HTTP/1.1\r\nHost: x\r\n\r\n" "GET /c HTTP/1.1\r\nHost: x\r\n\r\n")))
+      (fake-shell-advance! sh 10)
+      (fake-shell-fire-waits! sh)
+      (fake-shell-settle! sh)
+      (test-equal "two requests that arrive together while a handler waits are both held, and served after it, in order"
+                  '(((call-handler (GET "/a" 1 1 (("Host" . "x")))) (write 200)
+                     (call-handler (GET "/b" 1 1 (("Host" . "x")))) (write 200)
+                     (call-handler (GET "/c" 1 1 (("Host" . "x")))) (write 200))
+                    idle)
+                  (outcome sh)))
+
+    ;; A held request is judged as one fed at once: the 10 spaces before its
+    ;; value counted with it, 11 bytes past a limit of 8 (the padding PR).
+    (let ((sh (make-fake-connection (limits-with default-limits '((max-header-value-bytes . 8)))
+                                    (waits-then 10 (lambda (e) (raise e))))))
+      (deliver sh (get-bytes "/a"))
+      (deliver sh (b "GET /b HTTP/1.1\r\nHost: x\r\nX-Pad:          y\r\n\r\n"))
+      (fake-shell-advance! sh 10)
+      (fake-shell-fire-waits! sh)
+      (fake-shell-settle! sh)
+      (test-equal "a held request is judged where the parser stopped: its value's padding past the limit, 431"
+                  '(((call-handler (GET "/a" 1 1 (("Host" . "x")))) (write 200) (write 431)) lingering)
+                  (outcome sh)))
+
+    ;; GET /a and an empty line, then the client's end, while /a's handler
+    ;; waits 10 ms: the empty line is all that is left.
+    (let ((sh (make-fake-connection default-limits (waits-then 10 (lambda (e) (raise e))))))
+      (deliver sh (b "GET /a HTTP/1.1\r\nHost: x\r\n\r\n\r\n"))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-advance! sh 10)
+      (fake-shell-fire-waits! sh)
+      (fake-shell-settle! sh)
+      (test-equal "and with only an empty line held after the end, the request is answered, then the connection closes"
+                  '(((call-handler (GET "/a" 1 1 (("Host" . "x")))) (write 200) (close eof)) closed)
+                  (outcome sh)))))

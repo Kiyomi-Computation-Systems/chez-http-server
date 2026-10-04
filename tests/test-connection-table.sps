@@ -72,6 +72,7 @@
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server limits) (http-server body) (http-server switch) (fake-shell)
+        (only (http-server awaiting) make-client-closed)
         (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE F-CONNECTION-KEEP-ALIVE
               F-CHUNKED F-CONTENT-LENGTH)
         (only (chezscheme) display-condition))
@@ -283,9 +284,11 @@
            `(parser-event on-body-data ,bv 3 8)
            `(body #f ((reply-parser continue) (deliver-body ,bv 3 8) (arm-deadline body)))))
 
-   (row 'H6 "body, on-message-complete -> handling: pause, read-stop, disarm, call-handler"
+   ;; Reading goes on past the message's end, only to notice the client
+   ;; close (decision 0020): the close-notice rows below.
+   (row 'H6 "body, on-message-complete -> handling: pause, disarm, call-handler, reading on"
         (i (state 'body 'deadline 'body 'request req) '(parser-event on-message-complete 27)
-           `(handling #f ((reply-parser pause) (read-stop) (disarm-deadline) (call-handler ,req)))))
+           `(handling #f ((reply-parser pause) (disarm-deadline) (call-handler ,req)))))
 
    ;; The write is the serializer's segments for the request being answered
    ;; (M3.2): an HTTP/1.1 GET that keeps the connection.
@@ -334,7 +337,7 @@
         (i (state 'head 'deadline 'header) '(eof) '(closing #f ((disarm-deadline) (close eof))))
         (i (state 'body 'deadline 'body) '(eof) '(closing #f ((disarm-deadline) (close eof)))))
 
-   (row 'T2 "any live state, read-error -> closing: log, disarm, close, no response"
+   (row 'T2 "any live state, read-error -> closing: log, disarm, close, no response; from handling or responding the request's code told first (decision 0020)"
         (i (state 'idle 'deadline 'idle) '(read-error ECONNRESET)
            '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'head 'deadline 'header) '(read-error ECONNRESET)
@@ -342,12 +345,12 @@
         (i (state 'body 'deadline 'body) '(read-error ECONNRESET)
            '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'handling) '(read-error ECONNRESET)
-           '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
+           '(closing #f ((client-closed) (log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (withheld 10 '(3 8)) '(read-error ECONNRESET)
            '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100)
            '(read-error EPIPE)
-           '(closing #f ((log read-error EPIPE) (disarm-deadline) (close read-error))))
+           '(closing #f ((client-closed) (log read-error EPIPE) (disarm-deadline) (close read-error))))
         (i (state 'lingering 'deadline 'linger 'close-after 'headers-too-large) '(read-error ECONNRESET)
            '(closing headers-too-large ((log read-error ECONNRESET) (disarm-deadline) (close read-error)))))
 
@@ -951,16 +954,16 @@
         (i (reading 10 (whole-reader)) `(parser-event on-body-data ,bv 3 8)
            '(body #f ((reply-parser continue) (arm-deadline body)))))
 
-   (row 'B8 "body, on-message-complete, a streaming reader reading -> handling: pause, read-stop, disarm, deliver-body-end"
+   (row 'B8 "body, on-message-complete, a streaming reader reading -> handling: pause, disarm, deliver-body-end, reading on"
         (i (reading 10 streamer) '(parser-event on-message-complete 59)
-           '(handling #f ((reply-parser pause) (read-stop) (disarm-deadline) (deliver-body-end)))))
+           '(handling #f ((reply-parser pause) (disarm-deadline) (deliver-body-end)))))
 
    ;; The body, "GET /" and " HTTP" of the delivery, whole in a bytevector
    ;; of its own.
-   (row 'B9 "body, on-message-complete, a whole reader reading -> handling: pause, read-stop, disarm, the body as one piece, deliver-body-end"
+   (row 'B9 "body, on-message-complete, a whole reader reading -> handling: pause, disarm, the body as one piece, deliver-body-end, reading on"
         (let ((s (met (reading 10 (whole-reader)) '((0 5) (5 10)))))
           (i s '(parser-event on-message-complete 59)
-             `(handling #f ((reply-parser pause) (read-stop) (disarm-deadline)
+             `(handling #f ((reply-parser pause) (disarm-deadline)
                             (deliver-body ,(b "GET / HTTP") 0 10) (deliver-body-end))))))
 
    (row 'B10 "handling, handler-responded with the reader's response -> responding: write, arm write"
@@ -2001,15 +2004,101 @@
            '(handling not-keep-alive () #f)))
 
    ;; The states a close-marked message passes through after its pause.
-   (row 'P3 "after a close-marked message, bytes-arrived -> no feed-parser"
+   ;; Past a request's end the first delivery is held and reading stops, as
+   ;; for any message (decision 0020): never fed, since the input goes
+   ;; once the response is written, and handed to a switch's taker.
+   (row 'P3 "after a close-marked message, bytes-arrived -> no feed-parser: held, reading stopped, from handling or responding"
         (i (state 'handling 'close-after 'not-keep-alive) `(bytes-arrived ,bv 0 5)
-           '(handling not-keep-alive () #f))
+           `(handling not-keep-alive ((read-stop)) (,bv 0 5)))
         (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
                   'close-after 'not-keep-alive)
            `(bytes-arrived ,bv 0 5)
-           '(responding not-keep-alive () #f))
+           `(responding not-keep-alive ((read-stop)) (,bv 0 5)))
         (i (state 'closing 'close-after 'not-keep-alive) `(bytes-arrived ,bv 0 5)
            '(closing not-keep-alive () #f)))))
+
+;; ---------------------------------------------------------------------------
+;; A client's close (decision 0020).  From a request's end until its
+;; response is written, the connection reads only to notice the client
+;; close: bytes that arrive are the next request's, held after the pause's
+;; rest, and reading stops; the client's end tells the request's code, the
+;; connection closing once the response is written, at once, the client
+;; having closed already; a read error tells it too, and closes (T2).  A
+;; handler that lets the close's raise out is answered nothing.  The rows
+;; read what the state holds after them (kept).
+
+;; client-ended : ConnState -> ConnState — the same, after the client's end.
+(define (client-ended s) (conn-step s (quote (eof))) s)
+
+(define (notice-rows)
+  (list
+   (row 'N1 "handling, bytes-arrived -> handling: the bytes held, read-stop"
+        (i (state 'handling 'request req) `(bytes-arrived ,bv 0 5)
+           `(handling #f ((read-stop)) (,bv 0 5))))
+
+   ;; " / HT", the pause's rest, then "GE", which arrives: held as one, in
+   ;; a bytevector of their own.
+   (row 'N2 "handling, bytes-arrived after a pause's rest -> handling: the rest and the bytes held as one, read-stop"
+        (i (state 'handling 'request req 'pending (list bv 3 8)) `(bytes-arrived ,bv 0 2)
+           `(handling #f ((read-stop)) (,(b " / HTGE") 0 7))))
+
+   (row 'N3 "responding, bytes-arrived -> responding: the bytes held, read-stop"
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100 'request req)
+           `(bytes-arrived ,bv 0 5)
+           `(responding #f ((read-stop)) (,bv 0 5))))
+
+   (row 'N4 "handling, eof -> handling: read-stop, client-closed, to close after the response for the client"
+        (i (state 'handling 'request req) '(eof)
+           '(handling client-closed ((read-stop) (client-closed)) #f)))
+
+   (row 'N5 "responding, eof -> responding: read-stop, client-closed, to close for the client whatever it closed for before"
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100) '(eof)
+           '(responding client-closed ((read-stop) (client-closed)) #f))
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100 'close-after 'not-keep-alive)
+           '(eof)
+           '(responding client-closed ((read-stop) (client-closed)) #f))
+        (i (streaming 'chunked) '(eof)
+           '(responding client-closed ((read-stop) (client-closed)) #f)))
+
+   ;; Each state is reached as a connection reaches it: the client's end
+   ;; comes while the response is written.
+   (row 'N6 "responding, the last write-completed after the client's end -> closing: disarm, close, no linger, for the client or the reason before"
+        (i (client-ended (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100))
+           '(write-completed 100)
+           '(closing client-closed ((disarm-deadline) (close client-closed)) #f))
+        (i (client-ended (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
+                         'close-after 'not-keep-alive 'pending (list bv 0 5)))
+           '(write-completed 100)
+           '(closing not-keep-alive ((disarm-deadline) (close not-keep-alive)) #f)))
+
+   ;; With a delivery held, the client sent more before its end: those
+   ;; requests are answered first, so its end tells no one yet, and after
+   ;; the response what is held is fed, reading never starting again.
+   (row 'N10 "handling or responding, eof with a delivery held -> the same: read-stop, nothing told"
+        (i (state 'handling 'request req 'pending (list bv 0 5)) '(eof)
+           `(handling #f ((read-stop)) (,bv 0 5)))
+        (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100 'pending (list bv 0 5))
+           '(eof)
+           `(responding #f ((read-stop)) (,bv 0 5))))
+
+   (row 'N11 "responding, the last write-completed after the client's end, a delivery held -> idle: resume, feed it, arm idle, no read-start"
+        (i (client-ended (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100 'pending (list bv 0 5)))
+           '(write-completed 100)
+           `(idle #f ((resume-parser) (feed-parser ,bv 0 5) (arm-deadline idle)) #f)))
+
+   (row 'N7 "handling or responding, handler-failed with the close's raise, the client closed -> closing: disarm, close, no response"
+        (i (state 'handling 'request req 'close-after 'client-closed) `(handler-failed ,(make-client-closed))
+           '(closing client-closed ((disarm-deadline) (close client-closed)) #f))
+        (i (let ((s (streaming 'chunked))) (conn-step s '(eof)) s) `(handler-failed ,(make-client-closed))
+           '(closing client-closed ((disarm-deadline) (close client-closed)) #f)))
+
+   (row 'N8 "handling, handler-failed with another raise, the client closed -> responding: write 500, closing for the client"
+        (i (state 'handling 'request req 'close-after 'client-closed) '(handler-failed boom)
+           `(responding client-closed (,(status-write 500 "Internal Server Error") (arm-deadline write)) #f)))
+
+   (row 'N9 "handling, handler-failed with the close's raise, the client not closed -> responding: write 500, close-after, as any failure"
+        (i (state 'handling 'request req) `(handler-failed ,(make-client-closed))
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)) #f)))))
 
 ;; run-row : Row [(ConnState Event -> Datum)] -> (U 0 1)
 ;; Run every instance of a row through `step` (default: outcome); 1 if the
@@ -2173,10 +2262,10 @@
                   tick parser-event parser-result handler-responded handler-body-chunk
                   handler-body-end handler-failed body-credit shutdown-requested)
                 conn-events)
-    (test-equal "0002's fifteen actions plus 0006 item 3's hand-off"
+    (test-equal "0002's fifteen actions plus 0006 item 3's hand-off and 0020's client-closed"
                 '(reply-parser feed-parser resume-parser write read-stop read-start
                   call-handler deliver-body deliver-body-end notify-producer
-                  arm-deadline disarm-deadline shutdown close log hand-off)
+                  arm-deadline disarm-deadline shutdown close log hand-off client-closed)
                 conn-actions)
     (test-equal "five deadline kinds: design §4.3's idle, header, body and write, and decision 0011's linger"
                 '(idle header body write linger)
@@ -2277,7 +2366,8 @@
            (continues (count-rows "continue-accounting" continue-accounting-rows accounted))
            (framings (count-rows "framing" framing-rows asked-by))
            (paddings (count-rows "padding" padding-rows asked-by))
-           (cut-offs (count-rows "cut-off" cut-off-rows asked-by)))
+           (cut-offs (count-rows "cut-off" cut-off-rows asked-by))
+           (notices (count-rows "close-notice" notice-rows kept)))
       (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
       (test-eqv "design §4.4: 8 of the 9 termination and error rows have a test, T7 retired (M8.2), and M8.1's three" 11 term)
       (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
@@ -2294,13 +2384,14 @@
       (test-eqv "M6.4: the 100's accounting row has a test" 1 continues)
       (test-eqv "M6.4: all 7 trailer and extension rows have a test" 7 framings)
       (test-eqv "the padding PR: all 14 padding rows have a test" 14 paddings)
-      (test-eqv "the cut-off-span PR: all 4 cut-off rows have a test" 4 cut-offs))
+      (test-eqv "the cut-off-span PR: all 4 cut-off rows have a test" 4 cut-offs)
+      (test-eqv "decision 0020: all 11 close-notice rows have a test" 11 notices))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it: `notify-producer` since M6.3.
     (test-equal "no row emits an action outside the vocabulary" '()
                 (filter (lambda (k) (not (memq k conn-actions))) emitted))
-    (test-equal "the rows use all sixteen actions" conn-actions
+    (test-equal "the rows use all seventeen actions" conn-actions
                 (filter (lambda (k) (memq k emitted)) conn-actions))
     (test-equal "the rows arm all five deadline kinds, and no other"
                 (list conn-deadline-kinds '())

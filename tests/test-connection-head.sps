@@ -483,10 +483,11 @@
                             minimal))
 
     ;; --- bytes-arrived feeds the parser in every reading state -----------------
+    ;; Past a request's end it is held, and reading stops (decision 0020).
     (let ((bv (b "abcd")))
-      (test-equal "bytes-arrived asks for feed-parser in idle, head and body, not handling"
+      (test-equal "bytes-arrived asks for feed-parser in idle, head and body; in handling it is held, reading stopped"
                   (list (list (list 'feed-parser bv 0 4)) (list (list 'feed-parser bv 0 4))
-                        (list (list 'feed-parser bv 0 4)) '())
+                        (list (list 'feed-parser bv 0 4)) '((read-stop)))
                   (map (lambda (phase)
                          (call-with-values
                           (lambda () (conn-step (make-conn-state phase #f #f 0 0 #f #f minimal)

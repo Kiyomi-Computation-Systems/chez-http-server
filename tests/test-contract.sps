@@ -12,7 +12,12 @@
 ;;; where it waits for the server to have read what it sent, and its end,
 ;;; which is the half-close, or a stall: the client sends nothing more and
 ;;; never ends its stream, and waits for the server's deadlines to close the
-;;; connection (M5.3).  A script marked `(bare-close)` is one whose
+;;; connection (M5.3).  The client ends its stream only once the server has
+;;; read all it sent and answered it, its connection idle, lingering or
+;;; gone, as it always did before decision 0020: since then the server reads
+;;; past a request's end, and an end that comes while a handler waits tells
+;;; it (THE CLIENT'S END, below).  A script marked `(end-early)` ends its
+;;; stream as soon as it has sent.  A script marked `(bare-close)` is one whose
 ;;; connection the server closes at once, with no linger, before it reads
 ;;; the client's half-close: a producer's failure once the head is on the
 ;;; wire (M6.3).  The client plays it on the libuv shell's own loop,
@@ -95,7 +100,7 @@
         (only (http-server connection) conn-phase)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (http-server body)
-        (only (http-server awaiting) awaiting deadline-passed? resolve-error? resolve-error-reason)
+        (only (http-server awaiting) awaiting deadline-passed? client-closed? resolve-error? resolve-error-reason)
         (only (http-server private waits) sleep-ms with-deadline resolve)
         (fake-shell) (shell-testing) (producers))
 
@@ -214,7 +219,7 @@
 ;; marks too, in the replay, where nothing reads the marks.
 
 ;; woke! : Datum -> Void — mark the end of a wait, `(woke . what)`.
-(define (woke! what) (set! received (cons (cons (uv-now loop) (cons 'woke what)) received)))
+(define (woke! what) (set! received (cons (cons* (uv-now loop) turn (cons 'woke what)) received)))
 
 ;; slept : Nat -> Void
 ;; sleep-ms, marked where it ends: at its time, or at a deadline's raise,
@@ -273,6 +278,11 @@
   '(("a GET, kept alive" (send "GET /one HTTP/1.1\r\nHost: x\r\n\r\n"))
     ("three requests in one write"
      (send "GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\n\r\nGET /3 HTTP/1.1\r\nHost: x\r\n\r\n"))
+    ;; Its end comes with requests held, often in the turn a handler's call
+    ;; waits in: each is answered, then the close (decision 0020; THE TURNS).
+    ("three requests in one write, the client's end at once"
+     (send "GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\n\r\nGET /3 HTTP/1.1\r\nHost: x\r\n\r\n")
+     (end-early))
     ("a request split across two deliveries"
      (send "GET /split HTTP/1.1\r\nHo") (read) (send "st: x\r\n\r\n"))
     ("a request with a body, answered before it is read"
@@ -339,7 +349,8 @@
 ;; ORDER ROW (below) holds to the order they were asked in.
 (define lookup-in-a-pipeline
   '("a lookup inside a pipelined connection, then an ordinary request and a sleep"
-    (send "GET /resolve HTTP/1.1\r\nHost: x\r\n\r\nGET /after HTTP/1.1\r\nHost: x\r\n\r\nGET /sleep HTTP/1.1\r\nHost: x\r\n\r\n")))
+    (send "GET /resolve HTTP/1.1\r\nHost: x\r\n\r\nGET /after HTTP/1.1\r\nHost: x\r\n\r\nGET /sleep HTTP/1.1\r\nHost: x\r\n\r\n")
+    (end-early)))
 (define waiting-scripts
   (append
    '(("a handler that sleeps" (send "GET /sleep HTTP/1.1\r\nHost: x\r\n\r\n"))
@@ -374,6 +385,26 @@
 ;; closes-bare? : Script -> Boolean — whether the server closes its
 ;; connection at once, before it reads the client's end.
 (define (closes-bare? script) (ends-with? script '(bare-close)))
+
+;; THE CLIENT'S END.  Before decision 0020 the server did not read while a
+;; handler ran, so a client's end came after the answers however soon it
+;; was sent.  Now it can come while a request is answered, and tells a
+;; handler that waits, which these scripts' handlers let out: answered
+;; nothing.  So a script's client ends its stream once it has been answered
+;; (answered?), and the scripts meant for the end while a handler waits, or
+;; with requests held behind it, end early.
+;; ends-early? : Script -> Boolean — whether its client ends its stream as
+;; soon as it has sent.
+(define (ends-early? script) (ends-with? script '(end-early)))
+
+;; answered? : -> Boolean
+;; The script's connection has answered all it read: idle, lingering, closing
+;; or gone.
+(define (answered?)
+  (let ((cs (filter (lambda (c) (not (memq c earlier))) (shell-connections playing))))
+    (or (null? cs)
+        (and (memq (conn-phase (connection-state (car cs))) '(idle lingering closing closed handed-off))
+             #t))))
 
 ;; latin-1 : Bytevector -> String — one character per byte, so two byte
 ;; strings render alike only if they are alike.
@@ -457,8 +488,9 @@
 
 ;; What the libuv shell's connection has done while a script plays: every
 ;; event dispatched and action run, rendered, newest first; the events
-;; themselves, newest first, for the fake, each as (at . event), `at` the
-;; loop's time it came at; the loop's time at each of its writes, newest
+;; themselves, newest first, for the fake, each as (at turn . event), `at`
+;; the loop's time it came at and `turn` the turn of the loop it came in
+;; (THE TURNS); the loop's time at each of its writes, newest
 ;; first, which dates the write (ONE CLOCK); the bytes of its deliveries,
 ;; collected as they arrive; whether its close has completed; and the
 ;; loop's time the shell adopted it at.  One client plays at a time, so
@@ -475,7 +507,7 @@
   (cond ((connection? who)
          (set! traced (cons (list kind (render datum)) traced))
          (when (eq? kind 'event)
-           (set! received (cons (cons (uv-now loop) datum) received))
+           (set! received (cons (cons* (uv-now loop) turn datum) received))
            (case (car datum)
              ((bytes-arrived) (collect-span! delivered (cadr datum) (caddr datum) (cadddr datum)))
              ((closed) (set! closed #t))))
@@ -484,12 +516,25 @@
         ((and (eq? kind 'server-action) (eq? (car datum) 'accept))
          (set! adopted-at (uv-now loop)))))
 
+;; THE TURNS.  The libuv shell drains its scheduler, calling handlers and
+;; running coroutines, at the start of each turn of its loop, then polls:
+;; every event the poll brings comes before the next drain (decision
+;; 0014).  The fake drains its own after each event it is given, unless
+;; held, so the replay holds it and drains it once for each turn the libuv
+;; shell began between two events.  Since decision 0020 the client's end
+;; can come in the turn a handler's call waits in, after it was asked for
+;; and before it is made.
+;; turn : Nat — the turns of the libuv shell's loop wait-for has begun.
+(define turn 0)
+
 ;; wait-for : (-> Boolean) -> Symbol
 ;; Run the libuv shell's own run loop until `pred` holds: 'satisfied or
 ;; 'iterations-exhausted.  The run loop logs a callback's error and runs on,
 ;; so such a bug shows in the checks; a byte-machine contract condition it
 ;; raises again (design §6.4), which ends the suite, as it would end a server.
-(define (wait-for pred) (run-shell-until loop shell pred cap))
+;; Each turn is counted as it begins: `pred` is asked before each.
+(define (wait-for pred)
+  (run-shell-until loop shell (lambda () (or (pred) (begin (set! turn (+ turn 1)) #f))) cap))
 
 ;; The libuv shell a script plays to, and its connections as the script
 ;; began: the script's own is any other.
@@ -567,8 +612,13 @@
                                                              (collector-count sent))))
                                          waits)))
                             ((stall) (step '() waits))
-                            ((bare-close) (step (cdr steps) waits)))
-                          (begin
+                            ((bare-close end-early) (step (cdr steps) waits)))
+                          (let ((waits (if (or (stalls? script) (closes-bare? script) (ends-early? script))
+                                           waits
+                                           (cons (wait (lambda () (and (= (collector-count delivered)
+                                                                          (collector-count sent))
+                                                                       (answered?))))
+                                                 waits))))
                             (unless (stalls? script) (client-shut! cl))
                             (reverse (cons (wait (lambda () (and closed (not (eq? (client-end cl) 'open)))))
                                            waits)))))
@@ -581,7 +631,7 @@
 ;; --- the fake shell -----------------------------------------------------------
 
 ;; replay :
-;;   Limits Boolean Boolean (Listof (Pair Nat Event)) (Listof Nat) -> (values FakeShell (Listof Entry))
+;;   Limits Boolean Boolean (Listof (List* Nat Nat Event)) (Listof Nat) -> (values FakeShell (Listof Entry))
 ;; The libuv shell's events given to a fake connection under the same
 ;; limits, made on credit if the libuv shell was (M6.2), its handler
 ;; waiting if the libuv shell's did (`waits?`, the coroutine shell's), and
@@ -594,7 +644,9 @@
 ;; code ended a wait, the fake's wait ended, its timer fired or its lookup
 ;; answered as the libuv shell's was (THE WAITS' MARKS).  Then whatever the
 ;; fake still has waiting.  Its writes are dated at `writes`, the instants
-;; the libuv shell's were, in order (ONE CLOCK).  Answers the fake and its
+;; the libuv shell's were, in order (ONE CLOCK).  The fake is held, and
+;; drained where the libuv shell's turns began (THE TURNS), then let go to
+;; drain as it will once the events are given.  Answers the fake and its
 ;; trace, in order.  A client the libuv shell never adopted has no events,
 ;; and its fake is made at 0.  Whatever raises while the fake takes an
 ;; event, a bug in the core or in the fake, is recorded in its trace as
@@ -605,15 +657,21 @@
 ;; that answers a waiting handler at once makes (M7.3).
 (define (replay limits on-credit? waits? events writes)
   (let* ((seen '())
+         (last-turn #f)
          (fake (make-fake-connection limits (if waits? (waiting handler) handler)
                                      (lambda (kind datum)
                                        (set! seen (cons (list kind (render datum)) seen)))
                                      (or adopted-at 0)
                                      on-credit?)))
     (fake-shell-date-writes! fake writes)
+    (fake-shell-hold! fake #t)
     (for-each (lambda (e)
-                (let ((event (cdr e)))
+                (let ((event (cddr e)))
                   (guard (x (#t (set! seen (cons (list 'raised (render event) (render x)) seen))))
+                    ;; A turn's drain comes after the last turn's events,
+                    ;; at their time, before this event's.
+                    (do ((k (or last-turn (cadr e)) (+ k 1))) ((>= k (cadr e))) (fake-shell-schedule! fake))
+                    (set! last-turn (cadr e))
                     (fake-shell-advance! fake (- (car e) (fake-shell-now fake)))
                     (case (car event)
                       ((bytes-arrived eof read-error) (fake-shell-deliver! fake event))
@@ -639,6 +697,8 @@
                       (else (values))))))
               events)
     (guard (x (#t (set! seen (cons (list 'raised 'settling (render x)) seen))))
+      (fake-shell-hold! fake #f)
+      (fake-shell-schedule! fake)
       (fake-shell-settle! fake))
     (values fake (reverse seen))))
 
@@ -663,7 +723,7 @@
       (check name "the libuv shell read what the client sent, then its end alone, and closed"
              (list 'identical (if (or (stalls? script) (closes-bare? script)) '() '(eof)) 'satisfied)
              (list (compare-bytes sent (collector-bytes delivered))
-                   (map car (filter (lambda (e) (memq (car e) '(eof read-error))) (map cdr evs)))
+                   (map car (filter (lambda (e) (memq (car e) '(eof read-error))) (map cddr evs)))
                    finished))
       ;; compare-bytes names the first byte that differs, the fake's then
       ;; the client's: (differs-at index fake libuv).
@@ -673,7 +733,17 @@
       (check name "the two shells' traces are identical"
              'identical
              (first-difference libuv fake-trace))
+      (unless (or (stalls? script) (closes-bare? script) (ends-early? script)
+                  (positive? (bytevector-length (client-bytes cl))))
+        (set! unanswered (cons name unanswered)))
       (cons (client-bytes cl) libuv))))
+
+;; unanswered : (Listof String) — the scripts whose client waited for its
+;; answers and read no byte of one, newest first (THE CLIENT'S END): the two
+;; shells would then agree on nothing written, and the script check nothing
+;; of an answer.  A byte, not a whole response: a close-delimited body ends
+;; only with the close.
+(define unanswered '())
 
 ;; THE ORDER ROW (the brief's exit; plan §14, M7.3).  Through the libuv
 ;; shell, a handler awaiting uv-getaddrinfo! inside a pipelined connection
@@ -778,33 +848,44 @@
       ;; item 4); the socket lane holds the libuv shell to it.  No script can
       ;; close a connection while a call waits, so the fake is held to it
       ;; here, alone: a reader whose piece sleeps, its end's call behind it,
-      ;; the connection closed by a read's error meanwhile.  Its sleep ends,
-      ;; once; the piece's credit is dropped, and the end is never called.
-      (test-equal "a fake connection closed while a waiting call sleeps drops that call's answer and makes no more"
-                  '(1 end-not-called ())
-                  (let* ((ended #f)
-                         (seen '())
-                         (fake (make-fake-connection
-                                default-limits
-                                (lambda (req)
-                                  (awaiting
-                                   (lambda ()
-                                     (read-body (lambda (bv start end) (slept 5))
-                                                (lambda () (set! ended #t)
-                                                  (make-response 200 #f '() (b "ended")))))))
-                                (lambda (kind datum) (set! seen (cons (cons kind (car datum)) seen))))))
-                    (set! received '())
-                    (let ((post (b "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")))
-                      (fake-shell-deliver! fake (list 'bytes-arrived post 0 (bytevector-length post))))
-                    (set! seen '())
-                    (fake-shell-deliver! fake '(read-error ECONNRESET))
-                    (fake-shell-advance! fake 10)
-                    (fake-shell-fire-waits! fake)
-                    (fake-shell-settle! fake)
-                    (list (length (filter (lambda (e) (equal? (cdr e) '(woke timer))) received))
-                          (if ended 'end-called 'end-not-called)
-                          (filter (lambda (e) (memq (cdr e) '(body-credit handler-responded handler-failed)))
-                                  (reverse seen)))))
+      ;; the connection closed by the shell meanwhile, as at a drain's
+      ;; deadline, which the core hears as a read's error, ECANCELED.  Its
+      ;; sleep ends, once; the piece's credit is dropped, and the end is
+      ;; never called.  A close the client makes ends the wait at once
+      ;; (decision 0020; the next check).
+      (let ((closed-while-sleeping
+             (lambda (errno)
+               (let* ((ended #f) (told #f) (seen '())
+                      (fake (make-fake-connection
+                             default-limits
+                             (lambda (req)
+                               (awaiting
+                                (lambda ()
+                                  (read-body (lambda (bv start end)
+                                               (guard (e ((client-closed? e) (set! told #t) (raise e)))
+                                                 (slept 5)))
+                                             (lambda () (set! ended #t)
+                                               (make-response 200 #f '() (b "ended")))))))
+                             (lambda (kind datum) (set! seen (cons (cons kind (car datum)) seen))))))
+                 (set! received '())
+                 (let ((post (b "POST /x HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")))
+                   (fake-shell-deliver! fake (list 'bytes-arrived post 0 (bytevector-length post))))
+                 (set! seen '())
+                 (fake-shell-deliver! fake (list 'read-error errno))
+                 (fake-shell-advance! fake 10)
+                 (fake-shell-fire-waits! fake)
+                 (fake-shell-settle! fake)
+                 (list (length (filter (lambda (e) (equal? (cddr e) '(woke timer))) received))
+                       (if ended 'end-called 'end-not-called)
+                       (filter (lambda (e) (memq (cdr e) '(body-credit handler-responded handler-failed)))
+                               (reverse seen))
+                       (if told 'told 'not-told))))))
+        (test-equal "a fake connection closed while a waiting call sleeps drops that call's answer and makes no more"
+                    '(1 end-not-called () not-told)
+                    (closed-while-sleeping 'ECANCELED))
+        (test-equal "a fake connection the client resets while a waiting call sleeps ends that wait with &client-closed, drops its answer and makes no more"
+                    '(0 end-not-called () told)
+                    (closed-while-sleeping 'ECONNRESET)))
       (let ((port (shell-listen! shell "127.0.0.1" 0)))
         (for-each (lambda (script)
                     (set! direct (cons (cons script (check-script! shell port default-limits #f #f script))
@@ -831,6 +912,12 @@
                                   (check-script! coroutine port default-limits #f #t script)))
                   scripts))
 
+      (for-each (lambda (name)
+                  (let ((p (current-error-port)))
+                    (put-string p (string-append "CONTRACT UNANSWERED " name "\n"))
+                    (flush-output-port p)))
+                (reverse unanswered))
+      (test-equal "every script whose client waits for its answers read an answer" '() (reverse unanswered))
       (let ((shells (list shell quick on-credit coroutine)))
         (for-each shell-shutdown! shells)
         (test-equal "at the end, no connection is left, and no handle on the loop" '(() () () () ())
