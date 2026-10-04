@@ -2,7 +2,8 @@
 #
 # Dependencies are pinned git submodules under vendor/ (global-constraints):
 # chez-libuv, chez-httparse, uriparse, and chez-srfi for the SRFI-64 test
-# framework; byte-machine arrives transitively under chez-httparse.  The
+# framework; byte-machine arrives transitively under chez-httparse; vtest2,
+# the black-box lane's client, is built from its pin (decision 0017).  The
 # *_PIN lines below name each commit and its tag.  `make build` assembles them
 # onto one library path.  A pin is
 # a gitlink; `make check-pins` is the fingerprint check the brief's M0 asks for.
@@ -17,12 +18,14 @@ HTTPARSE_DIR     := vendor/chez-httparse
 URIPARSE_DIR     := vendor/uriparse
 SRFI_DIR         := vendor/chez-srfi
 BYTE_MACHINE_DIR := $(HTTPARSE_DIR)/vendor/byte-machine
+VTEST_DIR        := vendor/vtest2
 
 LIBUV_PIN        := d46654c64f123a6bb861de4cc0e100152cc4d295  # v0.7.3
 HTTPARSE_PIN     := 0b7058eeb9ccda767be4d20db207b4d3d6fe763f  # v0.4.5
 URIPARSE_PIN     := 5ecd88faefc66965361da2b701a78337c672fc68  # v0.6.2
 SRFI_PIN         := 7879b527f267f067416552fb989135ad1b4ea436
 BYTE_MACHINE_PIN := c338a576f2166ada18c02ac0740afeb4ae4b0ea8  # v0.7.0
+VTEST_PIN        := 803dcd000b1328f6e766774e23aedbd7f53e7d97  # last
 
 # --- one library path --------------------------------------------------------
 # chez-libuv locates its C shim by an absolute path baked into a generated
@@ -58,7 +61,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps build dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh
+.PHONY: help check-help submodules deps build vtest dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -73,7 +76,7 @@ check-help: ## Fail if any .PHONY target is undocumented in `make help`
 	exit $$missing
 
 submodules: ## Init the pinned dependency submodules (top-level + byte-machine)
-	git submodule update --init $(LIBUV_DIR) $(URIPARSE_DIR) $(SRFI_DIR)
+	git submodule update --init $(LIBUV_DIR) $(URIPARSE_DIR) $(SRFI_DIR) $(VTEST_DIR)
 	git submodule update --init --recursive $(HTTPARSE_DIR)
 
 check-pins: ## Verify each submodule sits at its pinned commit (fingerprint check)
@@ -88,11 +91,12 @@ check-pins: ## Verify each submodule sits at its pinned commit (fingerprint chec
 	check_pin $(URIPARSE_DIR) $(URIPARSE_PIN); \
 	check_pin $(SRFI_DIR) $(SRFI_PIN); \
 	check_pin $(BYTE_MACHINE_DIR) $(BYTE_MACHINE_PIN); \
+	check_pin $(VTEST_DIR) $(VTEST_PIN); \
 	nested=$$(git -C $(URIPARSE_DIR) rev-parse HEAD:vendor/byte-machine 2>/dev/null); \
 	if [ "$$nested" != "$(strip $(BYTE_MACHINE_PIN))" ]; then \
 	  echo "PIN MISMATCH: $(URIPARSE_DIR) was released with byte-machine $${nested:-<absent>}, the library path carries $(strip $(BYTE_MACHINE_PIN))" >&2; fail=1; \
 	else echo "pin ok: $(URIPARSE_DIR) was released with byte-machine $$nested"; fi; \
-	for d in $(LIBUV_DIR) $(HTTPARSE_DIR) $(URIPARSE_DIR) $(SRFI_DIR) $(BYTE_MACHINE_DIR); do \
+	for d in $(LIBUV_DIR) $(HTTPARSE_DIR) $(URIPARSE_DIR) $(SRFI_DIR) $(BYTE_MACHINE_DIR) $(VTEST_DIR); do \
 	  if [ -n "$$(git -C $$d status --porcelain --untracked-files=no 2>/dev/null)" ]; then \
 	    echo "PIN DIRTY: $$d has local edits to tracked files" >&2; fail=1; fi; \
 	done; \
@@ -156,6 +160,19 @@ deps: submodules ## Build the chez-libuv shim and link SRFI-64 onto the path
 build: deps ## Build dependencies and assemble the one library path
 	@echo "build: chez-libuv shim built; library path = $(LIBDIRS)"
 
+# vtest2 (decision 0017) is built out of its tree by tests/build-vtest.sh, from
+# the pinned commit's own files, into build/vtest; build/vtest.pin names the
+# commit it was built from, and a binary built from any other is rebuilt.  The
+# script, not $(MAKE), runs its build, so `make -n` prints it and runs nothing.
+# VTEST, in the environment or on the command line, names another vtest for
+# tests/test-clients.sps; `make test` then builds none.
+VTEST_BIN := $(BUILD_DIR)/vtest
+VTEST_BUILD := $(BUILD_DIR)/vtest2
+VTEST_COMMIT := $(strip $(VTEST_PIN))
+
+vtest: submodules ## Build vtest2, the black-box lane's .vtc client, at its pin into build/vtest
+	@sh tests/build-vtest.sh $(VTEST_DIR) $(VTEST_COMMIT) $(VTEST_BUILD) $(VTEST_BIN)
+
 dev: build ## Start a REPL with everything on the library path
 	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ)
 
@@ -163,9 +180,14 @@ run: build ## Run a program on the library path: make run PROGRAM=hello.sps
 	@test -n "$(PROGRAM)" || { echo "run: set PROGRAM=path/to/program.sps" >&2; exit 2; }
 	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ) --program $(PROGRAM)
 
+# A vtest that does not build stops no suite but the clients suite, which
+# names it (status 2): vtest2 builds on POSIX systems only (decision 0017).
 test: build check-pins check-imports ## Run every tests/test-*.sps (status 0/1/2/3, keep-going)
 	@test -n "$(TESTS)" || { echo "test: empty selection — no tests/test-*.sps (failure)" >&2; exit 2; }
 	@test -n "$(TIMEOUT_BIN)" || echo "note: no timeout(1) on PATH; a hung suite will not be capped"
+	@if [ -n "$${VTEST:-}" ]; then echo "test: VTEST names the vtest to run, $$VTEST"; \
+	else sh tests/build-vtest.sh $(VTEST_DIR) $(VTEST_COMMIT) $(VTEST_BUILD) $(VTEST_BIN) || \
+	  echo "test: vtest did not build; the clients suite will name it (decision 0017)" >&2; fi
 	@fail=0; \
 	for t in $(TESTS); do \
 	  echo "=== $$t ==="; \

@@ -49,10 +49,14 @@ Prerequisites:
   ~apt install libuv1-dev~), plus a C compiler — the chez-libuv shim is built
   from source; CMake 3.26+ is only needed if libuv falls back to its vendored
   build
+- For ~make test~, the real clients the tests run against the server: *curl*,
+  *ab* (~apache2-utils~ on Linux), and vtest2, which ~make vtest~ builds from
+  source with *pcre2* that ~pkg-config~ can see and *zlib* (~brew install
+  pcre2~ or ~apt install libpcre2-dev zlib1g-dev~), *python3* and *awk*
 
 Dependencies are pinned git submodules under ~vendor/~ (chez-libuv,
-chez-httparse, uriparse, and chez-srfi for the tests; byte-machine arrives
-under chez-httparse):
+chez-httparse, uriparse, chez-srfi and vtest2 for the tests; byte-machine
+arrives under chez-httparse):
 
 #+begin_src sh
 git clone --recursive https://github.com/Kiyomi-Computation-Systems/chez-http-server.git
