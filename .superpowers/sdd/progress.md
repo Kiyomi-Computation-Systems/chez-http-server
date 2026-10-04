@@ -4601,3 +4601,112 @@ of the robustness lane's), every pin ok.
 NEXT: step 1's PR, as decided; then the strictness lane (Kestrel, httpd,
 lighttpd), then the black-box lane (curl, vtest2), each its own PR, with a
 decision record for vtest2.
+
+### The second step: the strictness lane (feat/m8.3-strictness, on #112)
+
+Stacked on #112, since it vendors through `tests/vendor-corpus.sh` and checks
+provenance through `tests/provenance.sls`.
+
+DECIDED on the owner's word (2026-10-04), by form, after measuring each rule on
+the three corpora (refused-or-served class, the current core):
+- "Complete them into heads": Kestrel and httpd send a bare request line and
+  answer as they read it, where this server answers once a head ends, so a
+  request that ends in CRLF and holds no empty line gets one CRLF more and its
+  line is judged; the vendored bytes untouched. Measured: Kestrel 207/214 and
+  httpd 68/77 agree that way, against 202/214 and 67/77 as sent, where 12 and 2
+  cases end unanswered. Weighed: "Deliver as each source sends".
+- "Its two HTTP sections": lighttpd's "Basic Request-Handling" and
+  "keep-alive", 41 of request.t's 151 blocks, picked by the file's own
+  headings; the rest test lighttpd's modules. Weighed: all 151 with the module
+  sections deferred, and dropping lighttpd.
+
+Found while building:
+- Kestrel's `RequestLineInvalidData` appends every non-token method as an
+  HTTP/1.0 line (`.Concat(MethodWithNonTokenCharData.Select(...))`): the
+  scratch measurement scraped that interpolated string as a row (91, not 90)
+  and missed the 24 lines it builds. Two more tables append (`MethodWith...`,
+  `TargetWithNullCharData`). The reader reads each table's rows and its tail;
+  the lane ports the three appends, with a check that each tail still reads as
+  ported.
+- httpd's harness reads an undef strict expectation as the lenient one (`$expect
+  = $t->[1] if (! defined $expect)`): row 41's is 90, not undef. The reader
+  does the same, checked on row 41.
+- The suite's refusal check found httpd's reader taking any word in an
+  expectation slot as a build condition: only the third value may be one now.
+
+New:
+- `tests/kestrel-corpus.sls`, `tests/httpd-corpus.sls`,
+  `tests/lighttpd-corpus.sls`: each reads its vendored file as data, never
+  compiled or run, refusing any shape it does not know. httpd's 88 rows and
+  lighttpd's 41 blocks were checked in scratch against Perl's own reading of
+  the files (the tables evaluated, the test run with a stub harness):
+  identical. Kestrel's eleven tables read at the survey's counts.
+- `(strictness-lane)` and `tests/test-strictness-lane.sps`: 355 cases (Kestrel
+  237, httpd 77, lighttpd 41), each held to its source's refused-or-served
+  verdict or to a listed departure, gated both ways (22 departures, ten
+  reasons), and chunk-invariant at the corpus lanes' sizes.
+- `test/vendor/kestrel/`, `test/vendor/httpd-tests/`, `test/vendor/lighttpd/`,
+  vendored by `tests/vendor-corpus.sh` (`KESTREL_ROOT=`, `HTTPD_TESTS_ROOT=`,
+  `LIGHTTPD_ROOT=`).
+
+Measured on the tree (2026-10-04, Darwin arm64): `make test` green, fifty
+suites, 1,863 expected passes (1,848 + the strictness lane's 15). The lane runs
+709 deliveries by default and 14,420 under CORPUS=full, in about 0.6 s.
+
+Watched to fail (m8-mutations.md, M8.3, the second step): fifteen mutants,
+every one loading and reddening the strictness suite alone; one, M8S-L1, first
+missed the end-to-end check, which moved to a three-line block.
+
+
+REVIEWED (2026-10-04): a `/code-review high` of the second step found ten.
+DECIDED on the owner's word, by form: "Fix all ten" (weighed: fixing 1-4, 6
+and 7 and noting 8-10; fixing 1-4 only).
+1. A listed departure was held only to differ from its source's verdict, so it
+   could move to a third outcome unnoticed (httpd row 50, unanswered, could have
+   become served). Each departure now carries this server's own verdict, which
+   the lane holds it to; a check lists row 50 with a verdict it does not give and
+   reads a mismatch.
+2. `tests/vendor-corpus.sh` removed the vendored corpus before listing the
+   checkout's files: a checkout missing one (a sparse one, a wrong root) left the
+   corpus deleted. Witnessed by hand in a scratch copy (exit 1, the directory
+   emptied); it now lists and checks every file first (exit 2, named, the corpus
+   as it was), and a good checkout still vendors byte-identically.
+3. Completion touched header sections ended by CRLF too, and the form's figures
+   were measured on a scraped reading of Kestrel's tables (one table's appended
+   rows missed). Only a bare request line, one line ended by CRLF, is completed
+   now, as the decision says: 136 of Kestrel's cases, 2 of httpd's. Agreement, the
+   lane's own: Kestrel 230 of 237, httpd 70 of 79, lighttpd 35 of 41.
+4. httpd's two rows gated on its version (`$test_underscore`, a fix level), whose
+   expectation holds for any server, were left out with the one gated on a module:
+   only `have_module` rows are left out now, and both rows agree (79 cases).
+5. lighttpd's statuses outside the refusal list count as served: a 500 or 502 is
+   the server's answer to a request it accepted, as this server's handler accepts
+   it. The comment says so now; nothing else changed.
+6. Kestrel's reader would have taken the next table's rows for one whose array
+   opens on its constructor's line: it refuses that now, checked on a snippet.
+7. A Kestrel row past ASCII ended the suite with a harness error: the reader
+   refuses it by name now, checked on a snippet.
+8. Each reader re-read its file at every call: each reads it once a process.
+9. Six copies of the same string helpers: one library, `(corpus-text)`, which the
+   five readers and `(provenance)` import.
+10. The two lanes repeated the delivery schedule and its loop: one library,
+   `(corpus-scan)` (the selection, the sizes, the invariance check), which both
+   lanes and both suites use.
+
+Each behaviour fix's check was watched red first (1, 3, 4, 6, 7); 2 by hand.
+
+Found by the mutants' re-run: the strictness suite verified provenance inside a
+check's expression, so a provenance failure ended it with exit 1, not 3; it is
+verified outside the check now, as the robustness suite does.
+
+Measured on the fixed tree (2026-10-04, Darwin arm64): `make test` green, fifty
+suites, 1,865 expected passes (the strictness lane's 17: the departure-verdict
+and the Kestrel snippets' checks added). The lane: 357 cases, 713 deliveries by
+default, 14,467 under CORPUS=full.
+
+Watched to fail (m8-mutations.md, M8.3, the second step's review): thirty-three
+mutants on the fixed tree, every one loading and reddening a suite; one,
+M8R-P1, gave the strictness suite exit 1, which found the defect above.
+
+NEXT: step 2's PR, stacked on #112, as decided; then the black-box lane (curl,
+vtest2), with a decision record for vtest2.

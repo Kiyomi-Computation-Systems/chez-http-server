@@ -1619,6 +1619,17 @@ black-box lane.
   which of its cases reach the handler is a serve manifest written from RFC 9112 and
   gated both ways, and no Severe case may be in it (guardian's own contract). The
   survey's "668 cases" counted header rows: the corpus has 162.
+- **The strictness lane's oracle is its sources'** (step 2): Kestrel, httpd and lighttpd
+  are origin servers, so each case is held to its source's refused-or-served verdict,
+  or to a listed departure pinned to this server's own verdict, with its reason, gated
+  both ways; exact statuses are not compared. Decided by form: a bare request line,
+  one line ended by CRLF, which Kestrel and httpd answer as they read it, is completed
+  into a head so its line is judged ("Complete them into heads": 136 of Kestrel's cases
+  and 2 of httpd's), and lighttpd joins by its two HTTP sections, 41 of 151 blocks
+  ("Its two HTTP sections"). The form's agreement figures were measured on a scraped
+  reading of Kestrel's tables that missed one table's appended rows; the lane's own:
+  Kestrel 230 of 237, httpd 70 of 79, lighttpd 35 of 41, 22 departures. Step 2's
+  review found ten, all fixed on the owner's word ("Fix all ten").
 
 **M8.4 — load, and the release.**
 - oha's load smoke gives the first throughput numbers. That is where 0002's amendment

@@ -19,6 +19,24 @@ case "$name" in
     var=GUARDIAN_ROOT license="Apache-2.0 (LICENSE and NOTICE beside this file)"
     suite=tests/test-robustness-lane.sps
     files="LICENSE NOTICE tests/README.md tests/*.yaml" ;;
+  kestrel)
+    what="ASP.NET Core Kestrel HTTP/1 parsing tables"
+    url=https://github.com/dotnet/aspnetcore ref=main
+    var=KESTREL_ROOT license="MIT (LICENSE.txt beside this file)"
+    suite=tests/test-strictness-lane.sps
+    files="LICENSE.txt src/Servers/Kestrel/shared/test/HttpParsingData.cs" ;;
+  httpd-tests)
+    what="Apache httpd-tests http_strict.t request table"
+    url=https://github.com/apache/httpd-tests ref=trunk
+    var=HTTPD_TESTS_ROOT license="Apache-2.0 (LICENSE and NOTICE beside this file)"
+    suite=tests/test-strictness-lane.sps
+    files="LICENSE NOTICE t/apache/http_strict.t" ;;
+  lighttpd)
+    what="lighttpd request.t request blocks"
+    url=https://github.com/lighttpd/lighttpd1.4 ref=master
+    var=LIGHTTPD_ROOT license="BSD-3-Clause (COPYING beside this file)"
+    suite=tests/test-strictness-lane.sps
+    files="COPYING tests/request.t" ;;
   *)
     echo "vendor-corpus.sh: no corpus named '$name'" >&2
     exit 2 ;;
@@ -32,10 +50,15 @@ sha() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'
 }
 
+# The globs expand inside the checkout, in C order, and every file must be
+# there before the vendored copy is touched: a checkout missing one leaves
+# the corpus as it was.
+listed=$(cd "$root" && ls -1d $files) || { echo "vendor-corpus.sh: $root lacks a file of $name" >&2; exit 2; }
+for f in $listed; do
+  test -f "$root/$f" || { echo "vendor-corpus.sh: $root/$f is no file" >&2; exit 2; }
+done
 rm -rf "${dst:?}"
 mkdir -p "$dst"
-# The globs expand inside the checkout, in C order.
-listed=$(cd "$root" && ls -1d $files)
 for f in $listed; do
   mkdir -p "$dst/$(dirname "$f")"
   cp "$root/$f" "$dst/$f"

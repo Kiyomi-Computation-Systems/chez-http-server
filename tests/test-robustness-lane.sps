@@ -10,8 +10,8 @@
 ;;; serve manifest, gated both ways.  The handler reads any body it is given
 ;;; and answers 200, as the outcome lane's does.
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) getenv)
         (sha256)                         ; FIPS 180-4 calibration
+        (corpus-scan)                    ; corpus-selection, delivery-sizes
         (provenance)                     ; verify-provenance!
         (guardian-corpus)
         (robustness-lane))
@@ -23,8 +23,7 @@
 
 ;; The delivery sizes, as the corpus lanes take them: size 1 and the whole
 ;; input, unless CORPUS=full asks for every size (decision 0007).
-(define selection
-  (let ((v (getenv "CORPUS"))) (if (and (string? v) (string=? v "full")) 'full 'extremes)))
+(define selection (corpus-selection))
 
 ;; diag : String -> Void — a line to standard error.
 (define (diag line)
@@ -119,7 +118,9 @@
                                      (let ((m (robustness-mismatch c selection)))
                                        (and m (cons (guardian-short-id c) m))))
                                    cases))
-           (runs (fold-left (lambda (acc c) (+ acc 1 (length (robustness-sizes c selection)))) 0 cases)))
+           (runs (fold-left (lambda (acc c)
+                              (+ acc 1 (length (delivery-sizes (bytevector-length (guardian-case-request c)) selection))))
+                            0 cases)))
       (diag (string-append "robustness-lane: selection=" (symbol->string selection)
                            " runs=" (number->string runs)))
       ;; The schedule is the corpus lanes': two runs a case by default, size 1

@@ -190,13 +190,16 @@ clean: ## Remove our build artifacts and the vendored shim
 # (decision 0007). The initial vendor and every refresh run this one recipe, so
 # a refresh cannot drift from however the first copy was made; each source
 # checkout is named here, never committed, and only the corpora named are
-# refreshed. tests/test-libhtp.sps and tests/test-robustness-lane.sps
-# re-checksum every file on each run, so a stale or corrupt vendor is a
-# status-3 failure. M8.3's corpus is vendored by tests/vendor-corpus.sh;
+# refreshed. tests/test-libhtp.sps, tests/test-robustness-lane.sps and
+# tests/test-strictness-lane.sps re-checksum every file on each run, so a stale or corrupt vendor is a
+# status-3 failure. M8.3's corpora are vendored by tests/vendor-corpus.sh;
 # libhtp's recipe is M1.3's, below.
-corpus-refresh: ## Re-vendor a test corpus from a checkout: LIBHTP_ROOT or GUARDIAN_ROOT=/path
-	@test -n "$(LIBHTP_ROOT)$(GUARDIAN_ROOT)" || { echo "corpus-refresh: set LIBHTP_ROOT or GUARDIAN_ROOT to a checkout" >&2; exit 2; }
+corpus-refresh: ## Re-vendor a test corpus from a checkout: LIBHTP_ROOT, GUARDIAN_ROOT, KESTREL_ROOT, HTTPD_TESTS_ROOT or LIGHTTPD_ROOT=/path
+	@test -n "$(LIBHTP_ROOT)$(GUARDIAN_ROOT)$(KESTREL_ROOT)$(HTTPD_TESTS_ROOT)$(LIGHTTPD_ROOT)" || { echo "corpus-refresh: set LIBHTP_ROOT, GUARDIAN_ROOT, KESTREL_ROOT, HTTPD_TESTS_ROOT or LIGHTTPD_ROOT to a checkout" >&2; exit 2; }
 	@if [ -n "$(GUARDIAN_ROOT)" ]; then sh tests/vendor-corpus.sh http-desync-guardian "$(GUARDIAN_ROOT)"; fi
+	@if [ -n "$(KESTREL_ROOT)" ]; then sh tests/vendor-corpus.sh kestrel "$(KESTREL_ROOT)"; fi
+	@if [ -n "$(HTTPD_TESTS_ROOT)" ]; then sh tests/vendor-corpus.sh httpd-tests "$(HTTPD_TESTS_ROOT)"; fi
+	@if [ -n "$(LIGHTTPD_ROOT)" ]; then sh tests/vendor-corpus.sh lighttpd "$(LIGHTTPD_ROOT)"; fi
 	@test -z "$(LIBHTP_ROOT)" || { test -f "$(LIBHTP_ROOT)/LICENSE" && test -d "$(LIBHTP_ROOT)/test/files"; } || { echo "corpus-refresh: LIBHTP_ROOT has no LICENSE or test/files" >&2; exit 2; }
 	@test -n "$(LIBHTP_ROOT)" || exit 0; \
 	dst=test/vendor/libhtp; \

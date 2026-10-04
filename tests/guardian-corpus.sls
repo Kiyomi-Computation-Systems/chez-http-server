@@ -30,7 +30,8 @@
           guardian-case-uri guardian-case-method guardian-case-version
           guardian-case-headers guardian-case-request
           guardian-parse-error? guardian-parse-error-detail)
-  (import (rnrs) (only (chezscheme) directory-list))
+  (import (rnrs) (only (chezscheme) directory-list)
+          (only (corpus-text) split strip-cr index-of suffix?))
 
   ;; guardian-dir : String — where the corpus is vendored.
   (define guardian-dir "test/vendor/http-desync-guardian")
@@ -58,11 +59,20 @@
 
   ;; guardian-file-cases : String -> (Listof GuardianCase)
   ;; The cases of one file, by its name, in order; each's id is "file#n".
+  ;; Each file is read once a process.
   (define (guardian-file-cases file)
-    (let* ((port (open-file-input-port (string-append guardian-dir "/tests/" file)))
-           (text (utf8->string (get-bytevector-all port))))
-      (close-port port)
-      (parse-cases file text)))
+    (cond
+     ((assoc file read-files) => cdr)
+     (else
+      (let* ((port (open-file-input-port (string-append guardian-dir "/tests/" file)))
+             (text (utf8->string (get-bytevector-all port))))
+        (close-port port)
+        (let ((cases (parse-cases file text)))
+          (set! read-files (cons (cons file cases) read-files))
+          cases)))))
+
+  ;; The files read so far, with their cases.
+  (define read-files '())
 
   ;; guardian-parse-text : String String -> (Listof GuardianCase)
   ;; The cases of `text`, named `file` in refusals: for a test that feeds a
@@ -311,17 +321,6 @@
 
   ;; --- text -------------------------------------------------------------------
 
-  (define (split s ch)
-    (let ((n (string-length s)))
-      (let loop ((i 0) (start 0) (acc '()))
-        (cond ((= i n) (reverse (cons (substring s start n) acc)))
-              ((char=? (string-ref s i) ch) (loop (+ i 1) (+ i 1) (cons (substring s start i) acc)))
-              (else (loop (+ i 1) start acc))))))
-
-  (define (strip-cr s)
-    (let ((n (string-length s)))
-      (if (and (> n 0) (char=? (string-ref s (- n 1)) #\return)) (substring s 0 (- n 1)) s)))
-
   (define (leading-spaces s)
     (let loop ((i 0)) (if (and (< i (string-length s)) (char=? (string-ref s i) #\space)) (loop (+ i 1)) i)))
 
@@ -329,10 +328,4 @@
     (let loop ((end (string-length s)))
       (if (and (> end 0) (char=? (string-ref s (- end 1)) #\space)) (loop (- end 1)) (substring s 0 end))))
 
-  (define (index-of s ch)
-    (let loop ((i 0))
-      (cond ((= i (string-length s)) #f) ((char=? (string-ref s i) ch) i) (else (loop (+ i 1))))))
-
-  (define (suffix? suf s)
-    (let ((n (string-length s)) (m (string-length suf)))
-      (and (>= n m) (string=? (substring s (- n m) n) suf)))))
+)

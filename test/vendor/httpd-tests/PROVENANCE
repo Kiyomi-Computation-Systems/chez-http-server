@@ -1,0 +1,19 @@
+# PROVENANCE -- the vendored Apache httpd-tests http_strict.t request table (decision 0007).
+#
+# Upstream's bytes, verbatim and never hand-edited: a case we believe is
+# wrong becomes an expectation and a decision record, never a change to these
+# bytes. Every file is checksummed below and verified by tests/test-strictness-lane.sps
+# on every run, so drift or corruption is a status-3 failure, not a discovery.
+# Rewritten only by 'make corpus-refresh HTTPD_TESTS_ROOT=<checkout>'.
+#
+# httpd-tests is Apache-2.0 (LICENSE and NOTICE beside this file). This is test data; it is
+# not part of the distributed library.
+upstream-url: https://github.com/apache/httpd-tests
+upstream-ref: trunk
+upstream-commit: 4c187f27ecbf498a28c5a1c9b4de5873a8ad1ca4
+retrieved: 2026-10-04
+file-count: 3
+
+sha256 60afeb7ff9b301c2e9b8ca1dee1aaffa4ad02c640f4037fb89aa2001700b04fc LICENSE
+sha256 81af3ed19f0978e8200cacf3a69450e04dc299ed85fbc8e4f31bdb9b38a1d73f NOTICE
+sha256 cf7a1e5def093a0786911daf5525ad6f7ad30222896e6883b587a54aa60982c7 t/apache/http_strict.t
