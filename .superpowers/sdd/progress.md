@@ -5110,3 +5110,14 @@ NEXT: plan §14's open list (two items: 0004 item 3's alternative, the smuggler 
 - **Impact** (Darwin arm64, `research/spike/m7-exit-budget.sps`, two runs each, alternating): a connection idle after waits holds 1,942 to 1,956 B of heap on 0020's tree against 1,926 to 1,944 B on main, the two fields; after answers at once the readings fall in two bands about 95 B apart on main and the branch alike (`client-closed-budget-small.sps`). No coroutine is left in the heap.
 - **Records.** Decision 0020, new; 0004, 0015 and 0002 amended; design §4.1, §4.3, §5.3 and §7.5 notes; plan M8.4's bullet, and the open list drops the item: the smuggler corpus remains. `docs/handlers.org` and `docs/connections.org`; CHANGELOG.md's Unreleased gains Added and Changed.
 - `make test` green before each commit (Darwin arm64), each layer's tree run whole: the waits, fifty suites, 1,899 expected passes; with the core, 1,934; with the shell, 1,941; every pin ok.
+
+MERGED to main on 2026-10-04, on the owner's "do closing ritual": **a client's close noticed, as three stacked PRs** (the entry above).
+- **#126, the wait library and `&client-closed`,** as b8dc00c. Its squash tree is the tested tip's, cb00c6b's, and its parent is d784013. It kept its branch, since #127 was based on it.
+- **#127, the core reads past a request's end,** as c5973d4. It was retargeted to main and rebased from #126's tip, cb00c6b. The rebased tip, 6b0ec52, has the tested tree (26f72bd's), and so does the squash, whose parent is b8dc00c. It kept its branch, since #128 was based on it.
+- **#128, the libuv shell tells a waiting handler, with the records,** as 9016945. It was retargeted to main and rebased from #127's first tip, 26f72bd. The rebased tip, 84b51ad, has the tested tree (5533109's), and so does the squash, whose parent is c5973d4.
+- **CI.** Each merged on `linux` SUCCESS at its head: #126 on cb00c6b (run 37238709017); #127 on 6b0ec52 (run 37239186462); #128 on 84b51ad (run 37239325116). Each log holds its layer's count: fifty suites, and 1,899, 1,934 and 1,941 expected passes. The first heads of #127 and #128 had passed too (37238711071, 37238712859).
+- **Branches.** All three deleted, local and remote, and refs pruned. No PR is open.
+
+`make test` green on main: fifty suites, 1,941 expected passes, every pin ok.
+
+NEXT: plan §14's open list (one item: the smuggler corpus), a new milestone, or cutting 0.2.0 (Unreleased holds Added, Changed, Removed and Fixed), when the owner asks.
