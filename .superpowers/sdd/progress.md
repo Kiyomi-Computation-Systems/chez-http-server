@@ -5149,3 +5149,12 @@ NEXT: a new milestone, or cutting 0.2.0 (CHANGELOG.md's Unreleased holds Added, 
 - **Not re-measured.** The 0.2.0 section makes no throughput or memory claim, so the load smoke was not run again; the numbers in `[0.1.0]` stay 0.1.0's. Decision 0020 measured its own cost: an idle connection that waited holds about 16 B more, its two new fields.
 - **The tag.** After the merge, once main's run on the squash is green, `v0.2.0` goes on the squash, annotated as v0.1.0's was: "chez-http-server v0.2.0 — a waiting handler is told when its client closes", with a body pointing at CHANGELOG.md. The owner's "cut 0.2.0" asks for it; the merge waits for "do closing ritual".
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,949 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
+
+MERGED to main on 2026-10-04, on the owner's "CI is green, do closing ritual": **v0.2.0's release** (the entry above). ee9e763 was squashed as 1c86771 (tree the tested tip's, parent 27e4d6f).
+- **CI.** Its run, 37242254562, passed on ee9e763: fifty-one suites, 1,949 expected passes on ubuntu-24.04. Main's run on the squash, 37242394595, passed too, with the same counts, before the tag.
+- **Branches.** `--delete-branch` deleted the remote branch and left this checkout on the local one, so main was fast-forwarded and the branch deleted by hand. No PR is open.
+- **TAGGED v0.2.0** on 1c86771, annotated as v0.1.0 was ("chez-http-server v0.2.0 — a waiting handler is told when its client closes", its body pointing at CHANGELOG.md's `[0.2.0]`), and pushed: `git ls-remote --tags` shows the tag object 751d28b and its commit 1c86771. No GitHub Release, as for v0.1.0.
+
+`make test` green on main: fifty-one suites, 1,949 expected passes, every pin ok.
+
+NEXT: a new milestone, when the owner asks. CHANGELOG.md's Unreleased is empty.
