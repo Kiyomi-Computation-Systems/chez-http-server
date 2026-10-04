@@ -12,7 +12,7 @@
 (library (provenance)
   (export verify-provenance! vendored-files read-file-bytes)
   (import (rnrs) (only (chezscheme) directory-list file-directory?)
-          (sha256) (testing))
+          (only (corpus-text) split) (sha256) (testing))
 
   ;; read-file-bytes : String -> Bytevector — the file's bytes, all of them.
   (define (read-file-bytes path)
@@ -88,14 +88,6 @@
 
   ;; line-fields : String -> (Listof String) — the line's words, split on spaces.
   (define (line-fields line) (filter (lambda (w) (> (string-length w) 0)) (split line #\space)))
-
-  ;; split : String Char -> (Listof String)
-  (define (split s ch)
-    (let ((n (string-length s)))
-      (let loop ((i 0) (start 0) (acc '()))
-        (cond ((= i n) (reverse (cons (substring s start n) acc)))
-              ((char=? (string-ref s i) ch) (loop (+ i 1) (+ i 1) (cons (substring s start i) acc)))
-              (else (loop (+ i 1) start acc))))))
 
   ;; filter-map : (a -> (U b #f)) (Listof a) -> (Listof b)
   (define (filter-map f xs)

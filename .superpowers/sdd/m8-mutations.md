@@ -762,3 +762,70 @@ Witnessed by hand, beside these: one more file vendored with its sha256 line
 and the count raised to 14 reddened "PROVENANCE lists LICENSE, NOTICE, the
 README and the ten YAML files", now a `test-eqv` (the review's seventh); and
 the first step's two (a flipped vendored byte, exit 3; a lenient loader).
+
+### The second step: the strictness lane, fifteen mutants
+
+The step adds `(strictness-lane)` and `tests/test-strictness-lane.sps` over
+Kestrel's parsing tables, httpd's `http_strict.t` and lighttpd's `request.t`
+(355 cases), each read by a reader of its own (`tests/kestrel-corpus.sls`,
+`tests/httpd-corpus.sls`, `tests/lighttpd-corpus.sls`). It changes no source
+under `src/`, so each mutant is in the lane or a reader; every one loaded and
+matched once, and each reddened the strictness suite and no other.
+
+| mutant | the edit | the strictness suite's failures |
+|---|---|---|
+| M8S-D1 | a departure dropped (httpd row 15, HTTP/1.2) | the lane: "every case agrees with its source, or departs as listed" |
+| M8S-D2 | a case that agrees listed as a departure (httpd row 1) | the lane |
+| M8S-H1 | httpd's cases take the lenient column, not the strict | the lane |
+| M8S-H2 | httpd's reader keeps an undef strict expectation | "httpd's row 41: the strict host expects what the lenient one does" |
+| M8S-K1 | `RequestLineInvalidData` appends no non-token methods | "the cases: Kestrel 237, httpd 77, lighttpd 41" |
+| M8S-K2 | Kestrel's reader decodes `\r` as LF | the end-to-end requests, the lane |
+| M8S-K3 | the tail check reports every table | "Kestrel's three tables that append others still append as ported" |
+| M8S-C1 | `complete-head` completes nothing | the end-to-end requests, `complete-head`'s own, the lane |
+| M8S-L1 | lighttpd's transform leaves LF unconverted | the end-to-end requests, the lane |
+| M8S-L2 | lighttpd's scope takes a module section too | the counts, lighttpd's and the cases' |
+| M8S-V1 | the verdict counts an interim 100 as a response | the lane |
+| M8S-V2 | the verdict calls an unanswered case served | the lane |
+| M8S-R1 | httpd's reader takes a word as an expectation | "the readers refuse an unknown table, an unknown value, an unknown line" |
+| M8S-R2 | lighttpd's reader skips a line no block shape is | the same |
+| M8S-S1 | the size scan ignores the selection | "the runs are the corpus lanes' schedule" |
+
+M8S-L1 first left the end-to-end check green: its lighttpd case was the first
+block, one line, with no LF inside for the transform to make CRLF. The check
+moved to the third block, three lines, and the re-run above names it.
+
+### The second step's review, and its fixes: thirty-three mutants on the fixed tree
+
+A `/code-review high` found ten, all fixed on the owner's word ("Fix all ten";
+progress.md, M8.3). The fixes touched the first step's files too, shared now:
+`(corpus-text)` for the readers' string helpers and `(corpus-scan)` for the
+delivery sizes both lanes take. So every M8.3 mutant ran again on the fixed
+tree against every suite, the specs re-cut where the fixes changed the text
+they quote: the first step's eleven (the core's four, the robustness lane's
+seven), the second step's fourteen, and eight new. Every one loaded and
+matched once, and every one reddened a suite.
+
+| new mutant | the edit | suites red (failures) |
+|---|---|---|
+| M8C-S1 | the shared schedule ignores the selection (replaces M8R-S1, M8S-S1) | robustness (1), strictness (1): each lane's schedule check |
+| M8C-T1 | the shared `split` drops an empty part | strictness (3): lighttpd's blocks, whose pipelined heredocs hold empty lines |
+| M8C-G6 | guardian's cache returns the first file read, whatever the file | robustness (5) |
+| M8S-D3 | a departure is held only to differ from its source | strictness (1): "a departure listed with a verdict this server does not give is a mismatch" |
+| M8S-C2 | `complete-head` completes a header section ended by CRLF too | strictness (2): `complete-head`'s own, the lane |
+| M8S-H3 | httpd leaves out every gated row, the version-gated ones too | strictness (1): "the cases: Kestrel 237, httpd 79, lighttpd 41" |
+| M8S-K4 | Kestrel's reader takes an array opened on its constructor's line | strictness (1): "Kestrel's reader refuses an array opened on its constructor's line, and a row past ASCII" |
+| M8S-K5 | Kestrel's reader takes a row past ASCII | strictness (1): the same |
+
+Readings the re-run gave:
+- M8R-V1 and M8R-V4 redden the strictness lane too: with HTTP/0.9 or HTTP/2.0
+  served, httpd's rows 41 and 14 agree with httpd and are listed departures.
+- M8C-T1 leaves the robustness lane green: guardian's YAML loader skips empty
+  lines anyway, so the shared `split` dropping them is no fault there.
+- M8R-P1 ended the strictness suite with exit 1, not 3: its `verify-provenance!`
+  ran inside a check's expression, which took the provenance failure for its
+  own. Moved out of the check, as the robustness suite has it, and re-run: both
+  suites exit 3, the provenance failure the vocabulary names.
+
+Witnessed by hand: the refresh script, run against a checkout without the
+corpus's files, emptied a scratch copy of `test/vendor/kestrel` (exit 1) before
+the fix, and kept it, exit 2 by name, after.

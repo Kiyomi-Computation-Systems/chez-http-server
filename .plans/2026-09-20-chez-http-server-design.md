@@ -2000,6 +2000,10 @@ connection at the corpus lanes' sizes, and held to three properties: a serve man
 written from RFC 9112, gated both ways; no Severe case in it; and chunk invariance.
 libhtp's invalid and HTTP/0.9 streams joined the libhtp lane, found by name. smuggler's
 tables were dropped on the owner's word (plan §14's M8.3 note); hurl too, for vtest2.
+The strictness lane is `tests/test-strictness-lane.sps`: Kestrel's parsing tables,
+httpd's `http_strict.t` and lighttpd's `request.t`, vendored the same way and read as
+data by readers of their own (C#'s string literals, Perl's lists and heredocs), each
+case held to its source's refused-or-served verdict or a listed departure.
 
 ---
 

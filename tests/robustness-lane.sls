@@ -27,13 +27,13 @@
 ;;;   3. CHUNK INVARIANCE.  Each case's outcome is the same however its bytes
 ;;;      are split into reads, as (outcome-lane) gates the llhttp corpus, at
 ;;;      the sizes the corpus lanes share: size 1 and the whole by default,
-;;;      every size under CORPUS=full (corpus-scan-sizes; decision 0007).
+;;;      every size under CORPUS=full ((corpus-scan); decision 0007).
 (library (robustness-lane)
-  (export robustness-outcome robustness-verdict robustness-mismatch robustness-sizes
+  (export robustness-outcome robustness-verdict robustness-mismatch
           served-cases guardian-short-id severe?)
   (import (rnrs)
           (guardian-corpus)
-          (only (httparse test conformance) corpus-scan-sizes)
+          (only (corpus-scan) invariance-fault)
           (only (outcome-lane) outcome-at attempt reads))
 
   ;; served-cases : (Listof String) — the cases the server accepts to the
@@ -117,25 +117,7 @@
             "in served-cases, but refused")
            ((and (not want-served) (eq? verdict 'served))
             "refused by served-cases, but served")
-           (else (chunk-variance c (robustness-sizes c selection) whole))))))))
-
-  ;; robustness-sizes : GuardianCase Symbol -> (Listof Nat)
-  ;; The delivery sizes `selection` schedules for the case, the whole input's
-  ;; aside, which every run takes first.
-  (define (robustness-sizes c selection)
-    (let ((len (bytevector-length (guardian-case-request c))))
-      (filter (lambda (size) (< size len)) (corpus-scan-sizes len #f selection))))
-
-  ;; chunk-variance : GuardianCase (Listof Nat) Datum -> (U #f String)
-  ;; #f when each size gives the whole input's outcome; else which differed.
-  (define (chunk-variance c sizes whole)
-    (let loop ((sizes sizes))
-      (if (null? sizes)
-          #f
-          (let* ((size (car sizes)) (o (attempt (lambda () (robustness-outcome c size)))))
-            (cond ((string? o) (string-append "size " (number->string size) " " o))
-                  ((equal? o whole) (loop (cdr sizes)))
-                  (else (string-append "size " (number->string size) " differs from the whole input")))))))
+           (else (invariance-fault (lambda (size) (robustness-outcome c size)) len whole selection))))))))
 
   ;; --- text -------------------------------------------------------------------
 
