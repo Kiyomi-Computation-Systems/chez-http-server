@@ -1,0 +1,5 @@
+Darwin 25.6.0 arm64, Chez Scheme Version 10.4.1 (tarm64osx), libuv 1.52.1, oha 1.16.0
+round 1, 1 connection: 5,000 GETs 38695424 B in 10032 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25000 193230672 B in 50031 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 7727 B
+round 1, 50 connections: 5,000 GETs 37373680 B in 1104 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25000 184197840 B in 1653 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 7341 B
+round 2, 1 connection: 5,000 GETs 38689648 B in 10030 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25000 193164304 B in 50027 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 7724 B
+round 2, 50 connections: 5,000 GETs 37351200 B in 1038 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25000 184208864 B in 1695 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 7343 B

@@ -439,3 +439,30 @@ NEXT: a new milestone or fix here, when the owner asks. CHANGELOG.md's Unrelease
 - **Measured on this layer**, `hoist-request-alloc.sps`, M8.4's spike turned as `serve` now turns: 8,624 to 8,630 B a GET at one connection, and 8,374 to 8,381 at 50 (`out/hoist-request-alloc.L1.run1.txt`). That is −1,375 and −80 against main. The loop now makes no closure a turn.
 - `make test` green (Darwin arm64): fifty-one suites, 1,961 expected passes.
 - **Rebased** onto 8c04320, once #139 had merged: the branch met main only at this file's end, resolved as main's text followed by this entry. `make test` green again on this layer's rebased tree: fifty-one suites, 1,968 expected passes.
+
+**The guards' hoist, layer 2: one handler for a dispatch and its drain, on `feat/hoist-guards` (2026-10-05),** stacked on layer 1.
+- **Built.**
+  - The outermost dispatch, `dispatch-outermost!`, runs the step and the drain under one `with-exception-handler`. Its handler runs at the raise, before any unwinding: it abandons the drain (`abandon-drain!`), closes the connection and raises again.
+  - This replaces `closing-on-raise`'s `guard` and `drain!`'s `dynamic-wind`. That was about 500 B a dispatch, three dispatches a request; the handler costs 160 B and captures no continuation, so a deep stack costs it nothing more.
+  - `drain!` sets the depth to 1 and back to 0. `abandon-drain!` does what its after-thunk did on a raise: the depth 0, the phase before the dispatch, the queue and the held writes dropped. The after-thunk's other work on a normal exit put back what was already so.
+  - `closing-on-raise` stays for the listener, the signals, an adoption and the timer's first start, none of them per request.
+- **Measured** (`hoist-request-alloc.sps`): 7,724 to 7,727 B a GET at one connection, and 7,341 to 7,343 at 50 (`out/hoist-request-alloc.L2.run1.txt`). That is −900 and −1,035 against layer 1.
+- **Watched to fail**, against every suite:
+
+| mutant | the edit | result |
+|---|---|---|
+| L2-0 | unmutated, a comment | green |
+| L2-1 | a raise does not close the connection | red: the shell suite, 14 |
+| L2-2 | the handler returns where it raised again | red: "when one firing's ticks raise for both of two connections, … a contract condition is the raise the run loop raises again" (Chez raises its own non-continuable condition in the contract's place) |
+| L2-6 | an abandoned drain keeps what is held | red: "with nothing written, the connection closed and gone, the error logged, the close its last event" |
+| L2-7 | a drain that ends leaves the depth 1 | red: the shell suite. Its run over every suite waited out its caps and was stopped |
+| L2-3 | an abandoned drain leaves the depth | survives, a scope statement |
+| L2-5 | an abandoned drain keeps what is queued | survives, a scope statement |
+| L2-4 | an abandoned drain leaves the phase | survives, a scope statement, as M7.1's M7R-5 did |
+| L2-8 | the handler abandons nothing | survives, the three above at once, and L2-6's held write never sent |
+
+  The scope statements:
+  - A raise's connection is closed at once (`handle-close!` stops its reading and takes it out of the wheel). The only events it gets after that are a write's failed completion and `(closed)`, and the core's `on-closed` answers no action. A depth or a queue left behind has nothing left to run.
+  - The phase is set back twice over: by `abandon-drain!`, and by the run loop's guard once the raise reaches it (layer 1).
+- `make test` green (Darwin arm64): fifty-one suites, 1,961 expected passes.
+- **Rebased** onto 8c04320 with layer 1: `make test` green again on this layer's rebased tree, fifty-one suites, 1,968 expected passes.
