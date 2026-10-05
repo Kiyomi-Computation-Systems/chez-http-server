@@ -5272,3 +5272,26 @@ MERGED to main on 2026-10-05, on the owner's "CI is green, do closing ritual": *
 `make test` green on main: fifty-one suites, 1,957 expected passes, every pin ok.
 
 NEXT: a new milestone or fix here, when the owner asks. The entry above's "Not fixed here", `make prod` on a checkout whose submodules were never cloned, is offered as a task of its own, to start from this merge. chez-websocket's work goes on in its own repository (plan §15). CHANGELOG.md's Unreleased is empty: this fix is tooling only.
+
+**`make prod` clones the submodules first, on `fix/prod-on-fresh-clone` (2026-10-05),** on the owner's ask: the "Not fixed here" of #135's entry, cut from f761ec7 once #135 had merged.
+- **Measured first** (Darwin arm64, GNU Make 3.81, Chez 10.4.1, libuv 1.52.1). A fresh worktree of `main` at f761ec7, its five submodules never cloned (`git submodule status` shows each with a leading `-`). `make prod` stopped at its first line: ``make[1]: *** No rule to make target `prod'.  Stop.``, then `make: *** [prod] Error 2`, exit 2. `prod` had no prerequisite, and its first line enters `vendor/chez-libuv`, still an empty directory. `test` reaches `submodules` only through `build` and `deps`, after that line. Nothing was cloned or built.
+- **Fixed.** `prod` depends on `submodules`. The comment above it gains one sentence saying why, so the prerequisite is not dropped as one `test` already has.
+- **Green**, exit 0 in 61 s, on the same worktree with the fixed Makefile laid in (blob 3d8ea52, this commit's):
+  - `submodules` cloned all five and chez-httparse's byte-machine, each at its pin;
+  - chez-libuv's `prod` linked the shim once, at `-O2`, and its `check-prod` passed;
+  - the suite ran on that shim: fifty-one suites, 1,951 expected passes (shell 190, clients 35, the six counter checks skipped by name, as on a prod shim), every pin ok;
+  - the closing `check-prod` passed.
+
+  No relink-guard line appears anywhere in the run. The shim's one link comes before the first `check-prod`; the `-O2` lines between the two are vtest2's build.
+- **On a cloned checkout** (this worktree), `make prod` passed too, exit 0 in 50 s. `submodules` printed its two commands and cloned nothing. The rest ran as above: one `-O2` link before the first `check-prod`, no relink-guard line, fifty-one suites and 1,951 expected passes, both `check-prod` runs passing.
+- **Watched to fail.** One mutant of the fixed Makefile, cut by exact match. It ran with `make -f` in a second fresh worktree of f761ec7, never cloned, with the fixed Makefile laid in.
+
+| mutant | the edit | result |
+|---|---|---|
+| FC | `prod`'s `submodules` prerequisite removed | red, exit 2: ``make[1]: *** No rule to make target `prod'.  Stop.`` at the first line; nothing cloned |
+
+  FC is the rule as it stood, with the new comment: its red is the one measured first. CI runs `make submodules` as a step of its own, then `make test` and `make check-help`, and never `make prod`, so CI would not see FC: only a `make prod` on a fresh clone does.
+- **Shared state.** No `git submodule deinit`: in a linked worktree it edits the common `.git/config`, which the main checkout reads. The never-cloned checkouts were fresh worktrees in this session's scratchpad, removed after. The common config's `submodule.*` lines were the same before and after.
+- **chez-websocket has the same shape** at its `main`, 33534e7. Its `prod` has no prerequisite, and its first line enters `$(SERVER_DIR)/vendor/chez-libuv`, inside the server's own submodule. In a scratch clone of that commit, never cloned below, `make prod` stopped there, exit 2, with another message: `make: *** vendor/chez-http-server/vendor/chez-libuv: No such file or directory.  Stop.`. Not changed here. Its `submodules` clones the server and the pins inside it, so the same prerequisite is the likely fix there; not measured.
+- **Records.** This entry only. No CHANGELOG entry: tooling only, as #134 and #135 were. README.org does not name `make prod`.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok.

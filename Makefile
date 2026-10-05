@@ -223,8 +223,9 @@ test: build check-pins check-imports ## Run every tests/test-*.sps (status 0/1/2
 
 # make hands FLAVOR=prod to the suite's chez-libuv build, which would
 # otherwise relink a dev shim.  check-prod depends on nothing, so the last
-# line reads the shim the suite ran on.
-prod: ## Rebuild chez-libuv's shim optimized, run the suite on it, and check it is still the prod one
+# line reads the shim the suite ran on.  The first line enters chez-libuv
+# before test's build would clone it, so prod names submodules itself.
+prod: submodules ## Rebuild chez-libuv's shim optimized, run the suite on it, and check it is still the prod one
 	$(MAKE) -C $(LIBUV_DIR) prod
 	$(MAKE) test FLAVOR=prod
 	$(MAKE) -C $(LIBUV_DIR) check-prod
