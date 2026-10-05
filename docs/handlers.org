@@ -338,12 +338,49 @@ What the transport does:
 - A taken stream still counts toward ~CHEZ_HTTP_MAX_CONNECTIONS~. One you
   neither read nor time out stays open, a client gone or not, until the
   server shuts down: read it, or arm a deadline.
-- Your code runs inside the server's own callbacks, so keep it quick, and it
-  cannot ~await~. If it raises, the server logs ~taker-failed~ and closes the
-  stream.
+- Your take-over and your callbacks run inside the server's own callbacks, so
+  keep them quick: they cannot ~await~ (to wait, see below). If one raises,
+  the server logs ~taker-failed~ and closes the stream.
 - To test your taker without a server, make a transport of your own:
   ~make-transport~ takes the seven procedures the calls above end up in, in
   that order.
+
+** A taker that waits
+
+To wait, have your take-over answer ~(awaiting thunk)~, as a handler does.
+The server runs ~thunk~ on a coroutine, where it can ~await~, ~sleep-ms~,
+~with-deadline~ and ~resolve~. Your read callback still runs in place: it can
+wake the thunk with the ~resume~ an ~await~ handed out.
+
+#+begin_src scheme
+;; each read is written back by a loop that waits for the next one
+(lambda (t retained)
+  (let ((reads '()) (resume-to #f))
+    ;; in place: keep each read, and wake the loop if it waits
+    (transport-read-start! t
+                           (lambda (bv start end)
+                             (set! reads (append reads (list (list bv start end))))
+                             (let ((r resume-to)) (set! resume-to #f) (when r (r #t))))
+                           (lambda (why) (transport-close! t)))
+    ;; on a coroutine: wait for a read, write it back, again
+    (awaiting
+     (lambda ()
+       (let loop ()
+         (when (null? reads) (await (lambda (resume) (set! resume-to resume))))
+         (let ((read (car reads)))
+           (set! reads (cdr reads))
+           (apply transport-write! t read)
+           (loop)))))))
+#+end_src
+
+- When the stream closes, whoever closed it, the wait the thunk is in, or
+  else its next, raises ~&client-closed~, once. Let it raise and nothing is
+  logged. Anything else the thunk raises is logged ~taker-failed~, and the
+  stream is closed.
+- What the thunk returns is dropped. The stream stays open until something
+  closes it.
+- A thunk that waits holds memory until its wait ends, about 3.6 KB, as a
+  handler that waits does.
 
 * When the server will not start
 

@@ -898,6 +898,15 @@ pause answers `#f`.
 > head/body hand-off row above is retired: the parser's own hand-off on its pause
 > channel never comes, and the core refuses one, an assertion violation. A 101 a read
 > error cuts short closes as any write does, the take-over let go.
+>
+> *Amended 2026-10-04 (decision 0023, on the owner's word by form):* a take-over may
+> answer `(awaiting thunk)`. The core is unchanged: it hands off as above, and the shell
+> calls the take-over in place. Given an `awaiting`, the shell runs its thunk on a
+> coroutine from the scheduler's drain, a notice of the taker's own attached (decision
+> 0020's), closed as the stream's close completes. So the wait the thunk is in, or else
+> its next, raises `&client-closed`, once. A raise of that close is quiet; any other is
+> logged `taker-failed` and closes the stream. Anything else a take-over answers is
+> dropped, as before.
 > `tests/test-connection-table.sps` holds the rows (W1 to W7), and
 > `tests/test-connection-switch.sps` the flows at every delivery size.
 

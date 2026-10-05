@@ -678,6 +678,27 @@
                                                  (transport-close! t))))))
           ((bytevector=? target (b "/door-await"))
            (awaiting (lambda () (set! parked (current-coroutine)) (coroutine-park!) (switching echo))))
+          ((bytevector=? target (b "/door-wait"))
+           (let ((resume-to #f))
+             (switching (lambda (t retained)
+                          (transport-read-start! t
+                                                 (lambda (bv from to)
+                                                   (let ((r resume-to)) (set! resume-to #f) (when r (r (bytes-between bv from to)))))
+                                                 (lambda (why) (took! 'ended why) (transport-close! t)))
+                          (awaiting
+                           (lambda ()
+                             (guard (e ((client-closed? e) (took! 'told) (raise e)))
+                               (let loop ()
+                                 (transport-write! t (await (lambda (resume) (set! resume-to resume))))
+                                 (loop)))))))))
+          ((bytevector=? target (b "/door-wait-raise"))
+           (switching (lambda (t retained)
+                        (awaiting (lambda () (sleep-ms 1) (raise (make-message-condition "the waiting taker failed")))))))
+          ((bytevector=? target (b "/door-wait-ends"))
+           (switching (lambda (t retained)
+                        (transport-read-start! t (lambda (bv from to) (transport-write! t bv from to))
+                                               (lambda (why) (transport-close! t)))
+                        (awaiting (lambda () (took! 'thunk-ended) 'done)))))
           ((eq? (request-method req) 'POST)
            (read-body (lambda (bv start end) #t) (lambda () (make-response 200 #f '() target))))
           (else (make-response 200 #f '() target)))))
@@ -2409,6 +2430,54 @@
                   (list 'satisfied 'satisfied door-101 'eof '(taker-failed))
                   (list gone ended (client-bytes (car p)) (client-end (car p))
                         (map car (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))))
+      (client-close! (car p)))
+
+    ;; A taker that waits (decision 0023): its take-over answers `awaiting`,
+    ;; and the thunk, on a coroutine, waits for each read, which the read
+    ;; callback resumes it with, and writes it back.  The client's end has
+    ;; the taker close the stream, and the wait the thunk is in is told: it
+    ;; notes the close and lets it out, which logs nothing.
+    (set! took '())
+    (set! logged '())
+    (let* ((p (open-adopted! (door-handshake "/door-wait")))
+           (opened (wait-for (lambda () (= (bytevector-length (client-bytes (car p))) (bytevector-length door-101))))))
+      (client-send! (car p) hi-frame)
+      (let ((echoed (wait-for (lambda () (= (bytevector-length (client-bytes (car p)))
+                                             (+ (bytevector-length door-101) (bytevector-length hi-frame)))))))
+        (client-shut! (car p))
+        (let* ((gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+               (told (wait-for (lambda () (pair? (took-of 'told))))))
+          (test-equal "a taker that waits: its thunk, on a coroutine, writes back each read it waits for; the client's end closes the stream, its wait is told, and letting that out logs nothing"
+                      (list 'satisfied 'satisfied (joined (list door-101 hi-frame)) 'satisfied 'satisfied '(()) '())
+                      (list opened echoed (client-bytes (car p)) gone told (took-of 'told)
+                            (filter (lambda (e) (eq? (car e) 'taker-failed)) logged)))))
+      (client-close! (car p)))
+
+    ;; A waiting taker whose thunk raises anything else: logged
+    ;; taker-failed, and the stream closed after the 101.
+    (set! logged '())
+    (let* ((p (open-adopted! (door-handshake "/door-wait-raise")))
+           (gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+           (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
+      (test-equal "a waiting taker whose thunk raises: logged taker-failed, the stream closed after the 101"
+                  (list 'satisfied 'satisfied door-101 'eof '(taker-failed))
+                  (list gone ended (client-bytes (car p)) (client-end (car p))
+                        (map car (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))))
+      (client-close! (car p)))
+
+    ;; A waiting taker whose thunk ends leaves the stream as it was: open,
+    ;; its taker reading on and writing back what it reads.
+    (set! took '())
+    (set! logged '())
+    (let* ((p (open-adopted! (door-handshake "/door-wait-ends")))
+           (ended (wait-for (lambda () (pair? (took-of 'thunk-ended))))))
+      (client-send! (car p) hi-frame)
+      (let ((echoed (wait-for (lambda () (= (bytevector-length (client-bytes (car p)))
+                                             (+ (bytevector-length door-101) (bytevector-length hi-frame)))))))
+        (test-equal "a waiting taker whose thunk ends: the stream stays open, its taker writing back what it reads, nothing logged"
+                    (list 'satisfied 'satisfied (joined (list door-101 hi-frame)) 'handed-off '())
+                    (list ended echoed (client-bytes (car p)) (if (connection? (cdr p)) (phase (cdr p)) 'none)
+                          (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))))
       (client-close! (car p)))
 
     ;; A write asked for once the close has been is not written: its

@@ -263,3 +263,11 @@ Measured (2026-10-04, Darwin arm64, Chez 10.4.1, libuv 1.52.1):
   waits. Red before the fix; six mutants each red (m8-mutations.md, "After M8").
 
 Plan §14's open list drops the item.
+
+
+## Amendment (2026-10-04) — a taker can wait (decision 0023)
+
+The consequence that a taker's code "runs in place, in the shell's callbacks ... so it
+cannot wait with `await`" still holds for the take-over and the taker's callbacks. A
+take-over may now answer `(awaiting thunk)`: the thunk runs on a coroutine, where it may
+wait, and its waits are told when the stream closes.

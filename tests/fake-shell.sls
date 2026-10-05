@@ -114,6 +114,12 @@
 ;;; `fake-shell-drain!` is the shell
 ;;; draining: the core told `shutdown-requested`, or a taker's drain call
 ;;; run, once, and one registered while the shell drains runs at once.
+;;; A take-over that answers `(awaiting thunk)` has the thunk run on a
+;;; coroutine, the taker's notice given to it, told once the stream has
+;;; closed (decision 0023); a raise of it but that close is recorded
+;;; (`fake-shell-taker-failures`) and closes the stream.  Each delivery to a
+;;; taker and each of its completions is a turn of the libuv shell's, so
+;;; the scheduler is drained after it, unless held.
 ;;;
 ;;; M7.3: A HANDLER THAT WAITS, as the libuv shell's (decision 0014), so
 ;;; the contract test (design §8.4) can hold the coroutine shell to it.  A
@@ -152,16 +158,16 @@
           fake-shell-deliver-later! fake-shell-settle! fake-shell-feed-input!
           fake-shell-writes fake-shell-date-writes! written-status write-wire
           fake-shell-fire-waits! fake-shell-answer-lookup! fake-shell-drain! fake-shell-armed
-          fake-shell-hold! fake-shell-schedule!)
+          fake-shell-hold! fake-shell-schedule! fake-shell-taker-failures)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole? read-body)
-          (only (http-server awaiting) awaiting? awaiting-thunk)
+          (only (http-server awaiting) awaiting? awaiting-thunk client-closed?)
           (only (http-server private scheduler)
                 make-scheduler scheduler-call! scheduler-spawn! scheduler-drain!)
           (only (http-server private waits) make-waits waits-clock! waits-fire! waits-resolver!
-                make-notice notice-attach! notice-close!)
+                make-notice notice-attach! notice-close! notice-closed?)
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server serializer) date-line)
@@ -205,11 +211,12 @@
             (mutable taker)                   ; once handed off, the taker's calls (THE DOOR)
             (mutable draining?)               ; whether the shell has drained
             (mutable notice)                  ; the request's notice of its client's close, or #f
-            (mutable held?))                  ; whether its scheduler waits to be drained (fake-shell-hold!)
+            (mutable held?)                   ; whether its scheduler waits to be drained (fake-shell-hold!)
+            (mutable taker-failures-rev))     ; what a waiting taker's thunks raised, newest first (decision 0023)
     (protocol (lambda (new)
                 (define (make step state0 now0 perform trace)
                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
-                       #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f))
+                       #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f '()))
                 (case-lambda
                   ((step state0 now0) (make step state0 now0 #f #f))
                   ((step state0 now0 perform) (make step state0 now0 perform #f))
@@ -231,6 +238,12 @@
   (define (fake-shell-events s) (reverse (fake-shell-events-rev s)))
   (define (fake-shell-violations s) (reverse (fake-shell-violations-rev s)))
   (define (fake-shell-writes s) (reverse (fake-shell-writes-rev s)))
+
+  ;; fake-shell-taker-failures : FakeShell -> (Listof Any)
+  ;; What a waiting taker's thunks raised, in order, the close their notice
+  ;; told not among them (decision 0023): the libuv shell logs each as
+  ;; `taker-failed`.
+  (define (fake-shell-taker-failures s) (reverse (fake-shell-taker-failures-rev s)))
 
   ;; fake-shell-advance! : FakeShell Nat -> Nat
   ;; Move the injected clock forward by `dt` and return the new now; it never
@@ -257,7 +270,9 @@
       (assertion-violation 'fake-shell-deliver! "no progress: the dispatch cap was reached"
                            dispatch-cap event))
     (if (and (fake-shell-taker s) (memq (car event) '(bytes-arrived eof read-error)))
-        (begin (taker-read! s (fake-shell-taker s) event) '())
+        (begin (taker-read! s (fake-shell-taker s) event)
+               (unless (fake-shell-held? s) (schedule! s))
+               '())
         (step-event! s event)))
 
   ;; step-event! : FakeShell Event -> (Listof Action) — fake-shell-deliver!'s
@@ -386,7 +401,7 @@
       (and (pair? later)
            (begin (fake-shell-later-set! s (cdr later))
                   (if (procedure? (car later))
-                      ((car later))
+                      (begin ((car later)) (unless (fake-shell-held? s) (schedule! s)))
                       (fake-shell-deliver! s (car later)))
                   (car later)))))
 
@@ -512,20 +527,59 @@
 
   ;; --- the door (M8.2) ----------------------------------------------------------
 
-  ;; The calls a taker has registered, and how far its stream has gone.
+  ;; The calls a taker has registered, how far its stream has gone, and the
+  ;; notice its waits are told the close by, once a take-over has answered
+  ;; `awaiting` (decision 0023).
   (define-record-type fake-taker
     (fields (mutable on-bytes) (mutable on-end) (mutable on-passed) (mutable on-drain)
-            (mutable on-close) (mutable closing?) (mutable drained?) (mutable closed?))
-    (protocol (lambda (new) (lambda () (new #f #f #f #f #f #f #f #f)))))
+            (mutable on-close) (mutable closing?) (mutable drained?) (mutable closed?)
+            (mutable notice))
+    (protocol (lambda (new) (lambda () (new #f #f #f #f #f #f #f #f #f)))))
 
   ;; hand-off! : FakeShell (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) -> Void
   ;; The switch's take-over, called with a transport over the connection and
   ;; the bytes handed over, a copy, empty when none were.
+  ;; A take-over that answers `(awaiting thunk)` has the thunk run on a
+  ;; coroutine, as the libuv shell runs it (taker-wait!, decision 0023).
   (define (hand-off! s take-over retained)
-    (let ((tk (make-fake-taker)))
+    (let ((tk (make-fake-taker)) (answer #f))
       (fake-shell-taker-set! s tk)
-      (take-over (fake-transport s tk)
-                 (if retained (copy-of (car retained) (cadr retained) (caddr retained)) (make-bytevector 0)))))
+      (call-with-values
+        (lambda ()
+          (take-over (fake-transport s tk)
+                     (if retained (copy-of (car retained) (cadr retained) (caddr retained)) (make-bytevector 0))))
+        (lambda vs (when (and (pair? vs) (null? (cdr vs))) (set! answer (car vs)))))
+      (when (awaiting? answer) (taker-wait! s tk (awaiting-thunk answer)))))
+
+  ;; taker-wait! : FakeShell FakeTaker (-> Any) -> Void
+  ;; The thunk on a coroutine, the taker's notice given to it; a raise but
+  ;; the close the notice told is the taker's failure, recorded, and closes
+  ;; the stream; what it returns is dropped.
+  (define (taker-wait! s tk thunk)
+    (let ((n (make-notice)))
+      (fake-taker-notice-set! tk n)
+      (notice-attach!
+       (scheduler-spawn! (fake-shell-scheduler s) thunk
+         (lambda (kind v)
+           (when (and (eq? kind 'raised) (not (and (client-closed? v) (notice-closed? n))))
+             (fake-shell-taker-failures-rev-set! s (cons v (fake-shell-taker-failures-rev s)))
+             (taker-close! s tk))))
+       n)))
+
+  ;; taker-close! : FakeShell FakeTaker -> Void
+  ;; The stream's close, asked for once: reading stops, and after the turn
+  ;; the core is told `closed`, the taker's waits are told, and its close
+  ;; call runs.
+  (define (taker-close! s tk)
+    (unless (fake-taker-closing? tk)
+      (fake-taker-closing?-set! tk #t)
+      (fake-shell-reading?-set! s #f)
+      (fake-shell-closing?-set! s #t)
+      (later! s (lambda ()
+                  (fake-shell-deliver! s '(closed))
+                  (fake-taker-closed?-set! tk #t)
+                  (let ((n (fake-taker-notice tk))) (when n (notice-close! n)))
+                  (let ((closed (fake-taker-on-close tk))) (when closed (closed)))))))
 
   ;; copy-of : Bytevector Nat Nat -> Bytevector — bv[from, to), copied.
   (define (copy-of bv from to)
@@ -546,15 +600,7 @@
        (fake-taker-on-end-set! tk on-end)
        (unless (fake-taker-closing? tk) (fake-shell-reading?-set! s #t)))
      (lambda () (fake-shell-reading?-set! s #f))
-     (lambda ()
-       (unless (fake-taker-closing? tk)
-         (fake-taker-closing?-set! tk #t)
-         (fake-shell-reading?-set! s #f)
-         (fake-shell-closing?-set! s #t)
-         (later! s (lambda ()
-                     (fake-shell-deliver! s '(closed))
-                     (fake-taker-closed?-set! tk #t)
-                     (let ((closed (fake-taker-on-close tk))) (when closed (closed)))))))
+     (lambda () (taker-close! s tk))
      (lambda (ms passed)
        (fake-taker-on-passed-set! tk passed)
        (cond ((not ms) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
