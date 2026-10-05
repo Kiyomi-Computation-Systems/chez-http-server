@@ -6,6 +6,16 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A taker can wait.** A take-over that answers `(awaiting thunk)`, as a handler
+  does, has the thunk run on a coroutine, where it can `await`, `sleep-ms`,
+  `with-deadline` and `resolve`; its read callback can wake it. Once the stream has
+  closed, whoever closed it, the wait the thunk is in, or else its next, raises
+  `&client-closed`, once; let out, nothing is logged. Anything else it raises is
+  logged `taker-failed` and closes the stream. A take-over that answers anything
+  else runs as before (decision 0023; `docs/handlers.org`).
+
 ## [0.2.0] - 2026-10-04
 
 The second release. A handler that waits is now told when its client leaves, a

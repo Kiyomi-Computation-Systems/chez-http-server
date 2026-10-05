@@ -21,6 +21,8 @@
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
         (http-server switch) (http-server transport)
+        (only (http-server awaiting) awaiting client-closed?)
+        (only (http-server private waits) await)
         (fake-shell) (decisive))
 
 (define (b s) (string->utf8 s))
@@ -72,6 +74,18 @@
                               (lambda (bv from to) (taker-read-set! t (cons (slice bv from to) (taker-read t))))
                               (lambda (why) (taker-ends-set! t (cons why (taker-ends t)))))
        (unless (null? then) ((car then) transport))))))
+
+;; waiting-taking : (Transport -> Any) (Transport -> Any) -> (Request -> Switch)
+;; A handler that switches to websocket, its take-over doing `now` with the
+;; transport in place, then answering `(awaiting thunk)`, the thunk doing
+;; `later` with it on a coroutine (decision 0023).
+(define (waiting-taking now later)
+  (lambda (request)
+    (switch-protocols
+     (list (cons (b "Upgrade") (b "websocket")) accept)
+     (lambda (transport retained)
+       (now transport)
+       (awaiting (lambda () (later transport)))))))
 
 ;; run : Bytevector Nat (Request -> Any) -> FakeShell
 ;; One connection reading `input` in `size`-byte deliveries, every later turn
@@ -296,6 +310,80 @@
       (test-equal "a connection not handed off is told to finish: idle, it closes"
                   '(((shutdown-requested)) closing)
                   (list (fake-shell-events sh) (conn-phase (fake-shell-conn-state sh)))))
+
+    ;; --- a taker that waits (decision 0023) --------------------------------
+    ;; Its take-over answers (awaiting thunk): the thunk runs on a coroutine,
+    ;; where it waits, here for a read its on-bytes call resumes it with,
+    ;; then writes what it was resumed with after the 101.
+    (let* ((resume-to #f)
+           (sh (run handshake (bytevector-length handshake)
+                    (waiting-taking
+                     (lambda (tr)
+                       (transport-read-start! tr
+                                              (lambda (bv from to)
+                                                (let ((r resume-to)) (set! resume-to #f) (when r (r (slice bv from to)))))
+                                              (lambda (why) #t)))
+                     (lambda (tr)
+                       (transport-write! tr (await (lambda (resume) (set! resume-to resume)))))))))
+      (let ((parked (and resume-to #t)))
+        (fake-shell-deliver! sh (list 'bytes-arrived hello-frame 0 (bytevector-length hello-frame)))
+        (fake-shell-settle! sh)
+        (test-equal "a take-over that answers awaiting: its thunk waits on a coroutine, resumed by a read, then writes"
+                    (list #t (concat (list the-101 hello-frame)) 'handed-off)
+                    (list parked (client-bytes sh) (conn-phase (fake-shell-conn-state sh))))))
+    ;; Its waits are told once the stream has closed, whoever closed it, here
+    ;; its taker as the client ends: the wait it is in raises &client-closed,
+    ;; once, so its next wait does not.
+    (let* ((seen '())
+           (sh (run handshake (bytevector-length handshake)
+                    (waiting-taking
+                     (lambda (tr) (transport-read-start! tr (lambda (bv from to) #t) (lambda (why) (transport-close! tr))))
+                     (lambda (tr)
+                       (guard (e ((client-closed? e) (set! seen (cons 'told seen))))
+                         (await (lambda (resume) #f)))
+                       (set! seen (cons (await (lambda (resume) (resume 'next))) seen)))))))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
+      (test-equal "its wait is told once the stream has closed: the wait it is in raises &client-closed, its next does not"
+                  '((told next) closed ())
+                  (list (reverse seen) (conn-phase (fake-shell-conn-state sh)) (fake-shell-taker-failures sh))))
+    ;; A thunk that lets the told close out is no failure; one that raises
+    ;; anything else is, and its stream closes, as a take-over that raises
+    ;; closes it.
+    (let* ((started #f)
+           (sh (run handshake (bytevector-length handshake)
+                    (waiting-taking
+                     (lambda (tr) (transport-read-start! tr (lambda (bv from to) #t) (lambda (why) (transport-close! tr))))
+                     (lambda (tr) (set! started #t) (await (lambda (resume) #f)))))))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
+      (test-equal "a thunk that lets the told close out is no failure: nothing recorded, the stream closed"
+                  '(#t () closed)
+                  (list started (fake-shell-taker-failures sh) (conn-phase (fake-shell-conn-state sh)))))
+    (let ((sh (run handshake (bytevector-length handshake)
+                   (waiting-taking (lambda (tr) #t)
+                                   (lambda (tr) (raise (make-message-condition "the waiting taker failed")))))))
+      (test-equal "a thunk that raises anything else: the taker's failure, the stream closed after the 101"
+                  (list '("the waiting taker failed") the-101 'closed)
+                  (list (map condition-message (fake-shell-taker-failures sh)) (client-bytes sh)
+                        (conn-phase (fake-shell-conn-state sh)))))
+    ;; A thunk that ends leaves the stream as it was: open, its taker
+    ;; reading on.
+    (let* ((t (make-taker))
+           (ended #f)
+           (sh (run handshake (bytevector-length handshake)
+                    (waiting-taking
+                     (lambda (tr)
+                       (transport-read-start! tr
+                                              (lambda (bv from to) (taker-read-set! t (cons (slice bv from to) (taker-read t))))
+                                              (lambda (why) #t)))
+                     (lambda (tr) (set! ended #t) 'done)))))
+      (fake-shell-deliver! sh (list 'bytes-arrived hi-frame 0 (bytevector-length hi-frame)))
+      (fake-shell-settle! sh)
+      (test-equal "a thunk that ends leaves the stream open, its taker reading on"
+                  (list #t (list hi-frame) 'handed-off '())
+                  (list ended (reverse (taker-read t)) (conn-phase (fake-shell-conn-state sh))
+                        (fake-shell-taker-failures sh))))
 
     ;; --- the door closed (decision 0016 items 1 and 4) ----------------------
     (test-equal "a request that does not upgrade, answered a switch: 500, logged not-an-upgrade, the staged close"

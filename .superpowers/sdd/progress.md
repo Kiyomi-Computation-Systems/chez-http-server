@@ -5168,3 +5168,17 @@ NEXT: a new milestone, when the owner asks. CHANGELOG.md's Unreleased is empty.
 - **DECIDED (0022).** A private sibling repository, `chez-websocket`, created on "Create it now" (Kiyomi-Computation-Systems/chez-websocket, its first commit the siblings' license, 27ad906). Its code can wait; v1 is RFC 6455 alone; Autobahn gates it in CI, 301 cases. Weighed and not taken: the library in this repository; callbacks in place; permessage-deflate; a client; unit vectors alone.
 - **Records.** Decision 0022, new. Plan §15, new: the WebSocket path, this repository's part being the door change (decision 0023, the next PR) and server 0.3.0. No code and no CHANGELOG entry.
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,949 expected passes, every pin ok.
+
+**The door lets a taker wait, on `feat/taker-awaits` (2026-10-04),** on the owner's form ("take-over answers awaiting"): decision 0023, the WebSocket path's first slice here (decision 0022).
+- **DECIDED (0023).** A take-over may answer `(awaiting thunk)`. Its thunk runs on a coroutine, a notice of the taker's own attached and closed as the stream's close completes. A raise of that close is quiet; any other is logged `taker-failed` and closes the stream. Weighed and not taken: every take-over on a coroutine; a spawn verb.
+- **Built**, in both shells:
+  - `hand-off!` reads the take-over's answer, and `taker-wait!` spawns an `awaiting` thunk with the notice; the stream's close completion closes it.
+  - The fake drains its scheduler after a delivery to a taker and after a taker's completion, each a turn of the libuv shell's, and records a thunk's raise (`fake-shell-taker-failures`).
+  - A clause closing a notice made after the stream had closed was written, found unreachable while mapping the mutants, and taken out.
+- **Tests first.**
+  - The fake's door suite: five checks, red before the behaviour (23 and 5).
+  - The shell suite: two checks red before it, with two knock-ons (190 and 4); a third, the thunk that ends, was added once the mutant map showed the libuv shell had none.
+  - Sixteen mutants, each red, every one loaded (m8-mutations.md, "After M8").
+- **Docs.** `docs/handlers.org` gains "A taker that waits". Its example was run as written against the fake: three reads written back in order, one of them arriving while the loop was busy, and the client's end closed the stream with nothing logged. CHANGELOG.md's Unreleased gains Added.
+- **Records.** Decision 0023, new; 0016 amended; the design's door note.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok.

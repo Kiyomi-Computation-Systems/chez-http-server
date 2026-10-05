@@ -1378,3 +1378,52 @@ The checks the lane has, and their killers:
 Chunk invariance is not a check here (decision 0021): these vectors refuse at the head,
 so no mutant can make one size-dependent. The property is the outcome lane's (L-F1,
 L-F2) and the robustness lane's.
+
+## After M8 — a taker that waits (2026-10-04)
+
+Decision 0023, on the owner's form ("take-over answers awaiting"), the first slice of the
+WebSocket path (decision 0022): a take-over may answer `(awaiting thunk)`, its thunk run
+on a coroutine whose waits are told when the stream closes. Platform: Darwin arm64, Chez
+10.4.1 (`tarm64osx`), 2026-10-04, the library path as above.
+
+Tests first, against the tree before the behaviour:
+- the fake's door suite: 23 passes and 5 failures, the five new checks, once
+  `fake-shell-taker-failures` existed (recording nothing);
+- the shell suite: 190 passes and 4 failures, the two new checks and two knock-ons (the
+  raising taker's stream never closed, so a handle was left on the loop).
+
+The third shell check, the thunk that ends, was written after mapping the mutants showed
+the libuv shell had no check of its own for it (TW-F would have survived).
+
+Sixteen mutants, every suite each (`scratchpad/door/mut`, four at a time), all loaded:
+
+| mutant | the edit | red |
+|---|---|---|
+| TW-A | the libuv shell drops a take-over's `awaiting` answer | shell 5: its three waiting-taker checks, and the two leaked-handle knock-ons |
+| TW-B | the stream's close tells the taker's notice nothing | shell 1: the taker that waits, told |
+| TW-C | the close the notice told is logged `taker-failed` | shell 1: the taker that waits, logging nothing |
+| TW-D | a thunk's raise leaves the stream open | shell 3: the raising thunk, and the two knock-ons |
+| TW-E | a thunk's raise is not logged | shell 1: the raising thunk |
+| TW-F | a thunk that returns closes the stream | shell 1: the thunk that ends |
+| TW-G | the thunk's coroutine gets a notice of its own, not the taker's | shell 1: the taker that waits, told |
+| TF-A | the fake drops a take-over's `awaiting` answer | door 5: all five |
+| TF-B | the fake's close tells the taker's notice nothing | door 1: told once the stream has closed |
+| TF-C | the fake records the told close as a failure | door 1: letting the told close out is no failure |
+| TF-D | the fake leaves the stream open after a thunk's raise | door 1: a thunk that raises anything else |
+| TF-E | the fake does not record a thunk's raise | door 1: a thunk that raises anything else |
+| TF-F | the fake does not drain after a delivery to a taker | door 1: resumed by a read, then writes |
+| TF-G | the fake does not drain after a taker's completion | door 1: told once the stream has closed |
+| TF-H | the fake closes the stream when a thunk returns | door 3: resumed by a read, told, the thunk that ends |
+| TF-I | the fake gives the thunk's coroutine a notice of its own | door 1: told once the stream has closed |
+
+The checks the slice added, and their killers:
+- the fake's door suite: resumed by a read, then writes: TF-A, TF-F, TF-H; told once the
+  stream has closed: TF-A, TF-B, TF-G, TF-H, TF-I; letting the told close out is no
+  failure: TF-A, TF-C; a thunk that raises anything else: TF-A, TF-D, TF-E; a thunk that
+  ends leaves the stream open: TF-A, TF-H;
+- the shell suite: the taker that waits, told and logging nothing: TW-A, TW-B, TW-C,
+  TW-G; the raising thunk: TW-A, TW-D, TW-E; the thunk that ends: TW-A, TW-F.
+
+Taken out while mapping: a clause in both shells that closed a taker's new notice at
+once "if the stream has closed already". The notice is made in `hand-off!`, before any
+close can complete, so no input reaches it and no mutant could redden it.

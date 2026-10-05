@@ -1064,20 +1064,55 @@
   ;; What a taker has registered for its stream, and how far the stream has
   ;; gone: its deadline's call, its drain call, its close call, its writes
   ;; outstanding, whether its close has been asked for, whether its drain
-  ;; call has run, and whether the stream has closed.
+  ;; call has run, whether the stream has closed, and the notice its waits
+  ;; are told the close by, once a take-over has answered `awaiting` (#f
+  ;; until then; decision 0023).
   (define-record-type taker
     (fields (mutable on-passed) (mutable on-drain) (mutable on-close)
-            (mutable writes) (mutable closing?) (mutable drained?) (mutable closed?))
-    (protocol (lambda (new) (lambda () (new #f #f #f 0 #f #f #f)))))
+            (mutable writes) (mutable closing?) (mutable drained?) (mutable closed?)
+            (mutable notice))
+    (protocol (lambda (new) (lambda () (new #f #f #f 0 #f #f #f #f)))))
 
   ;; hand-off! : Connection (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) -> Void
   ;; The 101 is written: call the switch's take-over with a transport over
   ;; the connection and a copy of the bytes handed over, empty when none
-  ;; were.
+  ;; were.  A take-over that answers `(awaiting thunk)` has the thunk run on
+  ;; a coroutine (taker-wait!, decision 0023); anything else it answers is
+  ;; dropped, as before.
   (define (hand-off! c take-over retained)
-    (let ((tk (make-taker)))
+    (let ((tk (make-taker)) (answer #f))
       (connection-taker-set! c tk)
-      (taker-call! c (lambda () (take-over (connection-transport c tk) (retained-copy retained))))))
+      (taker-call! c (lambda ()
+                       (call-with-values
+                         (lambda () (take-over (connection-transport c tk) (retained-copy retained)))
+                         (lambda vs (when (and (pair? vs) (null? (cdr vs))) (set! answer (car vs)))))))
+      (when (awaiting? answer) (taker-wait! c tk (awaiting-thunk answer)))))
+
+  ;; taker-wait! : Connection Taker (-> Any) -> Void
+  ;; Run a waiting taker's thunk on a coroutine, from the scheduler's drain,
+  ;; the taker's notice given to it, so the wait it is in, or else its next,
+  ;; raises `&client-closed` once the stream has closed (decision 0020's
+  ;; notice; 0023).  If the thunk raises, `taker-failed` is logged and the
+  ;; stream closed, as for a take-over that raises, unless what it raised is
+  ;; the close the notice told.  What it returns is dropped.
+  ;; The notice is made here, before the stream can have closed: its close
+  ;; completes in a later callback (handle-closed!), which closes it.
+  (define (taker-wait! c tk thunk)
+    (let ((sh (connection-shell c)) (n (make-notice)))
+      (taker-notice-set! tk n)
+      (notice-attach!
+       (scheduler-spawn! (shell-scheduler sh) thunk
+         (lambda (kind v)
+           (when (and (eq? kind 'raised) (not (taker-told? tk v)))
+             (log-quietly! sh 'taker-failed (list v))
+             (connection-close! c))))
+       n)))
+
+  ;; taker-told? : Taker Any -> Boolean
+  ;; `e` is the raise of the close the taker's notice told.
+  (define (taker-told? tk e)
+    (and (client-closed? e)
+         (let ((n (taker-notice tk))) (and n (notice-closed? n)))))
 
   ;; retained-copy : (U #f (List Bytevector Nat Nat)) -> Bytevector
   (define (retained-copy retained)
@@ -1381,6 +1416,7 @@
         (let ((tk (connection-taker c)))
           (when tk
             (taker-closed?-set! tk #t)
+            (let ((n (taker-notice tk))) (when n (notice-close! n)))
             (when (taker-on-close tk)
               (taker-call! c (taker-on-close tk))))))))
 
