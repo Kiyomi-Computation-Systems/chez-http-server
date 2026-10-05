@@ -5263,3 +5263,12 @@ NEXT: a new milestone or fix here, when the owner asks. chez-websocket's skeleto
 - **Not fixed here.** On a checkout whose submodules were never cloned, `make prod` stops at its first line: ``make[1]: *** No rule to make target `prod'.  Stop.``, exit 2. `prod` reaches chez-libuv's make before anything runs `submodules`. This was measured on this worktree before `make submodules`, and is left for the owner, to keep this change to the recipe.
 - **Records.** This entry only. No CHANGELOG entry: nothing a client or an embedder meets changes, and README.org does not name `make prod`.
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok.
+
+MERGED to main on 2026-10-05, on the owner's "CI is green, do closing ritual": **`make prod` runs the suite on the prod shim, and checks it did, PR #135** (the entry above). d9679b0 was squashed as eb7adc2 (tree 1f91429, the tested tip's; parent f4adaef).
+- **CI.** Its run, 37292824065, passed on d9679b0: fifty-one suites, 1,957 expected passes on ubuntu-24.04, the seven pins checked twice. CI runs `make test`, never `make prod`. Main's run on the squash, 37293220131, passed too, before this reflect was pushed.
+- **Rebased twice before the merge.** Main moved under the branch twice, with #134's squash 7cf4fec and then its reflect f4adaef. Each time the branch met main only at this file's end, and was resolved as main's text followed by the entry above. `make prod` (fifty-one suites, 1,951) and `make test` (1,957) were run again on the rebased tree, d9679b0.
+- **Branches.** Merged from this session's own worktree without `--delete-branch`, since the shared checkout holds `main`. That `main` was fast-forwarded behind the guard (on `main`, no tracked changes), and the branch was deleted on the remote and here. No PR is open.
+
+`make test` green on main: fifty-one suites, 1,957 expected passes, every pin ok.
+
+NEXT: a new milestone or fix here, when the owner asks. The entry above's "Not fixed here", `make prod` on a checkout whose submodules were never cloned, is offered as a task of its own, to start from this merge. chez-websocket's work goes on in its own repository (plan §15). CHANGELOG.md's Unreleased is empty: this fix is tooling only.
