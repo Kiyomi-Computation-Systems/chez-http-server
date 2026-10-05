@@ -5182,3 +5182,13 @@ NEXT: a new milestone, when the owner asks. CHANGELOG.md's Unreleased is empty.
 - **Docs.** `docs/handlers.org` gains "A taker that waits". Its example was run as written against the fake: three reads written back in order, one of them arriving while the loop was busy, and the client's end closed the stream with nothing logged. CHANGELOG.md's Unreleased gains Added.
 - **Records.** Decision 0023, new; 0016 amended; the design's door note.
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok.
+
+MERGED to main on 2026-10-04, on the owner's "Do closing ritual": **the WebSocket path's decision and the door change, as two stacked PRs** (the two entries above).
+- **#131, decision 0022,** as e9f2209. Its squash tree is the tested tip's, 6c29015's, and its parent is 7477a3f. It kept its branch, since #132 was based on it.
+- **#132, a take-over may answer awaiting (decision 0023),** as 9b1a421. It was retargeted to main and rebased from #131's tip, 6c29015. The rebased tip, 474fdb4, has the tested tree (796d68e's), and so does the squash, whose parent is e9f2209.
+- **CI.** Each merged on `linux` SUCCESS at its head: #131 on 6c29015 (run 37248307485), #132 on 474fdb4 (run 37249149712). 796d68e's own run had passed too (37248322299). The logs hold each layer's count: fifty-one suites, and 1,949 and 1,957 expected passes.
+- **Branches.** Both deleted, local and remote. No PR is open.
+
+`make test` green on main: fifty-one suites, 1,957 expected passes, every pin ok.
+
+NEXT: server 0.3.0, for chez-websocket to pin (CHANGELOG.md's Unreleased holds Added: a taker can wait); then chez-websocket's skeleton, in its own repository (plan §15). Both when the owner asks.
