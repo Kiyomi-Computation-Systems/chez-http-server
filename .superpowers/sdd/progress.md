@@ -380,3 +380,15 @@ NEXT: a new milestone or fix here, when the owner asks. CHANGELOG.md's Unrelease
   - `m7-progress.md`'s last line dropped.
 - **Records.** This entry only. No CHANGELOG entry: the ledger is the project's process, not anything a client or an embedder meets.
 - **Made again** on 8c04320: #139's merge and reflect appended to the file's end. Its lines 1 to 4989 are byte-identical to 64761cb's, the old file a byte prefix of the new, so the nine archives are byte-identical to the first cut's, and only the part kept grew. The proof and its three mutants were run again on the new file, green and red as before.
+
+**CI's actions run on Node 24, on `chore/ci-node24-actions` (2026-10-05),** on the owner's form ("CI off Node 20"), cut from 64761cb.
+- **Measured first.** Main's run on 64761cb, 37296266668, passed with one warning annotation: "Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/cache/restore@v4, actions/checkout@v4." GitHub's notice is its changelog of 2025-09-19.
+- **Changed.** The five `uses:` lines: `actions/checkout@v4` to `@v7` (v7.0.1), and `actions/cache/restore@v4` and `actions/cache/save@v4` to `@v6` (v6.1.0), each floating major tag on its release's commit. At its tag, each declares `using: node24`, and keeps the inputs and outputs the job reads: `path` and `key`, `cache-hit` and `cache-primary-key`.
+- **Read before the bump**, every release note from v4 to the tags:
+  - checkout v6 keeps its token in a file of its own, included from this repository's `.git/config`. The submodules' clones never read that config: they authenticate through the step's `GIT_CONFIG_*` rewrite, as since #88.
+  - checkout v7's breaking change refuses a fork's head under `pull_request_target` and `workflow_run`. This workflow uses neither.
+  - cache v5 and v6 move to Node 24 and to ESM.
+- **Checked locally** (Darwin arm64): actionlint 1.7.12 is clean before and after, and `make test` is green, fifty-one suites and 1,957 expected passes.
+- **Watched to fail.** The red is main's annotation above, which names both actions. The green is this PR's run with no such annotation, read once it finishes and recorded at the merge.
+- **Records.** This entry only. No CHANGELOG entry: CI only, nothing a client or an embedder meets.
+- **Rebased** onto 8c04320, once #139 had merged, and again onto 4cdef7d, once #138 had archived this file by milestone: each time the branch met main only at this file's end, resolved as main's text followed by this entry. `make test` green again on the rebased tree: fifty-one suites, 1,964 expected passes.
