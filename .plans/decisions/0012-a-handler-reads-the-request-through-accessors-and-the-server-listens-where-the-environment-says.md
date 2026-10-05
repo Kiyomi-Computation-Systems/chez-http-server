@@ -111,3 +111,8 @@ stays recorded as it arrived, and each reader trims it.
   future reader of a whole value calls `trim-ows`, as the Host judge does.
 
 Plan §14's open list drops the item.
+
+## Noted (2026-10-05) — the port in ASCII digits alone
+
+`CHEZ_HTTP_PORT` is read as every numeric setting is, in ASCII digits alone, leading zeros
+allowed: decision 0005's amendment of 2026-10-05. Until then `#x1F90` was port 8080.

@@ -6,6 +6,16 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A numeric setting is written in ASCII digits alone.** The 19 numeric `CHEZ_HTTP_`
+  variables, the port's among them, were read by Chez's `string->number`, which also
+  takes a sign, a radix or exactness prefix, a fraction and a complex number with no
+  imaginary part: `CHEZ_HTTP_PORT=#x1F90` listened on 8080, and `+5`, `#e1e3`, `10/2`
+  or `5+0i` started a server too. Each is now refused at startup, naming its variable,
+  as `-1` and `five` were. Leading zeros are still digits: `08080` is 8080 (decision
+  0005's amendment of 2026-10-05).
+
 ## [0.3.0] - 2026-10-04
 
 The third release. A taker can now wait: a take-over may answer `(awaiting thunk)`,
