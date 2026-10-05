@@ -27,7 +27,10 @@
 ;;; §3), given in whole seconds as the other timeouts are.  There is no
 ;;; pipeline cap: 0005's amendment of 2026-10-04 removes the field, and
 ;;; CHEZ_HTTP_PIPELINE_CAP is read no more, since the server answers one
-;;; request at a time by design (decision 0004).
+;;; request at a time by design (decision 0004).  Every number, the port's
+;;; too, is written in ASCII digits alone, leading zeros allowed, decided on
+;;; the owner's word on 2026-10-05 (0005's amendment of that day): anything
+;;; else is refused, naming its variable.
 (import (rnrs) (srfi :64) (testing) (http-server limits))
 
 ;; env : (Pair String String) ... -> (String -> (U String #f))
@@ -64,6 +67,73 @@
         (cons 'drain-timeout-ms limits-drain-timeout-ms)))
 
 (define all-fields (map cdr named-fields))
+
+;; refusal : (-> Any) -> Any
+;; The thunk's answer, or, if it raised an assertion violation with
+;; irritants, (refused first-irritant): a refused setting names its variable
+;; first.
+(define (refusal thunk)
+  (guard (e ((and (assertion-violation? e) (irritants-condition? e)
+                  (pair? (condition-irritants e)))
+             (list 'refused (car (condition-irritants e)))))
+    (thunk)))
+
+;; set-alone : (Pair String Accessor) String -> Any
+;; The field its variable sets, from an environment holding just that
+;; variable at `value`, or the refusal.
+(define (set-alone variable value)
+  (refusal (lambda () ((cdr variable) (limits-from-environment (env (cons (car variable) value)))))))
+
+;; port-alone : String -> Any
+;; The port from an environment holding just CHEZ_HTTP_PORT at `value`, or
+;; the refusal.
+(define (port-alone value)
+  (refusal (lambda ()
+             (let-values (((host port) (address-from-environment (env (cons "CHEZ_HTTP_PORT" value)))))
+               port))))
+
+;; The timeouts, given in whole seconds, each with its field.
+(define timeout-variables
+  (list (cons "CHEZ_HTTP_READ_HEADER_TIMEOUT" limits-read-header-timeout-ms)
+        (cons "CHEZ_HTTP_IDLE_TIMEOUT" limits-idle-timeout-ms)
+        (cons "CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT" limits-body-inactivity-timeout-ms)
+        (cons "CHEZ_HTTP_LINGER_TIMEOUT" limits-linger-timeout-ms)
+        (cons "CHEZ_HTTP_WRITE_TIMEOUT" limits-write-timeout-ms)
+        (cons "CHEZ_HTTP_DRAIN_TIMEOUT" limits-drain-timeout-ms)))
+
+;; The tick, the sizes and the counts, given in their stored unit, each with
+;; its field.
+(define count-variables
+  (list (cons "CHEZ_HTTP_TICK_MS" limits-tick-ms)
+        (cons "CHEZ_HTTP_MAX_HEADER_BYTES" limits-max-header-bytes)
+        (cons "CHEZ_HTTP_MAX_HEADER_COUNT" limits-max-header-count)
+        (cons "CHEZ_HTTP_MAX_HEADER_FIELD_BYTES" limits-max-header-field-bytes)
+        (cons "CHEZ_HTTP_MAX_HEADER_VALUE_BYTES" limits-max-header-value-bytes)
+        (cons "CHEZ_HTTP_MAX_TARGET_BYTES" limits-max-target-bytes)
+        (cons "CHEZ_HTTP_READ_BUFFER_SIZE" limits-read-buffer-size)
+        (cons "CHEZ_HTTP_MAX_CONNECTIONS" limits-max-connections)
+        (cons "CHEZ_HTTP_BACKLOG" limits-backlog)
+        (cons "CHEZ_HTTP_WRITE_HIGH_WATER" limits-write-high-water)
+        (cons "CHEZ_HTTP_WRITE_LOW_WATER" limits-write-low-water)))
+
+(define body-variable (cons "CHEZ_HTTP_MAX_BODY_BYTES" limits-max-body-bytes))
+
+;; Values that are not a whole number in ASCII digits alone: a sign, on zero
+;; too; a radix prefix; an exponent, with an exactness prefix and without; a
+;; fraction; a decimal point; a space before and after; a word; an exactness
+;; prefix; a complex number with no imaginary part, in both its forms; and
+;; ARABIC-INDIC DIGIT THREE (U+0663), which char-numeric? takes for a digit.
+;; Chez's string->number reads "+5", "-0", "#x10", "#e1e3", "10/2", "#e5",
+;; "5+0i" and "5@0" as exact integers (measured, Chez 10.4.1).
+(define malformed
+  (list "-1" "+5" "-0" "#x10" "1e3" "#e1e3" "10/2" "1.5" " 5" "5 " "five" "#e5"
+        "5+0i" "5@0" (string (integer->char #x0663))))
+
+;; refused-for : (Listof (Pair String Accessor)) -> (Listof (Listof Any))
+;; Each variable's refusal of each malformed value, as a refusal names it.
+(define (refused-for variables)
+  (map (lambda (variable) (map (lambda (value) (list 'refused (car variable))) malformed))
+       variables))
 
 ;; alone? : (Pair Symbol Accessor) -> Boolean — limits-with, given this field
 ;; alone, changes it and leaves every other field as default-limits has it.
@@ -257,6 +327,28 @@
                  (lambda (name) (if (string=? name "CHEZ_HTTP_MAX_HEADER_BYTES") "big" #f)))
                'no-fault))
 
+    ;; --- a numeric value is ASCII digits alone (0005's amendment of 2026-10-05) ---
+    ;; Each variable alone, so a refusal can only be its own.
+    (test-equal "a timeout not in ASCII digits alone is refused, naming its variable, for each of the six"
+                (refused-for timeout-variables)
+                (map (lambda (variable) (map (lambda (value) (set-alone variable value)) malformed))
+                     timeout-variables))
+    (test-equal "the tick, a size or a count not in ASCII digits alone is refused, naming its variable, for each of the eleven"
+                (refused-for count-variables)
+                (map (lambda (variable) (map (lambda (value) (set-alone variable value)) malformed))
+                     count-variables))
+    (test-equal "a body cap not in ASCII digits alone, nor unbounded, is refused, naming CHEZ_HTTP_MAX_BODY_BYTES"
+                (refused-for (list body-variable))
+                (list (map (lambda (value) (set-alone body-variable value)) malformed)))
+    (test-equal "these checks cover every variable read but the Host switch"
+                (list-sort string<? (remove "CHEZ_HTTP_REQUIRE_HOST" limits-environment-variables))
+                (list-sort string<? (map car (append timeout-variables count-variables (list body-variable)))))
+    (test-equal "leading zeros are digits too: 007 s is 7000 ms, a tick of 0100 is 100 ms, a body cap of 00 is 0 bytes"
+                '(7000 100 0)
+                (list (set-alone (car timeout-variables) "007")
+                      (set-alone (car count-variables) "0100")
+                      (set-alone body-variable "00")))
+
     ;; --- where the server listens (decision 0012) ---
     (test-equal "the server listens on 127.0.0.1:8080 by default, or when both are empty"
                 '(("127.0.0.1" 8080) ("127.0.0.1" 8080))
@@ -271,6 +363,11 @@
                 '(faulted faulted faulted faulted)
                 (map (lambda (value) (address (env (cons "CHEZ_HTTP_PORT" value))))
                      '("-1" "65536" "http" "80.5")))
+    (test-equal "a port not in ASCII digits alone is refused, naming CHEZ_HTTP_PORT: #x1F90 is not 8080"
+                (cons '(refused "CHEZ_HTTP_PORT")
+                      (map (lambda (value) '(refused "CHEZ_HTTP_PORT")) malformed))
+                (cons (port-alone "#x1F90") (map port-alone malformed)))
+    (test-eqv "a port's leading zeros are digits too: 08080 is 8080" 8080 (port-alone "08080"))
 
     ;; --- how long each kind of deadline lasts (M5.1) ---
     (test-equal "each deadline kind lasts its own timeout"

@@ -37,7 +37,11 @@
 ;;; one duration given in milliseconds, CHEZ_HTTP_TICK_MS: 250 ms has no
 ;;; whole-second spelling.  It is 1 to 1,000 ms (decided 2026-09-27): a
 ;;; bucket is a tick wide, and a tick over a second would make a timeout,
-;;; given in whole seconds, late by more than its own unit.
+;;; given in whole seconds, late by more than its own unit.  Every number is
+;;; written in ASCII digits alone, leading zeros allowed (decided
+;;; 2026-10-05): Chez's string->number also reads a sign, a radix or
+;;; exactness prefix, a fraction, and a complex number with no imaginary
+;;; part, so "#x1F90" would be port 8080.
 ;;;
 ;;; One switch rides with them (decision 0005's amendment of 2026-09-25):
 ;;; an HTTP/1.1 request with no Host is refused with 400 (RFC 9112 §3.2)
@@ -162,12 +166,24 @@
   (define (blank? s)
     (or (not s) (string=? s "")))
 
+  ;; digits? : String -> Boolean
+  ;; Whether `s` is one or more of #\0 to #\9 and nothing else.
+  ;; char-numeric? would take other scripts' digits too, such as U+0663.
+  (define (digits? s)
+    (let ((k (string-length s)))
+      (and (> k 0)
+           (let loop ((i 0))
+             (or (= i k)
+                 (and (char<=? #\0 (string-ref s i) #\9) (loop (+ i 1))))))))
+
   ;; parse-exact : Symbol String String Nat (U Nat #f) -> Nat
-  ;; Parse an exact integer >= min and, unless max is #f, <= max, or fault
-  ;; with who/name.
+  ;; Parse a whole number written in ASCII digits alone, >= min and, unless
+  ;; max is #f, <= max, or fault with who/name.
   (define (parse-exact who name s min max)
+    (unless (digits? s)
+      (assertion-violation who "expected a whole number in ASCII digits" name s))
     (let ((n (string->number s 10)))
-      (unless (and n (integer? n) (exact? n) (>= n min) (or (not max) (<= n max)))
+      (unless (and (>= n min) (or (not max) (<= n max)))
         (assertion-violation who
           "expected an exact integer within the field's bounds" name s min max))
       n))

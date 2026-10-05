@@ -27,6 +27,8 @@
 ;;;     &http-server-config-error, which is an &http-server-error, an &error;
 ;;;   - decision 0005's amendment of 2026-09-25: CHEZ_HTTP_REQUIRE_HOST is
 ;;;     "true" or "false", and any other value is refused;
+;;;   - its amendment of 2026-10-05: a number is written in ASCII digits
+;;;     alone, so CHEZ_HTTP_PORT=#x1F90 is refused, not port 8080;
 ;;;   - chez-libuv's bind, which refuses a host that is not an IPv4 or IPv6
 ;;;     literal ('bad-address);
 ;;;   - decision 0001: the handler contract is request -> response, so the
@@ -406,14 +408,15 @@
 
     ;; --- a start that fails ---
     (test-equal "a malformed setting raises an &http-server-config-error naming it, from serve"
-                '((#t #t #t #t) (#t #t #t #t) (#t #t #t #t))
+                '((#t #t #t #t) (#t #t #t #t) (#t #t #t #t) (#t #t #t #t))
                 (map (lambda (setting)
                        (refused (lambda ()
                                   (serve handler (env setting (cons "CHEZ_HTTP_HOST" unbound-host))))
                                 (car setting)))
                      '(("CHEZ_HTTP_PORT" . "http")
                        ("CHEZ_HTTP_REQUIRE_HOST" . "yes")
-                       ("CHEZ_HTTP_MAX_CONNECTIONS" . "0"))))
+                       ("CHEZ_HTTP_MAX_CONNECTIONS" . "0")
+                       ("CHEZ_HTTP_PORT" . "#x1F90"))))
     (let ((loop (make-uv-loop)))
       (test-equal "a host that is no IP literal is refused by the bind, as a config error naming CHEZ_HTTP_HOST, and nothing is left open"
                   '((#t #t #t #t) ())

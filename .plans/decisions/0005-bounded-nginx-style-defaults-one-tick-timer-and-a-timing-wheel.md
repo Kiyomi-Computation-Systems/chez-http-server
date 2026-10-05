@@ -548,3 +548,34 @@ field kept a name for a design no one wants.
 - **What stands:** the server answers the requests on a connection one at a time by
   design (0004's amendment of 2026-09-25), not by a limit.
 - **CHANGELOG.md** records it under Unreleased, a change to v0.1.0's API.
+
+## Amendment (2026-10-05) — a number is written in ASCII digits alone
+
+Decided on the owner's word, by form (2026-10-05), on measurements of main (Darwin arm64,
+Chez 10.4.1). Every numeric variable, the port's (decision 0012) among them, was read by
+`(string->number s 10)`, which kept any exact integer within the field's bounds. Chez lets
+a number's own prefix override the radix it is given, and reads more than digits as an
+exact integer: `+5` is 5, `-0` is 0, `#x1F90` 8080, `#b101` 5, `#o17` 15, `#d10` 10, `#e5`
+5, `#e1e3` 1000, `#e10.0` 10, `#e#x10` 16, `10/2` 5, and `5+0i` and `5@0`, complex numbers
+with no imaginary part, 5.
+
+- **What a server started with.** Each of the 19 numeric variables, set alone to a value
+  inside its bounds (the high water's at or above the low water's default), took twelve
+  such spellings. Nine took `-0` too: the six timeouts, the low water, the body cap and the
+  port. That is 237 pairs of a variable and a spelling. So `CHEZ_HTTP_PORT=#x1F90`
+  listened on 8080, and `CHEZ_HTTP_IDLE_TIMEOUT=#e1e3` was 1,000 s. Already refused: a
+  space before or after, a word, a decimal point or exponent without `#e` (an inexact
+  number), `#16r10`, U+0663, a negative number, a value out of bounds.
+- **A number is now one or more of the ASCII digits `0` to `9`, nothing else.** A sign, a
+  prefix, an exponent, a fraction, a decimal point, a space or another script's digit is
+  refused at startup, naming the variable, as a malformed value was. It is the rule
+  chez-websocket's `(websocket limits)` reads its own variables by (its M3.1).
+- **Leading zeros are digits:** `08080` is 8080, as before.
+- **Unchanged:** the bounds; an unset or empty variable keeps the default;
+  `CHEZ_HTTP_MAX_BODY_BYTES=unbounded`; `CHEZ_HTTP_REQUIRE_HOST`'s `true` and `false`.
+- Nothing in this repository's tests, docs or scripts set a value but in digits.
+- Weighed: keeping Scheme's syntax and saying so in the docs; accepting the 237 for one
+  release with a logged warning, then refusing them, which would have had the pure
+  library hand warnings to the shell.
+- **CHANGELOG.md** records it under Unreleased: a value 0.3.0 accepted is refused, so the
+  next release is 0.4.0.

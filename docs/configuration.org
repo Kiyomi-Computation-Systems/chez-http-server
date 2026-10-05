@@ -4,9 +4,10 @@ chez-http-server follows the 12-factor rule for config: where the server
 listens, and every connection limit in the tables below, has a default and can
 be overridden from the environment. A few protocol limits are fixed; they are
 named as such further down. Timeouts are given in whole *seconds*, the tick in
-milliseconds, and sizes and counts in their own unit. An unset or empty
-variable keeps the default. A malformed value
-(negative or non-numeric) is refused rather than silently ignored: ~serve~
+milliseconds, and sizes and counts in their own unit. A number is written in
+the digits ~0~ to ~9~ and nothing else: ~0080~ is 80, while ~-1~, ~+80~,
+~#x50~, ~80.0~ and ~160/2~ are malformed. An unset or empty variable keeps the
+default. A malformed value is refused rather than silently ignored: ~serve~
 raises an ~&http-server-config-error~ naming the variable, before it listens.
 
 * Where the server listens

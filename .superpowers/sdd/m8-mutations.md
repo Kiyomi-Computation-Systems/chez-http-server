@@ -1427,3 +1427,64 @@ The checks the slice added, and their killers:
 Taken out while mapping: a clause in both shells that closed a taker's new notice at
 once "if the stream has closed already". The notice is made in `hand-off!`, before any
 close can complete, so no input reaches it and no mutant could redden it.
+
+## After M8 — a number in ASCII digits alone (2026-10-05)
+
+Decision 0005's amendment of 2026-10-05, on the owner's form ("ASCII digits only"):
+`parse-exact` refuses a value that is not one or more of `0` to `9`, naming its variable,
+before `string->number` reads it. Platform: Darwin arm64, Chez 10.4.1 (`tarm64osx`),
+libuv 1.52.1, 2026-10-05, the library path as above.
+
+Tests first, against main's library, the new checks in place: the limits suite 55 passes
+and 4 failures, the four malformed checks; the serve suite 17 and 1, its start-failure
+check, whose `#x1F90` row was read as port 8080 and refused only at the bind, naming
+`CHEZ_HTTP_HOST` (measured). Every other suite green: 1,959 expected passes. Each wrong row was a
+spelling Chez reads as an exact integer within its field's bounds (`+5`, `-0`, `#x10`,
+`#e1e3`, `10/2`, `#e5`, `5+0i`, `5@0`), but the high water's, which spell values below
+the low water's default and were refused by the water rule, naming the low water.
+
+Seventeen rows, every suite each (`scratchpad/mut`, four at a time), each red set named
+before the run, all loaded:
+
+| mutant | the edit | red |
+|---|---|---|
+| B-0 | none: a comment's text | none, run alone: 51 suites, 1,964 expected passes |
+| ND-OLD | the code before the change: `string->number`'s exact integers within bounds | limits 4: the four malformed checks; serve 1: the start-failure check |
+| ND-PLUS | `digits?` takes a plus sign for a digit | limits 4: the four malformed checks |
+| ND-MINUS | `digits?` takes a minus sign for a digit | limits 4: the four malformed checks (`-0`) |
+| ND-NUMERIC | `char-numeric?` for a digit | limits 4: the four malformed checks (U+0663) |
+| ND-FIRST | `digits?` reads only the first character | limits 5: the four malformed checks, and the port's old one (`80.5`) |
+| ND-LAST | `digits?` leaves the last character unread | limits 4: the four malformed checks |
+| ND-NAMES-VALUE | the digit refusal names the value first | limits 4: the four malformed checks |
+| ND-ERROR | the digit refusal an `&error`, not an assertion violation | limits 4: the four malformed checks; serve 1: the start-failure check |
+| ND-SECONDS | `env-seconds->ms` reads as `string->number` does | limits 1: the timeouts' |
+| ND-INTEGER | `env-integer` reads as `string->number` does | limits 2: the tick, sizes and counts', and the port's; serve 1 |
+| ND-BODY | `env-max-body`'s number reads as `string->number` does | limits 1: the body cap's |
+| ND-PORT | the port reads as `string->number` does | limits 1: the port's; serve 1 |
+| ND-ZERO | `digits?` refuses a leading zero | limits 2: the two leading-zero checks |
+| ND-EMPTY | `digits?` takes the empty string | none: survives, equivalent |
+| ND-VARS | the library lists a twentieth variable | limits 2: the coverage check, and "the environment variables, one per field" |
+| ND-V | the suite's eleven lose `CHEZ_HTTP_BACKLOG` | limits 1: the coverage check |
+
+Every red was by value, exit 1, with no harness error, and each set was the one named.
+ND-EMPTY survives because every reader takes an empty value as unset before it parses:
+`digits?` keeps its length check to stay true to its name, a scope statement.
+
+In the four-at-a-time run, B-0 also reddened one shell check, "a connection held in its
+handler, nothing armed, the timer stopped, is closed at the drain's deadline, on time", on
+the loop's real clock with a 10 ms tick. The shell suite reads no environment: its limits
+come from `limits-with`. Run again: B-0's shell suite alone, green three times; under six
+busy loops on the eight cores, main's code (ND-OLD's tree) and B-0 four times each, all
+green; B-0 alone over every suite, green.
+
+The checks the change added or changed, and their killers:
+- the limits suite's timeouts': ND-OLD, ND-PLUS, ND-MINUS, ND-NUMERIC, ND-FIRST, ND-LAST,
+  ND-NAMES-VALUE, ND-ERROR, ND-SECONDS;
+- its tick, sizes and counts': the same, ND-INTEGER for ND-SECONDS;
+- its body cap's: the same, ND-BODY for ND-SECONDS;
+- its port's: the same, ND-INTEGER and ND-PORT for ND-SECONDS;
+- its coverage check, "these checks cover every variable read but the Host switch": ND-V,
+  ND-VARS;
+- its two leading-zero checks: ND-ZERO;
+- the serve suite's "a malformed setting raises an &http-server-config-error naming it,
+  from serve", a fourth row, `CHEZ_HTTP_PORT=#x1F90`: ND-OLD, ND-ERROR, ND-INTEGER, ND-PORT.
