@@ -1,0 +1,12 @@
+oha: fetched build/oha, oha-linux-arm64 v1.16.0
+Linux 6.12.76-linuxkit aarch64
+Linux 6.12.76-linuxkit aarch64, Chez Scheme Version 10.4.1 (tarm64le), libuv 1.44.2, oha 1.16.0
+round 1, 1 connection: 5,000 GETs 36678048 B in 10002 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25000 183472256 B in 49974 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 7340 B
+round 1, 50 connections: 5,000 GETs 35341696 B in 209 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25000 174719344 B in 825 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 6969 B
+round 2, 1 connection: 5,000 GETs 36738240 B in 10003 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25000 183399328 B in 49966 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 7333 B
+round 2, 50 connections: 5,000 GETs 35329008 B in 157 turns, "statusCodeDistribution": { "200": 5000 } "errorDistribution": {}; 25000 174678992 B in 600 turns, "statusCodeDistribution": { "200": 25000 } "errorDistribution": {}; a request 6967 B
+make test exit 2
+51
+1928
+HARNESS-ERROR clients: the suite body raised before finishing
+SUITE FAILED

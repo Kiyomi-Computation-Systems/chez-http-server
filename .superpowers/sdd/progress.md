@@ -466,3 +466,35 @@ NEXT: a new milestone or fix here, when the owner asks. CHANGELOG.md's Unrelease
   - The phase is set back twice over: by `abandon-drain!`, and by the run loop's guard once the raise reaches it (layer 1).
 - `make test` green (Darwin arm64): fifty-one suites, 1,961 expected passes.
 - **Rebased** onto 8c04320 with layer 1: `make test` green again on this layer's rebased tree, fifty-one suites, 1,968 expected passes.
+
+**The guards' hoist, layer 3: a handler's raise taken by the run loop's guard, on `feat/hoist-guards` (2026-10-05),** stacked on layer 2.
+- **Built.**
+  - `call-handler!` sets the shell's new `calling` field to the connection while the handler and `answered` run, and clears it before the answer is dispatched. It has no `guard` of its own.
+  - `run-guarded`'s first arm takes any raise while `calling` is set, a contract condition among them, as that handler's failure (`handler-failed!`). That logs `handler-failed` and dispatches `(handler-failed e)`, under the run loop's guard again, so a raise from either is a callback's, as before. The turn then answers #t, and what the drain had still to run runs at the next turn.
+- **What changed for a check.** Three shell checks turned the loop with no run loop's guard (`wait-for`, `loop-turn!`), the one way `serve` never turns it. They now turn it as `serve` does (`run-turns-until`): an ordinary handler that waits, a handler that raises, and one that raises a contract condition. `loop-turn!`, which only the tests use, no longer makes a handler's raise its failure.
+- **Checks added**, three in the shell suite:
+  - a handler that raises a contract condition is answered 500, logged as its failure alone, and the server runs on (the arm comes before the contract arm);
+  - a bug in the dispatch of a handler's failure is logged as a callback's after it, its connection closed with nothing written, the run loop running on;
+  - the `/raise` route's check now turns as `serve` does.
+- **Departure from the form: `send!` keeps its `guard`.** A write libuv refuses at the call must become that connection's read error and let the drain go on, so its catch has to resume inside the libuv callback (the shell suite's "a write refused when it is issued" checks). Hoisted to the dispatch, it needs `call/1cc` there (256 B on every outermost dispatch, three a request), more than the one `guard` a write it replaces. Left as it is, with the alternatives put to the owner.
+- **Measured** (`hoist-request-alloc.sps`):
+  - Darwin arm64: 7,332 to 7,337 B a GET at one connection, and 6,973 to 6,980 at 50 (`out/hoist-request-alloc.L3.run1.txt`). That is −390 and −365 against layer 2, and −2,670 (−27%) and −1,470 (−17%) against main.
+  - Linux aarch64, in Docker (`chez-libuv-valgrind:10.4.1` by ID, libuv 1.44.2): 7,333 to 7,340 and 6,967 to 6,969 (`out/hoist-request-alloc.L3.linux-aarch64.run1.txt`), the same.
+
+  There, fifty suites passed. The clients suite stopped at its harness, since vtest is not built in that image.
+- **Watched to fail**, against every suite:
+
+| mutant | the edit | result |
+|---|---|---|
+| L3-0 | unmutated, a comment | green |
+| L3-1 | the handler's arm after the contract arm | red: the shell suite, 5, the contract handler's checks first |
+| L3-2 | a handler that answers leaves `calling` set | red: the shell suite, 13 (every later raise taken as that handler's) |
+| L3-3 | a handler's failure leaves `calling` set | red: "when the dispatch of a handler's failure raises, …" |
+| L3-4 | `calling` is never set | red: the contract suite, 12, and the shell suite |
+| L3-5 | the failure's log and dispatch not under the run loop's guard | red: "when the dispatch of a handler's failure raises, …" |
+| L3-6 | the failure is not logged | red: the shell suite, 4 |
+| L3-7 | the failure is not dispatched | red: the contract suite, 12, and the shell suite |
+
+- `make test` green (Darwin arm64): fifty-one suites, 1,964 expected passes.
+- **Rebased** onto 8c04320 with layers 1 and 2: `make test` green again on this layer's rebased tree, fifty-one suites, 1,971 expected passes.
+- **Decided by form after the plan-vs-landed walkthrough** (2026-10-05): "Keep it (Recommended)", `send!`'s guard as it is; and "Accept (Recommended)", the drain's other calls running after a poll once a handler raises. Weighed: also asking chez-libuv for a write that returns its status, or a refused write taken as a bug; and keeping call-handler!'s guard with the ratchet at 8 KiB.

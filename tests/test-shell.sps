@@ -439,6 +439,8 @@
            (make-response 200 #f '() (make-bytevector wide-size 120)))
           ((bytevector=? target (b "/raise"))
            (raise (make-message-condition "the handler failed")))
+          ((bytevector=? target (b "/raise-contract"))
+           (raise (provoke-reentrancy)))
           ((bytevector=? target (b "/await"))
            (awaiting
             (lambda ()
@@ -1273,7 +1275,7 @@
     (set! logged '())
     (let ((cl (open-client! (b "GET /wait-plain HTTP/1.1\r\nHost: x\r\n\r\n"))))
       (test-eq "the client of an ordinary handler that waits reads the stream's end" 'satisfied
-               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+               (run-turns-until loop shell (lambda () (eq? (client-end cl) 'eof)) cap))
       (test-equal "after a 500, the refusal logged as R2's, a wait on no coroutine"
                   '((500) handler-failed r2)
                   (list (map status (responses (client-bytes cl)))
@@ -1442,17 +1444,45 @@
                        (responses (client-bytes cl))))
       (client-close! cl))
 
-    ;; A handler that raises.
+    ;; A handler that raises.  The run loop's guard takes the raise as the
+    ;; handler's failure (call-handler!), so these turn the loop as serve
+    ;; does (run-turns-until), under that guard.
     (set! logged '())
     (let ((cl (open-client! (b "GET /raise HTTP/1.1\r\nHost: x\r\n\r\n"))))
       (test-eq "the client of a handler that raises reads the stream's end" 'satisfied
-               (wait-for (lambda () (eq? (client-end cl) 'eof))))
+               (run-turns-until loop shell (lambda () (eq? (client-end cl) 'eof)) cap))
       (test-equal "after a 500" '(500) (map status (responses (client-bytes cl))))
       (test-equal "and the shell logged what the handler raised" '(handler-failed "the handler failed")
                   (let ((entry (assq 'handler-failed logged)))
                     (if (and entry (pair? (cdr entry)) (message-condition? (cadr entry)))
                         (list 'handler-failed (condition-message (cadr entry)))
                         (list 'not-logged logged))))
+      (client-close! cl))
+    ;; The handler's raise reaches the run loop's guard, which knows the
+    ;; connection whose handler it called (call-handler!): a byte-machine
+    ;; contract condition a handler raises is the handler's failure, not the
+    ;; run loop's fatal one.
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /raise-contract HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of a handler that raises a contract condition reads the stream's end" 'satisfied
+               (run-turns-until loop shell (lambda () (eq? (client-end cl) 'eof)) cap))
+      (test-equal "after a 500, the raise logged as the handler's failure alone"
+                  '((500) (handler-failed))
+                  (list (map status (responses (client-bytes cl))) (map car logged)))
+      (client-close! cl))
+    ;; A bug in the dispatch of a handler's failure is a callback's, as a bug
+    ;; in any dispatch is: logged after the failure, the connection closed,
+    ;; and the run loop runs on.
+    (set! logged '())
+    (let* ((before (newest))
+           (cl (open-client! (b "GET /raise HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (trap! 'event 'handler-failed)
+      (test-equal "when the dispatch of a handler's failure raises, its client reads the stream's end and no response, both logged, the run loop running on"
+                  '(satisfied 0 (handler-failed callback-error) #t)
+                  (list (run-turns-until loop shell (lambda () (eq? (client-end cl) 'eof)) cap)
+                        (collector-count (client-collector cl))
+                        (reverse (map car logged))
+                        (closed-and-gone? shell (adopted-since before))))
       (client-close! cl))
 
     ;; A streamed response (M6.3, decision 0013 item 8): a MiB in 64 pieces

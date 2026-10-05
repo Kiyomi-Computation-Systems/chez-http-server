@@ -323,7 +323,8 @@
             (mutable timer) (mutable ticking?)  ; the timer, and whether it runs
             (mutable read-at) (mutable read-ms)       ; the clock's last reading, and when
             (mutable date-second) (mutable date-line)
-            (mutable deferred-front) (mutable deferred-back))) ; a taker's calls deferred to a turn
+            (mutable deferred-front) (mutable deferred-back) ; a taker's calls deferred to a turn
+            (mutable calling)))                 ; the connection whose handler is called, or #f
 
   (define make-shell
     (case-lambda
@@ -334,7 +335,7 @@
               (kept (hashtable-ref waits-timers loop #f)))
          (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
                       (make-wheel (limits-tick-ms limits)) s kept
-                      (make-server-state 'listening 0 limits #f) #f '() #f #f #f #f #f #f '() '())))))
+                      (make-server-state 'listening 0 limits #f) #f '() #f #f #f #f #f #f '() '() #f)))))
 
   ;; loop-scheduler : UvLoop [(Symbol (Listof Any) -> Any)] -> Scheduler
   ;; The loop's scheduler, made the first time it is asked for: its poll is
@@ -837,19 +838,40 @@
   ;; The handler called from the scheduler's drain, after libuv's turn
   ;; (decision 0014): its answer, and `credit` after it on a shell made on
   ;; credit, dispatched there, the turn's guard taking a raise out of the
-  ;; dispatch as a callback's (shell-turn!).  A connection that has closed
-  ;; before the drain reaches the call has its handler called no more, as a
-  ;; waiting connection's calls are not made (next-call!).
+  ;; dispatch as a callback's (shell-turn!).  While the handler and its
+  ;; answer run, the shell's `calling` names the connection, so the run
+  ;; loop's guard takes a raise out of them as the handler's failure
+  ;; (handler-failed!): a guard of the call's own cost a request 288 B and
+  ;; more.  A connection that has closed before the drain reaches the call
+  ;; has its handler called no more, as a waiting connection's calls are not
+  ;; made (next-call!).
   (define (call-handler! c request)
     (let ((sh (connection-shell c)))
       (connection-waits?-set! c #f)
       (scheduler-call! (shell-scheduler sh)
         (lambda ()
           (unless (connection-closing? c)
-            (let ((event (guard (e (#t (log! sh 'handler-failed (list e))
-                                       (list 'handler-failed e)))
-                           (answered c ((shell-handler sh) request) #t))))
+            (shell-calling-set! sh c)
+            (let ((event (answered c ((shell-handler sh) request) #t)))
+              (shell-calling-set! sh #f)
               (when event (dispatch! c event))))))))
+
+  ;; handler-failed! : Shell Any (Any -> Boolean) -> Void
+  ;; The handler call-handler! called, or its answer, raised `e`: logged
+  ;; `handler-failed` and dispatched to its connection as `(handler-failed
+  ;; e)`, as call-handler!'s own guard once did, under the run loop's guard
+  ;; again (run-guarded), so a raise from the log or the dispatch is a
+  ;; callback's, as it was then.  What the drain had still to run runs at
+  ;; the next turn.
+  (define (handler-failed! sh e callback?)
+    (let ((c (shell-calling sh)))
+      (shell-calling-set! sh #f)
+      (run-guarded sh
+                   (lambda ()
+                     (log! sh 'handler-failed (list e))
+                     (dispatch! c (list 'handler-failed e))
+                     #t)
+                   callback?)))
 
   ;; answered : Connection Any Boolean -> (U Event #f)
   ;; The event an answer brings, the handler's or, not `handler?`, a
@@ -1513,9 +1535,13 @@
   ;; raised again; a raise `callback?` takes as a callback's is logged, the
   ;; table reconciled, and #t answered, so the caller runs again.  Either
   ;; way the scheduler's phase is set back first: a raise out of a turn's
-  ;; poll left it 'in-uv-run (scheduler-turn!).
+  ;; poll left it 'in-uv-run (scheduler-turn!).  First of all, a raise out of
+  ;; a handler call-handler! called, whatever it is, is the handler's
+  ;; failure (handler-failed!), and #t answered, the caller running again.
   (define (run-guarded sh thunk callback?)
-    (guard (e ((byte-machine-contract-condition? e)
+    (guard (e ((shell-calling sh)
+               (handler-failed! sh e callback?))
+              ((byte-machine-contract-condition? e)
                (scheduler-turn-abandoned!)
                (log-quietly! sh 'contract-violation (list e))
                (reconcile! sh)
