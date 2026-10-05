@@ -687,13 +687,27 @@
 
   ;; dispatch! : Connection Event -> Void
   ;; Step the core with one event and queue its actions, then drain the queue
-  ;; unless a drain or a feed is under way.  The outermost dispatch closes the
-  ;; connection if anything raises.
+  ;; unless a drain or a feed is under way (dispatch-outermost!).
   (define (dispatch! c event)
     (if (fx=? (connection-depth c) 0)
-        (closing-on-raise (connection-shell c) (connection-tcp c)
-                          (lambda () (step! c event) (drain! c)))
+        (dispatch-outermost! c event)
         (step! c event)))
+
+  ;; dispatch-outermost! : Connection Event -> Void
+  ;; The step and the drain under one handler, which, if anything raises,
+  ;; abandons the drain (abandon-drain!), closes the connection and raises
+  ;; again, at the raise, before any unwinding.  A guard and a dynamic-wind
+  ;; around the drain cost about 500 B a dispatch, three a request; the
+  ;; handler, with-exception-handler's, about 200, and no more where the
+  ;; stack is deep, since it captures no continuation.
+  (define (dispatch-outermost! c event)
+    (let ((phase (scheduler-phase)))
+      (with-exception-handler
+       (lambda (e)
+         (abandon-drain! c phase)
+         (handle-close! (connection-shell c) (connection-tcp c))
+         (raise e))
+       (lambda () (step! c event) (drain! c)))))
 
   ;; step! : Connection Event -> Void — the core's step, its actions queued.
   (define (step! c event)
@@ -723,27 +737,29 @@
   ;; Run the queue, in order, and once it is empty send the writes held
   ;; (flush!), until nothing is queued or held: a write that fails at the
   ;; call queues what its failure dispatches.  A drain starts having called
-  ;; no producer (run!'s `notify-producer`).  A raise abandons the dispatch
-  ;; it came from: the depth is restored, the scheduler's phase too, which a
-  ;; feed the raise came out of left 'in-parser (feed!), and what is still
-  ;; queued or held is dropped.
+  ;; no producer (run!'s `notify-producer`).  It runs only from the
+  ;; outermost dispatch, at depth 0, whose handler abandons it if anything
+  ;; raises (abandon-drain!); ended so, it has nothing left to put back.
   (define (drain! c)
-    (let ((before (connection-depth c)) (phase (scheduler-phase)))
-      (dynamic-wind
-       (lambda ()
-         (connection-depth-set! c (fx+ before 1))
-         (connection-producer-called?-set! c #f))
-       (lambda ()
-         (let loop ()
-           (let ((a (dequeue! c)))
-             (cond (a (run! c a) (loop))
-                   ((pair? (connection-held c)) (flush! c) (loop))))))
-       (lambda ()
-         (connection-depth-set! c before)
-         (scheduler-feed-end! phase)
-         (connection-front-set! c '())
-         (connection-back-set! c '())
-         (drop-held! c)))))
+    (connection-depth-set! c 1)
+    (connection-producer-called?-set! c #f)
+    (let loop ()
+      (let ((a (dequeue! c)))
+        (cond (a (run! c a) (loop))
+              ((pair? (connection-held c)) (flush! c) (loop)))))
+    (connection-depth-set! c 0))
+
+  ;; abandon-drain! : Connection Symbol -> Void
+  ;; A raise abandons the dispatch it came from: the depth is 0 again, the
+  ;; scheduler's phase `phase`, the one before the dispatch, which a feed
+  ;; the raise came out of left 'in-parser (feed!), and what is still queued
+  ;; or held is dropped.
+  (define (abandon-drain! c phase)
+    (connection-depth-set! c 0)
+    (scheduler-feed-end! phase)
+    (connection-front-set! c '())
+    (connection-back-set! c '())
+    (drop-held! c))
 
   ;; run! : Connection Action -> Void
   ;; Record a violation if the action runs anywhere but the outermost drain,
