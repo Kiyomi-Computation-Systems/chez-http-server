@@ -518,3 +518,26 @@ NEXT: a new milestone or fix here, when the owner asks. CHANGELOG.md's Unrelease
 - `make test` green (Darwin arm64): fifty-one suites, 1,966 expected passes; the clients suite read 7,343 B a GET.
 - **Rebased** onto 8c04320 with layers 1 to 3, and the CHANGELOG entry joined #139's under one "Changed". `make test` green again on this layer's rebased tree: fifty-one suites, 1,973 expected passes; the clients suite read 7,312 B a GET.
 - **Decided by form** (2026-10-05): "Four stacked PRs (Recommended)", one a layer, and "Comment with the spread (Recommended)": chez-libuv #45 gained a comment giving its first row over five runs (decision 0008).
+
+MERGED to main on 2026-10-05, on the owner's "do closing ritual": **the six PRs of the day's side work, in the order the session recommended**: #138, #137, then #140 to #143 bottom-up.
+- **#138, the ledger archived by milestone.** 5f6feff was squashed as 4cdef7d (tree a67c1f7, the tested head's; parent 8c04320).
+  - Its run, 37376959282, passed: fifty-one suites, 1,964 expected passes.
+  - Main's run on the squash, 37380218573, passed.
+- **#137, CI on Node 24.**
+  - Rebased onto 4cdef7d, meeting main only at this file's end, as 9444d7c. `make test` green there: fifty-one suites, 1,964.
+  - Its run, 37380351798, passed with no annotation: fifty-one suites, 1,964.
+  - Squashed as d7e5177 (tree a6518bf, the tested head's; parent 4cdef7d). Main's run, 37380563492, passed.
+- **#140 to #143, the guards' hoist.** All four were replayed onto d7e5177. Outside this file, each layer's changes were byte-identical to its tested twin's, and its ledger was main's text followed by its entries. `make test` green at each layer: fifty-one suites, 1,968, 1,968, 1,971 and 1,973; the clients suite read 7,344 B a GET.
+  - The heads' runs passed: 37380943402, 37380946396, 37380947690 and 37380949893. On ubuntu-24.04, the ratchet read 7,342 to 7,343 B (7,328 before the replay), the same as Darwin arm64 and Linux aarch64.
+  - Bottom-up, each was squashed after main's run on the squash below had finished. Each was moved up from the PR-below's tip with `move-up.sh` (the tested tree, one commit on main), then merged once its run passed:
+    - #140, 08af654, as 84f022e (main's run 37381187871);
+    - #141, c03d454 (run 37381220115), as a26df3a (main's run 37381509178);
+    - #142, 069704c (run 37381526078), as b4a575d (main's run 37381756184);
+    - #143, 7dfb212 (run 37381775726), as 5117bc5 (main's run 37382010390).
+
+    Every squash's tree is its tested head's, and its parent the squash below.
+- **Branches.** Each PR's branch was deleted on the remote and here, and this session's three worktrees removed. The shared checkout's `main` was fast-forwarded behind the guard: on `main`, no tracked changes, only `claude` and `zsh` running there.
+
+`make test` green on main: fifty-one suites, 1,973 expected passes; the clients suite read 7,344 B a GET.
+
+NEXT: chez-libuv #45 is open upstream (decision 0008). When it lands, the pin moves on a commit of its own, and `hoist-request-alloc.sps` re-measures; the 7,680 B ratchet may then tighten, by form. chez-websocket's work goes on in its own repository.
