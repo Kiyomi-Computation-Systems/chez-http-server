@@ -5234,3 +5234,11 @@ NEXT: chez-websocket's skeleton, in its own repository (plan §15), pinning chez
   Each mutant's full output was diffed against the fixed recipe's in every scenario: each changed only its own guard's lines, and the code before the fix changed exactly their union. With every pin present, all six recipes pass. With uriparse absent on this tree, CP-C and CP-D both still read `<absent>`: the guard and `--verify` each hold that case alone, since the server's tree has no `vendor/byte-machine` for a climbed read to find. Each is red where it alone holds. CP-C's case was built in scratch, because this tree reaches byte-machine only through chez-httparse's copy.
 - **Records.** This entry only. No CHANGELOG entry: nothing a client or an embedder meets changes. README.org's sentence on `check-pins` still holds.
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok.
+
+MERGED to main on 2026-10-05, on the owner's "CI is green, do closing ritual": **`check-pins` names a checkout that was never cloned `<absent>`, PR #134** (the entry above). e2df861 was squashed as 7cf4fec (tree b4d541a, the tested tip's; parent b9663fe).
+- **CI.** Its run, 37290538059, passed on e2df861: fifty-one suites, 1,957 expected passes on ubuntu-24.04, the seven pins checked twice. Main's run on the squash, 37292190293, passed too, before this reflect was pushed.
+- **Branches.** Merged from this session's own worktree without `--delete-branch`, since the shared checkout holds `main`. That `main` was fast-forwarded behind the guard (on `main`, no tracked changes), and the branch was deleted on the remote and here. No PR is open.
+
+`make test` green on main: fifty-one suites, 1,957 expected passes, every pin ok.
+
+NEXT: a new milestone or fix here, when the owner asks. chez-websocket's skeleton is merged in its own repository (its #1 to #3, 2026-10-05), pinning this server at v0.3.0 (5528fa4), and its work goes on there (plan §15). CHANGELOG.md's Unreleased is empty: this fix is tooling only.
