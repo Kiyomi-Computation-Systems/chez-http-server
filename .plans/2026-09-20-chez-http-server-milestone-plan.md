@@ -1768,3 +1768,21 @@ on the way.
   safety classifier stopped it, and it duplicates guardian's classes); its measurement
   stands in the ledger (3,536 probes, all refused but 6 gadgets that are no
   Transfer-Encoding header).
+
+---
+
+## 15. The WebSocket path (after v0.2.0)
+
+*Decided 2026-10-04 (decision 0022), on the owner's "begin the websocket path" and four
+forms.* WebSocket is a sibling library, `chez-websocket`, as §9's note of 2026-09-26
+recorded. It is private and was created on 2026-10-04. It holds a pure RFC 6455 core and
+a binding over this server's transport, and pins chez-http-server at a release tag. Its
+v1 has no permessage-deflate and no client; its code reads with a call that waits; and
+Autobahn|Testsuite gates it in Linux CI, pinned by digest (301 cases). Its brief, design
+and plan live in its own repository.
+
+This repository's part:
+- **The door lets a taker wait** (decision 0023): a take-over may answer `(awaiting
+  thunk)`, its thunk run on a coroutine, its waits told when the stream closes.
+- **Server 0.3.0** is released with it, for chez-websocket to pin.
+- Any change the library finds the door needs comes back here as a slice of its own.
