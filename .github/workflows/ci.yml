@@ -46,7 +46,7 @@ jobs:
 
       # This repository alone, with the job's own token; `make submodules`
       # clones the submodules below.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # libuv for the shim (pkg-config path); the X11/ncurses/uuid headers are
       # what Chez's from-source build needs; curl and ab (apache2-utils) are
@@ -75,7 +75,7 @@ jobs:
       # must miss, not merge).
       - name: Restore cached Chez Scheme
         id: chez-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ~/.local/chez
           key: chez-${{ runner.os }}-${{ steps.os.outputs.release }}-${{ runner.arch }}-${{ env.CHEZ_FLOOR_VERSION }}-threads
@@ -94,7 +94,7 @@ jobs:
       # never publishes a half-installed prefix under the key.
       - name: Save built Chez Scheme
         if: steps.chez-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ~/.local/chez
           key: ${{ steps.chez-cache.outputs.cache-primary-key }}
@@ -160,7 +160,7 @@ jobs:
 
       - name: Restore cached vtest
         id: vtest-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             build/vtest
@@ -175,7 +175,7 @@ jobs:
       # build that finished is saved under the key.
       - name: Save built vtest
         if: steps.vtest-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             build/vtest
