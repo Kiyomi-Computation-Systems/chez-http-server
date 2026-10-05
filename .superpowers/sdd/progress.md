@@ -5213,3 +5213,24 @@ MERGED to main on 2026-10-04, on the owner's "Do closing ritual": **v0.3.0's rel
 `make test` green on main: fifty-one suites, 1,957 expected passes, every pin ok.
 
 NEXT: chez-websocket's skeleton, in its own repository (plan §15), pinning chez-http-server at v0.3.0, when the owner asks. Its CI needs the owner's `SUBMODULES_READ_TOKEN` secret there, able to read chez-http-server and its four private dependencies. CHANGELOG.md's Unreleased is empty.
+
+**`check-pins` names a checkout that was never cloned `<absent>`, on `fix/check-pins-absent-checkout` (2026-10-05),** on the owner's word ("apply the same fix to chez-http-server's Makefile check-pins"), after chez-websocket's M0-4b found the same shape in its own `check-pins`.
+- **Measured first** (Darwin arm64, git 2.50.1). A checkout was made never-cloned by moving it aside and leaving its empty directory, the placeholder an uninitialized submodule leaves (`git submodule status` shows `-`). There `git -C` does not fail: it climbs to the repository around it and answers for that one.
+  - `check_pin` named the server's own commit: `PIN MISMATCH: vendor/chez-srfi at b9663fe…`, and the same for uriparse. With chez-httparse's byte-machine absent, it named chez-httparse's commit, `at 0b7058e…`.
+  - With `SRFI_PIN` set to the server's HEAD on the command line, an absent chez-srfi passed: `pin ok: vendor/chez-srfi b9663fe…`, exit 0.
+  - The dirty loop read the server's status. With chez-srfi absent and one byte appended to README.org, it answered `PIN DIRTY: vendor/chez-srfi`.
+  - With uriparse absent, the nested read named `HEAD:vendor/byte-machine`. The climbed read found no such path in the server's tree, and `rev-parse` without `--verify` prints an argument it cannot resolve. uriparse at its root commit, a32de37, which records no byte-machine, was named the same way.
+- **Fixed in chez-websocket's form.** `check_pin`, the nested read and the dirty loop each ask for the checkout's own `.git` first. A checkout without one is `<absent>`, and the dirty loop skips it. The nested read also reads with `--verify`. A comment above the target says why.
+- **Not `git submodule deinit`.** In this worktree the submodules' sections live in the shared `.git/config`, which the main checkout reads too, and deinit removes a submodule's section. Moving the checkout aside leaves the same directory and edits no config; check-pins reads none. The shared config's submodule entries were compared before and after: unchanged.
+- **Watched to fail.** Four mutants of the fixed recipe, one edit each, cut by exact match. Each ran with `make -f` in eight scenarios; after each setup the checkout went back and every pin was proven ok.
+
+| mutant | the edit | red |
+|---|---|---|
+| CP-A | `check_pin` reads without asking for `.git` | chez-srfi absent: `at b9663fe…`; `SRFI_PIN` = the server's HEAD: `pin ok`, exit 0; uriparse absent: `at b9663fe…`; chez-httparse's byte-machine absent: `at 0b7058e…`; the superproject below: `at` its own commit |
+| CP-B | the dirty loop reads without asking for `.git` | chez-srfi absent, README.org edited: `PIN DIRTY: vendor/chez-srfi`; the superproject below, whose HEAD records a byte-machine its tree lacks: `PIN DIRTY: vendor/uriparse` |
+| CP-C | the nested read without asking for `.git` | a scratch superproject holding a byte-machine gitlink of its own, at the pin, with uriparse not cloned: `pin ok: vendor/uriparse was released with byte-machine c338a57…` |
+| CP-D | the nested read without `--verify` | uriparse at a32de37: `released with byte-machine HEAD:vendor/byte-machine` |
+
+  Each mutant's full output was diffed against the fixed recipe's in every scenario: each changed only its own guard's lines, and the code before the fix changed exactly their union. With every pin present, all six recipes pass. With uriparse absent on this tree, CP-C and CP-D both still read `<absent>`: the guard and `--verify` each hold that case alone, since the server's tree has no `vendor/byte-machine` for a climbed read to find. Each is red where it alone holds. CP-C's case was built in scratch, because this tree reaches byte-machine only through chez-httparse's copy.
+- **Records.** This entry only. No CHANGELOG entry: nothing a client or an embedder meets changes. README.org's sentence on `check-pins` still holds.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok.

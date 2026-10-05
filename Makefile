@@ -81,10 +81,14 @@ submodules: ## Init the pinned dependency submodules (top-level + byte-machine)
 	git submodule update --init $(LIBUV_DIR) $(URIPARSE_DIR) $(SRFI_DIR) $(VTEST_DIR)
 	git submodule update --init --recursive $(HTTPARSE_DIR)
 
+# Every read asks for the checkout's own .git first: in a submodule that was
+# never cloned, `git -C` climbs to the repository around it and answers for
+# that one, its commit or its edits, so such a checkout is named <absent>.
+# `--verify` keeps a gitlink read that finds nothing from printing its argument.
 check-pins: ## Verify each submodule sits at its pinned commit (fingerprint check)
 	@fail=0; \
 	check_pin() { \
-	  got=$$(git -C "$$1" rev-parse HEAD 2>/dev/null); \
+	  got=; [ -e "$$1/.git" ] && got=$$(git -C "$$1" rev-parse HEAD 2>/dev/null); \
 	  if [ "$$got" != "$$2" ]; then \
 	    echo "PIN MISMATCH: $$1 at $${got:-<absent>}, expected $$2" >&2; fail=1; \
 	  else echo "pin ok: $$1 $$2"; fi; }; \
@@ -94,12 +98,12 @@ check-pins: ## Verify each submodule sits at its pinned commit (fingerprint chec
 	check_pin $(SRFI_DIR) $(SRFI_PIN); \
 	check_pin $(BYTE_MACHINE_DIR) $(BYTE_MACHINE_PIN); \
 	check_pin $(VTEST_DIR) $(VTEST_PIN); \
-	nested=$$(git -C $(URIPARSE_DIR) rev-parse HEAD:vendor/byte-machine 2>/dev/null); \
+	nested=; [ -e "$(URIPARSE_DIR)/.git" ] && nested=$$(git -C $(URIPARSE_DIR) rev-parse --verify HEAD:vendor/byte-machine 2>/dev/null); \
 	if [ "$$nested" != "$(strip $(BYTE_MACHINE_PIN))" ]; then \
 	  echo "PIN MISMATCH: $(URIPARSE_DIR) was released with byte-machine $${nested:-<absent>}, the library path carries $(strip $(BYTE_MACHINE_PIN))" >&2; fail=1; \
 	else echo "pin ok: $(URIPARSE_DIR) was released with byte-machine $$nested"; fi; \
 	for d in $(LIBUV_DIR) $(HTTPARSE_DIR) $(URIPARSE_DIR) $(SRFI_DIR) $(BYTE_MACHINE_DIR) $(VTEST_DIR); do \
-	  if [ -n "$$(git -C $$d status --porcelain --untracked-files=no 2>/dev/null)" ]; then \
+	  if [ -e "$$d/.git" ] && [ -n "$$(git -C $$d status --porcelain --untracked-files=no 2>/dev/null)" ]; then \
 	    echo "PIN DIRTY: $$d has local edits to tracked files" >&2; fail=1; fi; \
 	done; \
 	exit $$fail
