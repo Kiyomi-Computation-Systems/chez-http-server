@@ -392,3 +392,50 @@ NEXT: a new milestone or fix here, when the owner asks. CHANGELOG.md's Unrelease
 - **Watched to fail.** The red is main's annotation above, which names both actions. The green is this PR's run with no such annotation, read once it finishes and recorded at the merge.
 - **Records.** This entry only. No CHANGELOG entry: CI only, nothing a client or an embedder meets.
 - **Rebased** onto 8c04320, once #139 had merged, and again onto 4cdef7d, once #138 had archived this file by milestone: each time the branch met main only at this file's end, resolved as main's text followed by this entry. `make test` green again on the rebased tree: fifty-one suites, 1,964 expected passes.
+
+**The guards' hoist, layer 1: the profile, chez-libuv #45, and one guard for a run of turns, on `feat/hoist-guards` (2026-10-05),** on the owner's forms. The first form asked for a profile ("Shell allocation profile"). The second chose "Hoist all six (Recommended)", "I file it (Recommended)" and "Ratchet in the load smoke (Recommended)". Cut from 64761cb.
+
+- **Measured first** (Darwin arm64, Chez 10.4.1, libuv 1.52.1, oha 1.16.0). M8.4's spike on main gave 10,005 B a GET at one connection and 8,437 to 8,460 at 50 (`out/hoist-request-alloc.main-m8.run1.txt`). The session's other runs on main gave 10,001 to 10,009 and 8,458 to 8,466.
+- **Where it goes.** Probes in a scratch build read `bytes-allocated` with the collector held off; a probe around nothing reads 0 B.
+  - The core and the parser: 2,052 to 2,053 B, on oha's own 124-byte GET served as the gate serves one (`hoist-core-share.sps`).
+  - chez-libuv: about 3.3 KB.
+  - The shell and the scheduler: the rest, about 4.6 KB.
+
+  Most of the last two is protection around the work, none of it raising (`hoist-guard-cost.sps`): a `guard` costs 288 B, 672 under 100 frames and 4,256 under 1,000; `with-exception-handler` 160; `call/1cc` with it 256; `dynamic-wind` 96.
+- **Ablations**, each wrapper taken out with its protection, on M8.4's spike: a ceiling, not a fix. In B a GET, at 1 and 50 connections:
+  - the turn's `guard`: −780, −90;
+  - the scheduler turn's `dynamic-wind`: −295, −50;
+  - `dispatch!`'s `guard` as `with-exception-handler`: −470 at 1 (at 50, ±300 between runs);
+  - `drain!`'s `dynamic-wind`: −413, −415;
+  - `send!`'s `guard`: −305, −300;
+  - `call-handler!`'s `guard`: −430, −410;
+  - the six: −2,740, −1,770;
+  - chez-libuv's three: −1,165, −880;
+  - all: −3,925, −2,740.
+- **Filed** chez-libuv #45 (decision 0008's row and bullet). Its program is `libuv-callback-alloc.sps`. A write's round reads 3,462 to 3,509 B over five runs, at 1.0 to 1.5 runs a round.
+- **Built, the turn level.**
+  - `shell-run-turns!` turns the scheduler while work remains and `go-on?` holds, under one run loop's guard. The guard is set up again only after a callback's error, and a contract condition is raised again.
+  - `serve`'s `run-until-stopped!` turns through it.
+  - `scheduler-turn!` sets and leaves its phase with no `dynamic-wind`. Both of `run-guarded`'s arms set the phase back first, through `scheduler-turn-abandoned!`: a raise out of a turn's poll left it `'in-uv-run`.
+  - `shell-turn!` is unchanged, one turn under its own guard.
+- **Checks added**, four in the shell suite, through `run-turns-until` (`tests/shell-testing.sls`), which turns as `serve` does:
+  - a run of turns, after an error in a callback, runs on and answers a request;
+  - having logged the error and answered 200;
+  - a contract condition is raised again, logged first;
+  - after it, the next run answers a request and logs nothing more.
+- **Watched to fail**, against every suite:
+
+| mutant | the edit | result |
+|---|---|---|
+| L1-0 | unmutated, a comment | green, the clients suite once vtest was built in the worktree |
+| L1-1 | the callback arm sets no phase back | red: the shell suite, 13, the new checks among them, and the two raising-callback checks before them |
+| L1-2 | the contract arm sets no phase back | red: "and the next run of turns answers a request, logging nothing more" |
+| L1-3 | a run of turns stops at a callback's error | red: the first two new checks |
+| L1-5 | `serve`'s run never asks whether the server stopped | red: the serve suite, 4 (the drain's children and the taker's deferred dones) |
+| L1-6 | a turn's poll is not `'in-uv-run` | red: the scheduler suite, 3, and the waits suite, 2 (R1's rows) |
+| L1-7 | a turn's poll that returns leaves the phase `'in-uv-run` | red: the contract suite, 39, and more |
+
+  Not run: the inner loop never asking `go-on?`, a run that never returns, which no check can stop but the runner's 600 s cap.
+- **Measured on this layer**, `hoist-request-alloc.sps`, M8.4's spike turned as `serve` now turns: 8,624 to 8,630 B a GET at one connection, and 8,374 to 8,381 at 50 (`out/hoist-request-alloc.L1.run1.txt`). That is −1,375 and −80 against main. The loop now makes no closure a turn.
+- `make test` green (Darwin arm64): fifty-one suites, 1,961 expected passes.
+- **Rebased** onto 8c04320, once #139 had merged: the branch met main only at this file's end, resolved as main's text followed by this entry. `make test` green again on this layer's rebased tree: fifty-one suites, 1,968 expected passes.

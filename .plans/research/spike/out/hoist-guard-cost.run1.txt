@@ -1,0 +1,10 @@
+Chez Scheme Version 10.4.1 (tarm64osx)
+calibration, a plain call: 0 B
+guard, a re-raising clause, no raise: 288 B
+with-exception-handler: 160 B
+call/1cc + with-exception-handler: 256 B
+dynamic-wind, thunks with two free variables: 96 B
+guard under 0 frames: 288 B
+guard under 10 frames: 288 B
+guard under 100 frames: 672 B
+guard under 1000 frames: 4256 B

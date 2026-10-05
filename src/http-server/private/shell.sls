@@ -249,6 +249,7 @@
 ;;; failure's place: a log that raises there is ignored.
 (library (http-server private shell)
   (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run! shell-turn!
+          shell-run-turns!
           shell-watch-signals! shell-call-deferred!
           loop-turn!
           shell-connections shell-server shell-listener shell-timer shell-signals shell-deadlines
@@ -271,7 +272,7 @@
                 limits-read-buffer-size limits-backlog limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server private scheduler)
-                make-scheduler scheduler-turn! scheduler-call! scheduler-spawn!
+                make-scheduler scheduler-turn! scheduler-turn-abandoned! scheduler-call! scheduler-spawn!
                 scheduler-phase scheduler-feed-begin! scheduler-feed-end! scheduler-waits)
           (only (http-server private waits)
                 make-waits waits-clock! waits-fire! waits-timed waits-resolver!
@@ -1458,6 +1459,23 @@
   (define (shell-turn! sh)
     (run-guarded sh (lambda () (scheduler-turn! (shell-scheduler sh))) (lambda (e) #t)))
 
+  ;; shell-run-turns! : Shell (-> Boolean) -> Void
+  ;; Turn the loop's scheduler while work remains and `go-on?`, asked after
+  ;; each turn, answers true: shell-turn! after shell-turn!, under one run
+  ;; loop's guard for them all, set up again only after a callback's error.
+  ;; A guard costs 288 B and more where the stack is deep, so `serve`'s
+  ;; turns cost one each, not one a turn.  A contract condition is raised
+  ;; again, as shell-turn! raises it.
+  (define (shell-run-turns! sh go-on?)
+    (let again ()
+      (when (and (run-guarded sh
+                              (lambda ()
+                                (let turn ()
+                                  (and (scheduler-turn! (shell-scheduler sh)) (go-on?) (turn))))
+                              (lambda (e) #t))
+                 (go-on?))
+        (again))))
+
   ;; loop-turn! : UvLoop -> Boolean
   ;; One turn of `loop`'s scheduler with no guard: what remains, as the
   ;; turn answers.  A raise from a callback comes out as uv-run raises it.
@@ -1477,13 +1495,17 @@
   ;; What `thunk`, a run of the loop, answers, under the run loop's guard:
   ;; a byte-machine contract condition is logged, the table reconciled, and
   ;; raised again; a raise `callback?` takes as a callback's is logged, the
-  ;; table reconciled, and #t answered, so the caller runs again.
+  ;; table reconciled, and #t answered, so the caller runs again.  Either
+  ;; way the scheduler's phase is set back first: a raise out of a turn's
+  ;; poll left it 'in-uv-run (scheduler-turn!).
   (define (run-guarded sh thunk callback?)
     (guard (e ((byte-machine-contract-condition? e)
+               (scheduler-turn-abandoned!)
                (log-quietly! sh 'contract-violation (list e))
                (reconcile! sh)
                (raise e))
               ((callback? e)
+               (scheduler-turn-abandoned!)
                (log-quietly! sh 'callback-error (list e))
                (reconcile! sh)
                #t))

@@ -60,7 +60,7 @@
 ;;; verb finds both through the coroutine running.
 (library (http-server private scheduler)
   (export make-scheduler scheduler? scheduler-ready?
-          scheduler-spawn! scheduler-call! scheduler-drain! scheduler-turn!
+          scheduler-spawn! scheduler-call! scheduler-drain! scheduler-turn! scheduler-turn-abandoned!
           scheduler-waits scheduler-waits-set!
           coroutine? current-coroutine coroutine-scheduler waiting-coroutine
           coroutine-waits coroutine-waits-set! coroutine-suspending?
@@ -278,11 +278,20 @@
   ;; scheduler-turn! : Scheduler -> Boolean
   ;; The drain, then the poll, 'nowait when something is ready and 'once
   ;; when nothing is, in the phase 'in-uv-run: whether work remains, as the
-  ;; poll answers, or #t while something is ready.
+  ;; poll answers, or #t while something is ready.  The phase is set and
+  ;; left with no dynamic-wind, which costs every turn 96 B and more; a
+  ;; poll that raises leaves it 'in-uv-run until whoever catches the raise
+  ;; calls scheduler-turn-abandoned!.
   (define (scheduler-turn! s)
     (scheduler-drain! s)
-    (let ((more (dynamic-wind
-                 (lambda () (set! phase 'in-uv-run))
-                 (lambda () ((scheduler-poll s) (if (scheduler-ready? s) 'nowait 'once)))
-                 (lambda () (set! phase 'scheduling)))))
-      (or (and more #t) (scheduler-ready? s)))))
+    (set! phase 'in-uv-run)
+    (let ((more ((scheduler-poll s) (if (scheduler-ready? s) 'nowait 'once))))
+      (set! phase 'scheduling)
+      (or (and more #t) (scheduler-ready? s))))
+
+  ;; scheduler-turn-abandoned! : -> Void
+  ;; A turn's poll raised, as uv-run raises a callback's error once libuv's
+  ;; turn is over, so no callback is under way: the phase is 'scheduling
+  ;; again.  The run loop's guard calls it as it catches the raise.
+  (define (scheduler-turn-abandoned!)
+    (set! phase 'scheduling)))

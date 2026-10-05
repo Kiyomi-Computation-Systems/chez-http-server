@@ -44,7 +44,7 @@
           (only (http-server limits) limits-from-environment address-from-environment)
           (only (http-server server) server-phase)
           (only (http-server private shell)
-                make-shell shell-listen! shell-turn! shell-watch-signals! shell-call-deferred!
+                make-shell shell-listen! shell-turn! shell-run-turns! shell-watch-signals! shell-call-deferred!
                 shell-server wall-clock))
 
   ;; &http-server-error : the condition type of the server's own errors.
@@ -84,9 +84,7 @@
   ;; a loop its caller owns.  So the `done` of a taker's write refused as the
   ;; server stops is told before the run returns (M8.2's review, its sixth).
   (define (run-until-stopped! sh)
-    (let run ()
-      (when (and (shell-turn! sh) (not (eq? (server-phase (shell-server sh)) 'stopped)))
-        (run)))
+    (shell-run-turns! sh (lambda () (not (eq? (server-phase (shell-server sh)) 'stopped))))
     (shell-call-deferred! sh))
 
   ;; start-server : UvLoop (Request -> Response) (String -> (U String #f))

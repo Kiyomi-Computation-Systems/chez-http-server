@@ -1768,6 +1768,46 @@
       (test-eq "after any other error in a callback, the run loop runs on" 'ran-on outcome)
       (test-eq "having logged the callback's error first" 'callback-error (first-logged)))
 
+    ;; A run of turns, as serve runs them (shell-run-turns!): one guard for
+    ;; them all, set up again only after a callback's error.  The error comes
+    ;; out of a turn's poll, so the turns after it must drain as before: a
+    ;; request sent with it is answered.
+    (set! logged '())
+    (let* ((t (make-uv-timer loop)) (fired #f)
+           (cl (begin
+                 (uv-timer-start! t (lambda (t) (set! fired #t) (raise (make-message-condition "a bug in a callback"))) 0 0)
+                 (open-client! (b "GET /after HTTP/1.1\r\nHost: x\r\n\r\n")))))
+      (test-eq "a run of turns, after an error in a callback, runs on and answers a request" 'satisfied
+               (run-turns-until loop shell (lambda () (and fired (= 1 (length (responses (client-bytes cl)))))) cap))
+      (test-equal "having logged the callback's error, and answered the request 200"
+                  '(callback-error (200 "/after"))
+                  (list (first-logged)
+                        (let ((r (car (append (responses (client-bytes cl)) (list '(none "" () "" none))))))
+                          (list (status r) (body r)))))
+      (uv-close! t)
+      (run-until loop (lambda () (eq? (uv-handle-state t) 'closed)) 8)
+      (client-close! cl))
+    (set! logged '())
+    (let* ((t (make-uv-timer loop)) (reentrancy (provoke-reentrancy))
+           (outcome (begin
+                      (uv-timer-start! t (lambda (t) (raise reentrancy)) 0 0)
+                      (guard (e ((byte-machine-contract-condition? e) (byte-machine-contract-condition-code e)))
+                        (run-turns-until loop shell (lambda () #f) 8)))))
+      (uv-close! t)
+      (run-until loop (lambda () (eq? (uv-handle-state t) 'closed)) 8)
+      (test-equal "a run of turns raises a contract condition again, having logged it first"
+                  '(reentrancy contract-violation)
+                  (list outcome (first-logged)))
+      ;; Its raise came out of a turn's poll too: the turns after it drain.
+      (let ((cl (open-client! (b "GET /next HTTP/1.1\r\nHost: x\r\n\r\n"))))
+        (test-equal "and the next run of turns answers a request, logging nothing more"
+                    '(satisfied (200 "/next") 1)
+                    (list (run-turns-until loop shell (lambda () (= 1 (length (responses (client-bytes cl))))) cap)
+                          (let ((r (car (append (responses (client-bytes cl)) (list '(none "" () "" none))))))
+                            (list (status r) (body r)))
+                          (length logged)))
+        (client-close! cl)))
+
     ;; A bug in a connection's callback closes that connection.
     (set! logged '())
     (let* ((before (newest))
