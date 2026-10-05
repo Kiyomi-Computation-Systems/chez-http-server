@@ -5192,3 +5192,14 @@ MERGED to main on 2026-10-04, on the owner's "Do closing ritual": **the WebSocke
 `make test` green on main: fifty-one suites, 1,957 expected passes, every pin ok.
 
 NEXT: server 0.3.0, for chez-websocket to pin (CHANGELOG.md's Unreleased holds Added: a taker can wait); then chez-websocket's skeleton, in its own repository (plan §15). Both when the owner asks.
+
+**v0.3.0's release, on `chore/release-0.3.0` (2026-10-04),** on the owner's "Cut the release", after the WebSocket path's door change.
+- **What it carries.** Every PR since v0.2.0, #131 and #132, was read against CHANGELOG.md's Unreleased. The one an embedder meets is in it: Added, a taker can wait (#132, decision 0023). #131 is decision 0022 and the plan only.
+- **Semantic versioning.** The addition breaks nothing in 0.2.0's API: a take-over that answers anything but `awaiting` runs as before. So the release is 0.3.0, the minor version decision 0022 named for it.
+- **The release note checked.** `sleep-ms`, `resolve` and `with-deadline` find the loop's waits through the running coroutine's scheduler (`loop-waits`, waits.sls), and a taker's thunk is spawned on the shell's scheduler, so the Added entry's list of waits holds for it.
+- **The pins are v0.2.0's.** Every gitlink is unchanged since the tag: chez-libuv d46654c (v0.7.3), chez-httparse 0b7058e (v0.4.5, byte-machine v0.7.0), uriparse 5ecd88f (v0.6.2), chez-srfi 7879b52, vtest2 803dcd0.
+- **Main's CI on the code released.** 9b1a421's own run was cancelled 77 s in, when the ledger reflect fe75671 was pushed during it (ci.yml's concurrency group cancels a run in progress). fe75671's run, 37249382260, passed: its tree is 9b1a421's plus the ledger.
+- **Built.** CHANGELOG.md: Unreleased moved under `[0.3.0] - 2026-10-04`, with an intro naming the addition, that nothing breaks, and the pins; a fresh empty Unreleased above it; the link references (`[0.3.0]` compares v0.2.0 with v0.3.0). README.org's status names v0.3.0 the current release and what it adds.
+- **Not re-measured.** The 0.3.0 section makes no throughput or memory claim, so the load smoke was not run again. A taker that waits holds a parked coroutine, as a handler does (design §5.2: 3,637 to 3,644 B), and a taker that does not wait runs none.
+- **The tag.** After the merge, once main's run on the squash is green, `v0.3.0` goes on the squash, annotated as v0.2.0's was: "chez-http-server v0.3.0 — a taker can wait", with a body pointing at CHANGELOG.md. The owner's "Cut the release" asks for it; the merge waits for "do closing ritual". The ledger reflect is pushed only after that run has finished.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.

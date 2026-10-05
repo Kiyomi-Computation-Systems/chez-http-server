@@ -6,6 +6,15 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-04
+
+The third release. A taker can now wait: a take-over may answer `(awaiting thunk)`,
+as a handler does, and its thunk runs on a coroutine. It is the one change that
+chez-websocket, a WebSocket library to be built on this server, needs from it
+(decisions 0022 and 0023). Nothing breaks: a take-over that answers anything else
+runs as before. The pinned libraries are 0.2.0's: chez-libuv v0.7.3, chez-httparse
+v0.4.5 with byte-machine v0.7.0, and uriparse v0.6.2.
+
 ### Added
 
 - **A taker can wait.** A take-over that answers `(awaiting thunk)`, as a handler
@@ -160,6 +169,7 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/releases/tag/v0.1.0
