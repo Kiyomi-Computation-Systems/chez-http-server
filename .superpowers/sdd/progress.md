@@ -5295,3 +5295,11 @@ NEXT: a new milestone or fix here, when the owner asks. The entry above's "Not f
 - **chez-websocket has the same shape** at its `main`, 33534e7. Its `prod` has no prerequisite, and its first line enters `$(SERVER_DIR)/vendor/chez-libuv`, inside the server's own submodule. In a scratch clone of that commit, never cloned below, `make prod` stopped there, exit 2, with another message: `make: *** vendor/chez-http-server/vendor/chez-libuv: No such file or directory.  Stop.`. Not changed here. Its `submodules` clones the server and the pins inside it, so the same prerequisite is the likely fix there; not measured.
 - **Records.** This entry only. No CHANGELOG entry: tooling only, as #134 and #135 were. README.org does not name `make prod`.
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok.
+
+MERGED to main on 2026-10-05, on the owner's "do closing ritual": **`make prod` clones the submodules first, PR #136** (the entry above). 203d74e was squashed as 97c12f5 (tree ccfcf99, the tested tip's; parent f761ec7).
+- **CI.** Its run, 37294605408, passed on 203d74e: fifty-one suites, 1,957 expected passes on ubuntu-24.04, the seven pins checked twice. CI runs `make test`, never `make prod`. Main's run on the squash, 37296038720, passed too, before this reflect was pushed.
+- **Branches.** Merged from this session's own worktree without `--delete-branch`, since the shared checkout holds `main`. That `main` was fast-forwarded behind the guard (on `main`, no tracked changes), and the branch was deleted on the remote and here. No PR is open.
+
+`make test` green on main: fifty-one suites, 1,957 expected passes, every pin ok.
+
+NEXT: a new milestone or fix here, when the owner asks. The entry above's chez-websocket gap, its `make prod` on a checkout never cloned, is a task of its own in that repository, begun 2026-10-05. CHANGELOG.md's Unreleased is empty: this fix is tooling only.
