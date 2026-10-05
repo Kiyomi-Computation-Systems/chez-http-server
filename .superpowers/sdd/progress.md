@@ -5158,3 +5158,13 @@ MERGED to main on 2026-10-04, on the owner's "CI is green, do closing ritual": *
 `make test` green on main: fifty-one suites, 1,949 expected passes, every pin ok.
 
 NEXT: a new milestone, when the owner asks. CHANGELOG.md's Unreleased is empty.
+
+**The WebSocket path decided, on `docs/websocket-path` (2026-10-04),** on the owner's "Let's begin the websocket path", four forms ("New repo", "Can wait", "RFC 6455 only", "Autobahn in CI"), and "Create it now". Decision 0022.
+- **Read first.** Plan §9's note of 2026-09-26 already said WebSocket is "a library of its own ... not code in this repository", after the owner's own question in an earlier session. Two research agents (Sonnet), each fact with its source, covered three things:
+  - RFC 6455's rules for a server, and RFC 7692 §5;
+  - five peers' APIs and defaults. Four read with a call that waits and Node's ws with callbacks. Message caps run from 32 KiB to none. Only coder and gorilla check `Origin` by default, and only websockets compresses by default;
+  - Autobahn|Testsuite: Apache-2.0, v25.10.1, 517 cases, 301 without compression. Its image is linux/amd64 only, and Deno pins it by digest.
+- **Here:** no SHA-1 or base64 in the tree; a parked `await` holds 3,637 to 3,644 B (design §5.2); Docker 29.2.1 runs on the Mac.
+- **DECIDED (0022).** A private sibling repository, `chez-websocket`, created on "Create it now" (Kiyomi-Computation-Systems/chez-websocket, its first commit the siblings' license, 27ad906). Its code can wait; v1 is RFC 6455 alone; Autobahn gates it in CI, 301 cases. Weighed and not taken: the library in this repository; callbacks in place; permessage-deflate; a client; unit vectors alone.
+- **Records.** Decision 0022, new. Plan §15, new: the WebSocket path, this repository's part being the door change (decision 0023, the next PR) and server 0.3.0. No code and no CHANGELOG entry.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,949 expected passes, every pin ok.
