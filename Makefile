@@ -221,9 +221,13 @@ test: build check-pins check-imports ## Run every tests/test-*.sps (status 0/1/2
 	if [ $$fail -eq 0 ]; then echo "ALL SUITES PASSED"; else echo "SUITE FAILED"; fi; \
 	exit $$fail
 
-prod: ## Rebuild the shim optimized (FLAVOR=prod), then run the suite
+# make hands FLAVOR=prod to the suite's chez-libuv build, which would
+# otherwise relink a dev shim.  check-prod depends on nothing, so the last
+# line reads the shim the suite ran on.
+prod: ## Rebuild chez-libuv's shim optimized, run the suite on it, and check it is still the prod one
 	$(MAKE) -C $(LIBUV_DIR) prod
-	$(MAKE) test
+	$(MAKE) test FLAVOR=prod
+	$(MAKE) -C $(LIBUV_DIR) check-prod
 
 clean: ## Remove our build artifacts and the vendored shim
 	rm -rf $(BUILD_DIR)

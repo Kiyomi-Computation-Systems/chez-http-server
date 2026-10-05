@@ -5242,3 +5242,24 @@ MERGED to main on 2026-10-05, on the owner's "CI is green, do closing ritual": *
 `make test` green on main: fifty-one suites, 1,957 expected passes, every pin ok.
 
 NEXT: a new milestone or fix here, when the owner asks. chez-websocket's skeleton is merged in its own repository (its #1 to #3, 2026-10-05), pinning this server at v0.3.0 (5528fa4), and its work goes on there (plan §15). CHANGELOG.md's Unreleased is empty: this fix is tooling only.
+
+**`make prod` runs the suite on the prod shim, and checks it did, on `fix/prod-on-prod-shim` (2026-10-05),** on the owner's ask, after chez-websocket's M0-13 (its 4f44296) found the same shape in its own `make prod`.
+- **Measured first** (Darwin arm64, GNU Make 3.81, Chez 10.4.1, libuv 1.52.1). `prod` built and checked chez-libuv's prod shim, then ran `make test`. That target's `deps` asks chez-libuv for its default flavor, dev, and chez-libuv's relink-guard relinks a shim built at the other flavor. The closing `check-prod` went in alone first, and `make prod` was red, exit 2:
+  - chez-libuv's own `check-prod` passed on its `-O2` link;
+  - the suite's build printed `relink-guard: shim provenance changed (flavor=dev, acquisition=pkgconfig); relinking` and linked with `-g -O0 -DCHEZ_LIBUV_DEBUG_COUNTERS`;
+  - the suite passed on that dev shim: fifty-one suites, 1,957 expected passes, `make test`'s own counts;
+  - the closing check failed: `check-prod: FAIL: the counters moved while the probe's scope was live: ((loop . 1) (tcp . 1) …)`.
+- **Fixed in chez-websocket's form.** The suite runs with `FLAVOR=prod`, which make hands to chez-libuv's build by itself, so `deps` has no pass-through (chez-websocket's first fix had one, and its mutant, M0-12, survived). `check-prod` depends on nothing, so the closing call reads the shim the suite ran on. The help text says what the target does, and a three-line comment says why.
+- **Green**, exit 0. The two `check-prod` runs pass with no relink-guard line and no second link between them. The suite names the shim it ran on: the shell suite prints "chez-libuv's counters are off in this build" five times and the clients suite once. Those six checks are the only difference from a dev run: fifty-one suites, 1,951 expected passes (shell 190 for 195, clients 35 for 36, every other suite the same).
+- **Watched to fail.** Three mutants of the fixed Makefile, one edit each, cut by exact match. PF-A and PF-B ran with `make -f`, so the Makefile itself stayed fixed; PF-B started from the dev shim `make test` leaves. CH ran in a scratch copy, since `check-help` reads the file named `Makefile`.
+
+| mutant | the edit | result |
+|---|---|---|
+| PF-A | the suite runs without `FLAVOR=prod`, as first written | red, exit 2: the suite's build relinks a dev shim (`flavor=dev`), the suite passes on it (1,957), and the closing `check-prod: FAIL: the counters moved …` |
+| PF-B | the leading `$(MAKE) -C $(LIBUV_DIR) prod` dropped | survives, exit 0: the suite's own build relinks at prod (`relink-guard: … (flavor=prod, …)`, `-O2`), the six counter checks are skipped by name (1,951), and the closing `check-prod` passes |
+| CH | `prod`'s `## ` help text made a plain comment | red: `check-help: 'prod' has no '## ' description`, exit 2 |
+
+  PF-B survives because make hands `FLAVOR=prod` down: in its run the one `-O2` link was the suite's own build. So the verdict no longer rests on the leading line. The line stays, as in the owner's form of the fix and in chez-websocket's: chez-libuv's `prod` links from a clean tree and checks the shim before the suite starts. This survivor is a scope statement, measured.
+- **Not fixed here.** On a checkout whose submodules were never cloned, `make prod` stops at its first line: ``make[1]: *** No rule to make target `prod'.  Stop.``, exit 2. `prod` reaches chez-libuv's make before anything runs `submodules`. This was measured on this worktree before `make submodules`, and is left for the owner, to keep this change to the recipe.
+- **Records.** This entry only. No CHANGELOG entry: nothing a client or an embedder meets changes, and README.org does not name `make prod`.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok.
