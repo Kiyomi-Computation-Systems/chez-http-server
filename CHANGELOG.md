@@ -16,6 +16,14 @@ All notable changes to chez-http-server are recorded here. The format follows
   as `-1` and `five` were. Leading zeros are still digits: `08080` is 8080 (decision
   0005's amendment of 2026-10-05).
 
+- **A request allocates about a quarter less.** Through the whole server, a GET kept
+  alive allocated about 10.0 KB at one connection and 8.4 KB at 50; it now allocates
+  7.3 KB and 7.0 KB, on Darwin and Linux alike. The server sets up its protection
+  against a raise once for a run of turns, a dispatch or a handler's failure, where it
+  set it up for every turn, every part of a dispatch and every handler call. What a
+  handler sees, and what a raise does, is unchanged. A check now holds a GET to 7.5 KiB
+  (decision 0002's amendment of 2026-10-05).
+
 ## [0.3.0] - 2026-10-04
 
 The third release. A taker can now wait: a take-over may answer `(awaiting thunk)`,

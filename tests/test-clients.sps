@@ -47,14 +47,15 @@
 ;;;     answered 200 and none failed, many connections at a time, kept alive
 ;;;     and not.
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) collect collect-maximum-generation bytes-allocated getenv directory-list)
+        (only (chezscheme) collect collect-maximum-generation bytes-allocated getenv directory-list
+              statistics sstats-bytes)
         (libuv) (uv-testing) (shell-testing)
         (http-server)
         (only (http-server limits) default-limits limits-read-buffer-size
               limits-write-high-water limits-write-low-water)
         (only (http-server connection) conn-outstanding-bytes)
         (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-timer
-              connection-state)
+              shell-run-turns! connection-state)
         (only (http-server private serve) start-server)
         (rename (only (libuv private native) live-counts) (live-counts debug-live-counts))
         (producers)
@@ -402,6 +403,47 @@
 ;; time for half an hour.
 (define oha-cap 25000)
 
+;; --- what a GET allocates through the whole server (the guards' hoist) ---
+;;
+;; Decision 0002's gate holds what the core allocates for a request; this
+;; ratchet holds what the whole server does, the libuv shell, the scheduler
+;; and chez-libuv included.  A server of its own, on a loop of its own, its
+;; handler answering every request with one response made once, so the
+;; handler allocates nothing, is sent oha's GETs on one connection kept
+;; alive, 2,000 and then 7,000, its loop turned as `serve` turns it
+;; (shell-run-turns!) with nothing else on it.  The bytes this process
+;; allocates over each run, Chez's cumulative counter, differ by what 5,000
+;; GETs cost: what does not grow with the requests, oha's start, its
+;; connection and its report, cancels.  Measured on
+;; 2026-10-05 once the shell's guards were hoisted: 7,332 to 7,337 B a GET
+;; on Darwin arm64 and 7,333 to 7,340 on Linux aarch64, by the spike
+;; hoist-request-alloc.sps, against 10,005 before.  The ratchet is 7.5 KiB,
+;; 340 B over the most measured: undoing any one of the hoist's three
+;; layers passes it.
+(define get-ratchet 7680)
+
+;; allocated-over : UvLoop Shell String Nat -> (List Nat (U (Listof (Pair String Nat)) #f))
+;; oha's `n` GETs to `url` on one connection kept alive, the loop turned as
+;; `serve` turns it until oha has ended, or for oha-cap turns: the bytes this
+;; process allocated from before oha started to its end, and its responses
+;; by status.
+(define (allocated-over loop sh url n)
+  (collect)
+  (let* ((b0 (sstats-bytes (statistics)))
+         (c (spawn loop oha (list "--no-tui" "--output-format" "json" "-t" "5s"
+                                  "-n" (number->string n) "-c" "1" url)))
+         (turns 0))
+    (shell-run-turns! sh (lambda ()
+                           (set! turns (+ turns 1))
+                           (and (< turns oha-cap) (not (and (child-exit c) (child-ended? c))))))
+    (let ((b1 (sstats-bytes (statistics))))
+      (unless (child-exit c)
+        (uv-process-kill! (child-process c) 'sigkill)
+        (run-shell-until loop sh (lambda () (child-exit c)) cap))
+      (uv-close! (child-process c))
+      (when (uv-handle-open? (child-pipe c)) (uv-close! (child-pipe c)))
+      (list (- b1 b0) (oha-tally (utf8->string (collector-bytes (child-out c))) "statusCodeDistribution")))))
+
 ;; json-string : String Nat -> (Values String Nat)
 ;; The JSON string whose text begins at `i`, just past its opening quote,
 ;; with \" and \\ read as the character escaped, and where it ends, just past
@@ -673,6 +715,29 @@
                              (oha-tally text "errorDistribution") (oha-number text "totalData")))))
        '(("20,000 GETs, 50 connections kept alive" ("-n" "20000" "-c" "50") 20000)
          ("2,000 GETs, 10 at a time, each on a connection of its own" ("-n" "2000" "-c" "10" "--disable-keepalive") 2000)))
+
+      ;; --- what a GET allocates through the whole server (the guards' hoist) ---
+      (let* ((aloop (make-uv-loop))
+             (alogged '())
+             (ok (make-response 200 #f '() (b "ok")))
+             (ash (start-server aloop (lambda (r) ok) (env '("CHEZ_HTTP_PORT" . "0"))
+                                (lambda (what details) (set! alogged (append alogged (list (cons what details)))))))
+             (aurl (string-append "http://127.0.0.1:" (number->string (caddr (assq 'listening alogged))) "/"))
+             (small (allocated-over aloop ash aurl 2000))
+             (large (allocated-over aloop ash aurl 7000))
+             (per-get (/ (- (car large) (car small)) 5000)))
+        (let ((p (current-output-port)))
+          (put-string p (string-append "clients: a GET through the whole server, one connection kept alive, allocates "
+                                       (number->string (exact (round per-get))) " B\n"))
+          (flush-output-port p))
+        (test-equal (string-append "a GET through the whole server allocates at most " (number->string get-ratchet)
+                                   " B, one connection kept alive, every one answered 200")
+                    (list #t '(("200" . 2000)) '(("200" . 7000)))
+                    (list (<= per-get get-ratchet) (cadr small) (cadr large)))
+        (shell-shutdown! ash)
+        (run-until-drained aloop cap)
+        (test-equal "shut down, nothing of the measured server is left on its loop" '() (uv-loop-live-handles aloop))
+        (uv-loop-teardown! aloop))
 
       ;; --- the counters return to zero ---
       (test-eq "with every client gone, every connection leaves the table" 'satisfied
