@@ -14,10 +14,10 @@
 (library (shell-testing)
   (export open-client client? client-tcp client-collector client-connected client-end
           client-read! client-send! client-shut! client-bytes client-close!
-          err->symbol run-shell-until run-loop-until run-until-drained
+          err->symbol run-shell-until run-turns-until run-loop-until run-until-drained
           bytes-between responses spaced looked-up)
   (import (rnrs) (libuv) (uv-testing) (response-reader)
-          (only (http-server private shell) shell-turn! loop-turn!))
+          (only (http-server private shell) shell-turn! shell-run-turns! loop-turn!))
 
   ;; err->symbol : (U #f Condition) -> Symbol
   ;; A callback's error as a symbol no failure path confuses with success:
@@ -92,6 +92,23 @@
   ;; cannot take the raise's place (as chez-libuv's run-until/ticking does).
   (define (run-shell-until loop sh pred cap)
     (ticking-until loop (lambda () (shell-turn! sh)) pred cap))
+
+  ;; run-turns-until : UvLoop Shell (-> Boolean) Nat -> Symbol
+  ;; As run-shell-until, the steps taken by the shell's own run of turns
+  ;; (shell-run-turns!), as serve takes them: one run loop's guard for them
+  ;; all, set up again only after a callback's error.  'satisfied once `pred`
+  ;; holds after a turn, or else 'iterations-exhausted.
+  (define (run-turns-until loop sh pred cap)
+    (let ((i 0) (outcome 'iterations-exhausted))
+      (ticking-until loop
+                     (lambda ()
+                       (shell-run-turns! sh (lambda ()
+                                              (cond ((pred) (set! outcome 'satisfied) #f)
+                                                    ((= i cap) #f)
+                                                    (else (set! i (+ i 1)) #t)))))
+                     (lambda () #f)
+                     1)
+      outcome))
 
   ;; run-loop-until : UvLoop (-> Boolean) Nat -> Symbol
   ;; The same with no shell's guard: each step a turn of the loop's

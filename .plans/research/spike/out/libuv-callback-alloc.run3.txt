@@ -1,0 +1,7 @@
+Chez Scheme Version 10.4.1 (tarm64osx), libuv 1.52.1, chez-libuv's src as built
+calibration, a cons: 16 B
+uv-run 'nowait, idle loop: 128.0 B
+timer: start and stop 0.0 B; start and a run that fires it 1049.9 B: the firing, less an idle run, 921.9 B
+uv-write*! of one 16-byte segment, the call alone: 825.6 B
+a round: the call, then 1.5 uv-run 'once on average, delivering the completion, libuv's alloc callback, the read and its copy: 3509.3 B
+  the callbacks' share, less the call and 1.5 idle runs: 2496.5 B
