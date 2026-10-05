@@ -5203,3 +5203,13 @@ NEXT: server 0.3.0, for chez-websocket to pin (CHANGELOG.md's Unreleased holds A
 - **Not re-measured.** The 0.3.0 section makes no throughput or memory claim, so the load smoke was not run again. A taker that waits holds a parked coroutine, as a handler does (design §5.2: 3,637 to 3,644 B), and a taker that does not wait runs none.
 - **The tag.** After the merge, once main's run on the squash is green, `v0.3.0` goes on the squash, annotated as v0.2.0's was: "chez-http-server v0.3.0 — a taker can wait", with a body pointing at CHANGELOG.md. The owner's "Cut the release" asks for it; the merge waits for "do closing ritual". The ledger reflect is pushed only after that run has finished.
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,957 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
+
+MERGED to main on 2026-10-04, on the owner's "Do closing ritual": **v0.3.0's release** (the entry above). 8417043 was squashed as 5528fa4 (tree the tested tip's, 10c3a80, parent fe75671).
+- **CI.** Its run, 37249880109, passed on 8417043: fifty-one suites, 1,957 expected passes on ubuntu-24.04, the seven pins checked twice (their own step and the test step). Main's run on the squash, 37250152054, passed too, with the same counts, before the tag.
+- **Branches.** `--delete-branch` deleted the remote branch, switched this checkout to main and fast-forwarded it, and deleted the local branch. No PR is open.
+- **TAGGED v0.3.0** on 5528fa4, annotated as v0.2.0 was ("chez-http-server v0.3.0 — a taker can wait", its body pointing at CHANGELOG.md's `[0.3.0]`), and pushed: `git ls-remote --tags` shows the tag object a6ea07d and its commit 5528fa4. No GitHub Release, as for v0.1.0 and v0.2.0.
+- **This reflect was pushed after main's run on the squash had finished,** so it cancelled nothing (9b1a421's run had been cancelled that way).
+
+`make test` green on main: fifty-one suites, 1,957 expected passes, every pin ok.
+
+NEXT: chez-websocket's skeleton, in its own repository (plan §15), pinning chez-http-server at v0.3.0, when the owner asks. Its CI needs the owner's `SUBMODULES_READ_TOKEN` secret there, able to read chez-http-server and its four private dependencies. CHANGELOG.md's Unreleased is empty.
