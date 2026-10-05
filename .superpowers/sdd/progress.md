@@ -498,3 +498,23 @@ NEXT: a new milestone or fix here, when the owner asks. CHANGELOG.md's Unrelease
 - `make test` green (Darwin arm64): fifty-one suites, 1,964 expected passes.
 - **Rebased** onto 8c04320 with layers 1 and 2: `make test` green again on this layer's rebased tree, fifty-one suites, 1,971 expected passes.
 - **Decided by form after the plan-vs-landed walkthrough** (2026-10-05): "Keep it (Recommended)", `send!`'s guard as it is; and "Accept (Recommended)", the drain's other calls running after a poll once a handler raises. Weighed: also asking chez-libuv for a write that returns its status, or a refused write taken as a bug; and keeping call-handler!'s guard with the ratchet at 8 KiB.
+
+**The guards' hoist, layer 4: the whole server's ratchet, on `feat/hoist-guards` (2026-10-05),** stacked on layer 3, by the owner's form ("Ratchet in the load smoke (Recommended)", set once the hoist landed).
+- **Built.** The clients suite measures what a GET allocates through the whole server, after the load smoke:
+  - a server of its own, on a loop of its own, its handler answering one response made once;
+  - oha's 2,000 and 7,000 GETs on one connection kept alive, the loop turned as `serve` turns it (`shell-run-turns!`) with nothing else on it, each read off `sstats-bytes` (`allocated-over`);
+  - the difference over 5,000 is held to `get-ratchet`, 7,680 B (7.5 KiB), and printed.
+- **The value, derived.** The most measured by `hoist-request-alloc.sps` was 7,337 B on Darwin arm64 and 7,340 on Linux aarch64, so 7,680 is 340 B over it. The suite's own reading was 7,312 to 7,343 over four runs. Decision 0002's amendment of 2026-10-05 records it. CHANGELOG.md's Unreleased says a request allocates about a quarter less.
+- **Watched to fail**, each mutant undoing one layer, against the clients suite:
+
+| mutant | the edit | the suite's reading | result |
+|---|---|---|---|
+| R-0 | unmutated, a comment | 7,316 B | green |
+| R-1 | layer 1 undone: a run of turns sets a guard up every turn (`shell-turn!`) | 8,360 B | red: "a GET through the whole server allocates at most 7680 B, …" |
+| R-2 | layer 2 undone: a guard and a `dynamic-wind` around every outermost dispatch | 8,145 B | red: the same |
+| R-3 | layer 3 undone: a guard around every handler call | 7,727 B | red: the same |
+
+  R-3 clears the ratchet by 47 B, against a spread of 31 B between the suite's runs.
+- `make test` green (Darwin arm64): fifty-one suites, 1,966 expected passes; the clients suite read 7,343 B a GET.
+- **Rebased** onto 8c04320 with layers 1 to 3, and the CHANGELOG entry joined #139's under one "Changed". `make test` green again on this layer's rebased tree: fifty-one suites, 1,973 expected passes; the clients suite read 7,312 B a GET.
+- **Decided by form** (2026-10-05): "Four stacked PRs (Recommended)", one a layer, and "Comment with the spread (Recommended)": chez-libuv #45 gained a comment giving its first row over five runs (decision 0008).

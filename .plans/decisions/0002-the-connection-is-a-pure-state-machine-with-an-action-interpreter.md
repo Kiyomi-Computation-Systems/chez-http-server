@@ -365,3 +365,35 @@ its connection while its request is answered: the shell tells the request's code
 closed action set is seventeen, `conn-actions` in `src/http-server/connection.sls`,
 and `tests/test-connection-table.sps` checks that its rows use all seventeen. The
 fifteen events are unchanged.
+
+## Amendment (2026-10-05) — the whole server's allocation gets a ratchet
+
+The gate (item 1) holds what the parser, the adapter and the core allocate for a request.
+Through the whole server, a GET kept alive allocated 10,005 B at one connection and 8,437 to
+8,460 B at 50 on main at 64761cb (M8.4's spike). On oha's own GET, the gated part was 2,052 to
+2,053 B (`research/spike/hoist-core-share.sps`). Probes in a scratch build put about 3.3 KB in
+chez-libuv and about 4.6 KB in the shell and the scheduler. Most of those two was protection
+that never fires: a `guard` costs 288 B in Chez 10.4.1, 672 B under 100 frames, and a
+`dynamic-wind` 96 B (`research/spike/hoist-guard-cost.sps`).
+
+Decided on the owner's word, by forms: the shell's guards are hoisted, chez-libuv's share is
+asked of chez-libuv (#45; 0008), and the whole server gets a ratchet in the load smoke, set
+once the hoist landed. The hoist is in three layers (the ledger, "The guards' hoist"):
+- one run loop's guard for every turn `serve` takes, and no `dynamic-wind` in a scheduler
+  turn;
+- one `with-exception-handler` for a dispatch and its drain;
+- a handler's raise taken by the run loop's guard.
+
+`send!` keeps its `guard`, since its catch must resume inside a libuv callback.
+
+Measured once the three layers landed (`research/spike/hoist-request-alloc.sps`, M8.4's
+spike turned as `serve` now turns): 7,332 to 7,337 B a GET at one connection on Darwin arm64
+and 7,333 to 7,340 on Linux aarch64, and 6,967 to 6,980 at 50 on both. That is −27% and
+−17%.
+
+**The ratchet:** a GET through the whole server, at one connection kept alive, allocates at
+most 7,680 B (7.5 KiB), 340 B over the most measured. `tests/test-clients.sps` measures it
+with a server of its own: its handler answers one response made once, and its loop is turned
+as `serve` turns it. The check is oha's 7,000 GETs less its 2,000, read off `sstats-bytes`.
+Undoing any one layer passes it: 8,360, 8,145 and 7,727 B. Like the gate, it is a regression
+ratchet, not a goal. A change that needs more raises it on purpose, with its measurement.
