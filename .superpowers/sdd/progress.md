@@ -540,4 +540,45 @@ MERGED to main on 2026-10-05, on the owner's "do closing ritual": **the six PRs 
 
 `make test` green on main: fifty-one suites, 1,973 expected passes; the clients suite read 7,344 B a GET.
 
-NEXT: chez-libuv #45 is open upstream (decision 0008). When it lands, the pin moves on a commit of its own, and `hoist-request-alloc.sps` re-measures; the 7,680 B ratchet may then tighten, by form. chez-websocket's work goes on in its own repository.
+THE CHEZ-LIBUV v0.7.4 PIN, on the owner's word ("chez-libuv version bumped to 0.7.4"). Branch chore/chez-libuv-v0.7.4, cut from main at f35e77c in a worktree of its own; 2026-10-08, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. `vendor/chez-libuv` is at 27d84bb.
+
+UPSTREAM: chez-libuv tagged v0.7.4 (27d84bb; annotated tag 36c7c5d, 16:35 -0400; release PR #97), 34 commits past v0.7.3. GitHub's objects are the sibling checkout's. It lands our #45 (PRs #46 and #48; the issue closed 2026-10-06): one guarded seam per callback, fixed-arity seams, `uv-run` without `dynamic-wind`, status checks in the writes and the shutdown, and, of chez-libuv's own, libuv's alloc callback for reads answered in the shim. Decision 0008's row is LANDED, with its landing bullet: all twenty-four filed asks have landed. Besides #45, the release:
+- makes the stream verbs, the constructors, `uv-accept!`, `uv-spawn!` and the process verbs one step that no engine splits;
+- reads a caller's strings and lists once;
+- locks the table that loops on several threads share (#70), claims a loop atomically in `uv-run`, its close and its teardown (#78), and refuses a verb that makes something on a loop off the loop's thread (#79);
+- leaves a loop marked running when a continuation escapes one of its callbacks.
+
+Checked against chez-libuv's history between the tags:
+- no public library's export list changed: each library's `(export ...)` form was compared between the tags. Only the private ones changed, and `(libuv private c-string)` and `(libuv private lists)` are new. `tests/uv-testing.sls` is byte-identical;
+- the shim changed (`src/libuv-shim.c` and `.h`), and `make test` rebuilt it through `deps`, its `cc` line in the log;
+- the server's exposure: one loop on one thread and no engine (`src/` makes none). Its coroutines run on `call/1cc` outside `uv-run`, and its callbacks only wake them, so no continuation escapes a callback. `uv-tcp-bind!` now refuses an address holding a NUL; the server's comes from CHEZ_HTTP_HOST, an environment variable, judged an IP literal first.
+
+Watched to fail: with the checkout moved and its gitlink staged, and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2). With both moved, it passes.
+
+`make test` green at v0.7.3 and at v0.7.4 on this branch: fifty-one suites, 1,973 expected passes, every suite's count the same. The clients suite read 7,342 B a GET at v0.7.3 and 5,156 B at v0.7.4.
+
+MEASURED at both pins the same day, Darwin arm64:
+
+| what | v0.7.3 | v0.7.4 | program |
+|---|---|---|---|
+| a write's round: a 16-byte `uv-write*!`, its completion, libuv's alloc callback and the peer's read, three runs | 3,535 to 3,566 B, 1.7 to 1.8 runs a round | 1,352 to 1,355 B, 1.6 to 1.8 | `libuv-callback-alloc.sps` |
+| the `uv-write*!` call alone | 760 to 860 B | 376 to 408 B | the same |
+| an idle `uv-run` | 128 B | 16 B | the same |
+| a timer started and a run that fires it | 1,050 B | 513 B | the same |
+| a GET through the whole server, one connection kept alive, two rounds | 7,333 to 7,334 B | 5,150 B | `hoist-request-alloc.sps` |
+| the same at 50 connections | 6,973 B | 5,019 to 5,023 B | the same |
+
+THE RATCHET: decision 0002's amendment of 2026-10-05 holds a GET to 7,680 B, 340 B over the most measured at v0.7.3, so that undoing any one of the guards' hoist's three layers reddens it. At v0.7.4 none does. The hoist's mutants, its session's specs (each cut matched once on this tree), against the clients suite:
+
+| mutant | the edit | 2026-10-05, v0.7.3 | v0.7.4 | against 7,680 B |
+|---|---|---|---|---|
+| R-0 | unmutated, a comment | 7,316 B | 5,143 B | green |
+| R-1 | layer 1 undone: a guard set up every turn | 8,360 B | 6,177 B | green, was red |
+| R-2 | layer 2 undone: a guard and a `dynamic-wind` around every outermost dispatch | 8,145 B | 5,970 B | green, was red |
+| R-3 | layer 3 undone: a guard around every handler call | 7,727 B | 5,526 B | green, was red |
+
+Records: the Makefile's pin, test-integration's version comment, global-constraints, decision 0008 (the row and the landing bullet), CHANGELOG.md's Unreleased.
+
+DECIDED on the owner's word (2026-10-08), by form: "5,376 B (Recommended)", the ratchet at 5.25 KiB, 220 B over the most measured, so that each layer's undoing reddens it again (weighed: 5,632 B, which lets R-3 pass, and keeping 7,680 B); and "Two stacked PRs (Recommended)": this PR the pin alone, the ratchet's on it.
+
+NEXT: the ratchet's PR, stacked on this one: `get-ratchet` 5,376 B, decision 0002's amendment, R-1 to R-3 watched red. Then both merged on the owner's word.

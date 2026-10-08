@@ -4,7 +4,7 @@
 ;;; chez-libuv, chez-httparse (generated parser + decisions + methods),
 ;;; byte-machine (transitive) and uriparse, all on the one library path.
 (import (rnrs) (srfi :64) (testing)
-        (libuv)                          ; chez-libuv v0.7.3
+        (libuv)                          ; chez-libuv v0.7.4
         (generated httparse-message)     ; chez-httparse v0.4.5 (generated parser)
         (httparse decisions)             ; chez-httparse v0.4.5
         (httparse methods)               ; chez-httparse v0.4.5

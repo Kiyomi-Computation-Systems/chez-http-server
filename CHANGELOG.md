@@ -24,6 +24,12 @@ All notable changes to chez-http-server are recorded here. The format follows
   handler sees, and what a raise does, is unchanged. A check now holds a GET to 7.5 KiB
   (decision 0002's amendment of 2026-10-05).
 
+- **A request allocates about 30% less again.** chez-libuv is pinned at v0.7.4, which
+  sets up one protection for each callback where it set up several, and answers libuv's
+  request for a read buffer without running Scheme (chez-libuv #45, this project's
+  ask). A GET kept alive allocated 7.3 KB at one connection and 7.0 KB at 50; it now
+  allocates 5.2 KB and 5.0 KB. What a handler sees is unchanged.
+
 ## [0.3.0] - 2026-10-04
 
 The third release. A taker can now wait: a take-over may answer `(awaiting thunk)`,
