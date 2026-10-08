@@ -21,14 +21,14 @@ All notable changes to chez-http-server are recorded here. The format follows
   7.3 KB and 7.0 KB, on Darwin and Linux alike. The server sets up its protection
   against a raise once for a run of turns, a dispatch or a handler's failure, where it
   set it up for every turn, every part of a dispatch and every handler call. What a
-  handler sees, and what a raise does, is unchanged. A check now holds a GET to 7.5 KiB
-  (decision 0002's amendment of 2026-10-05).
+  handler sees, and what a raise does, is unchanged.
 
 - **A request allocates about 30% less again.** chez-libuv is pinned at v0.7.4, which
   sets up one protection for each callback where it set up several, and answers libuv's
   request for a read buffer without running Scheme (chez-libuv #45, this project's
   ask). A GET kept alive allocated 7.3 KB at one connection and 7.0 KB at 50; it now
-  allocates 5.2 KB and 5.0 KB. What a handler sees is unchanged.
+  allocates 5.2 KB and 5.0 KB. What a handler sees is unchanged. A check now holds a
+  GET to 5.25 KiB (decision 0002's amendments of 2026-10-05 and 2026-10-08).
 
 ## [0.3.0] - 2026-10-04
 

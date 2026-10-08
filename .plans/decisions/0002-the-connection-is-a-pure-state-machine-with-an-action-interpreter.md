@@ -397,3 +397,17 @@ with a server of its own: its handler answers one response made once, and its lo
 as `serve` turns it. The check is oha's 7,000 GETs less its 2,000, read off `sstats-bytes`.
 Undoing any one layer passes it: 8,360, 8,145 and 7,727 B. Like the gate, it is a regression
 ratchet, not a goal. A change that needs more raises it on purpose, with its measurement.
+
+## Amendment (2026-10-08) — the ratchet follows chez-libuv v0.7.4
+
+chez-libuv v0.7.4 landed #45 (0008): one guarded seam per callback, `uv-run` without
+`dynamic-wind`, and libuv's alloc callback for reads answered in its shim. A GET through
+the whole server then allocated 5,150 B at one connection, against 7,333 B at v0.7.3 the
+same day, and 5,019 to 5,023 B at 50, against 6,973 B (`research/spike/hoist-request-alloc.sps`,
+Darwin arm64). The clients suite read 5,143 to 5,156 B. At 7,680 B, the ratchet no longer
+caught any one of the hoist's layers undone: they read 6,177, 5,970 and 5,526 B.
+
+Decided on the owner's word, by form: **the ratchet is 5,376 B (5.25 KiB)**, 220 B over the
+most measured. Undoing any one layer reddens it again: 6,177, 5,944 and 5,513 B. The nearest,
+a guard around every handler call, clears it by 137 B. Weighed: 5,632 B (5.5 KiB), which that
+layer's undoing passes, and keeping 7,680 B. The rest of the 2026-10-05 amendment holds.
