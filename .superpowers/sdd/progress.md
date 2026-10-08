@@ -597,4 +597,15 @@ THE RATCHET AT 5,376 B, on the owner's form, stacked on the pin. Branch test/get
 
 `make test` green (Darwin arm64): fifty-one suites, 1,973 expected passes; the clients suite read 5,156 B a GET.
 
-NEXT: both PRs, merged bottom-up on the owner's word, once CI's ubuntu reading of the ratchet is read off the pin PR's run.
+MERGED to main on 2026-10-08, on the owner's "do closing ritual on both": **the chez-libuv v0.7.4 pin and its ratchet**, bottom-up.
+- **#144, the pin.** 6a3146b was squashed as 48119b2 (tree 705da86, the tested head's; parent f35e77c), without deleting its branch, which #145 was based on.
+  - Its run, 37853618232, passed on ubuntu-24.04: fifty-one suites, 1,973 expected passes; the clients suite read 5,143 B a GET, inside the 7,680 B it still held.
+  - Main's run on the squash, 37857297226, passed.
+- **#145, the ratchet.** Retargeted to main and rebased from 6a3146b onto 48119b2 as b2b5705, whose tree, aca5d87, is the tested head's (71d9ad7's); pushed with the lease read from `ls-remote`.
+  - Its runs passed on ubuntu-24.04: 37853621818 on 71d9ad7, the clients suite reading 5,130 B a GET against 5,376, and 37857337031 on b2b5705, reading 5,156 B. That one was still running at the merge, which went on the identical tree's passed run and `make test`, as #55/#56's did; it passed afterwards.
+  - Squashed as e03c42a (tree aca5d87, the tested head's; parent 48119b2). Main's run on it, 37857501058, passed.
+- **Branches.** Both were deleted on the remote and here, and this session's worktree is removed once this reflect is pushed. The shared checkout's `main` was fast-forwarded behind the guard: on `main`, no tracked changes.
+
+`make test` green on main: fifty-one suites, 1,973 expected passes; the clients suite read 5,131 B a GET.
+
+NEXT: nothing is open upstream (decision 0008: all twenty-four filed asks have landed). chez-websocket's work goes on in its own repository.
