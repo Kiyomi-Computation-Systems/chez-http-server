@@ -414,13 +414,13 @@
 ;; (shell-run-turns!) with nothing else on it.  The bytes this process
 ;; allocates over each run, Chez's cumulative counter, differ by what 5,000
 ;; GETs cost: what does not grow with the requests, oha's start, its
-;; connection and its report, cancels.  Measured on
-;; 2026-10-05 once the shell's guards were hoisted: 7,332 to 7,337 B a GET
-;; on Darwin arm64 and 7,333 to 7,340 on Linux aarch64, by the spike
-;; hoist-request-alloc.sps, against 10,005 before.  The ratchet is 7.5 KiB,
-;; 340 B over the most measured: undoing any one of the hoist's three
-;; layers passes it.
-(define get-ratchet 7680)
+;; connection and its report, cancels.  Measured on 2026-10-08 at
+;; chez-libuv v0.7.4, which allocates less around each callback (its #45):
+;; 5,150 B a GET on Darwin arm64 by the spike hoist-request-alloc.sps, and
+;; 5,143 to 5,156 here, against 7,333 at v0.7.3 and 10,005 before the
+;; shell's guards were hoisted.  The ratchet is 5.25 KiB, 220 B over the
+;; most measured: undoing any one of the hoist's three layers passes it.
+(define get-ratchet 5376)
 
 ;; allocated-over : UvLoop Shell String Nat -> (List Nat (U (Listof (Pair String Nat)) #f))
 ;; oha's `n` GETs to `url` on one connection kept alive, the loop turned as

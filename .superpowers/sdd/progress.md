@@ -581,4 +581,20 @@ Records: the Makefile's pin, test-integration's version comment, global-constrai
 
 DECIDED on the owner's word (2026-10-08), by form: "5,376 B (Recommended)", the ratchet at 5.25 KiB, 220 B over the most measured, so that each layer's undoing reddens it again (weighed: 5,632 B, which lets R-3 pass, and keeping 7,680 B); and "Two stacked PRs (Recommended)": this PR the pin alone, the ratchet's on it.
 
-NEXT: the ratchet's PR, stacked on this one: `get-ratchet` 5,376 B, decision 0002's amendment, R-1 to R-3 watched red. Then both merged on the owner's word.
+THE RATCHET AT 5,376 B, on the owner's form, stacked on the pin. Branch test/get-ratchet-v0.7.4, on chore/chez-libuv-v0.7.4's tip.
+- **The check:** `get-ratchet` in `tests/test-clients.sps` is 5,376 B (5.25 KiB), where it was 7,680; the check itself is unchanged. Its comment gives the derivation.
+- **The value, derived.** The most measured at v0.7.4 is the suite's 5,156 B (five runs read 5,143 to 5,156; the spike read 5,150), so 5,376 is 220 B over it. Decision 0002's amendment of 2026-10-08 records it. CHANGELOG.md's line on the check moves from the hoist's entry to the pin's.
+- **Watched to fail**, the hoist's mutants against the clients suite at the new value:
+
+| mutant | the edit | the suite's reading | result |
+|---|---|---|---|
+| R-0 | unmutated, a comment | 5,156 B | green |
+| R-1 | layer 1 undone: a guard set up every turn | 6,177 B | red: "a GET through the whole server allocates at most 5376 B, …" |
+| R-2 | layer 2 undone: a guard and a `dynamic-wind` around every outermost dispatch | 5,944 B | red: the same |
+| R-3 | layer 3 undone: a guard around every handler call | 5,513 B | red: the same |
+
+  R-3 clears the ratchet by 137 B; over its two runs it read 5,513 and 5,526 B.
+
+`make test` green (Darwin arm64): fifty-one suites, 1,973 expected passes; the clients suite read 5,156 B a GET.
+
+NEXT: both PRs, merged bottom-up on the owner's word, once CI's ubuntu reading of the ratchet is read off the pin PR's run.
