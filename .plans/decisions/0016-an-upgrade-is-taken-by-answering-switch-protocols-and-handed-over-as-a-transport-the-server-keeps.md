@@ -271,3 +271,13 @@ The consequence that a taker's code "runs in place, in the shell's callbacks ...
 cannot wait with `await`" still holds for the take-over and the taker's callbacks. A
 take-over may now answer `(awaiting thunk)`: the thunk runs on a coroutine, where it may
 wait, and its waits are told when the stream closes.
+
+
+## Amendment (2026-10-08) — a taker may abort its stream (decision 0024)
+
+The transport's advice that "a deadline closes a client that stops reading" did not
+hold: a deadline's call could only ask for `transport-close!`, which waits for the
+writes a client that stops reading never takes. A taker may now abort its stream,
+`transport-abort!`, which drops what is unsent. `make-transport` takes an eighth
+procedure for it; a transport made of seven refuses the abort. And a handler may read
+every line of a field, `request-header-values`.

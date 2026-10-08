@@ -1786,3 +1786,10 @@ This repository's part:
   thunk)`, its thunk run on a coroutine, its waits told when the stream closes.
 - **Server 0.3.0** is released with it, for chez-websocket to pin.
 - Any change the library finds the door needs comes back here as a slice of its own.
+- **The second door change** (decision 0024, 2026-10-08, from chez-websocket's M4.2):
+  - `transport-abort!` closes a taker's stream at once, dropping what is unsent;
+  - `request-header-values` gives every line of a field;
+  - the fake shell's door does what the libuv shell's does for a client that stops
+    reading.
+
+  Server 0.4.0 is released with it, for chez-websocket to pin.
