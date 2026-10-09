@@ -909,6 +909,14 @@ pause answers `#f`.
 > dropped, as before.
 > `tests/test-connection-table.sps` holds the rows (W1 to W7), and
 > `tests/test-connection-switch.sps` the flows at every delivery size.
+>
+> *Amended 2026-10-08 (decision 0024, on the owner's word by form):* a taker may abort
+> its stream, `transport-abort!`. Reading stops, and the shell closes the handle at once:
+> each write outstanding has its callback told `ECANCELED`. The core is unchanged: it
+> ends `closed` at the stream's close, as for any close. The fake shell's door now does
+> what the libuv shell's does for a client that stops reading. A close it is asked for
+> waits for the writes outstanding, and every call into the taker's code is guarded, a
+> raise closing the stream at once.
 
 ### 4.5 Run-to-completion
 
