@@ -334,7 +334,7 @@
                   make-response
                   make-transport read-body read-whole-body request-header request-host request-method
                   request-path request-query request? resolve resolve-error-reason resolve-error?
-                  response? serve sleep-ms switch-protocols transport-close! transport-deadline!
+                  response? serve sleep-ms switch-protocols transport-abort! transport-close! transport-deadline!
                   transport-on-close! transport-on-drain! transport-read-start! transport-read-stop!
                   transport-write! transport? with-deadline)
                 (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))

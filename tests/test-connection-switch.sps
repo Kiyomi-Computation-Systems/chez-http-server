@@ -15,6 +15,13 @@
 ;;; runs when the shell drains.  A request the door does not open for, and
 ;;; a switch with a fault, are answered 500, then the staged close.
 ;;;
+;;; Decision 0024: for a client that reads nothing, the fake completes no
+;;; write the taker asks for, as the libuv shell's never complete.  A close
+;;; then waits for them, a deadline asked for meanwhile is armed, and an
+;;; abort closes the stream at once, each write outstanding told ECANCELED.
+;;; A raise in any of the taker's calls is its failure and closes the stream
+;;; at once, as the libuv shell's taker-call! has it.
+;;;
 ;;; Oracles: decision 0016; RFC 9110 §7.8 and §15.2.2; RFC 6455 §5.7's
 ;;; masked "Hello" frame, two of its bytes after the header; the inputs'
 ;;; own bytes; design §6.5's 500; decision 0011's staged close.
@@ -86,6 +93,58 @@
      (lambda (transport retained)
        (now transport)
        (awaiting (lambda () (later transport)))))))
+
+;; unread : Bytevector (Request -> Any) -> FakeShell
+;; One connection handed `input` whole, then let write the 101 and nothing
+;; after: a write the taker asks for completes only on a later turn, so
+;; none does, as for a client that reads nothing (decision 0024).
+(define (unread input handler)
+  (let ((sh (make-fake-connection default-limits handler)))
+    (fake-shell-deliver! sh (list 'bytes-arrived input 0 (bytevector-length input)))
+    (fake-shell-deliver-later! sh)
+    sh))
+
+;; noting : Taker -> ((U #f Symbol) -> Void) — a write's callback that keeps
+;; what it is told on the taker's `written`, newest first.
+(define (noting t) (lambda (err) (taker-written-set! t (cons err (taker-written t)))))
+
+;; counting-closes : Taker Transport -> Void — the stream's close counted.
+(define (counting-closes t tr)
+  (transport-on-close! tr (lambda () (taker-closes-set! t (+ 1 (taker-closes t))))))
+
+;; raised-in : Symbol -> Datum
+;; A taker that writes to a client that reads nothing, then raises in one of
+;; its calls, named by `where`: the take-over itself, its read, its end, its
+;; deadline's call, its drain call, its write's callback, the client then
+;; reading, or its close call, once it has aborted.  What was recorded, what the write was told, how often the close
+;; call ran, and the core's phase.
+(define (raised-in where)
+  (let* ((t (make-taker))
+         (fail (lambda () (raise (make-message-condition (symbol->string where)))))
+         (sh (unread handshake
+               (lambda (request)
+                 (switch-protocols
+                  (list (cons (b "Upgrade") (b "websocket")) accept)
+                  (lambda (tr retained)
+                    (transport-on-close! tr (lambda ()
+                                              (taker-closes-set! t (+ 1 (taker-closes t)))
+                                              (when (eq? where 'close) (fail))))
+                    (transport-write! tr (b "unread") 0 6
+                                      (lambda (err) ((noting t) err) (when (eq? where 'written) (fail))))
+                    (transport-read-start! tr (lambda (bv from to) (when (eq? where 'read) (fail)))
+                                           (lambda (why) (when (eq? where 'end) (fail))))
+                    (transport-deadline! tr 1000 (lambda () (when (eq? where 'deadline) (fail))))
+                    (transport-on-drain! tr (lambda () (when (eq? where 'drain) (fail))))
+                    (when (eq? where 'take-over) (fail))
+                    (when (eq? where 'close) (transport-abort! tr))))))))
+    (case where
+      ((read) (fake-shell-deliver! sh (list 'bytes-arrived hi-frame 0 (bytevector-length hi-frame))))
+      ((end) (fake-shell-deliver! sh '(eof)))
+      ((deadline) (fake-shell-advance! sh 1000) (fake-shell-fire! sh))
+      ((drain) (fake-shell-drain! sh)))
+    (fake-shell-settle! sh)
+    (list (map condition-message (fake-shell-taker-failures sh)) (taker-written t) (taker-closes t)
+          (conn-phase (fake-shell-conn-state sh)))))
 
 ;; run : Bytevector Nat (Request -> Any) -> FakeShell
 ;; One connection reading `input` in `size`-byte deliveries, every later turn
@@ -384,6 +443,72 @@
                   (list #t (list hi-frame) 'handed-off '())
                   (list ended (reverse (taker-read t)) (conn-phase (fake-shell-conn-state sh))
                         (fake-shell-taker-failures sh))))
+
+    ;; --- a stream aborted, and a taker's raise (decision 0024) --------------
+    ;; The client reads nothing, so the taker's write never completes and its
+    ;; close waits.  A deadline asked for then is armed, as the libuv shell
+    ;; arms it, and its call's abort closes the stream: the write is told
+    ;; ECANCELED, the close call runs once, and nothing failed.
+    (let* ((t (make-taker))
+           (sh (unread handshake
+                       (taking t (lambda (tr)
+                                   (transport-write! tr (b "unread") 0 6 (noting t))
+                                   (transport-close! tr)
+                                   (transport-deadline! tr 1000
+                                                        (lambda ()
+                                                          (taker-passes-set! t (+ 1 (taker-passes t)))
+                                                          (transport-abort! tr))))))))
+      (let ((armed (fake-shell-armed sh)) (open (taker-closes t)))
+        (fake-shell-advance! sh 1000)
+        (fake-shell-fire! sh)
+        (fake-shell-settle! sh)
+        (test-equal "a close waiting on a write the client has not read: a deadline asked for then is armed, and its call's abort closes the stream, the write told ECANCELED, nothing failed"
+                    '(1000 0 1 (ECANCELED) 1 closed ())
+                    (list armed open (taker-passes t) (taker-written t) (taker-closes t)
+                          (conn-phase (fake-shell-conn-state sh)) (fake-shell-taker-failures sh)))))
+    ;; Aborted at once, a write outstanding and a deadline armed: reading
+    ;; stops, that write and one asked for after are told ECANCELED, the
+    ;; stream closes, and the deadline is disarmed with it, never passing,
+    ;; as the libuv shell's close disarms it.
+    (let* ((t (make-taker))
+           (sh (unread handshake
+                       (taking t (lambda (tr)
+                                   (transport-deadline! tr 1000 (lambda () (taker-passes-set! t (+ 1 (taker-passes t)))))
+                                   (transport-write! tr (b "unread") 0 6 (noting t))
+                                   (transport-abort! tr)
+                                   (transport-write! tr (b "late") 0 4 (noting t)))))))
+      (let ((reading (fake-shell-reading? sh)))
+        (fake-shell-settle! sh)
+        (fake-shell-advance! sh 1000)
+        (fake-shell-fire! sh)
+        (test-equal "aborted with a write outstanding and a deadline armed: reading stops, that write and a later one are told ECANCELED, the stream closes, its close call once, the deadline never passing"
+                    '(#f (ECANCELED ECANCELED) 1 closed 0)
+                    (list reading (taker-written t) (taker-closes t) (conn-phase (fake-shell-conn-state sh))
+                          (taker-passes t)))))
+    ;; A raise in any call into the taker's code is its failure, recorded,
+    ;; and closes the stream at once, its write outstanding told ECANCELED.
+    ;; A raise in a write's callback comes once the client has read the
+    ;; write, so nothing is left to cancel; one in the close call, once the
+    ;; stream has closed.
+    (test-equal "a raise in the take-over, its read, its end, its deadline's call or its drain call: the taker's failure, recorded, and the stream closed at once, its write told ECANCELED; in a write's callback, the same once written; in its close call, recorded"
+                '((("take-over") (ECANCELED) 1 closed) (("read") (ECANCELED) 1 closed)
+                  (("end") (ECANCELED) 1 closed) (("deadline") (ECANCELED) 1 closed)
+                  (("drain") (ECANCELED) 1 closed) (("written") (#f) 1 closed)
+                  (("close") (ECANCELED) 1 closed))
+                (map raised-in '(take-over read end deadline drain written close)))
+    ;; A waiting thunk's raise closes the stream at once too.
+    (let* ((t (make-taker))
+           (sh (unread handshake
+                       (waiting-taking
+                        (lambda (tr) (counting-closes t tr))
+                        (lambda (tr)
+                          (transport-write! tr (b "unread") 0 6 (noting t))
+                          (raise (make-message-condition "the waiting taker failed")))))))
+      (fake-shell-settle! sh)
+      (test-equal "a waiting thunk that raises with a write outstanding: the taker's failure, the write told ECANCELED, the stream closed"
+                  '(("the waiting taker failed") (ECANCELED) 1 closed)
+                  (list (map condition-message (fake-shell-taker-failures sh)) (taker-written t) (taker-closes t)
+                        (conn-phase (fake-shell-conn-state sh)))))
 
     ;; --- the door closed (decision 0016 items 1 and 4) ----------------------
     (test-equal "a request that does not upgrade, answered a switch: 500, logged not-an-upgrade, the staged close"

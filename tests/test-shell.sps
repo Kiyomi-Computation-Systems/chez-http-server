@@ -665,6 +665,20 @@
            (switching (lambda (t retained)
                         (transport-write! t big-door)
                         (transport-close! t))))
+          ((bytevector=? target (b "/door-bound"))
+           (switching (lambda (t retained)
+                        (transport-on-close! t (lambda () (took! 'closed)))
+                        (transport-write! t big-door 0 (bytevector-length big-door) (lambda (err) (took! 'written err)))
+                        (transport-close! t)
+                        (transport-deadline! t door-ms (lambda () (took! 'passed) (transport-abort! t))))))
+          ((bytevector=? target (b "/door-bound-raise"))
+           (switching (lambda (t retained)
+                        (transport-on-close! t (lambda () (took! 'closed)))
+                        (transport-write! t big-door 0 (bytevector-length big-door) (lambda (err) (took! 'written err)))
+                        (transport-deadline! t door-ms
+                                             (lambda ()
+                                               (took! 'passed)
+                                               (raise (make-message-condition "the deadline's call failed")))))))
           ((bytevector=? target (b "/door-disarm"))
            (switching (lambda (t retained)
                         (transport-deadline! t 60000 (lambda () (took! 'passed)))
@@ -2574,6 +2588,48 @@
                   (list gone ended (client-end (car p))
                         (equal? (client-bytes (car p)) (joined (list door-101 big-door)))))
       (client-close! (car p)))
+
+    ;; Decision 0024.  A client that reads nothing, the connection's send
+    ;; buffer small: the taker's 4 MiB stays under way, so its close waits.
+    ;; A deadline asked for then is armed, and its call's abort closes the
+    ;; stream at once: the write is told ECANCELED, the close call runs once,
+    ;; and nothing is logged.
+    (set! took '())
+    (set! logged '())
+    (set! small-send-buffer 4096)
+    (let* ((before (newest))
+           (cl (open-client! (door-handshake "/door-bound") #f))
+           (passed (wait-for (lambda () (pair? (took-of 'passed)))))
+           (c (adopted-since before)))
+      (set! small-send-buffer #f)
+      (let ((gone (wait-for (lambda () (closed-and-gone? shell c))))
+            (told (wait-for (lambda () (pair? (took-of 'written))))))
+        (test-equal "a close waiting on a write the client reads nothing of: a deadline asked for then passes, and its abort closes the stream at once, the write told ECANCELED, its close call once, nothing logged"
+                    '(satisfied satisfied satisfied ((ECANCELED)) (()) ())
+                    (list passed gone told (took-of 'written) (took-of 'closed)
+                          (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))))
+      ;; Gone before the next check begins, so nothing of it lands there.
+      (client-close! cl)
+      (wait-for (lambda () (closed-and-gone? shell c))))
+    ;; A raise in the deadline's call, a write under way to a client that
+    ;; reads nothing: logged taker-failed, and the stream closed at once, the
+    ;; write told ECANCELED, as the fake shell has it.
+    (set! took '())
+    (set! logged '())
+    (set! small-send-buffer 4096)
+    (let* ((before (newest))
+           (cl (open-client! (door-handshake "/door-bound-raise") #f))
+           (passed (wait-for (lambda () (pair? (took-of 'passed)))))
+           (c (adopted-since before)))
+      (set! small-send-buffer #f)
+      (let ((gone (wait-for (lambda () (closed-and-gone? shell c))))
+            (told (wait-for (lambda () (pair? (took-of 'written))))))
+        (test-equal "a raise in a deadline's call, a write under way to a client that reads nothing: logged taker-failed, the stream closed at once, the write told ECANCELED"
+                    '(satisfied satisfied satisfied ((ECANCELED)) (()) (taker-failed))
+                    (list passed gone told (took-of 'written) (took-of 'closed)
+                          (map car (filter (lambda (e) (eq? (car e) 'taker-failed)) logged)))))
+      (client-close! cl)
+      (wait-for (lambda () (closed-and-gone? shell c))))
 
     ;; A write libuv refuses at the call, the stream's write side shut behind
     ;; the shell's back: its callback is told the errno after the turn, as a

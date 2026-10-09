@@ -121,6 +121,19 @@
 ;;; taker and each of its completions is a turn of the libuv shell's, so
 ;;; the scheduler is drained after it, unless held.
 ;;;
+;;; Decision 0024: A CLIENT THAT READS NOTHING.  A taker's write is
+;;; outstanding until its turn, which stands for the client reading it, so a
+;;; test that delivers no later turn plays a client that reads nothing.  A
+;;; close asked for waits for the writes outstanding before it begins, as
+;;; the libuv shell's does, so a deadline asked for meanwhile is armed; once
+;;; begun, it disarms the deadline, as the libuv shell's close does.  The
+;;; abort, `transport-abort!`, begins the close at once, each write
+;;; outstanding told ECANCELED on its turn.  Every call into the taker's
+;;; code is guarded, as the libuv shell's taker-call! guards it: the
+;;; take-over, its reads and its end, its deadline's, drain and close calls,
+;;; and a write's callback.  A raise there, or from a waiting thunk, is the
+;;; taker's failure, recorded, and aborts the stream.
+;;;
 ;;; M7.3: A HANDLER THAT WAITS, as the libuv shell's (decision 0014), so
 ;;; the contract test (design §8.4) can hold the coroutine shell to it.  A
 ;;; fake connection keeps a scheduler of its own, (http-server private
@@ -159,7 +172,7 @@
           fake-shell-writes fake-shell-date-writes! written-status write-wire
           fake-shell-fire-waits! fake-shell-answer-lookup! fake-shell-drain! fake-shell-armed
           fake-shell-hold! fake-shell-schedule! fake-shell-taker-failures)
-  (import (rnrs)
+  (import (rnrs) (rnrs mutable-pairs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole? read-body)
@@ -379,7 +392,7 @@
       (cond ((not (pair? (wheel-advance! wheel now))) '())
             ((fake-shell-taker s)
              (let ((passed (fake-taker-on-passed (fake-shell-taker s))))
-               (when passed (passed))
+               (when passed (taker-call! s (fake-shell-taker s) passed))
                '()))
             (else (fake-shell-deliver! s (list 'tick now))))))
 
@@ -527,14 +540,15 @@
 
   ;; --- the door (M8.2) ----------------------------------------------------------
 
-  ;; The calls a taker has registered, how far its stream has gone, and the
+  ;; The calls a taker has registered, how far its stream has gone, the
   ;; notice its waits are told the close by, once a take-over has answered
-  ;; `awaiting` (decision 0023).
+  ;; `awaiting` (decision 0023), and its writes outstanding, each a cell of
+  ;; what its callback will be told, oldest first (decision 0024).
   (define-record-type fake-taker
     (fields (mutable on-bytes) (mutable on-end) (mutable on-passed) (mutable on-drain)
             (mutable on-close) (mutable closing?) (mutable drained?) (mutable closed?)
-            (mutable notice))
-    (protocol (lambda (new) (lambda () (new #f #f #f #f #f #f #f #f #f)))))
+            (mutable notice) (mutable outstanding))
+    (protocol (lambda (new) (lambda () (new #f #f #f #f #f #f #f #f #f '())))))
 
   ;; hand-off! : FakeShell (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) -> Void
   ;; The switch's take-over, called with a transport over the connection and
@@ -544,17 +558,19 @@
   (define (hand-off! s take-over retained)
     (let ((tk (make-fake-taker)) (answer #f))
       (fake-shell-taker-set! s tk)
-      (call-with-values
+      (taker-call! s tk
         (lambda ()
-          (take-over (fake-transport s tk)
-                     (if retained (copy-of (car retained) (cadr retained) (caddr retained)) (make-bytevector 0))))
-        (lambda vs (when (and (pair? vs) (null? (cdr vs))) (set! answer (car vs)))))
+          (call-with-values
+            (lambda ()
+              (take-over (fake-transport s tk)
+                         (if retained (copy-of (car retained) (cadr retained) (caddr retained)) (make-bytevector 0))))
+            (lambda vs (when (and (pair? vs) (null? (cdr vs))) (set! answer (car vs)))))))
       (when (awaiting? answer) (taker-wait! s tk (awaiting-thunk answer)))))
 
   ;; taker-wait! : FakeShell FakeTaker (-> Any) -> Void
   ;; The thunk on a coroutine, the taker's notice given to it; a raise but
   ;; the close the notice told is the taker's failure, recorded, and closes
-  ;; the stream; what it returns is dropped.
+  ;; the stream at once (taker-abort!); what it returns is dropped.
   (define (taker-wait! s tk thunk)
     (let ((n (make-notice)))
       (fake-taker-notice-set! tk n)
@@ -563,23 +579,50 @@
          (lambda (kind v)
            (when (and (eq? kind 'raised) (not (and (client-closed? v) (notice-closed? n))))
              (fake-shell-taker-failures-rev-set! s (cons v (fake-shell-taker-failures-rev s)))
-             (taker-close! s tk))))
+             (taker-abort! s tk))))
        n)))
 
+  ;; taker-call! : FakeShell FakeTaker (-> Any) -> Void
+  ;; A call into the taker's code.  A raise is the taker's failure,
+  ;; recorded, and closes the stream at once, as the libuv shell's
+  ;; taker-call! logs it and closes (decision 0024).
+  (define (taker-call! s tk thunk)
+    (guard (e (#t (fake-shell-taker-failures-rev-set! s (cons e (fake-shell-taker-failures-rev s)))
+                  (taker-abort! s tk)))
+      (thunk)))
+
   ;; taker-close! : FakeShell FakeTaker -> Void
-  ;; The stream's close, asked for once: reading stops, and after the turn
-  ;; the core is told `closed`, the taker's waits are told, and its close
-  ;; call runs.
+  ;; The stream's close, asked for once: reading stops, and the close begins
+  ;; once no write is outstanding, as the libuv shell's waits for them.
   (define (taker-close! s tk)
     (unless (fake-taker-closing? tk)
       (fake-taker-closing?-set! tk #t)
       (fake-shell-reading?-set! s #f)
+      (when (null? (fake-taker-outstanding tk)) (close-begun! s tk))))
+
+  ;; taker-abort! : FakeShell FakeTaker -> Void
+  ;; The stream closed now, whatever is outstanding: reading stops, each
+  ;; write outstanding is told ECANCELED on its turn, and the close begins
+  ;; (decision 0024).
+  (define (taker-abort! s tk)
+    (fake-taker-closing?-set! tk #t)
+    (fake-shell-reading?-set! s #f)
+    (for-each (lambda (cell) (set-car! cell 'ECANCELED)) (fake-taker-outstanding tk))
+    (close-begun! s tk))
+
+  ;; close-begun! : FakeShell FakeTaker -> Void
+  ;; The handle's close, once: nothing more is armed, and after the turn,
+  ;; behind the writes' turns before it, the core is told `closed`, the
+  ;; taker's waits are told, and its close call runs.
+  (define (close-begun! s tk)
+    (unless (fake-shell-closing? s)
       (fake-shell-closing?-set! s #t)
+      (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s))
       (later! s (lambda ()
                   (fake-shell-deliver! s '(closed))
                   (fake-taker-closed?-set! tk #t)
                   (let ((n (fake-taker-notice tk))) (when n (notice-close! n)))
-                  (let ((closed (fake-taker-on-close tk))) (when closed (closed)))))))
+                  (let ((closed (fake-taker-on-close tk))) (when closed (taker-call! s tk closed)))))))
 
   ;; copy-of : Bytevector Nat Nat -> Bytevector — bv[from, to), copied.
   (define (copy-of bv from to)
@@ -591,10 +634,11 @@
     (make-transport
      (lambda (bv start end written)
        (if (fake-taker-closing? tk)
-           (when written (later! s (lambda () (written 'ECANCELED))))
-           (begin
+           (when written (later! s (lambda () (taker-call! s tk (lambda () (written 'ECANCELED))))))
+           (let ((cell (list #f)))
              (fake-shell-writes-rev-set! s (cons (copy-of bv start end) (fake-shell-writes-rev s)))
-             (later! s (lambda () (when written (written #f)))))))
+             (fake-taker-outstanding-set! tk (append (fake-taker-outstanding tk) (list cell)))
+             (later! s (lambda () (taker-wrote! s tk cell written))))))
      (lambda (on-bytes on-end)
        (fake-taker-on-bytes-set! tk on-bytes)
        (fake-taker-on-end-set! tk on-end)
@@ -608,22 +652,34 @@
               (wheel-arm! (fake-shell-wheel s) (fake-shell-entry s) (+ (fake-shell-now s) ms)))))
      (lambda (thunk)
        (fake-taker-on-drain-set! tk thunk)
-       (when (fake-shell-draining? s) (drain-taker! tk)))
+       (when (fake-shell-draining? s) (drain-taker! s tk)))
      (lambda (thunk)
        (fake-taker-on-close-set! tk thunk)
-       (when (fake-taker-closed? tk) (thunk)))))
+       (when (fake-taker-closed? tk) (taker-call! s tk thunk)))
+     (lambda () (taker-abort! s tk))))
+
+  ;; taker-wrote! : FakeShell FakeTaker (List (U #f Symbol)) (U #f ((U #f Symbol) -> Any)) -> Void
+  ;; A write's turn: no longer outstanding, its callback told what its cell
+  ;; holds, #f or ECANCELED, and the close begun if it was asked for and no
+  ;; write is left.
+  (define (taker-wrote! s tk cell written)
+    (fake-taker-outstanding-set! tk (remq cell (fake-taker-outstanding tk)))
+    (when written (taker-call! s tk (lambda () (written (car cell)))))
+    (when (and (fake-taker-closing? tk) (null? (fake-taker-outstanding tk)))
+      (close-begun! s tk)))
 
   ;; taker-read! : FakeShell FakeTaker Event -> Void
   ;; A delivery, the client's end or a read error, to the taker: each read
   ;; to its on-bytes, and the end to its on-end, once.
   (define (taker-read! s tk event)
     (case (car event)
-      ((bytes-arrived) ((fake-taker-on-bytes tk) (cadr event) (caddr event) (cadddr event)))
+      ((bytes-arrived)
+       (taker-call! s tk (lambda () ((fake-taker-on-bytes tk) (cadr event) (caddr event) (cadddr event)))))
       (else
        (let ((on-end (fake-taker-on-end tk)))
          (when on-end
            (fake-shell-reading?-set! s #f)
-           (on-end (if (eq? (car event) 'eof) 'eof (cadr event))))))))
+           (taker-call! s tk (lambda () (on-end (if (eq? (car event) 'eof) 'eof (cadr event))))))))))
 
   ;; fake-shell-armed : FakeShell -> (U Nat #f)
   ;; The instant a fake connection's deadline passes at, its core's or, once
@@ -637,15 +693,16 @@
     (unless (fake-shell-draining? s)
       (fake-shell-draining?-set! s #t)
       (if (fake-shell-taker s)
-          (drain-taker! (fake-shell-taker s))
+          (drain-taker! s (fake-shell-taker s))
           (fake-shell-deliver! s '(shutdown-requested)))))
 
-  ;; drain-taker! : FakeTaker -> Void — its drain call, once, if it has one.
-  (define (drain-taker! tk)
+  ;; drain-taker! : FakeShell FakeTaker -> Void — its drain call, once, if
+  ;; it has one.
+  (define (drain-taker! s tk)
     (let ((drain (fake-taker-on-drain tk)))
       (when (and drain (not (fake-taker-drained? tk)))
         (fake-taker-drained?-set! tk #t)
-        (drain))))
+        (taker-call! s tk drain))))
 
   ;; fake-waits : FakeShell -> Waits
   ;; The waits of the connection's scheduler: their clock the injected one,

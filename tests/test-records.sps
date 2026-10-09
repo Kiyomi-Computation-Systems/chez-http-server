@@ -4,7 +4,9 @@
 ;;; distinguish the two types.  And M8.2's two (decision 0016): the switch a
 ;;; handler answers to take an upgrade, and the transport the taker is handed,
 ;;; a record of verbs whose arguments are checked before the verb is called,
-;;; so a fake and the server's shell are handed the same shapes.
+;;; so a fake and the server's shell are handed the same shapes.  Its eighth
+;;; verb, the abort, is decision 0024's: a transport made of seven, as
+;;; 0.3.0's were, is still one, and refuses it.
 (import (rnrs) (srfi :64) (testing)
         (http-server request) (http-server response) (http-server span)
         (http-server switch) (http-server transport))
@@ -20,7 +22,7 @@
   (let* ((seen '())
          (note (lambda (name) (lambda args (set! seen (cons (cons name args) seen))))))
     (values (make-transport (note 'write) (note 'read-start) (note 'read-stop) (note 'close)
-                            (note 'deadline) (note 'on-drain) (note 'on-close))
+                            (note 'deadline) (note 'on-drain) (note 'on-close) (note 'abort))
             (lambda () (reverse seen)))))
 
 (define (b s) (string->utf8 s))
@@ -86,11 +88,12 @@
         (transport-on-drain! t drain)
         (transport-on-close! t closed)
         (transport-close! t)
+        (transport-abort! t)
         (test-equal "each verb calls its procedure, the arguments in one shape"
                     (list (list 'write bv 0 5 #f) (list 'write bv 1 3 #f) (list 'write bv 1 3 done)
                           (list 'read-start on-bytes on-end) (list 'read-stop)
                           (list 'deadline 250 passed) (list 'deadline #f #f)
-                          (list 'on-drain drain) (list 'on-close closed) (list 'close))
+                          (list 'on-drain drain) (list 'on-close closed) (list 'close) (list 'abort))
                     (seen))
         (test-eq "transport? accepts" 'yes (if (transport? t) 'yes 'no))
         (test-eq "transport? rejects a switch" 'no
@@ -124,5 +127,20 @@
                     (list (refused (lambda () (transport-on-drain! t 'bye)))
                           (refused (lambda () (transport-on-close! t #f)))))
         (test-equal "and no refused verb reached its procedure" '() (seen))))
-    (test-eq "a transport is made of seven procedures, or refused" 'refused
-             (refused (lambda () (make-transport car car car car car car 'not-a-procedure))))))
+    (test-equal "a transport is made of seven procedures, or eight, or refused" '(refused refused)
+                (list (refused (lambda () (make-transport car car car car car car 'not-a-procedure)))
+                      (refused (lambda () (make-transport car car car car car car car 'not-a-procedure)))))
+    ;; A transport made of seven procedures, as 0.3.0's were, is still a
+    ;; transport, and refuses the abort it was made without, naming it,
+    ;; before any of its procedures is called.
+    (let* ((called '())
+           (t7 (apply make-transport
+                      (map (lambda (name) (lambda args (set! called (cons name called))))
+                           '(write read-start read-stop close deadline on-drain on-close)))))
+      (test-equal "a transport made of seven procedures is one, and refuses transport-abort!, naming it, calling nothing"
+                  '(yes transport-abort! ())
+                  (list (if (transport? t7) 'yes 'no)
+                        (guard (e ((and (assertion-violation? e) (who-condition? e)) (condition-who e)))
+                          (transport-abort! t7)
+                          'aborted)
+                        called)))))

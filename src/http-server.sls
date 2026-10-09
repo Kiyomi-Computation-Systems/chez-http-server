@@ -51,7 +51,7 @@
     make-response response? awaiting switch-protocols
     ;; the stream a handler that takes an upgrade is handed
     make-transport transport? transport-write! transport-read-start! transport-read-stop!
-    transport-close! transport-deadline! transport-on-drain! transport-on-close!
+    transport-close! transport-abort! transport-deadline! transport-on-drain! transport-on-close!
     ;; what a handler that waits waits with, and what a wait raises
     await sleep-ms with-deadline resolve
     &deadline-passed deadline-passed? &client-closed client-closed?
