@@ -1752,7 +1752,21 @@ on the way.
 
 ### Open, and not sliced
 
-*Nothing. The list's last item was settled on 2026-10-04 (decision 0021).*
+*Noted 2026-10-08, from decision 0024's review, each with its reason; neither is decided.*
+
+- **A taken stream's close bounded from the server's side.** `transport-close!` still
+  waits for a client that reads nothing until the server drains. A taker that arms no
+  aborting deadline holds a connection, and its writes, that long. The server bounds
+  every other connection's writes with its write deadline; it could abort a close that
+  waits past it. Not done: M8.2's review decided by form that a taker owns its bounds,
+  and undoing that is the owner's choice.
+- **A door script in the cross-shell contract test.** The fake's door is held to the
+  libuv shell's by paired checks in the two suites, not by a replay of the libuv shell's
+  door events into the fake (0016 has no door script). Decision 0024 found four
+  differences that way. A replay would find the next; it needs the contract test to
+  drive a taker on both shells.
+
+*Settled before: the list's last item on 2026-10-04 (decision 0021).*
 
 - ~~M8.3's smuggler corpus~~, **settled 2026-10-04 (decision 0021)** as a hand-written
   fixed-vector lane, on the owner's form ("Static fixtures only", then "Per-case verdict

@@ -318,7 +318,7 @@ What the transport does:
 | ~(transport-deadline! t ms proc)~     | calls ~proc~ once ~ms~ milliseconds pass; ~(transport-deadline! t #f)~ cancels |
 | ~(transport-on-drain! t proc)~        | calls ~proc~ when the server shuts down                        |
 | ~(transport-on-close! t proc)~        | calls ~proc~ once the stream has closed, whoever closed it (at once if it has) |
-| ~(transport-abort! t)~                | closes now: what is unsent is dropped, and each ~done~ waiting gets ~ECANCELED~ |
+| ~(transport-abort! t)~                | closes now: writes not yet sent are dropped, their ~done~ getting ~ECANCELED~ |
 
 - Each read's bytevector is yours to keep. A write of no bytes is refused.
 - Nothing bounds what you write but you. A client that stops reading leaves
@@ -326,6 +326,8 @@ What the transport does:
   had ~done~ for; past a bound you choose, stop writing, or stop reading what
   you would echo. To close a client that never catches up, arm a deadline
   that calls ~transport-abort!~: ~transport-close!~ would wait for it to read.
+  A client that reads again after an abort may still get part of a write
+  already under way.
 - Each ~transport-write!~ is a write of its own: the server does not join
   small ones together, as it does for a response. Many small writes are
   slower than one, so join small pieces into one bytevector first.

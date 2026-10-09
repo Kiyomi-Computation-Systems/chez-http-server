@@ -627,3 +627,30 @@ NEXT: nothing is open upstream (decision 0008: all twenty-four filed asks have l
 - `make test` green on each layer (Darwin arm64): fifty-one suites, and 1,973, 1,980 and 1,981 expected passes; every pin ok.
 
 NEXT: review and the closing ritual for the four, when the owner asks; then 0.4.0's release, for chez-websocket to pin (its M4.2).
+
+**Decision 0024's review, as a fifth stacked PR, on `fix/0024-review` (2026-10-08):** a /code-review xhigh over #146-#149 reported eleven findings; on the owner's "Fix the review findings as a fifth pr", nine fixed and two noted.
+- **Fixed:**
+  - **An aborted write's bytes no longer count as read by the client.** The fake recorded a write's bytes at the call. They are now the client's at the write's turn, so an aborted write's never are.
+  - **A closed or ended stream is read nothing.** Once the taker's close has been asked for, or its end told, nothing more reaches it. The fake had handed a closed stream reads, and told an end twice.
+  - **Two guarded calls had no check:** a late write's `ECANCELED` callback, and a close call registered after the close. A check now raises in each.
+  - **The abort's docs** (transport, handlers.org, CHANGELOG, 0024) said what is unsent is dropped. What libuv has not written is; what the system already holds still goes out.
+    - Measured on Darwin arm64: a client that read nothing while 4 MiB was written, then read after the abort, got 973,521 to 1,013,857 bytes in three runs, then the end, each write told `ECANCELED`.
+  - **The shell suite's two door checks share `door-unread`.** It reports whether the stream was adopted, and always closes it before the next check.
+  - **`unread` checks its hand-off.**
+  - **Outstanding writes are a count and an abort flag,** not a list grown by append.
+  - **`taking` counts closes through `counting-closes`,** and `raised-in` is built on it.
+  - **`stop-taking!` is the close's and the abort's shared start.**
+- **Noted in plan §14's open list**, neither decided:
+  - bounding a taken stream's waiting close from the server's side, which would undo M8.2's form that a taker owns its bounds;
+  - a door script in the cross-shell contract test.
+- **Taken out while mapping:** the fake cleared its "end told" mark when reading started again. No check reached it, and no taker restarts after its end, so the fake tells an end once per stream.
+- **Tests first** (named and hashed):
+  - against #149's tip, exactly the two named fake checks went red, the client reading the aborted write and the end told twice;
+  - the third, the late raises, was predicted red and passed: both guards already existed, and the finding was that nothing watched them. Its red is the mutants'.
+- **Mutants**, on the fixed tree (e91e07b), each red set named and hashed before the run: 32 rows, 31 mutants and the baseline, 0 mismatches on the first run.
+  - The abort layer's 23, re-cut on the review's fake.
+  - The review's 8: the aborted bytes counted, a closing taker read, the end told every time or marked by nothing, and each late guard removed or made to swallow.
+  - Every check the review added or changed has a killer by value (m8-mutations.md).
+- `make test` green (Darwin arm64): fifty-one suites, 1,983 expected passes; every pin ok.
+
+NEXT: the closing ritual for #146 to #150, when the owner asks; then 0.4.0's release, for chez-websocket to pin (its M4.2).
