@@ -206,3 +206,13 @@ NEXT: v0.4.1's release, stacked on this, by the owner's form. Then, in chez-webs
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,989 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
 
 NEXT: the closing ritual for both PRs, bottom-up, and the tag, when the owner asks. Then, in chez-websocket: S-PARK's reference moves to one held outside the scheduler, then the pin moves to v0.4.1 alone, then M5.
+
+MERGED to main on 2026-10-09, on the owner's "ci is green, do closing ritual": **the ledger archive and v0.4.1's release, as two stacked PRs** (the two entries above), bottom-up.
+- **#159, the ledger archived by release,** as 5e09f79 (tree d7f5bd0's, parent 86b99dc). Its run, 37996804554, passed on d7f5bd0: fifty-one suites, 1,989 expected passes on ubuntu-24.04. It merged without `--delete-branch`, since #160 was based on it. Main's run on the squash, 37997095845, passed before #160 merged.
+- **#160, v0.4.1's release,** retargeted to main and rebased from d7f5bd0 onto 5e09f79: 33b6187 became 1e671cd (the tested tree), pushed with the lease. CI passed on both heads (37996827716 on 33b6187, 37997130602 on 1e671cd), each fifty-one suites and 1,989 expected passes. It merged as 520f70e (tree 1e671cd's, parent 5e09f79). Main's run on the squash, 37997420381, passed before the tag.
+- **Branches.** Both were deleted, local and remote; this checkout is on main, fast-forwarded. No PR is open.
+- **TAGGED v0.4.1** on 520f70e, annotated and signed as v0.4.0 was: "chez-http-server v0.4.1 — a waiting handler keeps about 3 KB less", its body pointing at CHANGELOG.md's `[0.4.1]`. `git verify-tag` read a good signature. `git ls-remote --tags` shows the tag object 947d782 and its commit 520f70e. No GitHub Release, as for the earlier tags.
+
+`make test` green on main: fifty-one suites, 1,989 expected passes, every pin ok.
+
+NEXT: in chez-websocket, its own repository: S-PARK's reference moves to one held outside the scheduler, then its pin moves to v0.4.1 alone, then M5. Here, v0.4.1's entries move to `v0.4.1-progress.md` at the next release.
