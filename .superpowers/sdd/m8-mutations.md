@@ -1712,3 +1712,95 @@ drain's continuation, was not measured.
 
 The values probe (`rows.sps`) is built from the suite's own helper text, and was run with
 each mutant's library root first.
+
+## After M8 — decision 0025's review: the drain full too, and a refusal that ends the one running (2026-10-09)
+
+The review's fixes, on `fix/0025-review`, stacked on the ledger branch. Two forms ("Drain
+full too", "End the one running") and eight findings.
+
+Platform: Darwin 25.6.0 arm64 (Apple M1), Chez Scheme 10.4.1, 2026-10-09. The values probes
+read the same on Linux 6.12.76-linuxkit aarch64 and x86_64 (the latter under emulation), in
+Docker.
+- **The code:** `src/http-server/private/scheduler.sls` and `src/http-server/private/waits.sls`.
+- **The suites:** `tests/test-scheduler.sps` (26 checks), `tests/test-waits.sps` (38),
+  `tests/testing.sls` (`heap`) and `tests/test-clients.sps` (its own `heap` gone).
+
+**The oracles:**
+- the two forms;
+- a one-shot continuation captured 4 calls deep and left: 3,516 B allocated and 3,419 to
+  3,420 B kept, measured in the run;
+- the peers' behaviour (decision 0025's amendment).
+
+**The values probes** (`rows-sched.sps`, `rows-waits.sps`) are each built from its suite's
+own text before `run-suite`, so neither can drift from the checks.
+
+### The test-first runs
+
+Each red set and its values were named and hashed before the run; all four matched.
+- **Stage 0:** the tests on the branch's code. 1,985 passes and the four new rows red:
+  - the guarded row, the code after the guard run twice;
+  - the cross row, `(b returned #f)`, and A's later wake an assertion;
+  - the once row, 4,191 B against 3,516;
+  - the waits row, naming `coroutine-park!`.
+- **Stage 1:** the drain full. The once row green at 1,177 B; 1,986 passes.
+- **Stage 2:** the refusal ends the one running. The guarded and cross rows green; 1,988
+  passes.
+- **Stage 3:** a waiting verb names itself. The waits row green; 1,989 passes.
+
+### The mutants
+
+28 rows, 27 mutants and the baseline. The scheduler's and the suites' mutants were cut new,
+or re-cut from this slice's first log for the code the review changed. M7S-B, M7S-H, M7S-R,
+M7W-8 and M7X-1 were re-cut from M7's log.
+
+| id | mutant | red, predicted and seen |
+|---|---|---|
+| BASE | the unmutated tree (a comment) | none |
+| RV-1 | the drain's resume by `call/1cc` again | scheduler: the once row, 4,191 B against 3,516 |
+| RV-2 | the refusal raised where the park lands | scheduler: the guarded row (the code after it ran twice) and the cross row (`(b returned #f)`) |
+| RV-3 | the coroutine running ended unmarked as raised | scheduler: the second-landing, guarded and cross rows (`(returned #<condition>)`); waits: the await row |
+| RV-4 | the refusal names no one | scheduler: those three, `(raised assertion)`; waits: the await row |
+| RV-5 | a wait parks without naming itself | waits: the await row, naming `coroutine-park!` |
+| RV-6 | `coroutine-park!` drops the name it is given | the same |
+| RV-7 | the landing checks the number's parity | scheduler: the cross row, `((a after-1st) (a after-1st) (a raised …))` |
+| PK-1 | `suspend!` by `call/1cc` again | scheduler: the second-landing, guarded, cross and heap rows (3,888 B); waits: the await row |
+| PK-2 | the landing's check gone | scheduler: the second-landing, guarded and cross rows, each run twice; waits: the await row |
+| PK-3 | a landing does not mark its park | scheduler: the second-landing and guarded rows; waits: the await row |
+| PK-4 | the park not numbered before its capture | scheduler alone, with waits: nine rows, every one that lands a park; waits red |
+| PK-5 | the check by `fx>=?` | scheduler: the second-landing, guarded and cross rows; waits: the await row |
+| PK-6 | a yield's landing not checked | scheduler: the second-landing row, its yield half |
+| PK-7 | the refusal names `suspend!` | scheduler: the three rows; waits: the await row, `(raised suspend!)` |
+| PK-8 | the refusal an `&error` | scheduler: the three rows, `(raised other)` |
+| PT-1 | the held reference by a full continuation | scheduler: exit 3, the provenance failure |
+| PT-1b | the allocated reference by a full continuation | none: equivalent (3,484 B allocated) |
+| PT-2 | entered-twice never armed | scheduler: the second-landing row |
+| PT-3 | entered-guarded never armed | scheduler: the guarded row |
+| PT-4 | the cross row's B enters nothing | scheduler: the cross row |
+| PT-5 | the await row never armed | waits: the await row |
+| PT-6 | the allocated reference 0 calls deep | scheduler: the calibration and once rows |
+| M7S-B | R3 broken (re-cut) | connection-switch 1, contract 68, message-loop 7, scheduler (raised, exit 2, 7 failed), shell (raised, exit 2), waits 28 |
+| M7S-H | a wake of one not parked let through (re-cut) | scheduler: the waking row |
+| M7S-R | a woken coroutine entered again from its start (re-cut) | connection-switch 1, contract 11, message-loop 6, scheduler 10, shell (raised, exit 2, 24 failed), waits 37 |
+| M7W-8 | a wait on no coroutine not refused as R2 (re-cut) | scheduler 1, shell 1, waits 2 |
+| M7X-1 | the scheduler keeps the drain's continuation (re-cut) | shell: the idle check, "a connection idle after its handler, its reader and its producer waited holds none of the coroutines they ran on" |
+
+- **Run 1: 28 rows, 1 mismatch, one prediction error.** PT-1b is equivalent: a full
+  continuation captured 4 calls deep and left allocates a segment too, 3,484 B. Read from
+  the runner's report, PK-4 showed a second mismatch. The runner prints at most eight FAIL
+  lines a suite, and PK-4's ninth, the cross row, was in its suite's log. The comparison
+  now reads each suite's log.
+- **Run 2:** PK-4, and PT-1b re-predicted equivalent: **0 mismatches.**
+- Every mutant loaded. M7S-B's suites print a `coroutine-wake!` assertion: the R3 breach
+  reaches a wake of an ended coroutine. It did not hang.
+
+**Every new or changed check has a killer by value:**
+- the guarded row: RV-2, RV-3, RV-4, PK-1, PK-2, PK-3, PK-5, PK-7, PK-8, PT-3;
+- the cross row: RV-2, RV-7 (finding 2's parity), PK-1, PK-2, PK-5, PT-4;
+- the once row: RV-1, PT-6;
+- the calibration row: PT-6;
+- the waits' await row: RV-3 to RV-6, PK-1 to PK-3, PK-5, PK-7 and PT-5;
+- the second-landing row, its values changed only in how they are read: PK-1 to PK-8,
+  RV-3, RV-4.
+
+**No longer a survivor:** M7X-1, since the drain's continuation is full. Kept, it holds the
+last coroutine resumed, and the shell suite's idle check reddens.
