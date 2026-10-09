@@ -1084,6 +1084,17 @@ collection). An idle keep-alive connection carries no coroutine at all.
 > each wait has been answered, and its connection is idle, a full collection leaves
 > none of the coroutines they ran on.
 
+> *Amended 2026-10-09 ([0025](decisions/0025-a-waiting-coroutine-parks-on-a-full-continuation-and-each-park-lands-once.md)):*
+> a coroutine parks on a full continuation (`call/cc`), not a one-shot one, which kept
+> the stack segment it was captured on for as long as the coroutine waited. Each park
+> is numbered, so its continuation lands once: a second landing raises an assertion
+> naming the verb, where Chez refused a one-shot continuation entered again. Measured on
+> Darwin arm64 and Linux aarch64, alike: a coroutine parked 4 calls deep keeps 745 B on
+> the heap, where it kept 3,691 B; one parked at an `await`, 2,000 at once, 654 to
+> 688 B, where 3,634 to 3,644 B; a wake and park allocates 419 B with the scheduler
+> alone, where 291. The figures above, from 3,449 B to the M7 exit's 3,644 B, are a
+> one-shot park's.
+
 ### 5.3 The invariants, as checks
 
 Decision 0003 item 2 adopts R1–R5 of the two-level proposal as checks, not comments:
