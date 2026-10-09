@@ -609,3 +609,21 @@ MERGED to main on 2026-10-08, on the owner's "do closing ritual on both": **the 
 `make test` green on main: fifty-one suites, 1,973 expected passes; the clients suite read 5,131 B a GET.
 
 NEXT: nothing is open upstream (decision 0008: all twenty-four filed asks have landed). chez-websocket's work goes on in its own repository.
+
+**The second door change, decision 0024, as four stacked branches (2026-10-08):** `docs/0024-abort-and-every-line`, `feat/transport-abort`, `feat/request-header-values` and `docs/0024-ledger`, on the owner's forms in chez-websocket's M4.2 ("Server's fake shell", "Door change: abort", "Every line, in the release"), after its "Lets start the next step".
+- **Measured first** (v0.3.0's door, unchanged on main since; Darwin arm64), in chez-websocket's scratchpad:
+  - **A close a client that reads nothing holds open.** 16 MiB written to such a client, the close asked for, then a 300 ms deadline: the deadline passed at 496 ms, and the stream stayed open until the client left at 2,998 ms. A raise in the deadline's call closed it at 497 ms, logged `taker-failed`; a prototype abort at 498 ms, its write told `ECANCELED`, nothing logged.
+  - **A field's first line only.** Through the fake shell's parse, by chez-websocket's handshake: a split `Connection` or `Upgrade` refused 400, a split `Sec-WebSocket-Protocol`'s later offers lost, and two `Sec-WebSocket-Key` or `Sec-WebSocket-Version` lines accepted, using the first.
+  - **The fake's door differed from the libuv shell's** for a client that reads nothing: no deadline armed after the close, a raise in a deadline's call escaping to the test, a waiting thunk's raise closing only after its write, and the take-over unguarded.
+- **DECIDED (0024).** `transport-abort!` closes a taken stream at once, dropping what is unsent; `request-header-values` gives every field of a name; the fake's door does what the libuv shell's does. Weighed and not taken there: the binding raising at its bound, a field's first line documented, chez-websocket reading the server's internal libraries.
+- **Built.**
+  - The libuv shell's abort is the handle's close, as a taker's raise has it; libuv tells each write outstanding `ECANCELED`. `make-transport` takes it as an eighth procedure; one made of seven refuses `transport-abort!`, naming it.
+  - The fake: a taker's write is outstanding until its turn, so a test that delivers no later turn plays a client that reads nothing. The close waits for the writes, and disarms the deadline once begun; the abort begins it at once; every call into the taker's code is guarded, a raise recorded and the stream aborted.
+  - `request-header-values`, in the view and the facade.
+- **Tests first**, in two stages each (m8-mutations.md, "After M8 — a taker may abort its stream"): main's code stopped three suites at load, exit 255, not the run-time failures the prediction named; the API alone reddened exactly the five named once a test-isolation fault in the shell suite was fixed. Then the values layer, as named.
+- **Mutants:** the abort layer's 24 rows (23 mutants), one mismatch, A-3's two leak-check knock-ons; the values layer's 6 rows, none. Every check added or changed has a killer by value.
+- **Docs.** `docs/handlers.org`: the abort's row, a deadline that aborts in the advice, eight procedures for a fake, and `request-header-values`' row. CHANGELOG.md's Unreleased gains two Added and a Fixed (the fake's door).
+- **Records.** Decision 0024, new; 0016 amended; the design's door note; plan §15.
+- `make test` green on each layer (Darwin arm64): fifty-one suites, and 1,973, 1,980 and 1,981 expected passes; every pin ok.
+
+NEXT: review and the closing ritual for the four, when the owner asks; then 0.4.0's release, for chez-websocket to pin (its M4.2).

@@ -46,7 +46,10 @@ stops reading. Measured against chez-websocket's driver prototype:
   where the libuv shell logs it and closes the stream at once;
 - a waiting thunk's raise closes the fake's stream only after the write outstanding has
   completed, where the libuv shell cancels it;
-- the fake does not guard the take-over itself either.
+- the fake does not guard the take-over itself either;
+- and, found while mapping this change's mutants, a deadline armed before the close
+  stays armed in the fake, and passes on a closed stream, where the libuv shell's close
+  disarms it.
 
 ## Decision
 
@@ -66,7 +69,7 @@ By form, the recommended of each:
 3. **The fake shell's door does what the libuv shell's does** for a client that stops
    reading:
    - Asked for, the close waits for the writes outstanding, so a deadline asked for
-     meanwhile is armed.
+     meanwhile is armed; begun, it disarms the deadline.
    - Every call into the taker's code is guarded, the take-over itself among them. A
      raise is the taker's failure, recorded, and closes the stream at once, as a waiting
      thunk's raise does.
