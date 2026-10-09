@@ -19,8 +19,17 @@
 ;;; against a value only success can produce, never #f or bare truthiness
 ;;; (global-constraints).  This library only computes the status.
 (library (testing)
-  (export run-suite provenance-failure provenance-error?)
-  (import (rnrs) (srfi :64))
+  (export run-suite provenance-failure provenance-error? heap)
+  (import (rnrs) (srfi :64)
+          (only (chezscheme) collect collect-maximum-generation bytes-allocated))
+
+  ;; heap : -> Nat
+  ;; The bytes the heap holds after two full collections: a footprint, read
+  ;; before and after what it measures, back to back.
+  (define (heap)
+    (collect (collect-maximum-generation))
+    (collect (collect-maximum-generation))
+    (bytes-allocated))
 
   ;; provenance-error : a raised marker mapping a suite to status 3.
   (define-record-type provenance-error

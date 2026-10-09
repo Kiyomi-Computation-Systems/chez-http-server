@@ -12,11 +12,12 @@
 ;;; a count, never by the clock (global-constraints).
 ;;;
 ;;; The checks, R3's first.  A coroutine that returns normally, R3 broken,
-;;; breaks every drain after it: Chez refuses its return into the
-;;; continuation its park used, or its raise's handler returns, and the
-;;; coroutine running stays set.  Since M7.2's handler for a coroutine's
-;;; raise, that comes at the first coroutine that raises, or parks and ends,
-;;; so R3's row runs before any other (the M7 exit):
+;;; returns into the drain that first entered it, which runs again from
+;;; there, and the drains after it break: that drain's continuation is a
+;;; full one (decision 0025), where Chez refused a return into a one-shot
+;;; one.  Since M7.2's handler for a coroutine's raise, that comes at the
+;;; first coroutine that raises, or parks and ends, so R3's row runs before
+;;; any other (the M7 exit):
 ;;;   - R3: a coroutine that parks, is woken and ends, ends through the
 ;;;     scheduler: its end once, and the turns after it run on;
 ;;;   - a coroutine spawned runs at the next drain, not where it was spawned,
@@ -41,19 +42,26 @@
 ;;;   - a turn answers the poll's answer, or #t while something is ready;
 ;;;   - a guard inside a coroutine catches a raise after a park, and what a
 ;;;     coroutine parameterizes stays its own across a park;
-;;;   - a park's or a yield's continuation entered a second time is refused,
-;;;     as an assertion naming the verb, and the code after it runs once
-;;;     (decision 0025: a one-shot continuation refused it, and a full one
-;;;     lands as often as it is entered);
+;;;   - a park's or a yield's continuation entered a second time is refused:
+;;;     the coroutine whose turn it is ends by an assertion naming the verb,
+;;;     and the code after the park runs once (decision 0025: a one-shot
+;;;     continuation refused it, and a full one lands as often as it is
+;;;     entered); so inside a guard that catches everything, which never
+;;;     sees the refusal; and entered from another coroutine while its own
+;;;     waits on a newer park, the one that entered it ends, and the one
+;;;     parked stays parked, its newer park landing when it is woken;
 ;;;   - a coroutine that ends, by its value or by a raise, allocates no stack
 ;;;     of its own (M7.2's first step: a `guard` around the thunk gave each
 ;;;     one a stack);
+;;;   - a coroutine that parks once, is woken and ends allocates under half
+;;;     of what a one-shot continuation held at the same depth allocates
+;;;     (decision 0025's review: on a one-shot continuation the drain
+;;;     entered, its park cost a fresh stack segment);
 ;;;   - a coroutine parked keeps on the heap under half of what a one-shot
 ;;;     continuation held at the same depth keeps (decision 0025: parked by
 ;;;     a one-shot continuation, it kept that stack segment).
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) make-parameter parameterize statistics sstats-bytes
-              call/1cc collect collect-maximum-generation bytes-allocated)
+        (only (chezscheme) make-parameter parameterize statistics sstats-bytes call/1cc)
         (http-server private scheduler))
 
 ;; scripted : (Listof (Listof (-> Any))) -> (values (Symbol -> Boolean) (-> (Listof Symbol)))
@@ -104,14 +112,22 @@
 (define (ender note!)
   (lambda (kind v) (note! (list 'end kind (if (condition? v) 'condition v)))))
 
+;; ended : Symbol Any -> (Listof Any)
+;; A coroutine's end, or a raise, as a check reads it: `(returned v)`, or
+;; `(raised assertion who)` for an assertion naming who, `(raised
+;; assertion)` for one naming no one, `(raised other)` for anything else.
+(define (ended kind v)
+  (cond ((not (eq? kind 'raised)) (list kind v))
+        ((not (assertion-violation? v)) '(raised other))
+        ((who-condition? v) (list 'raised 'assertion (condition-who v)))
+        (else '(raised assertion))))
+
 ;; entered-twice : Symbol -> (Listof Any)
 ;; A coroutine that parks, for 'park, or yields, for 'yield, inside a
 ;; dynamic-wind whose before thunk, as the coroutine is resumed, captures the
 ;; continuation it runs in; once landed, the coroutine calls that
 ;; continuation, which enters the park again.  What it noted: `(landed n)`
-;; at each landing, then its end, `(returned v)`, or a raise as `(raised
-;; assertion who)` for an assertion naming who, `(raised assertion)` for one
-;; naming no one, `(raised other)` for anything else.
+;; at each landing, then its end, as `ended` reads it.
 (define (entered-twice how)
   (let* ((seen '()) (again #f) (armed #f) (landings 0)
          (note! (lambda (x) (set! seen (cons x seen))))
@@ -128,22 +144,76 @@
                      (when k (set! again #f) (k #f)))
                    landings)
                  (lambda () #f)))
-              (lambda (kind v)
-                (note! (cond ((not (eq? kind 'raised)) (list kind v))
-                             ((not (assertion-violation? v)) '(raised other))
-                             ((who-condition? v) (list 'raised 'assertion (condition-who v)))
-                             (else '(raised assertion))))))))
+              (lambda (kind v) (note! (ended kind v))))))
     (scheduler-drain! s)
     (set! armed #t)
     (when (eq? how 'park) (coroutine-wake! c 'go))
     (scheduler-drain! s)
     (reverse seen)))
 
-;; heap : -> Nat — the bytes in use after two full collections.
-(define (heap)
-  (collect (collect-maximum-generation))
-  (collect (collect-maximum-generation))
-  (bytes-allocated))
+;; entered-guarded : -> (Listof Any)
+;; entered-twice's park inside a guard that catches anything, noting
+;; `(caught . what)`, as `ended` reads it; the code after the guard notes
+;; `(after-guard n)`, then calls the continuation once, which enters the
+;; park again.  What it noted, then its end.
+(define (entered-guarded)
+  (let* ((seen '()) (again #f) (armed #f) (landings 0)
+         (note! (lambda (x) (set! seen (cons x seen))))
+         (s (make-scheduler (lambda (mode) #f)))
+         (c (scheduler-spawn! s
+              (lambda ()
+                (dynamic-wind
+                 (lambda () (when armed (call/cc (lambda (k) (set! again k)))))
+                 (lambda ()
+                   (guard (e (#t (note! (cons 'caught (ended 'raised e)))))
+                     (coroutine-park!))
+                   (set! landings (+ landings 1))
+                   (note! (list 'after-guard landings))
+                   (let ((k again))
+                     (when k (set! again #f) (k #f)))
+                   landings)
+                 (lambda () #f)))
+              (lambda (kind v) (note! (ended kind v))))))
+    (scheduler-drain! s)
+    (set! armed #t)
+    (coroutine-wake! c 'go)
+    (scheduler-drain! s)
+    (reverse seen)))
+
+;; entered-from-another : -> (Listof Any)
+;; Coroutine A parks inside a dynamic-wind whose before thunk, as A is first
+;; resumed, captures the continuation it runs in; A then parks again.
+;; While A waits on that second park, coroutine B calls the continuation,
+;; entering A's first park again; then A is woken.  What was noted: `(a
+;; after-1st)` and `(a after-2nd)` after A's parks, each coroutine's end as
+;; `(a . end)` or `(b . end)`, as `ended` reads it, and a raise out of A's
+;; wake as `(wake . raise)`.
+(define (entered-from-another)
+  (let* ((seen '()) (again #f) (armed #f)
+         (note! (lambda (x) (set! seen (cons x seen))))
+         (s (make-scheduler (lambda (mode) #f)))
+         (a (scheduler-spawn! s
+              (lambda ()
+                (dynamic-wind
+                 (lambda () (when (and armed (not again)) (call/cc (lambda (k) (set! again k)))))
+                 (lambda ()
+                   (coroutine-park!)
+                   (note! '(a after-1st))
+                   (coroutine-park!)
+                   (note! '(a after-2nd))
+                   'a-done)
+                 (lambda () #f)))
+              (lambda (kind v) (note! (cons 'a (ended kind v)))))))
+    (scheduler-drain! s)
+    (set! armed #t)
+    (coroutine-wake! a 'go)
+    (scheduler-drain! s)
+    (scheduler-spawn! s (lambda () (again #f) 'b-done) (lambda (kind v) (note! (cons 'b (ended kind v)))))
+    (scheduler-drain! s)
+    (guard (e (#t (note! (cons 'wake (ended 'raised e)))))
+      (coroutine-wake! a 'go)
+      (scheduler-drain! s))
+    (reverse seen)))
 
 ;; deep : Nat (-> Any) -> Any — `thunk`'s value, called `d` calls deep, each
 ;; call's frame kept by what it does after.
@@ -188,6 +258,42 @@
                                         (call/1cc (lambda (k) (out (cons k kept))))))))))))
          (after (heap)))
     (div (- after before) (length kept))))
+
+;; one-shot-allocates : Nat Nat -> Nat
+;; What each of `n` one-shot continuations allocates, each captured `d`
+;; calls deep and left by an escape, never called, all kept, after a
+;; warm-up of the same: one-shot-held's continuations, by the counter.
+(define (one-shot-allocates n d)
+  (define (run!)
+    (let loop ((i 0) (kept '()))
+      (when (< i n)
+        (loop (+ i 1)
+              (call/1cc
+               (lambda (out)
+                 (deep d (lambda ()
+                           (call/1cc (lambda (k) (out (cons k kept))))))))))))
+  (run!)
+  (let ((before (sstats-bytes (statistics))))
+    (run!)
+    (div (- (sstats-bytes (statistics)) before) n)))
+
+;; waits-once-allocates : Nat Nat -> Nat
+;; What each of `n` coroutines allocates, one at a time, each parking once
+;; `d` calls deep, woken and drained to its end, after a warm-up of the
+;; same.
+(define (waits-once-allocates n d)
+  (let ((s (make-scheduler (lambda (mode) #f))) (c #f))
+    (define (run!)
+      (do ((i 0 (+ i 1))) ((= i n))
+        (scheduler-spawn! s (lambda () (deep d (lambda () (set! c (current-coroutine)) (coroutine-park!))))
+                          (lambda (kind v) #f))
+        (scheduler-drain! s)
+        (coroutine-wake! c #t)
+        (scheduler-drain! s)))
+    (run!)
+    (let ((before (sstats-bytes (statistics))))
+      (run!)
+      (div (- (sstats-bytes (statistics)) before) n))))
 
 ;; bytes-each : Nat (-> Any) -> Nat
 ;; The bytes each of `n` coroutines running `thunk` allocates, all spawned
@@ -458,15 +564,29 @@
         ((landed 1) (raised assertion coroutine-yield!)))
       (list (entered-twice 'park) (entered-twice 'yield)))
 
+    (test-equal "a park entered a second time inside a guard that catches everything: the guard never sees the refusal, and the code after the guard runs once"
+      '((after-guard 1) (raised assertion coroutine-park!))
+      (entered-guarded))
+
+    (test-equal "a park entered from another coroutine, while its own waits on a newer park: the one that entered it ends by the refusal, and the one parked stays parked, its newer park landing when it is woken"
+      '((a after-1st) (b raised assertion coroutine-park!) (a after-2nd) (a returned a-done))
+      (entered-from-another))
+
     ;; --- what a coroutine allocates --------------------------------------
-    ;; A park allocates a stack segment: 3,772 B each, 1,000 parked at once,
-    ;; by a one-shot continuation, and 3,919 to 3,984 B by a full one
-    ;; (decision 0025; Darwin arm64 and Linux aarch64).  One that ends, by
-    ;; its value or by a raise, needs no stack of its own, and under 1,024 B
-    ;; it cannot have made one.  Calibration: the counter sees the parks'.
-    (let ((parked (bytes-each 1000 coroutine-park!)))
-      (test-eq "1,000 coroutines parked at once each allocate a stack the counter sees"
-               'stacks (if (> parked 2048) 'stacks parked)))
+    ;; A one-shot continuation captured 4 calls deep and left keeps a stack
+    ;; segment: 3,516 B each (Darwin arm64), whatever the scheduler does.
+    ;; Calibration: the counter sees it.  A coroutine that ends, by its value
+    ;; or by a raise, needs no stack of its own, and under 1,024 B it cannot
+    ;; have made one.  One that parks once, woken and ended, allocates under
+    ;; half of the reference, 4 calls deep: on a one-shot continuation the
+    ;; drain entered, its full park cost a fresh segment, 4,256 to 4,257 B;
+    ;; on a full one, 1,177 to 1,242 B (decision 0025's review).
+    (let ((reference (one-shot-allocates 1000 4)))
+      (test-eq "a one-shot continuation captured 4 calls deep and left allocates a stack the counter sees"
+               'stacks (if (> reference 2048) 'stacks reference))
+      (let ((once (waits-once-allocates 1000 4)))
+        (test-equal "a coroutine that parks once 4 calls deep, is woken and ends, one at a time, allocates under half of what a one-shot continuation held 4 calls deep allocates"
+          'under-half (if (< (* 2 once) reference) 'under-half (list once reference)))))
     (let ((ended (bytes-each 1000 (lambda () 'done))))
       (test-eq "a coroutine that ends by its value allocates no stack of its own"
                'stackless (if (< ended 1024) 'stackless ended)))
@@ -477,10 +597,11 @@
     ;; --- what a coroutine keeps, parked -----------------------------------
     ;; Decision 0025: parked by a one-shot continuation, a coroutine kept the
     ;; stack segment its park was captured on, 3,691 to 3,692 B 4 calls deep;
-    ;; by a full one, it keeps its frames, 745 B (Darwin arm64, and Linux
-    ;; aarch64 and x86_64, alike).  The reference is that one-shot park with
-    ;; no scheduler, a one-shot continuation captured 4 calls deep and left
-    ;; by an escape, 3,419 to 3,420 B on all three.  Should it keep under 2 KiB, the counter no
+    ;; by a full one, it keeps its frames, 802 B, the drain's continuation
+    ;; full too (Darwin arm64, and Linux aarch64 and x86_64, alike).  The
+    ;; reference is that one-shot park with no scheduler, a one-shot
+    ;; continuation captured 4 calls deep and left by an escape, 3,419 to
+    ;; 3,420 B on all three.  Should it keep under 2 KiB, the counter no
     ;; longer sees a segment, and the suite stops as a provenance failure.
     (parked-held 100 4)
     (one-shot-held 100 4)

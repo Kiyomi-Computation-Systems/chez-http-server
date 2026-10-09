@@ -23,7 +23,10 @@
 ;;;   - a wait begins only where a coroutine may park: on no coroutine it is
 ;;;     refused as R2, inside a callback as R1, inside a feed as R5, each
 ;;;     before `register` is called;
-;;;   - a wait on a loop that keeps no waits is an assertion violation.
+;;;   - a wait on a loop that keeps no waits is an assertion violation;
+;;;   - a wait's park entered a second time ends the coroutine by an
+;;;     assertion naming the wait, `await` (decision 0025's review), and
+;;;     nothing is logged.
 ;;;
 ;;; The checks (the third step, `sleep-ms` and `with-deadline`), on a clock
 ;;; the suite sets, the loop's timer standing in as a recorder of each start
@@ -176,6 +179,35 @@
 (define (closed-or thunk)
   (guard (e ((client-closed? e) 'closed)) (thunk)))
 
+;; await-entered-twice : -> (List (Listof Any) (Listof Any))
+;; A coroutine that awaits inside a dynamic-wind whose before thunk, as the
+;; coroutine is resumed, captures the continuation it runs in; once its
+;; wait has answered, the coroutine calls that continuation, which enters
+;; the wait's park again.  What it noted, `landed` at each landing, then its
+;; end, `(returned v)` or `(raised who)` for a condition naming who; and the
+;; waits' log.
+(define (await-entered-twice)
+  (let*-values (((note! seen) (recorder))
+                ((resume) #f)
+                ((again) #f)
+                ((armed) #f)
+                ((s logged) (waiting (list (list (lambda () (set! armed #t) (resume 'go)))))))
+    (scheduler-spawn! s
+      (lambda ()
+        (dynamic-wind
+         (lambda () (when armed (call/cc (lambda (k) (set! again k)))))
+         (lambda ()
+           (await (lambda (r) (set! resume r)))
+           (note! 'landed)
+           (let ((k again))
+             (when k (set! again #f) (k #f)))
+           'done)
+         (lambda () #f)))
+      (lambda (kind v)
+        (note! (list kind (if (and (condition? v) (who-condition? v)) (condition-who v) v)))))
+    (turns! s 4)
+    (list (seen) (logged))))
+
 ;; waiting : (Listof (Listof (-> Any))) -> (values Scheduler (-> (Listof Any)))
 ;; A scheduler polling `batches`, with waits that log, and the log.
 (define (waiting batches)
@@ -300,6 +332,10 @@
         (let ((t (taken s 4)))
           (test-equal "a wait on a loop that keeps no waits is an assertion violation"
             '((returned 1) (raised assertion)) (list t outcome)))))
+
+    (test-equal "a wait's park entered a second time ends the coroutine by an assertion naming the wait, await, and nothing is logged"
+      '((landed (raised await)) ())
+      (await-entered-twice))
 
     ;; --- sleep-ms and with-deadline ------------------------------------------
     ;; Each check keeps time in `clock`, which its batches set before they

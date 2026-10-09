@@ -47,7 +47,7 @@
 ;;;     answered 200 and none failed, many connections at a time, kept alive
 ;;;     and not.
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) collect collect-maximum-generation bytes-allocated getenv directory-list
+        (only (chezscheme) collect getenv directory-list
               statistics sstats-bytes)
         (libuv) (uv-testing) (shell-testing)
         (http-server)
@@ -198,13 +198,6 @@
        (for-each (lambda (p) (when (and p (uv-handle-open? p)) (uv-close! p)))
                  (list (child-pipe c) (child-in c)))
        (list outcome (child-exit c) (utf8->string (collector-bytes (child-out c))))))))
-
-;; heap : -> Nat — the bytes the server's heap holds after two full
-;; collections, as the M4 exit read a connection's (its budget spike).
-(define (heap)
-  (collect (collect-maximum-generation))
-  (collect (collect-maximum-generation))
-  (bytes-allocated))
 
 ;; make-watch : UvLoop Shell Nat -> (Pair (-> Void) (-> (List Nat Nat Nat)))
 ;; A watch for run, and what it saw: the heap, read every `every-ms` by the
