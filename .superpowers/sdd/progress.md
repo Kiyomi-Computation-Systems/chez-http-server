@@ -216,3 +216,10 @@ MERGED to main on 2026-10-09, on the owner's "ci is green, do closing ritual": *
 `make test` green on main: fifty-one suites, 1,989 expected passes, every pin ok.
 
 NEXT: in chez-websocket, its own repository: S-PARK's reference moves to one held outside the scheduler, then its pin moves to v0.4.1 alone, then M5. Here, v0.4.1's entries move to `v0.4.1-progress.md` at the next release.
+
+**Plan §14's open list gains what the full drain keeps after a big read, on `docs/open-drain-retention` (2026-10-09),** from chez-websocket#57's review (its decision 0007), by form ("Server plan's open list (Recommended)"; weighed: a server check now, and fixing it in a v0.4.2 before chez-websocket pins). Docs only; nothing under `src/` or `tests/` moved.
+- **What.** Measured through chez-websocket's socket suite on v0.4.1 (Darwin arm64): after a 4,000-byte message the heap stays 2,832 to 2,952 B above the heap after a 1-byte one, whatever the message's size, and 9,344 to 9,360 B with ten connections, about 620 B a connection more than v0.4.0. With the drain alone one-shot again it is 0 to 200 B. Not explained, and nothing here bounds it.
+- **Where.** The plan's "Open, and not sliced" list, dated, with the measures and the two ways to settle it. chez-websocket's S-LETGO now allows up to 8,004 B at 16,000 bytes (its 0007).
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,989 expected passes, every pin ok. Nothing tested changed: the plan and the ledger only.
+
+NEXT: in chez-websocket, #57 and its review's stacked PR, then the pin to v0.4.1 alone, then M5. Here, plan §14's open list holds three items.

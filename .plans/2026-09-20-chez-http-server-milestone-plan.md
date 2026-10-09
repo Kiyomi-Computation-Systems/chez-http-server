@@ -1752,6 +1752,23 @@ on the way.
 
 ### Open, and not sliced
 
+*Noted 2026-10-09, from chez-websocket#57's review (its decision 0007), by form ("Server
+plan's open list"); not decided.*
+
+- **What the full drain keeps after a big read.** Since decision 0025's review the drain
+  enters and resumes coroutines on a full continuation. Measured through chez-websocket's
+  socket suite (Darwin arm64; its research record, 2026-10-09), the heap after a WebSocket
+  message of 4,000 bytes stays 2,832 to 2,952 B above the heap after a 1-byte one, until
+  the connection's next message.
+  - It is not the message: 2,872 to 2,888 B at 40,000 and 400,000 bytes.
+  - It grows with connections: 9,344 to 9,360 B at ten, where v0.4.0 kept 104 to 112 B
+    at one and 976 to 1,120 B at ten. So about 620 B a connection more than v0.4.0.
+  - It goes with the drain: with the drain alone on a one-shot continuation again, 0 to
+    200 B; with the park alone, 2,696 to 2,704 B.
+  - Not explained, and nothing here bounds it. A check through the libuv shell of the
+    heap after a large read against a small one, or a drain that keeps none, would
+    settle it. chez-websocket's own check allows up to 8,004 B at 16,000 bytes.
+
 *Noted 2026-10-08, from decision 0024's review, each with its reason; neither is decided.*
 
 - **A taken stream's close bounded from the server's side.** `transport-close!` still
