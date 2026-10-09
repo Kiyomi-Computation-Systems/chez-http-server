@@ -6,6 +6,15 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-09
+
+The fifth release, a patch. A handler that waits, or a taker's thunk that waits, keeps
+about 3 KB less, and a wait entered a second time ends the handler that did it
+(decision 0025). Nothing an embedder calls changes, so the release is 0.4.1.
+chez-libuv is pinned at v0.8.0, which needs libuv 1.48 or later: with an older one, as
+Debian 12's 1.44 is, the build makes its own, and needs CMake. chez-httparse v0.4.5
+with byte-machine v0.7.0, and uriparse v0.6.2, are 0.4.0's.
+
 ### Changed
 
 - **libuv 1.48 or later is needed.** chez-libuv is pinned at v0.8.0, which refuses a
@@ -250,7 +259,8 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.1.0...v0.2.0
