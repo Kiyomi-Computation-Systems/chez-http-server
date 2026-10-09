@@ -743,7 +743,7 @@ NEXT: chez-websocket's M4.2, in its own repository: pin v0.4.0, put this server'
 
 **Decision 0025, a coroutine parks on a full continuation and each park lands once (2026-10-09),** on the owner's "lets start the server slice". It is the slice chez-websocket's M4.3 step 3 review asked for by form ("A server slice next"). Three stacked branches, by form ("Three stacked PRs (Recommended)"), cut from 6c451bb: `docs/0025-park-decision` (the records), `feat/0025-park` (the code) and `docs/0025-ledger`.
 - **Measured first** (Darwin arm64, and Linux aarch64 in Docker, alike; the heap check's numbers on Linux x86_64 too, under emulation), in the scratch `srv-park/`:
-  - **What a park keeps.** Main's park, by `call/1cc`, kept the stack segment it was captured on: a coroutine parked 4 calls deep held 3,691 B on the heap, and one at an `await` 3,634 to 3,644 B. By `call/cc`, 705 B 4 calls deep. A park still *allocates* a segment either way (3,772 B, against 3,887 to 3,984), so only the heap tells them apart.
+  - **What a park keeps.** Main's park, by `call/1cc`, kept the stack segment it was captured on: a coroutine parked 4 calls deep held 3,691 B on the heap, and one at an `await` 3,634 to 3,644 B. By `call/cc` alone, on the tree before the numbering, 705 B 4 calls deep. A park still *allocates* a segment either way (3,772 B, against 3,887 to 3,984 by `call/cc` alone), so only the heap tells them apart. (The numbered tree's figures are decision 0025's: 745 B, and 3,919 to 3,984.)
   - **What a continuation entered twice does.** With `call/cc` and no check, the code after a park ran twice in three cases, where `call/1cc` raised each time:
     - a handler's own `dynamic-wind` before thunk re-entering the park;
     - the scheduler resuming a park twice, with both of its guards removed;
@@ -767,3 +767,45 @@ NEXT: chez-websocket's M4.2, in its own repository: pin v0.4.0, put this server'
 - `make test` green on each layer before its commit (Darwin arm64): fifty-one suites, and 1,983, 1,985 and 1,985 expected passes; every pin ok.
 
 NEXT: the PRs by form; review and the closing ritual when the owner asks; then 0.4.1's release. Then, in chez-websocket, S-PARK's reference moves to one held outside the scheduler, before the pin moves to v0.4.1 alone.
+
+**Decision 0025's review, as three more stacked branches by form ("Three stacked PRs (Recommended)"): `docs/0025-review-records`, `fix/0025-review` and `docs/0025-review-ledger`, on `docs/0025-ledger` (2026-10-09):** a /code-review xhigh over #152 to #154 reported eight findings. On the owner's "fix all", all eight were fixed. One, finding 6, turned out larger than reported, and two forms decided it.
+- **Measured first.**
+  - **Finding 6, a fresh coroutine that waits once.** A 16 MiB upload whose reader waited on every piece allocated 24,025 B a piece, where main's allocated about 21,000. That isolated to a coroutine that parks once, 4 calls deep: 4,256 to 4,257 B, where main's 720. The drain's one-shot continuation, made multi-shot by the park's full capture, cost each such coroutine a fresh stack segment.
+  - **Through the server** (Darwin arm64, `oha`, 20,000 requests a route), a request that waited once allocated 10,255 to 10,556 B, where main's 6,977 to 7,980. One that answered at once, or answered awaiting without waiting, was unchanged.
+  - **The drain full too:** 7,158 to 7,868 B a request, and 21,106 to 21,187 B a waiting piece. A parked coroutine keeps what it did, 738 B.
+  - **The refusal's two gaps, on main and the branch alike.**
+    - A guard around the wait caught the refusal, and the code after the wait ran twice.
+    - Entered from another coroutine, the wrong coroutines ended: the entering one was reported returning `#f`, and the parked one was marked ended, so its next wake raised inside a libuv callback.
+- **DECIDED by form:**
+  - "Drain full too (Recommended)": the drain enters and resumes coroutines by `call/cc`.
+  - "End the one running (Recommended)", after the owner asked how peers handle it. The refusal ends the coroutine whose turn it is, through the drain, naming the wait, so no guard on the frames entered sees it, and a parked coroutine stays parked.
+- **Built:**
+  - `resume!` by `call/cc`, so the scheduler imports `(rnrs)` alone;
+  - `refuse-landing!`;
+  - `coroutine-park!` takes the waiting verb's name, which `wait!` passes;
+  - the comments re-measured.
+- **The suites** (scheduler 26, waits 38):
+  - the guarded row;
+  - the cross-coroutine row, which holds the park's number rather than its parity (finding 2);
+  - a coroutine that waits once allocates under half of a one-shot reference;
+  - the calibration moved to that reference, since parks no longer allocate a segment;
+  - the waits suite's `await` row;
+  - `heap` shared in `(testing)` (finding 8).
+- **Records:** the stale R3 text (finding 1), in the suite's header and design §5.3's amendment; design §5.2's amendment; decision 0025's review amendment; `docs/handlers.org`, the size growing with depth (finding 5); CHANGELOG.md; the first entry's numbers labelled by tree (finding 7).
+- **Tests first**, in four stages, each named and hashed before its run (m8-mutations.md). All four matched: 1,985 passes and the 4 new rows red; then 1,986, 1,988 and 1,989.
+- **Mutants:** 28 rows, 27 mutants and the baseline, against every suite but where the log says.
+  - Run 1, read from the suites' own logs: 1 mismatch, a prediction error. PT-1b, the allocation reference by a full continuation, is equivalent: one captured and left allocates a segment too, 3,484 B.
+  - PK-4's ninth red row was in its suite's log, not the runner's report, which prints eight. The comparison now reads the logs.
+  - Run 2, PK-4 and PT-1b, the latter re-predicted: 0 mismatches.
+  - Every new or changed check has a killer by value.
+  - M7X-1, a survivor since the M7 exit, now reddens the shell suite's idle check: a full drain continuation kept would hold the last coroutine.
+- **Measured on the finished tree,** the scheduler-alone figures on Darwin arm64 and Linux aarch64, the rows' on x86_64 too, alike:
+  - a coroutine parked 4 calls deep keeps 802 B (main 3,691 to 3,692);
+  - at an `await`, 690 to 754 B (main 3,676 to 3,848), about 16 B more a call deeper;
+  - a coroutine that waits once allocates 1,177 to 1,242 B (main 720);
+  - through the server, a request that waits once allocates 7,160 to 7,877 B (main 6,977 to 7,980), and a waiting piece 21,073 to 21,154 B (main about 21,000).
+- `make test` green on each layer before its commit (Darwin arm64): fifty-one suites, and 1,985, 1,989 and 1,989 expected passes; every pin ok.
+- **Rebased onto c7bfd48** once #155, another session's chez-libuv v0.8.0 pin, had merged to main. All six branches moved with `--update-refs`; CHANGELOG.md's Unreleased kept both entries, the pin's first. Re-run on v0.8.0 (Darwin arm64), the server's figures fall within the ranges above but one: a request that answers awaiting without waiting allocates 6,325 to 6,526 B (main 6,404 to 6,803). Otherwise: a request that waits once, 7,161 to 7,874 B (main 7,019 to 7,973); a waiting piece, 21,090 to 21,154 B (main 21,039 to 21,056).
+- **The PRs:** #152 to #154 for the slice; #156 to #158 for the review (#155 was the pin).
+
+NEXT: the closing ritual for #152 to #154 and #156 to #158, bottom-up, when the owner asks; then 0.4.1's release. Then, in chez-websocket, S-PARK's reference moves to one held outside the scheduler, before the pin moves to v0.4.1 alone.
