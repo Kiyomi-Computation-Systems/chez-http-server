@@ -223,3 +223,12 @@ NEXT: in chez-websocket, its own repository: S-PARK's reference moves to one hel
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,989 expected passes, every pin ok. Nothing tested changed: the plan and the ledger only.
 
 NEXT: in chez-websocket, #57 and its review's stacked PR, then the pin to v0.4.1 alone, then M5. Here, plan §14's open list holds three items.
+
+MERGED to main on 2026-10-09, on the owner's "all green, do closing ritual": **plan §14's open list gains what the full drain keeps, #161** (the entry above). 6252524 was squashed as aa7dc93 (tree the tested head's, parent 440051c).
+- **CI.** Its run, 38005726235, passed on 6252524: fifty-one suites, 1,989 expected passes on ubuntu-24.04. Main's run on the squash, 38006078331, passed with the same counts.
+- **Branches.** `--delete-branch` deleted the remote branch; the local one was deleted by hand once main was fast-forwarded. No PR is open.
+- **Alongside**, in chez-websocket: #57 and its review #58, the v0.4.1 fit, merged the same hour (its ledger).
+
+`make test` green on main: fifty-one suites, 1,989 expected passes, every pin ok.
+
+NEXT: in chez-websocket, the pin to v0.4.1 (520f70e) alone, then M5. Here, plan §14's open list holds three items.
