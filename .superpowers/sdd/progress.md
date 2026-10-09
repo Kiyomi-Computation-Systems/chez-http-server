@@ -684,3 +684,22 @@ CHANGELOG.md's Unreleased holds them, beside #139 to #145's entries.
 `make test` green on main: fifty-one suites, 1,983 expected passes, every pin ok.
 
 NEXT: 0.4.0's release, for chez-websocket to pin (its M4.2), when the owner asks. Plan §14's open list holds the review's two noted items.
+
+**v0.4.0's release, on `chore/release-0.4.0` (2026-10-09),** on the owner's "Cut the release", after decision 0024's merges: the release chez-websocket's M4.2 pins.
+- **What it carries.** Every PR since v0.3.0, #134 to #150, was read against CHANGELOG.md's Unreleased.
+  - The eight an embedder meets are in it:
+    - Added, the abort (#147, #150) and `request-header-values` (#148), decision 0024;
+    - Changed, a numeric setting in ASCII digits alone (#139), the guards' hoist (#140 to #142) and the chez-libuv v0.7.4 pin (#144);
+    - Fixed, the test fake's door (#147, #150).
+  - The other nine are tooling, tests or records only: #134 to #138, #143, #145, #146 and #149.
+- **Semantic versioning.** #139 refuses at startup a value 0.3.0 accepted, so the release is 0.4.0. The rest adds: `make-transport` still takes seven procedures.
+- **The pins.** chez-libuv moved, from d46654c (v0.7.3) to 27d84bb (v0.7.4), by #144. The rest are v0.3.0's: chez-httparse 0b7058e (v0.4.5, byte-machine v0.7.0), uriparse 5ecd88f (v0.6.2), chez-srfi 7879b52, vtest2 803dcd0.
+- **Built.**
+  - CHANGELOG.md: Unreleased moved under `[0.4.0] - 2026-10-09`, with an intro naming what refuses, the door change and the pins.
+  - A fresh, empty Unreleased above it, and `[0.4.0]` comparing v0.3.0 with v0.4.0.
+  - README.org's status names v0.4.0 the current release and what it adds.
+- **Not re-measured.** The intro claims no number. The allocation numbers under Changed are the ones #140 to #145 measured, and `[0.1.0]`'s stay 0.1.0's, so the load smoke was not run again.
+- **The tag.** After the merge, once main's run on the squash is green, `v0.4.0` goes on the squash, annotated as before: "chez-http-server v0.4.0 — a taker can abort its stream, and a handler can read every line of a field", with a body pointing at CHANGELOG.md. The owner's "Cut the release" asks for it; the merge waits for "do closing ritual".
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,983 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
+
+NEXT: the closing ritual and the tag, when the owner asks; then chez-websocket's M4.2: the pin of v0.4.0, the server's fake shell on its test path, and decision 0004.

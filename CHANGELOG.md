@@ -6,6 +6,16 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-09
+
+The fourth release. A taker can abort its stream, and a handler can read every line of
+a field: the second change chez-websocket needs from this server (decision 0024). One
+change refuses what 0.3.0 accepted, so the release is 0.4.0: a numeric setting written
+in anything but ASCII digits now stops the server at startup, naming its variable.
+`make-transport` still takes the seven procedures 0.3.0's did. chez-libuv is pinned at
+v0.7.4; chez-httparse v0.4.5 with byte-machine v0.7.0, and uriparse v0.6.2, are
+0.3.0's.
+
 ### Added
 
 - **A taker can abort its stream.** `(transport-abort! t)` closes it at once: reading
@@ -220,7 +230,8 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/releases/tag/v0.1.0
