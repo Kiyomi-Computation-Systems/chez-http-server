@@ -654,3 +654,33 @@ NEXT: review and the closing ritual for the four, when the owner asks; then 0.4.
 - `make test` green (Darwin arm64): fifty-one suites, 1,983 expected passes; every pin ok.
 
 NEXT: the closing ritual for #146 to #150, when the owner asks; then 0.4.0's release, for chez-websocket to pin (its M4.2).
+
+MERGED to main on 2026-10-09, on the owner's "Do closing ritual": **decision 0024's door change and its review, as five stacked PRs** (the two entries above), bottom-up.
+- **The squashes.** Each has the tree of the head CI tested:
+  - #146, decision 0024: 6bed841 squashed as 1cfd4b1, on 59e68fe;
+  - #147, the abort: 0e234e2 rebased onto 1cfd4b1 as b4ff142, squashed as f39b56e;
+  - #148, `request-header-values`: cbe029a rebased onto f39b56e as daace64, squashed as aaab24c;
+  - #149, the ledger: 12a36a0 rebased onto aaab24c as b821300, squashed as 45858c7;
+  - #150, the review's fixes: ef6d278 rebased onto 45858c7 as 1438ba6 (two commits), squashed as 79370d3.
+
+  Each PR but #150 kept its branch until the one above it was rebased onto its squash. Each rebased tree was proved equal to its tested tip's before the push, which was made with the lease read from `ls-remote`.
+- **CI.** Every head merged on `linux` SUCCESS, its log tallied against the local count:
+  - #146 on 6bed841 (run 37867285037): fifty-one suites, 1,973 expected passes;
+  - #147 on b4ff142 (37870263139): 1,980;
+  - #148 on daace64 (37871110226): 1,981;
+  - #149 on b821300 (37871928333): 1,981;
+  - #150 on 1438ba6 (37872768584): 1,983.
+
+  The first heads had passed too: 37867287339, 37867289549, 37867292678 and 37869526742. Main's runs on 1cfd4b1 (37870243688), f39b56e (37871096243), aaab24c (37871916104) and 45858c7 (37872754842) each finished green before the next merge; main's run on 79370d3 (37873593337) passed before this reflect was pushed.
+- **Branches.** All five deleted, local and remote. No PR is open.
+
+**Decision 0024 is on main:**
+- `transport-abort!`;
+- `request-header-values`;
+- the fake shell's door, doing what the libuv shell's does for a client that reads nothing.
+
+CHANGELOG.md's Unreleased holds them, beside #139 to #145's entries.
+
+`make test` green on main: fifty-one suites, 1,983 expected passes, every pin ok.
+
+NEXT: 0.4.0's release, for chez-websocket to pin (its M4.2), when the owner asks. Plan §14's open list holds the review's two noted items.
