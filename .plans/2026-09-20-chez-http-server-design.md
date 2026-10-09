@@ -1095,6 +1095,17 @@ collection). An idle keep-alive connection carries no coroutine at all.
 > alone, where 291. The figures above, from 3,449 B to the M7 exit's 3,644 B, are a
 > one-shot park's.
 
+> *Amended 2026-10-09 (0025's review, by form):* the drain enters and resumes
+> coroutines on full continuations too. A full park on the drain's one-shot
+> continuation made it multi-shot, so Chez could not reuse its segment: a coroutine that
+> waited once allocated 4,256 to 4,257 B, 4 calls deep, where a one-shot park allocated
+> 720, and through the server a request that waited once allocated 10,255 to 10,556 B,
+> where 6,977 to 7,980. With both full: 1,177 to 1,242 B, and 7,160 to 7,877 B a
+> request; a coroutine parked 4 calls deep keeps 802 B (the scheduler suite's
+> measure), and one at an `await` 690 to 754 B, about 16 B more for each call deeper.
+> A park entered a second time ends the coroutine whose turn it is, through the drain,
+> so no handler of the frames entered sees it.
+
 ### 5.3 The invariants, as checks
 
 Decision 0003 item 2 adopts R1–R5 of the two-level proposal as checks, not comments:
@@ -1161,6 +1172,12 @@ resume cell; call a handler from inside `on-data`.
 > Chez refuses its return into the continuation its park used, or its raise's handler
 > returns, and the coroutine running stays set. That came at the suite's first
 > coroutine that raised, or parked and ended, before R3's row.
+
+> *Amended 2026-10-09 ([0025](decisions/0025-a-waiting-coroutine-parks-on-a-full-continuation-and-each-park-lands-once.md)'s review):*
+> the drain's continuation is a full one now, so Chez no longer refuses that return:
+> the coroutine returns into the drain that first entered it, which runs again from
+> there. Measured with R3's mutant (M7S-B): the suites it reaches go red, the scheduler
+> suite stopping after fourteen checks, seven of them failed; R3's row still runs first.
 
 ### 5.4 What was rejected, and by what
 

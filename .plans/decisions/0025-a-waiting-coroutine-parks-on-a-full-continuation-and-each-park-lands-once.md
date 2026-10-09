@@ -109,3 +109,64 @@ By form, the recommended of each:
   what a parked coroutine keeps, and the assertion a second landing raises.
 - `docs/handlers.org`'s "about 3.6 KB" for a waiting handler, and for a thunk that
   waits, is now about 0.7 KB.
+
+## Amendment (2026-10-09) — the review's
+
+A /code-review (xhigh) over #152 to #154 reported eight findings. On the owner's "fix all",
+one turned out larger than reported, and two forms decided it.
+
+- **A cost the first form missed.** The form above showed a long-lived coroutine woken
+  again and again: 291 → 419 B a wake. A *fresh* coroutine that waits once, as most
+  waiting handlers do, is a different case. The drain entered each coroutine on a
+  one-shot continuation; a park's full capture made it multi-shot, so Chez could not
+  reuse its segment for the next.
+  - A coroutine that waited once, 4 calls deep, allocated 4,256 to 4,257 B, where a
+    one-shot park allocated 720.
+  - Through the server (Darwin arm64, oha, 20,000 requests), a request that waited once
+    allocated 10,255 to 10,556 B, where 6,977 to 7,980.
+  - A 16 MiB upload whose reader waited on each piece allocated 24,025 B a piece, where
+    about 21,000.
+- **Decided by form, "Drain full too (Recommended)":** the drain enters and resumes
+  coroutines by `call/cc` as well. On the finished tree:
+  - a coroutine that waits once allocates 1,177 to 1,242 B;
+  - a request that waits once, 7,160 to 7,877 B, and a waiting piece 21,073 to 21,154 B;
+  - parked 4 calls deep, a coroutine keeps 802 B (the scheduler suite's measure), and at
+    an `await` 690 to 754 B, about 16 B more for each call deeper, as before;
+  - one that never waits allocates 515 B with the scheduler alone, where 384, and a
+    long-lived wake 531 to 534 B, where 291. Neither shows through the server: a request
+    that answers awaiting without waiting allocates 6,323 to 6,523 B, where 6,395 to
+    6,803.
+
+  Request rates are within the noise. Weighed: the park alone, as first built, and back
+  to one-shot.
+- **The refusal, by form, "End the one running (Recommended)",** after the owner asked how
+  peers handle it.
+  - Measured on main and the branch alike: the refusal was raised where the jump landed,
+    so a guard around the wait caught it and the code after the wait ran twice. Entered
+    from another coroutine, the wrong coroutines ended. The one that entered was reported
+    returning `#f`; the parked one was marked ended, so its next wake raised an assertion
+    inside a libuv callback.
+  - Now the coroutine whose turn it is, the one that made the jump, ends through the
+    drain, as an uncaught raise ends it. Its assertion names the wait. No handler of the
+    frames entered sees it, and a coroutine still parked stays parked. Entered from no
+    coroutine, it is still raised where it landed: no drain runs to end it through.
+  - Peers refuse a bad resume at the resume, to a caller that can catch it. No peer
+    refuses a jump back into an old suspension: Python, Ruby and Node can't express one,
+    and Racket 9.3 ran it twice. Here the caller can't be raised to, since the jump
+    abandoned its continuation.
+  - The cost is within the measures' noise: a wake and park 531 to 534 B against the
+    raise's 541, and parked at an `await` the same.
+- **The wait is named.** A waiting verb passes its name to the park (`coroutine-park!`
+  takes it), so the refusal names `await`, `sleep-ms` or `resolve`, not
+  `coroutine-park!`.
+- **Also fixed:**
+  - the scheduler suite's header and design §5.3's note said Chez refuses an R3 breach's
+    return; it re-runs the drain now;
+  - a check that holds the park's number, not its parity: an old park entered from
+    another coroutine while its own waits on a newer one;
+  - `docs/handlers.org`: the size grows with the depth of the wait;
+  - the ledger's numbers labelled by tree;
+  - `heap` shared in `(testing)`.
+- **A guard on a coroutine** now allocates 1,238 to 1,304 B, where a one-shot drain gave
+  it a stack of its own, 4,383 to 4,449. The scheduler still catches a coroutine's raise
+  with an exception handler, 625 to 691 B.
