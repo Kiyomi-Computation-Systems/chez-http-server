@@ -13,11 +13,14 @@
 ;;; script the callbacks that land and never load libuv.
 ;;;
 ;;; A COROUTINE is a thunk run on a one-shot continuation the drain enters
-;;; (`call/1cc`).  It parks by capturing its own continuation and jumping to
-;;; the drain's; `coroutine-wake!` makes it ready again, from a callback or
-;;; anywhere else, and the drain resumes it with what the wake gave.  It ends
-;;; by jumping to the drain's current continuation, never by returning (R3,
-;;; below): its value, or what it raised, is caught on its own stack and
+;;; (`call/1cc`).  It parks by capturing its own continuation, a full one
+;;; (`call/cc`, decision 0025), and jumping to the drain's; `coroutine-wake!`
+;;; makes it ready again, from a callback or anywhere else, and the drain
+;;; resumes it with what the wake gave.  A park's continuation lands once: a
+;;; full continuation can be entered again, so each park is numbered, and a
+;;; second landing is refused (below), as Chez refused a one-shot one.  It
+;;; ends by jumping to the drain's current continuation, never by returning
+;;; (R3, below): its value, or what it raised, is caught on its own stack and
 ;;; handed to its end procedure by the drain, on no coroutine.  A CALL is a
 ;;; thunk the drain makes in place, on no coroutine: an ordinary handler's
 ;;; call (decision 0014).
@@ -51,8 +54,10 @@
 ;;;   R5  a parser callback never waits: a park inside a feed is refused as
 ;;;       'r5.
 ;;; R4, one-shot resume cells, is (http-server private waits)'s (M7.2).  A
-;;; wake of a coroutine that is not parked, and a drain re-entered from a
-;;; coroutine, are the caller's bugs, plain assertion violations.
+;;; wake of a coroutine that is not parked, a drain re-entered from a
+;;; coroutine, and a park's continuation entered a second time, are the
+;;; caller's bugs, plain assertion violations; the last names the park's
+;;; verb.
 ;;;
 ;;; A scheduler keeps its loop's WAITS, (http-server private waits)'s, and a
 ;;; coroutine what its waits keep of it, the wait it is parked on and how
@@ -67,7 +72,7 @@
           coroutine-park! coroutine-wake! coroutine-yield!
           scheduler-phase scheduler-feed-begin! scheduler-feed-end!
           &scheduler-invariant scheduler-invariant? scheduler-invariant-name)
-  (import (rnrs) (only (chezscheme) call/1cc))
+  (import (rnrs) (only (chezscheme) call/1cc call/cc))
 
   ;; &scheduler-invariant : an invariant of design §5.3 refused.
   ;; scheduler-invariant? : Any -> Boolean
@@ -102,13 +107,15 @@
   ;; coroutine-waits-set! : Coroutine Any -> Void
   ;; A coroutine is 'ready, 'running, 'parked or 'ended.  `k` is its
   ;; continuation while parked, `value` what a wake gave it, and then its
-  ;; end: what it returned or raised.
+  ;; end: what it returned or raised.  `parks` numbers its parks and their
+  ;; landings: 2n+1 while its n+1st park waits to land, 2n once it has.
   (define-record-type (coroutine make-coroutine coroutine?)
     (fields scheduler thunk on-end
             (mutable state) (mutable k) (mutable value) (mutable raised?)
-            (mutable waits))                ; what its waits keep of it, which it never reads
+            (mutable waits)                 ; what its waits keep of it, which it never reads
+            (mutable parks))
     (protocol (lambda (new)
-                (lambda (s thunk on-end) (new s thunk on-end 'ready #f #f #f #f)))))
+                (lambda (s thunk on-end) (new s thunk on-end 'ready #f #f #f #f 0)))))
 
   ;; coroutine-suspending? : Coroutine -> Boolean
   ;; Whether it is parking or yielding: what a `dynamic-wind` on its stack
@@ -207,13 +214,26 @@
     (or running (refuse 'r2 who "a wait on no coroutine")))
 
   ;; suspend! : Symbol Symbol -> Any — park, or yield, the coroutine running.
+  ;; Its continuation is a full one (decision 0025): a one-shot one kept the
+  ;; stack segment it was captured on for as long as the coroutine waited,
+  ;; 3,691 B parked 4 calls deep where this keeps 745.  A full one lands as
+  ;; often as it is entered, so the park is numbered first, and a second
+  ;; landing of it is refused, an assertion naming `who`.  The number is 40 B
+  ;; of the 745, and 39 to 71 B of a wake and park's 419, the frame the
+  ;; landing keeps; a one-shot park's cost 291.
   (define (suspend! who how)
-    (let ((c (waiting-coroutine who)))
-      (call/1cc
-       (lambda (k)
-         (coroutine-k-set! c k)
-         (coroutine-state-set! c how)
-         ((scheduler-k (coroutine-scheduler c)) how)))))
+    (let* ((c (waiting-coroutine who))
+           (n (fx+ (coroutine-parks c) 1)))
+      (coroutine-parks-set! c n)
+      (let ((v (call/cc
+                (lambda (k)
+                  (coroutine-k-set! c k)
+                  (coroutine-state-set! c how)
+                  ((scheduler-k (coroutine-scheduler c)) how)))))
+        (unless (fx=? (coroutine-parks c) n)
+          (assertion-violation who "a park's continuation entered a second time" n))
+        (coroutine-parks-set! c (fx+ n 1))
+        v)))
 
   ;; scheduler-drain! : Scheduler -> Void
   ;; Run what is ready, and what is made ready meanwhile, until nothing is;
