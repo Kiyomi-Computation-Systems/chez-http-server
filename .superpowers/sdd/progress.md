@@ -740,3 +740,30 @@ MERGED to main on 2026-10-09, on the owner's "do closing ritual": **the chez-lib
 `make test` green on main: fifty-one suites, 1,983 expected passes; the clients suite read 5,143 B a GET.
 
 NEXT: chez-websocket's M4.2, in its own repository: pin v0.4.0, put this server's `tests/` on its test path for the fake shell, and record its decision 0004. Here, plan §14's open list holds decision 0024's review's two noted items.
+
+**Decision 0025, a coroutine parks on a full continuation and each park lands once (2026-10-09),** on the owner's "lets start the server slice". It is the slice chez-websocket's M4.3 step 3 review asked for by form ("A server slice next"). Three stacked branches, by form ("Three stacked PRs (Recommended)"), cut from 6c451bb: `docs/0025-park-decision` (the records), `feat/0025-park` (the code) and `docs/0025-ledger`.
+- **Measured first** (Darwin arm64, and Linux aarch64 in Docker, alike; the heap check's numbers on Linux x86_64 too, under emulation), in the scratch `srv-park/`:
+  - **What a park keeps.** Main's park, by `call/1cc`, kept the stack segment it was captured on: a coroutine parked 4 calls deep held 3,691 B on the heap, and one at an `await` 3,634 to 3,644 B. By `call/cc`, 705 B 4 calls deep. A park still *allocates* a segment either way (3,772 B, against 3,887 to 3,984), so only the heap tells them apart.
+  - **What a continuation entered twice does.** With `call/cc` and no check, the code after a park ran twice in three cases, where `call/1cc` raised each time:
+    - a handler's own `dynamic-wind` before thunk re-entering the park;
+    - the scheduler resuming a park twice, with both of its guards removed;
+    - a coroutine returning into an old drain (R3 broken), which re-ran the program from that drain.
+  - **What the checks would cost.** Numbering each park: +39 B through `await` and 39 to 71 B with the scheduler alone, per wake and park, and +40 B parked. Checking the state at resume: nothing. Numbering the drain too: 8 B more parked.
+  - **Peers.** Python, Ruby, Node and Racket each refuse to resume a running coroutine, at the resume. Racket's generator ran the code after a yield twice in the `dynamic-wind` case.
+  - **chez-websocket's S-PARK.** With this scheduler shadowed in, its socket suite stopped as a provenance failure: its `call/1cc` reference, promoted by the park's capture, sat 196 B over a bare `await`.
+- **DECIDED by form** ("Number each park (Recommended)"), decision 0025. Weighed and not taken: the state at resume, as the peers check, which no test could reach; and numbering the drain's continuation too, which the R3 row holds already.
+- **Built.** `suspend!` parks and yields by `call/cc`. It numbers the park on its coroutine first, a new field `parks`, and the landing refuses a second landing, an assertion naming the verb. The drain's `call/1cc` is unchanged.
+- **The suite.** `tests/test-scheduler.sps` gains two checks, now 23:
+  - a park's or a yield's continuation entered a second time is refused, naming the verb, and the code after it runs once (a `dynamic-wind` before thunk re-enters it);
+  - a coroutine parked 4 calls deep keeps under half of what a one-shot continuation held 4 calls deep keeps. The reference is measured in the run, and the suite stops as a provenance failure if it keeps under 2 KiB.
+  - The calibration row now says "allocate", since a parked coroutine no longer keeps its segment.
+- **Tests first**, in three stages (m8-mutations.md). Stage 0 was first run before its prediction was named, a slip: its red set was seen, its values were predicted blind and matched. Stages 1 and 2 matched as named.
+- **Mutants:** 17 rows, 16 mutants and the baseline.
+  - Run 1: 2 mismatches, one prediction error. M7S-B and M7S-R, re-cut from M7's log, also reddened `connection-switch` and `message-loop`, whose waiting rows came after it.
+  - Run 2, those two re-predicted: 0 mismatches, the same counts.
+  - Every new or changed check has a killer by value. M7X-1 survives, as at the M7 exit.
+- **Docs.** `docs/handlers.org`: a waiting handler, and a thunk that waits, hold about 0.7 KB, where 3.6. CHANGELOG.md's Unreleased gains two Changed entries.
+- **Records.** Decision 0025, new; design §5.2's amendment; plan §15.
+- `make test` green on each layer before its commit (Darwin arm64): fifty-one suites, and 1,983, 1,985 and 1,985 expected passes; every pin ok.
+
+NEXT: the PRs by form; review and the closing ritual when the owner asks; then 0.4.1's release. Then, in chez-websocket, S-PARK's reference moves to one held outside the scheduler, before the pin moves to v0.4.1 alone.
