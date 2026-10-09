@@ -23,6 +23,9 @@
 ;;;     may be empty, and a request with none reads empty too.  A header's
 ;;;     value is its first field's, as `headers-ref` reads it in the
 ;;;     decision's measurement.
+;;;   - Decision 0024: every field of a name, in the order they came, each
+;;;     as `request-header` reads the first; RFC 9110 §5.3 lets a list run
+;;;     over several field lines.
 (import (rnrs) (srfi :64) (testing) (fake-shell)
         (http-server limits) (http-server response) (http-server view))
 
@@ -107,6 +110,12 @@
                       (lambda (r) (list (request-header r "X-TWICE")
                                         (request-header r "accept")
                                         (request-header r "missing")))))
+    (test-equal "every field of a name, in any case, in the order they came, an empty one among them, each without the whitespace around it; none when there is none; request-header still the first"
+                '(("first" "second, third" "") () "first")
+                (seen (b "GET / HTTP/1.1\r\nHost: h\r\nX-Twice: first\r\nAccept: */*\r\nx-twice:  second, third \r\nX-TWICE:\r\n\r\n")
+                      (lambda (r) (list (request-header-values r "X-Twice")
+                                        (request-header-values r "missing")
+                                        (request-header r "x-twice")))))
     (test-equal "a value without the whitespace after it"
                 '("v  x" "v")
                 (seen (b "GET / HTTP/1.1\r\nHost: h\r\nX-Pad:   v  x  \r\nX-Tab:\tv\t\r\n\r\n")
