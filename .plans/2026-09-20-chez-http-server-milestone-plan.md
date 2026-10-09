@@ -1808,6 +1808,7 @@ This repository's part:
 
   Server 0.4.0 is released with it, for chez-websocket to pin.
 - **The park by a full continuation** (decision 0025, 2026-10-09, from chez-websocket's
-  M4.3 step 3 review): a waiting coroutine parks by `call/cc`, keeping about 3 KB less,
-  and each park lands once. Server 0.4.1 is to be released with it, for chez-websocket
-  to pin.
+  M4.3 step 3 review): a coroutine is entered, and parks, on full continuations
+  (`call/cc`), keeping about 3 KB less while it waits and allocating what it did, and
+  each park lands once; a park entered again ends the coroutine that entered it. Server
+  0.4.1 is to be released with it, for chez-websocket to pin.
