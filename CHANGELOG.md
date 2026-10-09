@@ -12,6 +12,13 @@ All notable changes to chez-http-server are recorded here. The format follows
   libuv older than 1.48 when it loads, where the floor was 1.44. Ubuntu 24.04's libuv
   is 1.48. Where the system's is older, as Debian 12's 1.44 is, the build makes its
   own copy with CMake. What a handler sees, and what a request allocates, is unchanged.
+- **A waiting handler, or a taker's waiting thunk, keeps about 3 KB less.** A coroutine
+  now parks on a full continuation. A one-shot one kept a stack segment for as long as
+  the coroutine waited. One parked at an `await` keeps 654 to 688 B, where it kept 3,634
+  to 3,644 B; a wake and park allocates about 130 B more (decision 0025).
+- **A park entered a second time raises an assertion naming its verb**,
+  `coroutine-park!` or `coroutine-yield!`. Chez's refusal of the one-shot continuation
+  named no one (decision 0025).
 
 ## [0.4.0] - 2026-10-09
 

@@ -204,7 +204,7 @@ answer: a response or a reader. There it can wait with ~await~.
   client gets ~500~, and the server logs ~handler-failed~.
 - While a handler waits, the next request on its connection waits too. Other
   connections go on.
-- A waiting handler holds about 3.6 KB until its wait ends. Once it has
+- A waiting handler holds about 0.7 KB until its wait ends. Once it has
   answered, its connection holds no more than any other.
 
 If the client closes or resets the connection while your handler waits:
@@ -387,7 +387,7 @@ wake the thunk with the ~resume~ an ~await~ handed out.
   stream is closed.
 - What the thunk returns is dropped. The stream stays open until something
   closes it.
-- A thunk that waits holds memory until its wait ends, about 3.6 KB, as a
+- A thunk that waits holds memory until its wait ends, about 0.7 KB, as a
   handler that waits does.
 
 * When the server will not start
