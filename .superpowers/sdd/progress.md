@@ -732,4 +732,11 @@ MEASURED at both pins the same day, Darwin arm64: a GET through the whole server
 
 Records: the Makefile's pin, test-integration's version comment, README.org's libuv floor, global-constraints (the floor and the pin), CHANGELOG.md's Unreleased.
 
+MERGED to main on 2026-10-09, on the owner's "do closing ritual": **the chez-libuv v0.8.0 pin**, #155.
+- 6682146 was squashed as 5a1eccc (tree e210091, the tested head's; parent 6c451bb).
+- Its run, 37987345199, passed on ubuntu-24.04 with libuv 1.48.0, the new floor: fifty-one suites, 1,983 expected passes; the clients suite read 5,156 B a GET.
+- The branch was deleted on the remote and here, and this session's worktree removed. The shared checkout held another session's branch (fix/0025-review) with uncommitted work, so it was left alone; local `main` was fast-forwarded by fetch.
+
+`make test` green on main: fifty-one suites, 1,983 expected passes; the clients suite read 5,143 B a GET.
+
 NEXT: chez-websocket's M4.2, in its own repository: pin v0.4.0, put this server's `tests/` on its test path for the fake shell, and record its decision 0004. Here, plan §14's open list holds decision 0024's review's two noted items.
