@@ -9,7 +9,8 @@ All notable changes to chez-http-server are recorded here. The format follows
 ### Added
 
 - **A taker can abort its stream.** `(transport-abort! t)` closes it at once: reading
-  stops, and what is unsent is dropped, each write's `done` told `ECANCELED`.
+  stops, and each write not yet sent is dropped, its `done` told `ECANCELED`. A client
+  that reads again may still get part of a write already under way.
   `transport-close!` waits for the writes, so a client that stopped reading kept the
   stream open until it went or the server shut down, and a deadline could only ask for
   the same close again. A deadline that aborts now closes it. `make-transport` takes the
@@ -52,7 +53,9 @@ All notable changes to chez-http-server are recorded here. The format follows
   path). A close it is asked for waits for the writes outstanding, so a deadline asked
   for meanwhile is armed. A raise in any of the taker's calls is recorded as its failure
   and closes the stream at once, where it escaped to the test, or waited behind the
-  writes (decision 0024).
+  writes. An aborted write's bytes no longer count as read by the client, and once the
+  close has been asked for the taker is read nothing more, its end told once (decision
+  0024).
 
 ## [0.3.0] - 2026-10-04
 

@@ -22,8 +22,10 @@
 ;;;   (transport-close! t)
 ;;;        close the stream once the bytes written so far have been.
 ;;;   (transport-abort! t)
-;;;        close the stream now: reading stops, and what is unsent is
-;;;        dropped, each write outstanding told ECANCELED (decision 0024).
+;;;        close the stream now: reading stops, and each write not yet
+;;;        written is dropped, its `written` told ECANCELED.  What the
+;;;        system already holds may still reach the client, so a client
+;;;        that reads on can get part of a write (decision 0024).
 ;;;   (transport-deadline! t ms on-passed) / (transport-deadline! t #f)
 ;;;        one deadline: `on-passed` called once `ms` milliseconds have
 ;;;        passed, the one armed before replaced; #f disarms it.  The

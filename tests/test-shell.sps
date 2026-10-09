@@ -998,6 +998,33 @@
                          (lambda (bv from to) (transport-write! t bv from to))
                          (lambda (why) (took! 'ended why) (transport-close! t))))
 
+;; door-unread : String -> (List Symbol Symbol Symbol Symbol Datum Datum Datum)
+;; A client that reads nothing, the connection's send buffer small, sends a
+;; handshake to `target`, whose taker writes more than the socket takes at
+;; once and arms a deadline (decision 0024).  Whether the stream was
+;; adopted, its deadline passed, the stream then closed and gone, and its
+;; write told; what it was told, the close call's notes and the taker
+;; failures logged.  Then both ends are closed and the stream gone, so
+;; nothing of it lands in the next check, whatever it did.
+(define (door-unread target)
+  (set! took '())
+  (set! logged '())
+  (set! small-send-buffer 4096)
+  (let* ((before (newest))
+         (cl (open-client! (door-handshake target) #f))
+         (passed (wait-for (lambda () (pair? (took-of 'passed)))))
+         (c (adopted-since before)))
+    (set! small-send-buffer #f)
+    (let* ((gone (wait-for (lambda () (closed-and-gone? shell c))))
+           (told (wait-for (lambda () (pair? (took-of 'written)))))
+           (seen (list (if (connection? c) 'adopted 'none) passed gone told (took-of 'written) (took-of 'closed)
+                       (map car (filter (lambda (e) (eq? (car e) 'taker-failed)) logged)))))
+      (client-close! cl)
+      (when (connection? c)
+        (connection-close! c)
+        (wait-for (lambda () (closed-and-gone? shell c))))
+      seen)))
+
 ;; door-handshake : String -> Bytevector — a handshake to `target`.
 (define (door-handshake target)
   (b (string-append "GET " target " HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -2589,47 +2616,18 @@
                         (equal? (client-bytes (car p)) (joined (list door-101 big-door)))))
       (client-close! (car p)))
 
-    ;; Decision 0024.  A client that reads nothing, the connection's send
-    ;; buffer small: the taker's 4 MiB stays under way, so its close waits.
-    ;; A deadline asked for then is armed, and its call's abort closes the
-    ;; stream at once: the write is told ECANCELED, the close call runs once,
-    ;; and nothing is logged.
-    (set! took '())
-    (set! logged '())
-    (set! small-send-buffer 4096)
-    (let* ((before (newest))
-           (cl (open-client! (door-handshake "/door-bound") #f))
-           (passed (wait-for (lambda () (pair? (took-of 'passed)))))
-           (c (adopted-since before)))
-      (set! small-send-buffer #f)
-      (let ((gone (wait-for (lambda () (closed-and-gone? shell c))))
-            (told (wait-for (lambda () (pair? (took-of 'written))))))
-        (test-equal "a close waiting on a write the client reads nothing of: a deadline asked for then passes, and its abort closes the stream at once, the write told ECANCELED, its close call once, nothing logged"
-                    '(satisfied satisfied satisfied ((ECANCELED)) (()) ())
-                    (list passed gone told (took-of 'written) (took-of 'closed)
-                          (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))))
-      ;; Gone before the next check begins, so nothing of it lands there.
-      (client-close! cl)
-      (wait-for (lambda () (closed-and-gone? shell c))))
-    ;; A raise in the deadline's call, a write under way to a client that
-    ;; reads nothing: logged taker-failed, and the stream closed at once, the
-    ;; write told ECANCELED, as the fake shell has it.
-    (set! took '())
-    (set! logged '())
-    (set! small-send-buffer 4096)
-    (let* ((before (newest))
-           (cl (open-client! (door-handshake "/door-bound-raise") #f))
-           (passed (wait-for (lambda () (pair? (took-of 'passed)))))
-           (c (adopted-since before)))
-      (set! small-send-buffer #f)
-      (let ((gone (wait-for (lambda () (closed-and-gone? shell c))))
-            (told (wait-for (lambda () (pair? (took-of 'written))))))
-        (test-equal "a raise in a deadline's call, a write under way to a client that reads nothing: logged taker-failed, the stream closed at once, the write told ECANCELED"
-                    '(satisfied satisfied satisfied ((ECANCELED)) (()) (taker-failed))
-                    (list passed gone told (took-of 'written) (took-of 'closed)
-                          (map car (filter (lambda (e) (eq? (car e) 'taker-failed)) logged)))))
-      (client-close! cl)
-      (wait-for (lambda () (closed-and-gone? shell c))))
+    ;; Decision 0024, through a client that reads nothing (door-unread): a
+    ;; close waits for the 4 MiB under way, a deadline asked for then passes,
+    ;; and its call's abort closes the stream at once, the write told
+    ;; ECANCELED, its close call once, nothing logged.  And a raise in the
+    ;; deadline's call does the same, logged taker-failed, as the fake shell
+    ;; has it.
+    (test-equal "a close waiting on a write the client reads nothing of: a deadline asked for then passes, and its abort closes the stream at once, the write told ECANCELED, its close call once, nothing logged"
+                '(adopted satisfied satisfied satisfied ((ECANCELED)) (()) ())
+                (door-unread "/door-bound"))
+    (test-equal "a raise in a deadline's call, a write under way to a client that reads nothing: logged taker-failed, the stream closed at once, the write told ECANCELED"
+                '(adopted satisfied satisfied satisfied ((ECANCELED)) (()) (taker-failed))
+                (door-unread "/door-bound-raise"))
 
     ;; A write libuv refuses at the call, the stream's write side shut behind
     ;; the shell's back: its callback is told the errno after the turn, as a

@@ -56,8 +56,9 @@ stops reading. Measured against chez-websocket's driver prototype:
 By form, the recommended of each:
 
 1. **`(transport-abort! t)` closes the stream at once.**
-   - Reading stops, and what is unsent is dropped: each write outstanding has its
-     `written` told `ECANCELED`.
+   - Reading stops, and each write not yet written is dropped, its `written` told
+     `ECANCELED`. What the system already holds may still reach the client (amended in
+     the review, below).
    - The close call runs once the close completes, as for any close.
    - `make-transport` takes an eighth procedure for it. A transport made of seven, as
      before, is still a transport, and refuses `transport-abort!`, naming it.
@@ -97,3 +98,21 @@ By form, the recommended of each:
   - a field's first line, documented: no change;
   - chez-websocket reading the server's internal libraries for every line: no release,
     but no promise across versions.
+
+## Amendment (2026-10-08) — the review's fixes
+
+A /code-review over #146-#149 found the fake shell still unlike the libuv shell's door
+in two ways, two of its new guards unwatched, and the abort's docs overstated.
+
+- **What an abort drops.** The docs said what is unsent is dropped. What libuv has not
+  yet written is; what the system already holds still goes out. Measured on Darwin
+  arm64: a client that read nothing while 4 MiB was written, then read once the taker had
+  aborted, got 973,521 to 1,013,857 bytes in three runs, then the end, each write told
+  `ECANCELED`. The docs now say so.
+- **The fake's door.** A write's bytes are now the client's at the write's turn, so an
+  aborted write's never are, where the fake had counted them read at the call. And once
+  the taker's close has been asked for, or its end told, nothing more reaches it, where
+  the fake handed a closed stream reads and told an end twice.
+- **Not done, noted in plan §14's open list:** bounding a close that waits from the
+  server's side, which would undo M8.2's form that a taker owns its bounds; and a door
+  script in the cross-shell contract test.
