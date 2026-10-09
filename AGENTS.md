@@ -25,8 +25,9 @@
   `progress.md` is the spine and `global-constraints.md` binds every task
   brief. Read both before starting slice work; close-outs are recorded there.
   A closed milestone's entries live in its `mN-progress.md`, beside its
-  `mN-mutations.md`; at each release, the entries before it move out of
-  `progress.md` into an archive file, verbatim.
+  `mN-mutations.md`. A tagged release's entries live in its
+  `vX.Y.Z-progress.md`, moved out of `progress.md` verbatim at the next
+  release.
 * Add entries to `CHANGELOG.md` for each release
 * `/docs` is for user facing documentation only.
 * Documentation should be very concise, focused, to the point, ELI5 style.
