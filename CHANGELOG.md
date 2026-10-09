@@ -16,6 +16,11 @@ All notable changes to chez-http-server are recorded here. The format follows
   abort as an eighth procedure; a transport made of seven, as before, still works, and
   refuses the abort (decision 0024).
 
+- **A handler can read every line of a field.** `(request-header-values r name)` gives
+  the value of each field of that name, in the order they came, or none; `request-header`
+  still gives the first. A list such as `Connection` may run over several lines (RFC 9110
+  §5.3), and a client may send a field twice (decision 0024).
+
 ### Changed
 
 - **A numeric setting is written in ASCII digits alone.** The 19 numeric `CHEZ_HTTP_`
