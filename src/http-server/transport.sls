@@ -21,6 +21,9 @@
 ;;;   (transport-read-stop! t)
 ;;;   (transport-close! t)
 ;;;        close the stream once the bytes written so far have been.
+;;;   (transport-abort! t)
+;;;        close the stream now: reading stops, and what is unsent is
+;;;        dropped, each write outstanding told ECANCELED (decision 0024).
 ;;;   (transport-deadline! t ms on-passed) / (transport-deadline! t #f)
 ;;;        one deadline: `on-passed` called once `ms` milliseconds have
 ;;;        passed, the one armed before replaced; #f disarms it.  The
@@ -35,7 +38,9 @@
 ;;; Nothing bounds a taker's writes outstanding but the taker (decided on the
 ;;; owner's word, by form, at M8.2's review): `written` tells it what each
 ;;; write has become, so it can count what is still outstanding, and stop
-;;; past a bound of its own; a deadline closes a client that stops reading.
+;;; past a bound of its own.  A client that stops reading never takes them,
+;;; so `transport-close!` would wait for it: a deadline whose call aborts
+;;; closes it (decision 0024).
 ;;;
 ;;; A write of no bytes is refused: chez-libuv completes a write that ends in
 ;;; an empty span a turn late, and a close then cancels it.  PURE: imports
@@ -43,11 +48,11 @@
 (library (http-server transport)
   (export make-transport transport?
           transport-write! transport-read-start! transport-read-stop! transport-close!
-          transport-deadline! transport-on-drain! transport-on-close!)
+          transport-abort! transport-deadline! transport-on-drain! transport-on-close!)
   (import (rnrs))
 
   (define-record-type (transport %make-transport transport?)
-    (fields write read-start read-stop close deadline on-drain on-close))
+    (fields write read-start read-stop close deadline on-drain on-close abort))
 
   ;; make-transport :
   ;;   (Bytevector Nat Nat (U #f ((U #f Symbol) -> Any)) -> Any)  write
@@ -57,16 +62,24 @@
   ;;   ((U Nat #f) (U (-> Any) #f) -> Any)                        deadline
   ;;   ((-> Any) -> Any)                                          on-drain
   ;;   ((-> Any) -> Any)                                          on-close
+  ;;   [(-> Any)]                                                 abort
   ;;   -> Transport
   ;; The verbs' procedures, each called with what its verb has checked.
-  ;; Anything but a procedure among them is an assertion violation.
+  ;; Anything but a procedure among them is an assertion violation.  A
+  ;; transport made of the first seven, as 0.3.0's were, refuses
+  ;; transport-abort!, naming it.
   ;; transport? : Any -> Boolean
-  (define (make-transport write read-start read-stop close deadline on-drain on-close)
-    (for-each (lambda (p)
-                (unless (procedure? p)
-                  (assertion-violation 'make-transport "a transport's verbs are procedures" p)))
-              (list write read-start read-stop close deadline on-drain on-close))
-    (%make-transport write read-start read-stop close deadline on-drain on-close))
+  (define make-transport
+    (case-lambda
+      ((write read-start read-stop close deadline on-drain on-close)
+       (make-transport write read-start read-stop close deadline on-drain on-close
+                       (lambda () (assertion-violation 'transport-abort! "a transport made without an abort"))))
+      ((write read-start read-stop close deadline on-drain on-close abort)
+       (for-each (lambda (p)
+                   (unless (procedure? p)
+                     (assertion-violation 'make-transport "a transport's verbs are procedures" p)))
+                 (list write read-start read-stop close deadline on-drain on-close abort))
+       (%make-transport write read-start read-stop close deadline on-drain on-close abort))))
 
   ;; transport-write! : Transport Bytevector [Nat Nat] [(U #f ((U #f Symbol) -> Any))] -> Any
   (define transport-write!
@@ -96,6 +109,9 @@
 
   ;; transport-close! : Transport -> Any
   (define (transport-close! t) ((transport-close t)))
+
+  ;; transport-abort! : Transport -> Any
+  (define (transport-abort! t) ((transport-abort t)))
 
   ;; transport-deadline! : Transport (U Nat #f) [(-> Any)] -> Any
   (define transport-deadline!

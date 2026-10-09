@@ -136,7 +136,9 @@
 ;;; and its callback is told ECANCELED after the turn, or, the server
 ;;; stopping first, as `serve` returns (shell-call-deferred!).  Reading starts
 ;;; libuv's reads again with the taker's callbacks, its end reported once.  The
-;;; close waits for the writes outstanding, then closes the handle.  The
+;;; close waits for the writes outstanding, then closes the handle; the abort
+;;; closes it at once, as a taker's raise does, libuv cancelling each write
+;;; (decision 0024).  The
 ;;; deadline is the connection's one entry in the wheel, armed at the loop's
 ;;; time brought up to date, as a connection's are, and the timer, as it
 ;;; fires, calls it for a connection taken where it ticks any other.  The
@@ -1208,7 +1210,7 @@
         (each (fx- n 1)))))
 
   ;; connection-transport : Connection Taker -> Transport — the verbs (THE
-  ;; DOOR, the header).
+  ;; DOOR, the header).  The abort is the handle's close, at once.
   (define (connection-transport c tk)
     (make-transport
      (lambda (bv start end written) (taker-write! c tk bv start end written))
@@ -1222,7 +1224,8 @@
          (taker-drain! c)))
      (lambda (thunk)
        (taker-on-close-set! tk thunk)
-       (when (taker-closed? tk) (taker-call! c thunk)))))
+       (when (taker-closed? tk) (taker-call! c thunk)))
+     (lambda () (connection-close! c))))
 
   ;; taker-write! : Connection Taker Bytevector Nat Nat (U #f ((U #f Symbol) -> Any)) -> Void
   ;; bv[start, end) as one uv-write*!, chez-libuv copying it at the call; the

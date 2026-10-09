@@ -315,12 +315,14 @@ What the transport does:
 | ~(transport-deadline! t ms proc)~     | calls ~proc~ once ~ms~ milliseconds pass; ~(transport-deadline! t #f)~ cancels |
 | ~(transport-on-drain! t proc)~        | calls ~proc~ when the server shuts down                        |
 | ~(transport-on-close! t proc)~        | calls ~proc~ once the stream has closed, whoever closed it (at once if it has) |
+| ~(transport-abort! t)~                | closes now: what is unsent is dropped, and each ~done~ waiting gets ~ECANCELED~ |
 
 - Each read's bytevector is yours to keep. A write of no bytes is refused.
 - Nothing bounds what you write but you. A client that stops reading leaves
   your writes waiting, in memory. Count what you have written and not yet
   had ~done~ for; past a bound you choose, stop writing, or stop reading what
-  you would echo; and arm a deadline to close a client that never catches up.
+  you would echo. To close a client that never catches up, arm a deadline
+  that calls ~transport-abort!~: ~transport-close!~ would wait for it to read.
 - Each ~transport-write!~ is a write of its own: the server does not join
   small ones together, as it does for a response. Many small writes are
   slower than one, so join small pieces into one bytevector first.
@@ -337,13 +339,14 @@ What the transport does:
   down, it runs at once.
 - A taken stream still counts toward ~CHEZ_HTTP_MAX_CONNECTIONS~. One you
   neither read nor time out stays open, a client gone or not, until the
-  server shuts down: read it, or arm a deadline.
+  server shuts down: read it, or arm a deadline that aborts it.
 - Your take-over and your callbacks run inside the server's own callbacks, so
   keep them quick: they cannot ~await~ (to wait, see below). If one raises,
   the server logs ~taker-failed~ and closes the stream.
 - To test your taker without a server, make a transport of your own:
-  ~make-transport~ takes the seven procedures the calls above end up in, in
-  that order.
+  ~make-transport~ takes the eight procedures the calls above end up in, in
+  that order. Seven, without the abort, still make one, but
+  ~transport-abort!~ on it is refused.
 
 ** A taker that waits
 

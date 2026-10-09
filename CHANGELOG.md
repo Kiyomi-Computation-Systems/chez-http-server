@@ -6,6 +6,16 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A taker can abort its stream.** `(transport-abort! t)` closes it at once: reading
+  stops, and what is unsent is dropped, each write's `done` told `ECANCELED`.
+  `transport-close!` waits for the writes, so a client that stopped reading kept the
+  stream open until it went or the server shut down, and a deadline could only ask for
+  the same close again. A deadline that aborts now closes it. `make-transport` takes the
+  abort as an eighth procedure; a transport made of seven, as before, still works, and
+  refuses the abort (decision 0024).
+
 ### Changed
 
 - **A numeric setting is written in ASCII digits alone.** The 19 numeric `CHEZ_HTTP_`
@@ -29,6 +39,15 @@ All notable changes to chez-http-server are recorded here. The format follows
   ask). A GET kept alive allocated 7.3 KB at one connection and 7.0 KB at 50; it now
   allocates 5.2 KB and 5.0 KB. What a handler sees is unchanged. A check now holds a
   GET to 5.25 KiB (decision 0002's amendments of 2026-10-05 and 2026-10-08).
+
+### Fixed
+
+- **The test fake's door now behaves as the server's does for a client that stops
+  reading** (`tests/fake-shell.sls`, which a taker's own tests may put on their library
+  path). A close it is asked for waits for the writes outstanding, so a deadline asked
+  for meanwhile is armed. A raise in any of the taker's calls is recorded as its failure
+  and closes the stream at once, where it escaped to the test, or waited behind the
+  writes (decision 0024).
 
 ## [0.3.0] - 2026-10-04
 
