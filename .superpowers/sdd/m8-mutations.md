@@ -1619,3 +1619,96 @@ The checks the review added or changed, and their killers:
 Taken out while mapping: the fake cleared its end mark when reading started again. No
 check reached it and no taker restarts after its end, so the fake tells an end once per
 stream.
+
+## After M8 — a coroutine parks on a full continuation, and each park lands once (2026-10-09)
+
+Decision 0025, on two forms: "A server slice next", in chez-websocket's M4.3 step 3
+review, and "Number each park", here. The code's layer, `feat/0025-park`, carries every
+change the mutants read.
+
+Platform: Darwin 25.6.0 arm64 (Apple M1), Chez Scheme 10.4.1 (`tarm64osx`), 2026-10-09. The
+heap and cost figures were measured on Linux 6.12.76-linuxkit aarch64 in Docker as well
+(Ubuntu 24.04, Chez 10.4.1), where they read the same.
+- **The code:** `src/http-server/private/scheduler.sls`.
+- **The suite:** `tests/test-scheduler.sps`, 23 checks.
+
+**The oracles:**
+- Chez's refusal of a one-shot continuation entered a second time: an `&assertion` naming no
+  one, `attempt to invoke shot one-shot continuation`. Measured.
+- A one-shot continuation captured 4 calls deep and left by an escape keeps a stack segment,
+  3,419 to 3,420 B, whatever the scheduler does. That makes it the heap check's reference,
+  measured in the run.
+- 0025's form: a second landing raises an assertion naming the verb.
+
+### The test-first runs
+
+Each red set was named and hashed before its run, but for stage 0's.
+- **Stage 0:** the two new rows and the calibration's new name, on main's scheduler.
+  - A slip: the suite was first run before its prediction was named. That run showed the red
+    set: the two new rows, 21 passes. It did not show their values.
+  - The prediction, hashed after that run, named the values blind. The values probe then
+    read, as named:
+    - the second landing `(((landed 1) (raised assertion)) ((landed 1) (raised assertion)))`,
+      Chez's refusal, naming no one;
+    - the heap: 3,691 B parked against a 3,420 B reference, not under half.
+- **Stage 1:** `call/cc` alone, no check. As predicted:
+  - the second-landing row alone red, its value
+    `(((landed 1) (landed 2) (returned 2)) …)`, the code after the park run twice;
+  - the heap 705 B against 3,419, under half;
+  - `make test`: fifty-one suites, 1,984 expected passes and that one failure.
+- **Stage 2:** the numbered landing. As predicted:
+  - the row reads `(((landed 1) (raised assertion coroutine-park!)) ((landed 1) (raised
+    assertion coroutine-yield!)))`;
+  - the heap 745 B against 3,420;
+  - `make test` green: fifty-one suites, 1,985.
+
+### The mutants
+
+Each red set was named and hashed before its run. Three were re-cut, from the M7 exit's
+log, for the code this change touches; the others were cut new.
+- The new and test mutants ran against every suite, except PK-4 and the test mutants,
+  which ran against the scheduler suite alone.
+- The rows that ran every suite also ran the values probe.
+- The M7 re-cuts were predicted by suite, as the M7 exit recorded them.
+
+| id | mutant | red, predicted and seen |
+|---|---|---|
+| BASE | the unmutated tree (a comment) | none; values as stage 2 |
+| PK-1 | `suspend!` by `call/1cc` again, its park still numbered | scheduler: the second-landing row, `(raised assertion)` naming no one, and the heap row, 3,862 B against 3,420 |
+| PK-2 | the landing's check gone | scheduler: the second-landing row, the code after the park run twice |
+| PK-3 | a landing does not mark its park landed | the same |
+| PK-4 | the park not numbered before its capture: every first landing refused | scheduler alone: R3's row, a raise after a park, a park woken, a yield, a guard after a park, a parameter across a park, the second-landing row (`((raised assertion coroutine-park!))`) |
+| PK-5 | the landing's check by `fx>=?`: a second landing passes | scheduler: the second-landing row, run twice |
+| PK-6 | a yield's landing not checked | scheduler: the second-landing row, its yield half run twice |
+| PK-7 | the refusal names `suspend!`, not the verb | scheduler: the second-landing row, `(raised assertion suspend!)` |
+| PK-8 | the refusal an `&error`, not an `&assertion` | scheduler: the second-landing row, `(raised other)` |
+| PT-1 | the suite's reference by a full continuation | scheduler: exit 3, the provenance failure, 288 B each |
+| PT-2 | the suite's `entered-twice` never arms its before thunk | scheduler: the second-landing row, `(((landed 1) (returned 1)) …)` |
+| PT-4 | the suite's calibration measures coroutines that end | scheduler: the calibration row |
+| M7S-B | R3: a coroutine's first run returns normally at its end, into the continuation that first entered it | connection-switch 1, contract 67, message-loop 7, scheduler (raised, exit 2, 7 failed), shell (raised, exit 2), waits 28 |
+| M7S-H | a wake of a coroutine that is not parked is not refused | scheduler: the waking row |
+| M7S-R | a woken coroutine entered again from its start | connection-switch 1, contract 11, message-loop 6, scheduler 8 (the second-landing row among them, `(() ())`), shell (raised, exit 2, 24 failed), waits 36 |
+| M7W-8 | a wait on no coroutine is not refused as R2 | scheduler 1, shell 1, waits 2 |
+| M7X-1 | the scheduler keeps the drain's continuation once a coroutine has run | none: survives, as at the M7 exit |
+
+- **Run 1: 17 rows, 2 mismatches, one prediction error.** M7S-B and M7S-R also reddened
+  `connection-switch` and `message-loop`. Their predictions took the M7 exit's suites, and
+  those two suites' waiting rows came after it:
+  - `message-loop`'s with #127 (decision 0020);
+  - `connection-switch`'s take-over that awaits with decision 0023.
+- **Run 2:** those two rows, re-predicted, **0 mismatches**, the same counts.
+- Every mutant loaded. M7S-B did not hang, though its stale return re-ran an old drain:
+  under `call/cc` that re-run is silent (decision 0025's Consequences).
+
+**Every new or changed check has a killer by value:**
+- the second-landing row: PK-1, PK-2, PK-3, PK-5, PK-6, PK-7, PK-8, PK-4, PT-2 and M7S-R;
+- the heap row: PK-1;
+- its provenance stop: PT-1;
+- the calibration, renamed: PT-4.
+
+**The survivor:** M7X-1, as at the M7 exit: no check reads what the scheduler keeps once a
+coroutine has run. Why it keeps nothing a check sees, now that a park's capture promotes the
+drain's continuation, was not measured.
+
+The values probe (`rows.sps`) is built from the suite's own helper text, and was run with
+each mutant's library root first.
