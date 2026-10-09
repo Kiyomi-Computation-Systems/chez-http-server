@@ -1576,3 +1576,46 @@ fake's close now disarms it too, and the abort check arms one first (K-4). And t
 shell's abort was first written to stop reading and mark its taker closing before the
 close; the close does both, so no check could tell them apart, and the abort is the
 close alone, as a taker's raise has it.
+
+### Decision 0024's review, and its fixes (2026-10-08)
+
+A /code-review xhigh over #146-#149: eleven findings, nine fixed on the owner's word ("Fix
+the review findings as a fifth pr"), two noted in plan §14's open list. Platform: Darwin
+arm64, Chez 10.4.1, 2026-10-08.
+
+Tests first, against #149's tip (12a36a0), named and hashed: the fake door suite 32
+passes and 2 failures, the aborted write the client "read" and the end told twice. The
+third new check, the late raises, was predicted red and passed. Both guards it holds
+already existed; the finding was that nothing watched them, so its red is the mutants'
+(R-5 to R-8). A prediction error.
+
+On the fixed tree (e91e07b): 32 rows, 31 mutants and the baseline, the records, fake door,
+shell, serve and fake-shell suites each, two at a time, 0 mismatches. The abort layer's
+23, re-cut where the fake changed, redden what they did before, with three differences:
+- A-3's two leak checks are now named.
+- K-5 also reddens the late raises.
+- K-15 and K-16 now cut `stop-taking!`, which the close and the abort share. K-16 reddens
+  the end told once (a stopped taker is read on) and closed by the taker (its close never
+  begins).
+
+| mutant | the edit | red |
+|---|---|---|
+| R-1 | an aborted write's bytes are the client's | door 1: the abort |
+| R-2 | a closing taker is still read | door 1: the end told once |
+| R-3 | the end is told every time | door 1: the end told once |
+| R-4 | the end told marks nothing | door 1: the end told once |
+| R-5 | a late write's `ECANCELED` callback unguarded | door 1: the late raises |
+| R-6 | that callback's raise swallowed, unrecorded | door 1: the late raises |
+| R-7 | a close call registered after the close unguarded | door 1: the late raises |
+| R-8 | that call's raise swallowed, unrecorded | door 1: the late raises |
+
+The checks the review added or changed, and their killers:
+- the abort, now with the client reading neither write: T-2, K-1, K-2, K-4, K-15, R-1;
+- the end told once, and nothing read once aborted: K-16, R-2, R-3, R-4;
+- the late raises: K-5, R-5 to R-8, R-6 and R-8 by value;
+- the shell suite's two door checks, through `door-unread`: A-1, A-2, T-2 (the bound),
+  A-3 (the raise).
+
+Taken out while mapping: the fake cleared its end mark when reading started again. No
+check reached it and no taker restarts after its end, so the fake tells an end once per
+stream.
