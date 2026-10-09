@@ -809,3 +809,27 @@ NEXT: the PRs by form; review and the closing ritual when the owner asks; then 0
 - **The PRs:** #152 to #154 for the slice; #156 to #158 for the review (#155 was the pin).
 
 NEXT: the closing ritual for #152 to #154 and #156 to #158, bottom-up, when the owner asks; then 0.4.1's release. Then, in chez-websocket, S-PARK's reference moves to one held outside the scheduler, before the pin moves to v0.4.1 alone.
+
+MERGED to main on 2026-10-09, on the owner's "all green lets do the closing ritual": **decision 0025 and its review, as six stacked PRs** (the two entries above), bottom-up, each after main's run on the squash below had passed.
+- **The squashes.** Each has the tree of the head CI tested, and sits on the squash below:
+  - #152, the records: ccd4e72 squashed as 39cf0b3, on c7bfd48;
+  - #153, the park: 2edcbf9 rebased as a52c8e6, squashed as ac32251;
+  - #154, the ledger: f582156 rebased as 1eddaaf, squashed as a4b310e;
+  - #156, the review's records: 69213ab rebased as f74738e, squashed as 0a1021c;
+  - #157, the review's code: 3bf8db3 rebased as 93b2c3d, squashed as cab5b04;
+  - #158, the review's ledger: 7b6c84d rebased as d6186bf, squashed as 6133001.
+
+  Each rebased tree was proved equal to its tested tip's before the push, made with the lease read from `ls-remote`.
+- **CI.** Every head merged passed on `linux`, its log tallied against the local count: #152 on ccd4e72 (run 37991325524), fifty-one suites, 1,983 expected passes; #153 on a52c8e6 (37992568262), 1,985; #154 on 1eddaaf (37992875736), 1,985; #156 on f74738e (37993177799), 1,985; #157 on 93b2c3d (37993465618), 1,989; #158 on d6186bf (37993748288), 1,989. Main's runs on 39cf0b3 (37992539801), ac32251 (37992860644), a4b310e (37993161630), 0a1021c (37993452085) and cab5b04 (37993734534) each passed before the next merge; main's run on 6133001 (37994037273) passed, fifty-one suites and 1,989 expected passes, before this reflect was pushed.
+  - #156's earlier red was a duplicate run (37991325226), cancelled by the workflow's concurrency group before it ran a step, when all six branches were pushed at once; the other run on the same head (37991325187) had passed. Its rebased head's only run passed.
+- **Branches.** All six deleted, local and remote. No PR is open.
+
+**Decision 0025 is on main:**
+- coroutines entered, and parked, on full continuations;
+- each park numbered, and a park entered again ending the coroutine whose turn it is, naming the wait.
+
+CHANGELOG.md's Unreleased holds two Changed entries for it, beside the chez-libuv v0.8.0 pin's.
+
+`make test` green on main: fifty-one suites, 1,989 expected passes, every pin ok.
+
+NEXT: 0.4.1's release, when the owner asks. Then, in chez-websocket: S-PARK's reference moves to one held outside the scheduler, then the pin moves to v0.4.1 alone, then M5.
