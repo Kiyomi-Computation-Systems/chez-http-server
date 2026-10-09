@@ -711,4 +711,25 @@ MERGED to main on 2026-10-09, on the owner's "Ci is green do closing ritual": **
 
 `make test` green on main: fifty-one suites, 1,983 expected passes, every pin ok.
 
+THE CHEZ-LIBUV v0.8.0 PIN, on the owner's form ("Bump now, one PR (Recommended)"; weighed: staying on v0.7.4), after the libuv:issues session's note of the release. Branch chore/chez-libuv-v0.8.0, cut from main at 6c451bb in a worktree of its own; 2026-10-09, Darwin arm64, Chez 10.4.1 `tarm64osx`, libuv 1.52.1. `vendor/chez-libuv` is at ad3bb47.
+
+UPSTREAM: chez-libuv tagged v0.8.0 (ad3bb47; annotated, 11 commits past v0.7.4). It carries no ask of ours, so decision 0008 is unchanged. It finishes v0.7.4's one-step work (#85, #86): every verb checks its handle or loop, and its owner, and calls libuv in one step that no engine splits. Besides that:
+- the libuv floor rises from 1.44.0 to 1.48.0. The build passes a system libuv below it over for chez-libuv's vendored one, and the generated `config.sls` refuses one below it at load (`&uv-version-incompatible`); here it reads `(#x013000 . #x01ffff)`;
+- seven verbs return nothing where they returned 0: `uv-timer-start!`, `uv-timer-stop!`, `uv-timer-again!`, `uv-signal-stop!`, `uv-listen!`, `uv-tcp-nodelay!` and `uv-tcp-keepalive!`;
+- new refusals by name: a timer verb given another kind of handle, and a timeout, repeat, keepalive delay or backlog out of range.
+
+Checked against chez-libuv's history between the tags, and against the server:
+- the shim's C and header are byte-identical, so `make test` did not recompile it; it regenerated `config.sls`. No public library's export list changed, and `tests/uv-testing.sls` is byte-identical;
+- no result of the seven verbs is read. Their seven call sites in `src/` are in the shell: `loop-clock!`'s start and stop, the listen, the nodelay under its guard, and the tick timer's again, start and stop. The waits call the clock's start for its effect only: in `arm-at!` under a `when`, and as `waits-fire!`'s last call, whose value the timer's callback drops. No suite reads one either;
+- the backlog is already held to 2,147,483,647 (`limits.sls`), and the server makes no engine;
+- CI's libuv is ubuntu-24.04's apt 1.48.0 (`pkg-config --modversion` in #144's run), exactly the floor.
+
+Watched to fail: with the checkout moved and its gitlink staged, and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2). With both moved, it passes.
+
+`make test` green at v0.7.4 and at v0.8.0 on this branch: fifty-one suites, 1,983 expected passes, every suite's count the same. The clients suite read 5,143 B a GET at v0.7.4, and 5,157 and 5,143 B over two runs at v0.8.0.
+
+MEASURED at both pins the same day, Darwin arm64: a GET through the whole server, `hoist-request-alloc.sps`, two rounds, 5,143 to 5,150 B at one connection and 5,014 to 5,020 at 50 at v0.7.4, and 5,150 B and 5,015 to 5,019 at v0.8.0, unchanged. By `libuv-callback-alloc.sps`, three runs, a write's round 1,354 to 1,355 B against 1,350 to 1,352, a timer's firing 513 B against 516, and an idle `uv-run` 16 B at both. v0.8.0's cuts are in the calls a GET does not make here: connect, bind, the lookups and the address queries.
+
+Records: the Makefile's pin, test-integration's version comment, README.org's libuv floor, global-constraints (the floor and the pin), CHANGELOG.md's Unreleased.
+
 NEXT: chez-websocket's M4.2, in its own repository: pin v0.4.0, put this server's `tests/` on its test path for the fake shell, and record its decision 0004. Here, plan §14's open list holds decision 0024's review's two noted items.

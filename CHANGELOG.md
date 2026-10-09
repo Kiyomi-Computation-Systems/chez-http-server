@@ -6,6 +6,13 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **libuv 1.48 or later is needed.** chez-libuv is pinned at v0.8.0, which refuses a
+  libuv older than 1.48 when it loads, where the floor was 1.44. Ubuntu 24.04's libuv
+  is 1.48. Where the system's is older, as Debian 12's 1.44 is, the build makes its
+  own copy with CMake. What a handler sees, and what a request allocates, is unchanged.
+
 ## [0.4.0] - 2026-10-09
 
 The fourth release. A taker can abort its stream, and a handler can read every line of

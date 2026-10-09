@@ -53,10 +53,10 @@ Save it as ~hello.sps~, start it with ~make run PROGRAM=hello.sps~, and
 Prerequisites:
 
 - *Chez Scheme* 10.4.1 or later, threaded build (the binary is ~chez~)
-- *libuv* 1.44 or later that ~pkg-config~ can see (~brew install libuv~ or
-  ~apt install libuv1-dev~), plus a C compiler — the chez-libuv shim is built
-  from source; CMake 3.26+ is only needed if libuv falls back to its vendored
-  build
+- *libuv* 1.48 or later that ~pkg-config~ can see (~brew install libuv~, or
+  ~apt install libuv1-dev~ on Ubuntu 24.04 or later), plus a C compiler — the
+  chez-libuv shim is built from source. With no libuv, or an older one such as
+  Debian 12's 1.44, chez-libuv builds its own, which needs CMake 3.26+
 - For ~make test~, the real clients the tests run against the server: *curl*,
   *ab* (~apache2-utils~ on Linux), vtest2, which ~make vtest~ builds from
   source with *pcre2* that ~pkg-config~ can see and *zlib* (~brew install
