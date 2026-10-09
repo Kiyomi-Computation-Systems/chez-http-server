@@ -28,9 +28,10 @@ it to other servers' strict request tests, request-smuggling cases and vtest2's
 scripts, and M8.4 to a load test with oha. v0.1.0 was the first release. Since
 v0.2.0 a handler that waits is told when its client leaves, and a request in
 HTTP/1.2 to 1.9 is served as 1.1. Since v0.3.0 code that speaks the new
-protocol after an upgrade can wait as a handler does. Since v0.4.0, the current
-release, it can close at once a client that stopped reading, and a handler can
-read every line of a field (see [[file:docs/handlers.org][docs/handlers.org]]). [[file:CHANGELOG.md][CHANGELOG.md]] has what
+protocol after an upgrade can wait as a handler does. Since v0.4.0 it can close
+at once a client that stopped reading, and a handler can read every line of a
+field. Since v0.4.1, the current release, a handler that waits holds about
+0.7 KB until its wait ends, about 3 KB less (see [[file:docs/handlers.org][docs/handlers.org]]). [[file:CHANGELOG.md][CHANGELOG.md]] has what
 each release does, and the numbers measured for v0.1.0. See
 [[file:.plans/2026-09-19-chez-http-server-project-brief.md][the project brief]] for the milestone map.
 
@@ -56,7 +57,8 @@ Prerequisites:
 - *libuv* 1.48 or later that ~pkg-config~ can see (~brew install libuv~, or
   ~apt install libuv1-dev~ on Ubuntu 24.04 or later), plus a C compiler — the
   chez-libuv shim is built from source. With no libuv, or an older one such as
-  Debian 12's 1.44, chez-libuv builds its own, which needs CMake 3.26+
+  Debian 12's 1.44, chez-libuv builds its own, which needs CMake 3.10 or later
+  (Debian 12's own builds it)
 - For ~make test~, the real clients the tests run against the server: *curl*,
   *ab* (~apache2-utils~ on Linux), vtest2, which ~make vtest~ builds from
   source with *pcre2* that ~pkg-config~ can see and *zlib* (~brew install

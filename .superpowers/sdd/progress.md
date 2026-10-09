@@ -184,3 +184,25 @@ NEXT: 0.4.1's release, when the owner asks. Then, in chez-websocket: S-PARK's re
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,989 expected passes, every pin ok. Nothing tested changed: the ledger and AGENTS.md only.
 
 NEXT: v0.4.1's release, stacked on this, by the owner's form. Then, in chez-websocket: S-PARK's reference moves to one held outside the scheduler, then the pin moves to v0.4.1 alone, then M5.
+
+**v0.4.1's release, on `chore/release-0.4.1` (2026-10-09),** on the owner's "lets do the v0.4.1 release", after decision 0025's merges: the release chez-websocket's next pin waits for. Stacked on `docs/ledger-archive-by-release`, by the owner's form.
+- **What it carries.** Every PR since v0.4.0, #152 to #158, was read against CHANGELOG.md's Unreleased.
+  - The three an embedder meets are in it, all under Changed: the chez-libuv v0.8.0 pin (#155), and decision 0025's park (#153) and its review's drain and refusal (#157).
+  - The other four are records only: #152, #154, #156 and #158.
+- **Semantic versioning.** Decision 0025 named 0.4.1, a patch, before #155 raised the libuv floor from 1.44 to 1.48, so the patch was checked again:
+  - nothing an embedder calls changes. Since v0.4.0 only `private/scheduler.sls` and `private/waits.sls` changed under `src/`, and no export line;
+  - chez-websocket gets chez-libuv only through this server's checkout, and calls none of the seven verbs whose results v0.8.0 changed (its `src/` and `tests/` at 43b18e7);
+  - Debian 12's libuv, 1.44.2, built 0.4.0. 0.4.1 builds chez-libuv's own libuv 1.52.1 there, and Debian 12's own CMake, 3.25.1, built it with chez-libuv's flags (in chez-libuv's Debian 12 image, 2026-10-09). Ubuntu 24.04's libuv and Homebrew's are used as before.
+
+  So the release is 0.4.1. chez-libuv tagged its floor v0.8.0, a minor, since seven of its verbs' results changed; the server reads none of them (#155's entry).
+- **A record corrected.** README.org said chez-libuv's own libuv build needs CMake 3.26+, and global-constraints.md "CMake 3.26 where CMake is used". This server's build runs CMake only for that libuv, whose CMakeLists asks for 3.10 (3.13 only under UBSAN). The 3.26 is chez-httparse's, uriparse's and byte-machine's own floor, set by CMake presets this build never runs, restated in M-1's planning (bb81cc1). Both now say 3.10, and that Debian 12's own builds it.
+- **The pins.** chez-libuv moved from 27d84bb (v0.7.4) to ad3bb47 (v0.8.0), by #155. The rest are v0.4.0's: chez-httparse 0b7058e (v0.4.5, byte-machine v0.7.0), uriparse 5ecd88f (v0.6.2), chez-srfi 7879b52, vtest2 803dcd0.
+- **Built.**
+  - CHANGELOG.md: Unreleased moved under `[0.4.1] - 2026-10-09`, with an intro naming the patch, what changes and the pins.
+  - A fresh, empty Unreleased above it, and `[0.4.1]` comparing v0.4.0 with v0.4.1.
+  - README.org's status names v0.4.1 the current release and what it changes.
+- **Not re-measured.** The intro's "about 3 KB less" is the Changed entry's, measured by #157 on its finished tree (Darwin arm64, Linux aarch64 and x86_64), and README.org's 0.7 KB is `docs/handlers.org`'s. So the load smoke was not run again.
+- **The tag.** After the merges, once main's run on the release's squash is green, `v0.4.1` goes on that squash, annotated and signed as v0.4.0 was: "chez-http-server v0.4.1 — a waiting handler keeps about 3 KB less", with a body pointing at CHANGELOG.md. The owner's "lets do the v0.4.1 release" asks for it; the merges wait for "do closing ritual".
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,989 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
+
+NEXT: the closing ritual for both PRs, bottom-up, and the tag, when the owner asks. Then, in chez-websocket: S-PARK's reference moves to one held outside the scheduler, then the pin moves to v0.4.1 alone, then M5.
