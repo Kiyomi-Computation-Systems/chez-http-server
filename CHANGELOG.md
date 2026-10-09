@@ -13,12 +13,18 @@ All notable changes to chez-http-server are recorded here. The format follows
   is 1.48. Where the system's is older, as Debian 12's 1.44 is, the build makes its
   own copy with CMake. What a handler sees, and what a request allocates, is unchanged.
 - **A waiting handler, or a taker's waiting thunk, keeps about 3 KB less.** A coroutine
-  now parks on a full continuation. A one-shot one kept a stack segment for as long as
-  the coroutine waited. One parked at an `await` keeps 654 to 688 B, where it kept 3,634
-  to 3,644 B; a wake and park allocates about 130 B more (decision 0025).
-- **A park entered a second time raises an assertion naming its verb**,
-  `coroutine-park!` or `coroutine-yield!`. Chez's refusal of the one-shot continuation
-  named no one (decision 0025).
+  is now entered, and parks, on full continuations. A one-shot park kept a stack segment
+  for as long as the coroutine waited. One parked at an `await` keeps 690 to 754 B, where
+  it kept 3,676 to 3,848 B, and about 16 B more for each call deeper. A request that
+  waits once allocates what it did: 7,160 to 7,877 B through the server, where 6,977 to
+  7,980 (decision 0025 and its review).
+- **A wait entered a second time ends the handler.** When a handler's own continuation
+  jumps back into a wait that has already returned, the handler fails as if it raised,
+  with an assertion naming the wait (`await`, `sleep-ms` or `resolve`), and the code
+  after the wait does not run again. A guard around the wait does not see it, and
+  another handler still waiting is untouched. Chez's refusal of the one-shot
+  continuation was raised where the jump landed, so a guard there caught it and the code
+  after the wait ran twice (decision 0025's review).
 
 ## [0.4.0] - 2026-10-09
 

@@ -301,7 +301,7 @@
             (begin
               (cell-state-set! cell 'parked)
               (when x (context-cell-set! x cell))
-              (let ((v (coroutine-park!)))
+              (let ((v (coroutine-park! who)))
                 (when x (context-cell-set! x #f))
                 (cond ((eq? v passed-token) (deadline-passed! who))
                       ((eq? v closed-token) (client-closed! x who))
