@@ -703,3 +703,12 @@ NEXT: 0.4.0's release, for chez-websocket to pin (its M4.2), when the owner asks
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,983 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
 
 NEXT: the closing ritual and the tag, when the owner asks; then chez-websocket's M4.2: the pin of v0.4.0, the server's fake shell on its test path, and decision 0004.
+
+MERGED to main on 2026-10-09, on the owner's "Ci is green do closing ritual": **v0.4.0's release** (the entry above). 3dcd759 was squashed as 388ec43 (tree the tested tip's, parent e869b6a).
+- **CI.** Its run, 37908722570, passed on 3dcd759: fifty-one suites, 1,983 expected passes on ubuntu-24.04. Main's run on the squash, 37909106526, passed before the tag.
+- **Branches.** `--delete-branch` deleted the remote branch; the local one was deleted by hand once main was fast-forwarded. No PR is open; the remote has only `main`.
+- **TAGGED v0.4.0** on 388ec43, annotated and signed as v0.3.0 was: "chez-http-server v0.4.0 — a taker can abort its stream, and a handler can read every line of a field", its body pointing at CHANGELOG.md's `[0.4.0]`. `git verify-tag` read a good signature. `git ls-remote --tags` shows the tag object 3eebcd3 and its commit 388ec43. No GitHub Release, as for the earlier tags.
+
+`make test` green on main: fifty-one suites, 1,983 expected passes, every pin ok.
+
+NEXT: chez-websocket's M4.2, in its own repository: pin v0.4.0, put this server's `tests/` on its test path for the fake shell, and record its decision 0004. Here, plan §14's open list holds decision 0024's review's two noted items.
