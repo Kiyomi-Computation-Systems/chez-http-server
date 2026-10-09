@@ -1488,3 +1488,91 @@ The checks the change added or changed, and their killers:
 - its two leading-zero checks: ND-ZERO;
 - the serve suite's "a malformed setting raises an &http-server-config-error naming it,
   from serve", a fourth row, `CHEZ_HTTP_PORT=#x1F90`: ND-OLD, ND-ERROR, ND-INTEGER, ND-PORT.
+
+## After M8 — a taker may abort its stream, and a handler may read every line of a field (2026-10-08)
+
+Decision 0024, on chez-websocket's M4.2 form ("Door change: abort", "Every line, in the
+release"): `transport-abort!`, the fake shell's door made to do what the libuv shell's
+does for a client that reads nothing, and `request-header-values`. Platform: Darwin
+arm64, Chez 10.4.1 (`tarm64osx`), libuv 1.52.1, 2026-10-08, the library path as above.
+Each red set was named and hashed before its run (`scratchpad/srv/red`, `srv/mut`).
+
+Tests first, in two stages, as chez-websocket's M4.1 review did:
+- **Against main's code**, the new checks in place: the records, fake door and shell
+  suites stopped at load, exit 255, Chez refusing the unbound `transport-abort!` as it
+  loaded each program; the serve suite 17 passes and 1 failure, its export list. The
+  prediction named the right suites but the wrong way for three: it expected run-time
+  failures, exit 2 or 1. Chez's expander refuses a program that names an unbound
+  identifier wherever the name sits.
+- **Against the API alone** (the verb, the facade's export, and each shell's eighth
+  procedure only asking for the close): exactly the four new fake checks and the shell
+  suite's bound. A first run also reddened the shell suite's raise check: the bound
+  check's stream, left open at that stage, closed during the next check once its client
+  went, and its `EPIPE` and its close landed in that check's notes. Each of the two checks
+  now waits for its connection to be gone before the next begins; run again, exactly the
+  five named.
+- **The values layer**, the same way: the view suite stopped at load (exit 255) and the
+  serve suite failed its export list; then, `request-header-values` answering no value,
+  exactly the view suite's new check.
+
+**The abort layer, 0e234e2:** 24 rows, 23 mutants and the baseline, the records, fake
+door, shell, serve and fake-shell suites each, two at a time. 23 matched; A-3 did not.
+
+| mutant | the edit | red |
+|---|---|---|
+| B-0 | none | none: 305 passes |
+| A-1 | the libuv shell's abort only asks for the close | shell 1: the bound |
+| A-2 | the libuv shell's abort does nothing | shell 1: the bound |
+| A-3 | a raise in a taker's call is logged, its stream left open | shell 4: the raise in a deadline's call, the raising take-over, and the suite's two closing leak checks |
+| T-1 | a transport of seven procedures aborts by its close | records 1: seven refuse the abort |
+| T-2 | `transport-abort!` calls the close procedure | records 2: each verb, seven refuse; door 3: the bound, the abort, the raises; shell 1: the bound |
+| T-3 | an eighth procedure is not checked | records 1: seven or eight, or refused |
+| T-4 | the facade does not export `transport-abort!` | serve 1: the export list |
+| K-1 | the fake's abort only asks for the close | door 4: the bound, the abort, the raises, the raising thunk |
+| K-2 | the fake's abort tells the writes outstanding nothing new | door 4: the same |
+| K-3 | the fake's close begins at once, whatever is outstanding | door 1: the bound |
+| K-4 | the fake's close leaves the deadline armed | door 1: the abort |
+| K-5 | the fake guards no call into the taker's code | door 1: the raises |
+| K-6 to K-12 | the take-over, the reads, the end, the deadline's call, the drain call, a write's callback, the close call, each unguarded | door 1 each: the raises |
+| K-13 | a waiting thunk's raise only asks for the close | door 1: the raising thunk |
+| K-14 | the last write's turn never begins a close asked for | door 1: closed by the taker, its write first |
+| K-15 | the fake's abort leaves reading on | door 1: the abort |
+| K-16 | the fake's abort leaves its taker writing | door 1: the abort |
+
+A-3's two leak checks, "and no handle is left on the loop" and "nor a TCP handle, a read
+buffer or a write request", were not predicted: the streams it leaves open still hold
+their handles when the suite ends. A knock-on; its named checks are red.
+
+**The values layer, cbe029a:** 6 rows, 5 mutants and the baseline, the view, serve and
+headers suites each: 0 mismatches.
+
+| mutant | the edit | red |
+|---|---|---|
+| B-0 | none | none: 55 passes |
+| V-1 | `request-header-values` reads the first field alone | view 1: every field |
+| V-2 | each value kept with the whitespace after it | view 1: every field |
+| V-3 | the values in reverse order | view 1: every field |
+| V-4 | an empty value dropped | view 1: every field |
+| V-5 | the facade does not export `request-header-values` | serve 1: the export list |
+
+A name is matched without regard to case by `headers-ref-all`, the same `header-name=?`
+that `request-header` reads by; the headers suite's "ref-all across case" holds it, so no
+mutant of the view's own was cut for it, a scope statement.
+
+Every red was by value, exit 1, with no harness error. The checks the change added or
+changed, and their killers:
+- the records suite: each verb calls its procedure: T-2; seven or eight, or refused: T-3;
+  seven refuse the abort: T-1, T-2;
+- the fake's door suite: the bound: T-2, K-1, K-2, K-3; the abort: T-2, K-1, K-2, K-4,
+  K-15, K-16; the raises: T-2, K-1, K-2, K-5 to K-12; the raising thunk: K-1, K-2, K-13;
+  and closed by the taker, whose path the fake now takes through `taker-wrote!`: K-14;
+- the shell suite: the bound: A-1, A-2, T-2; the raise in a deadline's call: A-3;
+- the serve suite's export list: T-4, V-5;
+- the view suite's every field: V-1 to V-4.
+
+Found while mapping the mutants: the fake left a deadline armed before its close armed
+after it, so it passed on a closed stream, where the libuv shell's close disarms it. The
+fake's close now disarms it too, and the abort check arms one first (K-4). And the libuv
+shell's abort was first written to stop reading and mark its taker closing before the
+close; the close does both, so no check could tell them apart, and the abort is the
+close alone, as a taker's raise has it.
