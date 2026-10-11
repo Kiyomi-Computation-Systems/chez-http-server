@@ -6,6 +6,22 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **chez-libuv is pinned at v0.9.0.** Run `make build` after pulling: its C shim gained
+  two functions. libuv 1.48 or later is still enough. A loop run that would leave its
+  thread too little C stack is now refused with chez-libuv's `&uv-stack-exhausted`,
+  where before it could crash the thread. The server never leaves a libuv callback
+  without returning, which is what uses that stack up, so it should never see one: if
+  it does, that is a bug to report.
+
+### Fixed
+
+- **A malformed setting reaches your handlers as itself.** Raised out of `serve` through
+  a `guard` whose clauses did not match it, the `&http-server-config-error` reached the
+  handlers further out as chez-libuv's `&uv-handle-closed` (chez-libuv #120). It now
+  arrives as itself. `serve` allocates about 256 B more, once (chez-libuv's figure).
+
 ## [0.4.1] - 2026-10-09
 
 The fifth release, a patch. A handler that waits, or a taker's thunk that waits, keeps

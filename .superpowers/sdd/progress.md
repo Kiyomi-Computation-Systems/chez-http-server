@@ -368,3 +368,26 @@ MERGED to main on 2026-10-11, on the owner's "do closing ritual on #165 once the
 `make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
 
 NEXT: the chez-libuv v0.9.0 pin alone, by the owner's form. Then the lost close (`feat/taker-close-lingers`). Here, plan §14's open list holds five items.
+
+**THE CHEZ-LIBUV v0.9.0 PIN, on `chore/chez-libuv-v0.9.0` (2026-10-11),** by the owner's form ("Bump after #165 lands (Recommended)"), after the chez-libuv session's handoff of the release. Cut from 9690cca. `vendor/chez-libuv` is at 3c4e7f0.
+- **UPSTREAM.** chez-libuv tagged v0.9.0, "headroom" (annotated tag object 7ba5886 on 3c4e7f0, 14 commits past v0.8.0), a minor release. It carries no ask of ours, so decision 0008 is unchanged.
+- **Checked against chez-libuv's history between the tags, and against the server:**
+  - the facade, `(libuv)`, gains six names and loses none: `&uv-stack-exhausted`, `make-uv-stack-exhausted`, `uv-stack-exhausted?`, `uv-stack-exhausted-who`, `uv-stack-exhausted-headroom` and `uv-stack-exhausted-floor`. No library or suite of ours defines any of them;
+  - the shim's C changed (`libuv-shim.c` and `.h`, 60 lines added and 2 removed: two exports, `chez_uv_stack_pointer` and `chez_uv_stack_bottom`), so `make build` rebuilt it;
+  - `tests/uv-testing.sls` is byte-identical, and the libuv floor is still 1.48.0;
+  - `src/` imports no `(libuv private …)` library (`make check-imports`). Two suites import `live-counts` from `(libuv private native)`, still exported;
+  - `call-with-uv-loop` is used in `serve` (serve.sls:75) and in the shell suite's clock helpers. No suite or library reads `&uv-wrong-thread`'s fields.
+- **The fix that reaches an embedder, measured** (`.plans/research/spike/serve-raise-through-guard.sps`, Darwin arm64). A malformed setting raised out of `serve` through a `guard` whose clause does not match it:
+  - at v0.8.0, it reached the guard outside as `&uv-handle-closed`, with the server's tree and v0.8.0's shim built from an export;
+  - at v0.9.0, as `&http-server-config-error`;
+  - with no guard between, as `&http-server-config-error` at both.
+- **The stack refusal.** `uv-run` raises `&uv-stack-exhausted` with under 128 KiB of C stack left, and a teardown's drain with under 64 KiB. Only a continuation or engine leaving a libuv callback without returning spends that stack. The scheduler refuses waits and drains inside a callback (R1), and no suite raised the refusal.
+- **Watched to fail.** With the checkout moved and its gitlink staged, and the Makefile's pin not, `make check-pins` answered `PIN MISMATCH` (exit 2). With both moved, it passes.
+- `make test` green at v0.8.0 (main, 9690cca) and at v0.9.0 on this branch (Darwin arm64, libuv 1.52.1): fifty-one suites, 1,990 expected passes, every suite's count the same. The clients suite read 5,156 B a GET at v0.8.0 and 5,144 B at v0.9.0, inside #155's spread at v0.8.0 (5,143 to 5,157 B).
+- **Linux** (CI is billing-blocked), every suite once at v0.9.0: in `chez-libuv-noble-scratch:10.4.1` (aarch64, libuv 1.48.0), fifty green, 1,952 expected passes. In `chez-websocket-ci-amd64:10.4.1` (x86_64 under emulation, libuv 1.48.0), forty-nine green, 1,951 expected passes. In each the clients suite stops at its first tool, `ab`, which the images lack, as on main.
+- **Found under emulation, not the pin's.** In the amd64 image the serve suite's "once serve has returned, a SIGINT ends the process at once" was red in three runs of three, with the same value at v0.9.0 and at v0.8.0: `(satisfied satisfied () (0 sigterm))`, where `(satisfied satisfied ("draining 0" "stopped") (0 sigint))`. The child died of the parent's SIGTERM, with no drain logged.
+  - Read, not measured further: `start-server` logs `listening`, and only then does `serve` watch signals (serve.sls:75-80). The parent sends SIGTERM once it reads `listening`, so under emulation the signal lands before the watch, at its default disposition.
+  - CI's x86_64 runs passed the check in every run. Natively the gap is too short to hit, so under AGENTS.md's rule this is noted, not fixed. A supervisor that signals as soon as `listening` appears would meet the same gap.
+- **Records.** The Makefile's pin, test-integration's version comment, global-constraints (the pin and what v0.9.0 adds), CHANGELOG.md's Unreleased (Changed: the pin; Fixed: the setting's raise), the probe.
+
+NEXT: this PR, then the closing ritual when the owner asks. Then the lost close (`feat/taker-close-lingers`). Here, plan §14's open list holds five items.
