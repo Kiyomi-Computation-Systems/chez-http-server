@@ -1752,6 +1752,26 @@ on the way.
 
 ### Open, and not sliced
 
+*Noted 2026-10-11, by the owner's form ("Land two, stop two"), under AGENTS.md's rule for
+timing flakes: each went red only under synthetic load, so it is noted, not fixed. CI ran
+the full suite 214 times from 2026-10-01 to the 2026-10-10 billing block with no test
+failure.*
+
+- **The slow body's 408 check under load.** "a client that sends its body a piece at a
+  time, then stops, reads 408 once the deadline armed again at its last piece passes"
+  went red in #164's soaks, eight containers at once, with the value
+  `((408) eof ((body on-time) (linger on-time)) #f)`: no body deadline was armed at or
+  after the client's last piece. How often was not recorded. Its session's reading: the
+  loop stalled past the deadline armed at the piece before, so the tick that passed it
+  and the client's timer sending the last piece ran in one turn, before the piece was
+  read. Its fix, checking the pieces sent between the last arm and its deadline, was
+  stopped before its mutants ran.
+- **A MiB write's hold under load.** "a MiB answer's write holds the loop less than a
+  tick" went red in the same soaks; how often was not recorded either. The copy takes
+  under a millisecond since chez-libuv v0.7.1, so under load something else kept the
+  thread from the loop during the write, past a tick (10 ms). Its fix, the least of
+  three writes, was stopped before its counts were recorded.
+
 *Noted 2026-10-09, from chez-websocket#57's review (its decision 0007), by form ("Server
 plan's open list"); not decided.*
 

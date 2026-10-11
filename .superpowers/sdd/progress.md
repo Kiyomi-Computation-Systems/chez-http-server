@@ -339,3 +339,24 @@ MERGED to main on 2026-10-11, on the owner's "do closing ritual": **the timer-st
 `make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
 
 NEXT: #165 (the stopping rule) rebases onto main, its entries after these, then its closing ritual when the owner asks. When main's runs start again, re-run main's latest run once. Here, plan §14's open list holds three items.
+
+**The timing work cut back, by the owner's form (2026-10-11),** on `docs/timing-stopping-rule`, cut from 455a88d and rebased onto 58f9307. The owner asked for a review of the sessions in flight: several were fixing shell checks that went red only under load, and it looked like diminishing returns. Docs only.
+- **In flight at the review.** Four chez-http-server sessions were chasing timing checks, each 700 to 1,000 messages long; a fifth, #163's, had moved on to chez-websocket's lost close (`feat/taker-close-lingers`), product work.
+  - #164: the shell's timer-stop waits read the trace. A real race: the firing that stops the timer could come before the suite counts. PR open, finished.
+  - The 20 ms sleep check timed by the loop's clock (`test/sleep-by-loop-clock`): mutants run, ledger written, not yet committed.
+  - The slow body's 408 check, and a MiB write's hold, both spawned as follow-ups by #164's session from its soaks. Edits under way, nothing measured recorded.
+  - It started with #162's soak, which raised the first two as follow-ups; each soak at eight containers on an 8-core VM found another check near its margin.
+- **The deciding datum.** CI ran the full suite 214 times from 2026-10-01 20:57Z (after #88) to the 2026-10-10 billing block, with no test failure (and 18 runs cancelled by the concurrency group). Every check those sessions were fixing ran in each. They went red only under synthetic load: in 0.5 to 5% of runs, the most #164's held-connection check, 20 of 400 on main's tree.
+- **DECIDED by form:**
+  - "Land two, stop two (Recommended)": #164 and the sleep check land, with no more soaks; the slow-body and MiB sessions stop. Weighed: stopping all four, which throws away two finished pieces; letting all four finish.
+  - "AGENTS.md, via a PR (Recommended)": the stopping rule binds every session. Weighed: memory only; no rule.
+  - Later the same day, on the chez-libuv session's handoff of v0.9.0 (tag on 3c4e7f0): "Bump after #165 lands (Recommended)", one PR, the pin alone. Weighed: bumping now in parallel; staying on v0.8.0.
+- **Done.**
+  - The slow-body and MiB sessions were stopped and archived. Their background runs were ended: a mutation run, three orphaned serve suites, a container. Their worktrees were discarded and their local branches deleted; neither had been pushed or held a commit.
+  - #164's and the sleep session were each told to stop soaking and raise no follow-ups. Each merged on the owner's word in its own session: the sleep check first, as #166 (906cf76, reflect 68ce7ad), then #164 rebased onto it (fd45967, reflect 58f9307).
+- **Recorded.**
+  - AGENTS.md's testing discipline gains the rule: chase a timing flake only when it fails on CI, or locally with no added load. One seen only under synthetic load gets a line in the plan's open list, not a fix, and a soak raises no follow-up tasks.
+  - Plan §14's open list gains the two stopped checks, each with what was known. How often each went red was not recorded.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,990 expected passes, every pin ok. Nothing tested changed: AGENTS.md, the plan and the ledger only.
+
+NEXT: this PR's closing ritual, then the chez-libuv v0.9.0 pin alone. Then the lost close (`feat/taker-close-lingers`). Here, plan §14's open list holds five items.
