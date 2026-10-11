@@ -1863,3 +1863,8 @@ This repository's part:
   (`call/cc`), keeping about 3 KB less while it waits and allocating what it did, and
   each park lands once; a park entered again ends the coroutine that entered it. Server
   0.4.1 is to be released with it, for chez-websocket to pin.
+- **The third door change** (decision 0026, 2026-10-11, from chez-websocket's decision
+  0008, item 6): `transport-close!` stages the close as the server stages its own (0011):
+  it reads on, dropping what comes, half-closes once the writes are out, and lingers
+  until the client ends, a read fails, or `linger-timeout-ms` passes. The server's next
+  release carries it, for chez-websocket to pin alone.
