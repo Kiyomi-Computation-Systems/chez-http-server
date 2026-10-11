@@ -406,3 +406,11 @@ NEXT: the lost close (`feat/0026-linger`, another session's). Here, plan §14's 
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,990 expected passes, every pin ok. Nothing tested changed: the plan and the ledger only.
 
 NEXT: this PR, then the closing ritual when the owner asks. Then the lost close (`feat/0026-linger`, another session's). Here, plan §14's open list holds six items.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual on #168": **plan §14's open list gains the signal gap after `listening`, #168** (the entry above). 0dcd4e4 was squashed as 758be06 (tree 6ba4019, the tested head's; parent 68f29e5).
+- **CI.** Billing-blocked: the PR's run 38147512689 and main's run on the squash 38148076851 each ended with the `linux` job not started, 0 steps, and the payments annotation. Nothing tested changed.
+- **Branches.** Deleted on the remote and here. The shared checkout, clean on `main`, was fast-forwarded. No PR is open.
+
+`make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
+
+NEXT: the lost close (`feat/0026-linger`, another session's). Here, plan §14's open list holds six items.
