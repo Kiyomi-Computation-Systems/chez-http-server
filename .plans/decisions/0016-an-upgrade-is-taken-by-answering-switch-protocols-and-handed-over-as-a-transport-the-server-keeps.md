@@ -292,3 +292,14 @@ closes are staged (0011). It reads on, dropping what comes, and half-closes once
 writes are out. It lingers until the client ends, a read fails, or `linger-timeout-ms`
 passes. The close call runs once the socket has closed, as before. `transport-abort!`
 still closes at once.
+
+## Amendment (2026-10-11, later) — a taken stream's close bounds its writes (decision 0027)
+
+"Nothing bounds a taker's writes outstanding but the taker" still holds until the taker
+closes. A taker that armed no deadline held a client that read nothing until the server
+drained: measured with both timeouts at 1 s, its stream was still open after 6.5 s. Now,
+once `transport-close!` has been asked for, each write the close waits for has
+`write-timeout-ms`, from the close and again at each write's end, and the stream is
+aborted past it. The taker's own deadline still runs beside the bound, the earlier
+first: the second deadline this record weighed is two instants on the stream's one
+wheel entry.
