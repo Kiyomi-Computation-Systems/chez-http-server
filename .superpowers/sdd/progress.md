@@ -399,3 +399,10 @@ MERGED to main on 2026-10-11, on the owner's "do closing ritual on #167": **the 
 `make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
 
 NEXT: the lost close (`feat/0026-linger`, another session's). Here, plan §14's open list holds five items. chez-websocket meets v0.9.0 through the server release that carries this pin.
+
+**Plan §14's open list gains the signal gap after `listening`, on `docs/open-sigterm-gap` (2026-10-11),** on the owner's "add the SIGTERM gap to plan §14's open list", after #167. Docs only; nothing under `src/` or `tests/` moved.
+- **What.** `start-server` logs `listening` (serve.sls:107) before `serve` watches SIGTERM and SIGINT (serve.sls:78), so a signal between the two ends the process at its default disposition, with no drain. Seen only in the amd64 image under emulation, three runs of three at both chez-libuv pins (#167's entry); CI's native x86_64 runs never failed it.
+- **Where.** The plan's "Open, and not sliced" list, dated, with the evidence and the fix that would close it: watching the signals before logging `listening`. Noted, not fixed, as the owner asked.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,990 expected passes, every pin ok. Nothing tested changed: the plan and the ledger only.
+
+NEXT: this PR, then the closing ritual when the owner asks. Then the lost close (`feat/0026-linger`, another session's). Here, plan §14's open list holds six items.
