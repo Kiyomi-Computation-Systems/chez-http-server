@@ -444,3 +444,17 @@ NEXT: the lost close (`feat/0026-linger`, another session's). Here, plan §14's 
 - `make test` green on each layer before its commit (Darwin arm64), and again on each after the rebase, at v0.9.0: fifty-one suites, and 1,990, 1,999 and 1,999 expected passes; every pin ok.
 
 NEXT: the PRs; review and the closing ritual when the owner asks; then the server's next release, for chez-websocket to pin alone and measure `none` again for 3.4, 4.1.5 and 4.2.5.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual": **decision 0026, a taken stream's close half-closes and lingers, as three stacked PRs** (the entry above), bottom-up.
+- **The squashes.** Each has the tree of its tested head, and sits on the squash below:
+  - #169, the records: a767a80 squashed as 227165c, on f672faf;
+  - #170, the code and its checks: retargeted to main and rebased from a767a80 onto 227165c, 8661a53 becoming 10cb0d3 (tree cb4a008, unchanged), squashed as a0477fd;
+  - #171, the ledger: retargeted and rebased from 8661a53 onto a0477fd, fda2ac6 becoming 96d5d8f (tree 26f7ece, unchanged), squashed as 56e621b.
+
+  Each rebased tree was proved equal to its tested tip's before the push, made with the lease read from `ls-remote`.
+- **CI.** Billing-blocked throughout. Each run ended with its `linux` job not started (0 steps, the payments annotation): the PRs' runs 38149047139, 38149071168 and 38149081293, the rebased heads' 38149725830 and 38149786477, and main's on each squash, 38149701029, 38149760883 and 38149825092. The local and Linux runs in the entry above stood in, as the PR bodies said. The stack merged past the red check on the owner's word.
+- **Branches.** All three deleted, local and remote. This session's worktree was left detached at 56e621b for this reflect; the shared checkout, clean on `main`, is fast-forwarded after it. No PR of this slice is open.
+
+`make test` green on main: fifty-one suites, 1,999 expected passes, every pin ok.
+
+NEXT: the server's next release, carrying decision 0026 and the chez-libuv v0.9.0 pin, for chez-websocket to pin alone and measure `none` again for 3.4, 4.1.5 and 4.2.5. When main's runs start again, re-run main's latest run once. Here, plan §14's open list holds six items.
