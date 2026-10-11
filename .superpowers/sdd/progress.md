@@ -294,3 +294,23 @@ NEXT: the server's next release, carrying decision 0026 and the chez-libuv v0.9.
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,999 expected passes, every pin ok. Nothing tested changed: the ledger only.
 
 NEXT: 0.5.0's release, stacked on this, by the owner's form ("0.5.0 (Recommended)", "Tag on local runs (Recommended)"). Then chez-websocket's pin to it alone, and `none` measured again for 3.4, 4.1.5 and 4.2.5.
+
+**0.5.0's release, on `chore/release-0.5.0` (2026-10-11),** on the owner's "let's cut the next release", after decision 0026's merges: the release chez-websocket's next pin waits for. Stacked on `docs/ledger-archive-v0.4.1`.
+- **What it carries.** Every PR since v0.4.1, #161 to #171, was read against CHANGELOG.md's Unreleased.
+  - The two an embedder meets are in it: the chez-libuv v0.9.0 pin (#167), under Changed, and under Fixed for the config error's raise; and decision 0026 (#170), under Changed. #170 also changed the test fake's door, which a taker's own tests load (chez-websocket's `test-binding` and `test-driver` do), and had no entry: one is added under Changed. Since v0.4.1 only those two touched `src/`, `docs/`, README.org, the Makefile, `vendor/` or `tests/fake-shell.sls`.
+  - The other nine are records or checks only: #161, #162, #163, #164, #165, #166, #168, #169 and #171.
+- **Semantic versioning, by form** ("0.5.0 (Recommended)"; weighed: 0.4.2). No export line changed: under `src/` only the shell's body and the transport's notes did, and `CHEZ_HTTP_LINGER_TIMEOUT` was already read, for the server's own closes. But what `transport-close!` does changes as a taker sees it: its close call, and a waiting taker's `&client-closed`, come once the client has closed, up to the linger later, and the stream counts toward `CHEZ_HTTP_MAX_CONNECTIONS` until then. The test fake's door closes the same way: three of this server's own fake checks had to deliver the client's end first. 0.4.1 was a patch because nothing an embedder calls changed, and 0.3.0 a minor for an addition. No decision named this version.
+- **The pins.** chez-libuv moved from ad3bb47 (v0.8.0) to 3c4e7f0 (v0.9.0), by #167. The rest are v0.4.1's: chez-httparse 0b7058e (v0.4.5, byte-machine v0.7.0 at c338a57), uriparse 5ecd88f (v0.6.2), chez-srfi 7879b52, vtest2 803dcd0.
+- **Built.**
+  - CHANGELOG.md: Unreleased moved under `[0.5.0] - 2026-10-11`, with an intro naming the minor, what changes and the pins, and the fake's entry added.
+  - A fresh, empty Unreleased above it, and `[0.5.0]` comparing v0.4.1 with v0.5.0.
+  - README.org's status names v0.5.0 the current release and what it changes.
+- **Not re-measured.** The Changed entry's 14 of 100 and 46 to 56 of 100 are decision 0026's measured cells, so the spike was not run again.
+- **CI is billing-blocked.** Main's run on 6497ab6, 38149945307, ended with `linux` not started (0 steps, the payments annotation). By the owner's form ("Tag on local runs (Recommended)"; weighed: waiting for CI), these runs stand in, on this branch's tree before this entry:
+  - Darwin arm64, `make test`: fifty-one suites, 1,999 expected passes, every pin ok;
+  - Linux aarch64 (`chez-libuv-noble-scratch:10.4.1`, libuv 1.48.0), every suite once: fifty green, 1,961 expected passes, each suite's count the 0026 slice's on its rebased tree; the clients suite at status 2 with no tools built, as before;
+  - Linux x86_64 under emulation (`chez-websocket-ci-amd64:10.4.1`, libuv 1.48.0), every suite once: forty-nine green, 1,960 expected passes, each suite's count the 0026 slice's on its rebased tree; the clients suite at status 2 with no tools built, and the serve suite's "once serve has returned, a SIGINT ends the process at once" red, as at main (#167's reading: the SIGTERM lands before `serve` watches signals; plan §14's open list since #168).
+- **The tag.** After the merges, the billing block proved again on main's run on the release's squash, `v0.5.0` goes on that squash, annotated and signed as v0.4.1 was: "chez-http-server v0.5.0 — a taker's close half-closes and lingers", its body pointing at CHANGELOG.md's `[0.5.0]`. Main's run is read once when CI returns. The merges and the tag wait for "do closing ritual".
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 1,999 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
+
+NEXT: the closing ritual for both PRs, bottom-up, and the tag, when the owner asks. Then, in chez-websocket: the pin to v0.5.0 alone, and `none` measured again for 3.4, 4.1.5 and 4.2.5.
