@@ -2131,3 +2131,151 @@ Every mutant loaded, and every row reported its suites.
 
 **The changed check has its killers by value:** M7T-21 (both parts), W-PAUSE+M7T-21
 (the witness alone) and W-STALE+M7T-21 (the length alone).
+
+## After M8 — the timer-stop waits read from the trace, and the taker's arm read after it (2026-10-11)
+
+Two shell checks that went red under load, on `test/timer-waits-under-load`: "a connection
+held in its handler, nothing armed, the timer stopped, is closed at the drain's deadline,
+on time" (the held-connection check) and "a taker's deadline, armed with the timer
+stopped, passes the first time the timer fires at or after it, once" (the taker check).
+Each read `fired`, the count of the shell's firings, once the handler was seen waiting or
+the stream handed off, then waited for one more. Now each waits for `fired-since-emptied?`: a firing
+traced after the first disarm that followed the connection's last arm. And the taker check's taker
+notes `armed` after its arm, not before. Tests only: nothing under `src/` moved.
+
+Platform: Darwin 25.6.0 arm64 (Apple M1), Chez 10.4.1 `tarm64osx`, libuv 1.52.1; and Linux
+6.12.76-linuxkit aarch64 in Docker, `chez-libuv-noble-scratch:10.4.1` (Ubuntu 24.04, libuv
+1.48.0, CI's), Chez 10.4.1. 2026-10-11, the library path as above.
+
+**The oracles:**
+- the shell's code: `tick!` stops the timer at a firing that finds the wheel empty while
+  the server does not drain, and traces the firing (`server-step!`'s `(tick now)`) after
+  that decision; `run!` traces each action before it performs it; `start-ticking!`, at an
+  arm, starts it again. So once the wheel has emptied, the next firing stops the timer,
+  and nothing but an arm starts it;
+- `taker-deadline!` arms at `uv-now` after `uv-update-time!`, and starts the timer with
+  `uv-timer-again!`, which reads the loop's time and does not bring it up to date: the
+  loop's time after the arm is the time the deadline counts from.
+
+### The probe
+
+A copy of the suite, run as the program, the checks unchanged. Before each check's wait it
+counted the shell's firings traced since the connection's last
+`disarm-deadline` (`since`), and it counted the wait's turns and the loop's milliseconds
+across it. For the taker check the taker also noted the loop's time after its arm and the wheel's
+deadline (`connection-deadline`). It printed one line a check a run. The values shadow, a
+copy of `tests/testing.sls` printing a failing check's actual and expected values, was
+first on the path. Eight containers at once, 50 runs each.
+
+| tree | runs | the held-connection check red | its `since` ≥ 1 | the taker check red | its `since` ≥ 1 |
+|---|---|---|---|---|---|
+| main's (e20d9cb) | 400 | 20 | 20, the same 20 | 1 | 1, the same |
+
+- **Every red run had its stopping firing before the suite looked, and every such run was
+  red.** Its values were #162's: the held-connection check `(satisfied 0 iterations-exhausted satisfied
+  satisfied () eof on-time)`, the taker check `(satisfied iterations-exhausted
+  iterations-exhausted #t satisfied satisfied #t #t 1)`.
+- **What spent the turns.** In each red run `fired` was 1, that firing 0 to 51 ms of the
+  loop's clock before the wait began, and no firing came in the wait: 4,097 turns over
+  10,806 to 25,618 ms of the loop's clock, 2.6 to 6.3 ms a turn, the suite's own 1 ms
+  ticker the only timer left. The shell's timer had stopped. In the green runs the wait
+  took 2 to 7 turns and 3 to 62 ms.
+- **The taker's `armed`.** Read before the arm, it trailed the loop's time after the arm by
+  0 ms in 386 runs, 1 in 12 and 2 in 2, and the wheel's deadline was that later time plus
+  50 in all 400. The leg "no firing between the deadline and the one that passed it" never
+  went false here, read either way.
+- **Other checks red in that soak**, none changed here: the 20 ms sleep check 11 times, "a
+  MiB answer's write holds the loop less than a tick" 4 (actual `10`), and slowhttptest's
+  slow body once (its `armed >= sent` false).
+
+### The demonstrations on main's tree
+
+Four rows on the shell suite, each with the values shadow (scratchpad `mut/old`).
+
+| id | what | seen |
+|---|---|---|
+| B-0 | none: a comment's text | green, 204 |
+| LOAD-1 | the loop held 300 ms as the held connection's handler is asked for (`holding-at` matched on the action's verb, `call-handler`), after its last disarm | the held-connection check red, `(satisfied 0 iterations-exhausted …)`, the soak's values |
+| LOAD-2 | the loop held 300 ms at the door's `hand-off`, after its last disarm | the taker check red, `(satisfied iterations-exhausted …)`, the soak's values |
+| STALE | the `/door-timed` taker holds the loop 30 ms by libuv's clock (`hold-until!`) between noting `armed` and arming | the taker check red, `(… #t #f 1)`: firings between `armed` + 50 and the one that passed it |
+
+### The mutants
+
+Thirteen rows on this branch's tree, and the four above on main's (`mut/old`), each red set
+predicted and its spec hashed before the run (sha256 `c67c6db6` FW-0, `daf61535` FW-LOAD1,
+`3cd493f3` FW-LOAD2, `51efea52` FW-STALE, `3a2c3ba5` FW-NP1, `bf2b3ab7` FW-NP1+M8H-4,
+`d4d447df` FW-NP2, `a2d9c7fa` M8H-4, `52dcfc44` M8H-2, `18539825` M8DH-8, `2f7ade22` M8DC-2,
+`27bfa38c` FW-EARLY, `e1b76aef` FW-LATE; on main's, `5f9fa1aa` B-0, `d696eb12` LOAD-1,
+`9cab2a2c` LOAD-2, `2a2be258` STALE). They ran on each of the branch's three trees: on
+e20d9cb (`mut/new`); rebased onto 455a88d, where #163's check joined the suite (`mut/new2`;
+FW-EARLY re-predicted for that check, `f8474271`); and rebased onto 68ce7ad, #166's sleep
+check with it (`mut/new3`). The rows that change `src/`, and FW-0 and FW-NP1+M8H-4, ran
+every suite, four at a time; the rest the shell suite. Every mutant loaded, and every
+every-suite row reported 51 suites. The table is the last run's; each value at the changed
+checks was the same in all three.
+
+| id | mutant | red, predicted and seen |
+|---|---|---|
+| FW-0 | none: a comment's text in the shell suite | none: 51 suites, 1,990 expected passes |
+| FW-LOAD1 | LOAD-1 on this tree | none: shell green, 205 |
+| FW-LOAD2 | LOAD-2 on this tree | none |
+| FW-STALE | the taker holds the loop 30 ms by libuv's clock before it arms | none |
+| FW-NP1 | the held-connection check's wait for a firing since the wheel emptied left out | none |
+| FW-NP1+M8H-4 | that and M8H-4 | none: M8H-4 survives |
+| FW-NP2 | the taker check's wait left out | shell 1: the taker check, `(satisfied satisfied iterations-exhausted #f satisfied satisfied #t #t 1)`: the stopping firing came in the 30 idle turns |
+| M8H-4 | the timer not started as the drain begins (re-cut on this tree) | shell 4: the held-connection check, `(satisfied 0 satisfied iterations-exhausted iterations-exhausted () open never-forced)`; "and that drain ends", and the suite's last two handle counts |
+| M8H-2 | force-close-all closes nothing (re-cut) | serve 2, shell 10, the held-connection check among them: `(satisfied 0 satisfied iterations-exhausted iterations-exhausted () open on-time)` |
+| M8DH-8 | a taker's deadline starts no timer (re-cut) | shell 1: the taker check, `(satisfied satisfied iterations-exhausted #t iterations-exhausted iterations-exhausted #f #f 0)` |
+| M8DC-2 | the hand-off not disarmed (re-cut) | connection-switch 1, connection-table 3, shell 1: the taker check, `(satisfied iterations-exhausted iterations-exhausted #f satisfied satisfied #t #t 1)` |
+| FW-EARLY | a taker's deadline armed 20 ms early (`taker-deadline!`'s `+ ms -20`) | shell 2: the taker check, `(… #f #t 1)`: it passed before `armed` + 50; and #163's check, `(satisfied stale 280 satisfied)` |
+| FW-LATE | a taker's deadline armed 20 ms late | shell 1: the taker check, `(… #t #f 1)`: firings between `armed` + 50 and the one that passed it |
+
+- **Mismatches.**
+  - FW-NP1+M8H-4 was predicted to leave M8H-4's other three shell reds. They follow from
+    the held connection left open, so they went green with it (every run).
+  - FW-EARLY was predicted to redden #163's check too. In the second run, four at a time,
+    it did not. Run alone there, three times, it did each time, reading `(satisfied stale
+    280 satisfied)`, `280` and `282` where that check wants 300 or more; in the third run,
+    four at a time, `280`; in the noble image, on both trees, `280`. Under load the loop's
+    time can move the 20 ms on between #163's hold and its arm. That is the margin of
+    #163's check, not of these: SC-1, the mutant it is for, reads `0` there.
+- **The first run's other differences.** M8DH-8 also reddened a drain check of the door
+  there: "told the server drains, a taker says goodbye and closes; …" on Darwin, and "a
+  taker that ignores the drain has its stream closed at the deadline, on time, …" in the
+  noble image; on the rebased trees, neither. And the clients suite stopped at `build/oha`,
+  not yet fetched in that worktree, in every every-suite row, FW-0 too ("cannot start
+  build/oha"); once `make test` had fetched it, it ran green alone for each of the eight,
+  and in the later runs.
+- **FW-NP1+M8H-4 is why the held-connection check waits.** Without the wait the shutdown
+  comes while the timer still runs, and a drain that never starts it again still reaches
+  its deadline. A scope statement, kept to say so.
+- **FW-NP2 is why the taker check waits.** Without it, the stopping firing comes in the
+  idle turns that check the timer stays stopped.
+- **SC-1** (chez-websocket's: `taker-deadline!` without `uv-update-time!`) is not reddened
+  by the taker check: it reads `armed` as the arm left it, either way. #163's check is its
+  killer.
+- **On Linux** (the noble image, the shell suite, each row once, on each tree): the same
+  values. LOAD-1, LOAD-2 and STALE red on main's tree and B-0 green. On this tree, FW-0,
+  FW-LOAD1, FW-LOAD2 and FW-STALE green, and FW-NP2, M8H-4, M8DH-8, FW-EARLY and FW-LATE
+  red at the changed checks.
+
+### The soak of this tree
+
+The probe of this tree printed, per run, whether the stopping firing had come before the
+suite looked, and the wait's turns. Eight containers at once, 50 runs each.
+
+| tree | runs | the held-connection check red | stopped before the look | the taker check red | stopped before the look |
+|---|---|---|---|---|---|
+| e43522c, before the rebases | 400 | 0 | 8, each wait met in its first turn | 0 | 0 |
+| rebased onto 455a88d | 400 | 0 | 6, each wait met in its first turn | 0 | 0 |
+| rebased onto 68ce7ad, as committed | 400 | 0 | 11, each wait met in its first turn | 0 | 0 |
+
+Before the rebases the waits took 1 to 8 turns, and six runs went red elsewhere: the 20 ms
+sleep check 3 times and "a MiB answer's write holds the loop less than a tick" 3. After it,
+1 to 7, and three: those two once each, and once "and the connection closes once its client does, before the drain's deadline asks for anything",
+`(satisfied on-time)` where it wants `never-forced`: under load the in-flight connection's
+close came after the drain's 200 ms. That check runs before both changed ones, its code
+unchanged. On the last tree, 1 to 7 turns, and one run went red elsewhere: "a MiB answer's write holds the loop less than a tick", `10`. The 20 ms sleep check, #166's, never did.
+
+**The changed checks have their killers by value:** the held-connection check, M8H-4 and
+M8H-2; the taker check, M8DH-8, M8DC-2, FW-EARLY and FW-LATE (and FW-NP2, its own wait).

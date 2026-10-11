@@ -169,11 +169,13 @@
 ;;; live-handle list and its dev-build counters; byte-machine's own contract
 ;;; condition, provoked by a feed from inside a callback; the weak-pair
 ;;; instrument, calibrated below; for deadlines, the loop's time (uv_now)
-;;; each was armed at, read where it was armed, and each write began at, and
-;;; the suite's own limits, and a hold of the loop timed by libuv's clock,
-;;; read on a loop made for the hold (hold-until!); and for the drain, the
-;;; loop's time each shutdown was asked at, which the server is told, plus
-;;; the suite's drain timeout.
+;;; each was armed at, read where it was armed (a taker's as its arm left
+;;; it), and each write began at, and the suite's own limits, and a hold of
+;;; the loop timed by libuv's clock, read on a loop made for the hold
+;;; (hold-until!); for a timer's stop, a firing traced after its
+;;; connection's deadline left the wheel; and for the drain, the loop's time
+;;; each shutdown was asked at, which the server is told, plus the suite's
+;;; drain timeout.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?
               current-time time-second time-nanosecond fork-thread)
@@ -684,8 +686,8 @@
                         (transport-read-start!
                          t
                          (lambda (bv from to)
-                           (took! 'armed (uv-now loop))
-                           (transport-deadline! t door-ms (lambda () (took! 'passed (uv-now loop)) (transport-close! t))))
+                           (transport-deadline! t door-ms (lambda () (took! 'passed (uv-now loop)) (transport-close! t)))
+                           (took! 'armed (uv-now loop)))
                          (lambda (why) #t)))))
           ((bytevector=? target (b "/door-big"))
            (switching (lambda (t retained)
@@ -992,6 +994,25 @@
 ;; firings-of : Shell -> Nat — how many times `sh`'s timer has fired.
 (define (firings-of sh)
   (length (filter (lambda (e) (and (eq? (car e) 'fire) (eq? (cadr e) sh))) timed)))
+
+;; fired-since-emptied? : Shell Connection -> Boolean
+;; Whether `sh`'s timer has fired since `c`, its one connection, left the
+;; wheel empty: since the first disarm after `c`'s last arm, read from the
+;; trace, where each firing is traced once its stop is decided.  That
+;; firing stops the timer, so no later one comes.  It may come in the turn
+;; a wait ends on, before the suite looks: a wait for a firing after the
+;; suite looks then runs out of turns, as it did under load.
+(define (fired-since-emptied? sh c)
+  (let scan ((ts traced) (fired #f) (since #f))
+    (if (null? ts)
+        since
+        (let ((t (car ts)))
+          (cond ((and (eq? (car t) c) (eq? (cadr t) 'action) (eq? (caddr t) 'arm-deadline)) since)
+                ((and (eq? (car t) c) (eq? (cadr t) 'action) (eq? (caddr t) 'disarm-deadline))
+                 (scan (cdr ts) fired fired))
+                ((and (eq? (car t) sh) (eq? (cadr t) 'server-event) (eq? (caddr t) 'tick))
+                 (scan (cdr ts) #t since))
+                (else (scan (cdr ts) fired since)))))))
 
 ;; drain-logged : -> (Listof (Pair Symbol (Listof Any)))
 ;; What the drains logged since `logged` was cleared, oldest first.
@@ -2414,9 +2435,10 @@
 
     ;; A drain whose only connection is held in its handler: the core arms
     ;; no deadline there (design §4.3), so the shell's wheel is empty, and
-    ;; the next firing of its timer stops it.  Once it has, the shutdown:
-    ;; the timer is started again and runs on, telling the server the time,
-    ;; until the deadline closes the connection.
+    ;; the next firing of its timer stops it, which may come before the
+    ;; handler is seen waiting.  Once it has, the shutdown: the timer is
+    ;; started again and runs on, telling the server the time, until the
+    ;; deadline closes the connection.
     (let ((parker (make-shell loop handler drain-limits clock log! trace!)))
       (set! adopting parker)
       (set! parked #f)
@@ -2424,8 +2446,7 @@
       (let* ((p (open-adopted! (b "GET /await HTTP/1.1\r\nHost: x\r\n\r\n")))
              (waiting (wait-for (lambda () (and parked #t))))
              (armed (shell-deadlines parker))
-             (fired (firings-of parker))
-             (stopped (wait-for (lambda () (> (firings-of parker) fired)))))
+             (stopped (wait-for (lambda () (fired-since-emptied? parker (cdr p))))))
         (shell-shutdown! parker)
         (let* ((gone (wait-for (lambda () (closed-and-gone? parker (cdr p)))))
                (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
@@ -2794,14 +2815,16 @@
     ;; timer fires at or after it, as a connection's are (design §8.5).  The
     ;; taker arms it as its first read comes, once the timer has stopped:
     ;; the hand-off took the connection's last deadline out of the wheel, and
-    ;; the next firing found it empty.
+    ;; the next firing found it empty, which may come before the hand-off is
+    ;; seen.  The taker notes the loop's time as the arm left it, the time
+    ;; the deadline counts from: the arm brings the loop's time up to date,
+    ;; and the time its turn read can be milliseconds older under load.
     (let ((timed-shell (make-shell loop handler drain-limits clock log! trace!)))
       (set! adopting timed-shell)
       (set! took '())
       (let* ((p (open-adopted! (door-handshake "/door-timed")))
              (taken (wait-for (lambda () (and (connection? (cdr p)) (eq? (phase (cdr p)) 'handed-off)))))
-             (fired (firings-of timed-shell))
-             (stopped (wait-for (lambda () (> (firings-of timed-shell) fired))))
+             (stopped (wait-for (lambda () (fired-since-emptied? timed-shell (cdr p)))))
              (quiet (firings-of timed-shell))
              (idle (run-loop-until loop (lambda () #f) 30))
              (still (firings-of timed-shell))
