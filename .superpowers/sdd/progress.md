@@ -412,3 +412,12 @@ NEXT: plan §14's open list holds five items: what the full drain keeps after a 
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,012 expected passes (main's 2,007 and the five checks), every pin ok.
 
 NEXT: the PR; the closing ritual when the owner asks; then a docs-only PR in chez-websocket, by the owner's form, for its four records of the 2.9 KB (decision 0007, its research record of 2026-10-09, its design doc, test-socket.sps's oracle note). Plan §14's open list holds four items: a door script in the cross-shell contract test, the two load-only timing items the owner's form stopped, and the linger check's one red.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual": **what a wake gave, let go, and the drain item settled**, #178 (the entry above).
+- **The squash.** de34c39 squashed as e5be01a, on ab5062c, with `--match-head-commit` on the full SHA. Its tree, e0d78af, is the tested tip's.
+- **CI.** Billing-blocked. Each run's `linux` job was not started (0 steps, the payments annotation): the PR's 38174485112, and main's 38174999623 on the squash. The runs in the entry above stood in, as the PR body said. It merged past the red check on the owner's word.
+- **Branches.** `fix/wake-value-let-go` deleted on the remote by the merge, and locally once this session's worktree was detached at e5be01a for this reflect. The shared checkout, clean on `main`, is fast-forwarded after it. No PR is open.
+
+`make test` green on main: fifty-one suites, 2,012 expected passes, every pin ok.
+
+NEXT: the docs-only PR in chez-websocket, by the owner's form, for its four records of the 2.9 KB: decision 0007, its research record of 2026-10-09, its design doc, and test-socket.sps's oracle note. Plan §14's open list holds four items: a door script in the cross-shell contract test, the two load-only timing items the owner's form stopped, and the linger check's one red. Main's run is read once when CI returns. The wake-value fix, 0027 and the signal fix are Unreleased, for the server's next release.
