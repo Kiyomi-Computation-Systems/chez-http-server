@@ -44,6 +44,10 @@
   it fail.
 * Prefer a check to a comment.
 * **Do not** write tests that rely on reading code comments
+* Chase a timing flake only when it fails on CI, or locally with no added load.
+  One seen only under synthetic load (suites or containers run at once) gets a
+  line in the plan's open list, not a fix, and a soak raises no follow-up
+  tasks.
 
 ## Closing ritual
 
