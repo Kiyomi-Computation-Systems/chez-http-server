@@ -300,3 +300,11 @@ NEXT: the follow-ups' PRs (the 20 ms sleep check and the timer's waits under loa
 - Rebased onto 455a88d: `make test` green (Darwin arm64), fifty-one suites, 1,990 expected passes, every pin ok; the shell suite's 205, #163's check among them. The change to `tests/` and the probes is the tested one, line for line.
 
 NEXT: #166's closing ritual, on the owner's "do closing ritual". #164 (`test/timer-waits-under-load`) then rebases onto it, its ledger entries after these.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual": **the 20 ms sleep's check timed by the loop's clock, with a witness, #166** (the entry above), ahead of #164. 0efcb58 was squashed as 906cf76 (tree cdac5e0, the tested head's; parent 455a88d).
+- **CI.** The PR's run, 38144086377, and main's run on the squash, 38144150799: the billing block, the `linux` job with 0 steps and the payments annotation. The local runs in the entry stand in.
+- **Branches.** The shared checkout held `main`, so the merge ran without `--delete-branch`: the branch was deleted on the remote and here by hand, and the shared checkout's `main` fast-forwarded.
+
+`make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
+
+NEXT: #164 rebases onto main, its ledger entries after these, then its closing ritual when the owner asks. When main's runs start again, re-run main's latest run once. Here, plan §14's open list holds three items.
