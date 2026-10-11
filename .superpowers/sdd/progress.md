@@ -391,3 +391,11 @@ NEXT: the chez-libuv v0.9.0 pin alone, by the owner's form. Then the lost close 
 - **Records.** The Makefile's pin, test-integration's version comment, global-constraints (the pin and what v0.9.0 adds), CHANGELOG.md's Unreleased (Changed: the pin; Fixed: the setting's raise), the probe.
 
 NEXT: this PR, then the closing ritual when the owner asks. Then the lost close (`feat/taker-close-lingers`). Here, plan §14's open list holds five items.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual on #167": **the chez-libuv v0.9.0 pin, #167** (the entry above). 13b99f8 was squashed as 6afa7ea (tree 57b0dc0, the tested head's; parent 9690cca). Main's gitlink and the Makefile's `LIBUV_PIN` both name 3c4e7f0.
+- **CI.** Billing-blocked: the PR's run 38146936058 and main's run on the squash 38147064359 each ended with the `linux` job not started, 0 steps, and the payments annotation. The local runs in the entry above stood in.
+- **Branches.** Deleted on the remote and here. The shared checkout, clean on `main`, was fast-forwarded. Its chez-libuv store lacked 3c4e7f0, so v0.9.0 was fetched into it from the sibling checkout, offline, and `make build` checked it out and rebuilt the shim; `make check-pins` reads it ok.
+
+`make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
+
+NEXT: the lost close (`feat/0026-linger`, another session's). Here, plan §14's open list holds five items. chez-websocket meets v0.9.0 through the server release that carries this pin.
