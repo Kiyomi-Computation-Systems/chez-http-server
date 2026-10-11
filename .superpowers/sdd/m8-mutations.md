@@ -2457,3 +2457,62 @@ Every prediction was written and hashed before its run (sha256 below). Darwin ar
 
 **Every new check has a killer by value:** the child's, SG-1, SG-2 and SG-4; the default's,
 SG-3; the order's, SG-2 and SG-5.
+
+## After M8 — a taken stream's close gives each write it waits for the write timeout (2026-10-11)
+
+Decision 0027, on `feat/taker-close-write-timeout`, by the owner's form ("Write timeout
+after close"). Once `transport-close!` has been asked for, each write the close waits for
+has `write-timeout-ms`, from the close and again at each write's end, and the stream is
+aborted past it. The taker keeps two instants, its own deadline and the bound, and the
+stream's one wheel entry is armed at the earlier. Five checks are new in the shell suite,
+on a shell whose write timeout is 300 ms, each client reading nothing of a 4 MiB write
+(the server's send buffer 4 KiB):
+
+- **C1, the bound alone:** a taker arming no deadline is aborted at the write timeout from
+  the close, its write told `ECANCELED`, its close call once, nothing logged.
+- **C2, each write:** /door-rearm's client reads from 150 ms after the close until the
+  first write is out, then stops. The 16 MiB second write is aborted 300 ms after the
+  first's end, not the close.
+- **C3, the taker's own deadline first:** at 100 ms its call, which does not abort, runs
+  once, and the bound still aborts the stream at 300.
+- **C4, the taker's own deadline later:** at 600 ms, the bound aborts the stream at 300,
+  and the taker's call never runs.
+- **C5, a held loop:** a taker that holds the loop 300 ms, then closes behind a write, has
+  its bound armed after the hold, at the loop's time brought up to date, and met.
+
+Every prediction was written and hashed before its run. Darwin arm64.
+
+- **Test first, on #174's shell** (d81b414d…): C1 to C4 red alone, by value:
+  - C1 `(iterations-exhausted () () () #f)`;
+  - C2 `(iterations-exhausted ((1 #f)) () #t #f)`;
+  - C3 `(iterations-exhausted () () #f 1 #t)`;
+  - C4 `(satisfied ((1 ECANCELED)) (()) #f (609))`.
+
+  Its first run raised in C2's setup. The check read a write's time with `cadddr`, where
+  `took-of` drops the tag and leaves three fields, so it tested nothing past C1. It was
+  fixed to `caddr`, and the second run was the one predicted.
+- **The bound** (de626370…): the shell suite was red in C2 in two of five runs,
+  `(satisfied ((1 ECANCELED) (2 ECANCELED)) (()) #t #f)`. That was the check, not the
+  shell. Through a 4 KiB send buffer, the client needed more than the 150 ms left to read
+  the first 4 MiB, so the bound passed first. Once the client starts reading, the
+  server's send buffer is now 1 MiB. Then 5 of 5 green, and 20 of 20 in a row.
+- **C5** was added after, since no check held the bound's `uv-update-time!`. CB-7 is its
+  killer.
+- **Eight rows over every suite** (a3b41d44…), each with the values-printing
+  `testing.sls`: **0 mismatches.**
+
+| Row | Mutant | Red in the shell suite, by value (every other suite green) |
+|---|---|---|
+| B-0 | a comment | none |
+| CB-1 | the close arms no bound | C1 `(iterations-exhausted () () () #f)`; C3 `(iterations-exhausted () () #f 1 #t)`; C4 `(… #f (602))`; C5 `(satisfied stale #f iterations-exhausted)` |
+| CB-2 | a write's end arms the bound no more | C2 `(satisfied ((1 #f) (2 ECANCELED)) (()) #t #f)` |
+| CB-3 | a passed bound does not abort | C1; C2; C3 `(… #f 429 #t)`, its call made at every tick; C4 `(… #t (308))`; C5 `(… iterations-exhausted)` |
+| CB-4 | the entry armed at the later of the two | C3 `(… #t 0 #f)`; C4 `(… #f ())`; and the 0024 check "a close waiting on a write the client reads nothing of: a deadline asked for then passes …", its waits `iterations-exhausted` |
+| CB-5 | the taker's own deadline replaces the bound | C3 `(iterations-exhausted () () #f 1 #t)`; C4 `(… #f (605))` |
+| CB-6 | the taker's call arms nothing again | C3 `(iterations-exhausted () () #f 1 #t)` |
+| CB-7 | the bound from the loop's stale time | C5 `(satisfied stale 0 satisfied)` |
+
+- **Every mutant loaded:** 408 logs, 51 for each row, none with `Exception` or `HARNESS`.
+
+**Every new check has a killer by value:** C1, CB-1 and CB-3; C2, CB-2 and CB-3; C3,
+CB-1, CB-3, CB-4, CB-5 and CB-6; C4, CB-1, CB-3, CB-4 and CB-5; C5, CB-1, CB-3 and CB-7.
