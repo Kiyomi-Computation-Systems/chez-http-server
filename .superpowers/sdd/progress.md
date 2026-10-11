@@ -367,3 +367,23 @@ NEXT: the PR; the closing ritual when the owner asks. Plan §14's open list hold
 - `make test` green before each commit (Darwin arm64): fifty-one suites; 2,002 on the records, 2,007 on the code and on this ledger; every pin ok.
 
 NEXT: the PRs, #174 then these three; the closing ritual when the owner asks, bottom-up. Plan §14's open list then holds five items: what the full drain keeps after a big read, a door script in the cross-shell contract test, the two load-only timing items the owner's form stopped, and the linger check's one red.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual": **the signals watched before `listening` and decision 0027, as four stacked PRs** (the two entries above), bottom-up.
+- **The squashes.** Each has the tree of its tested head, and sits on the squash below:
+  - #174, the signals: a0cdafa squashed as 8528ab1, on 9ee88b2. It merged without `--delete-branch`, since #175 was based on it.
+  - #175, 0027's records: retargeted to main and rebased from a0cdafa onto 8528ab1, 542e8a1 becoming faec604 (tree f81d1de, unchanged), squashed as c1e024a;
+  - #176, the code and its checks: rebased from 542e8a1 onto c1e024a, 882f4d4 becoming 6854bc2 (tree fddff40, unchanged), squashed as bc53039;
+  - #177, the ledger: rebased from 882f4d4 onto bc53039, 969851f becoming 94973e0 (tree de58438, unchanged), squashed as 25ad9b7.
+
+  Each rebased tree was proved equal to its tested tip's before the push, made with the lease read from `ls-remote`.
+- **CI.** Billing-blocked throughout. Each run ended with its `linux` job not started (0 steps, the payments annotation):
+  - the PRs' runs: 38166028144, 38169304601, 38169322629 and 38169332736;
+  - the rebased heads': 38169788953, 38169838910 and 38169879635;
+  - main's on the squashes: 38169766908, 38169817476 and 38169860536.
+
+  The local and Linux runs in the entries above stood in, as the PR bodies said. The stack merged past the red check on the owner's word.
+- **Branches.** All four deleted, local and remote. This session's worktree was left detached at 25ad9b7 for this reflect; the shared checkout, clean on `main`, is fast-forwarded after it. No PR is open.
+
+`make test` green on main: fifty-one suites, 2,007 expected passes, every pin ok.
+
+NEXT: plan §14's open list holds five items: what the full drain keeps after a big read (measure first); a door script in the cross-shell contract test; the two load-only timing items the owner's form stopped; and the linger check's one red. Main's run is read once when CI returns. 0027 and the signal fix are Unreleased, for the server's next release.
