@@ -20,7 +20,14 @@
 ;;;        the taker's to keep; then (on-end why), 'eof or the errno, once.
 ;;;   (transport-read-stop! t)
 ;;;   (transport-close! t)
-;;;        close the stream once the bytes written so far have been.
+;;;        close the stream once the bytes written so far have been, in
+;;;        stages, as the server closes its own connections (decision 0026):
+;;;        the taker is read nothing more, while what the client still
+;;;        sends is read and dropped; once the writes are out, the stream
+;;;        tells the client it has finished writing, and closes when the
+;;;        client closes too, or at the server's linger limit.  From the
+;;;        close on, a read-stop changes nothing, and once the writes are
+;;;        out neither does a deadline.
 ;;;   (transport-abort! t)
 ;;;        close the stream now: reading stops, and each write not yet
 ;;;        written is dropped, its `written` told ECANCELED.  What the

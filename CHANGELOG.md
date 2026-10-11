@@ -14,6 +14,15 @@ All notable changes to chez-http-server are recorded here. The format follows
   where before it could crash the thread. The server never leaves a libuv callback
   without returning, which is what uses that stack up, so it should never see one: if
   it does, that is a bug to report.
+- **A taker's close is gentle, as the server's own closes are.** `transport-close!`
+  stops handing the taker reads but keeps reading, throwing away what the client
+  still sends. Once the taker's writes are out it half-closes, and it closes when the
+  client closes too, or after `CHEZ_HTTP_LINGER_TIMEOUT` (30 s). It closed the socket
+  at once, and a client still sending got a reset that could lose the taker's last
+  words. On macOS a WebSocket client in Node read the close frame in 14 of 100 tries,
+  and now in 100 of 100; on Linux, 46 to 56 of 100 clients ended in a reset, and now
+  none. The close call, and a waiting taker's `&client-closed`, come once the client
+  has closed. `transport-abort!` still closes at once (decision 0026).
 
 ### Fixed
 

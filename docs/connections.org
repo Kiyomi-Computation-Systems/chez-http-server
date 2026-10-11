@@ -71,6 +71,10 @@ the connection. A client that is still uploading would then see an error instead
 the answer, and the end of a long response could be lost. Decision 0011 in
 ~.plans/decisions/~ records why.
 
+A connection handed to a taker (a WebSocket, say) closes the same way when the
+taker calls ~transport-close!~ (decision 0026), so the client reads the taker's
+goodbye.
+
 * When the server shuts down
 
 Send the process ~SIGTERM~ (what Docker, Kubernetes and systemd send) or
