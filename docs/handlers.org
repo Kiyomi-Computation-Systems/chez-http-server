@@ -322,6 +322,8 @@ What the transport does:
 | ~(transport-abort! t)~                | closes now: writes not yet sent are dropped, their ~done~ getting ~ECANCELED~ |
 
 - Each read's bytevector is yours to keep. A write of no bytes is refused.
+- Nothing is read until you call ~transport-read-start!~: what the client
+  sends after the ~101~ waits for you, however late you start reading.
 - Nothing bounds what you write but you. A client that stops reading leaves
   your writes waiting, in memory. Count what you have written and not yet
   had ~done~ for; past a bound you choose, stop writing, or stop reading what

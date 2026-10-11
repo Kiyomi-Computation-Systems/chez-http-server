@@ -883,7 +883,7 @@ pause answers `#f`.
 > | State | Event | State' | Actions |
 > |---|---|---|---|
 > | `handling` | `handler-responded`, a switch, the door open | `responding` | the 101's `write`, `arm-deadline write`; the take-over kept |
-> | `responding` | `write-completed`, the 101's last | `handed-off` | `disarm-deadline`, `(hand-off take-over retained)`: the pending input, `(bv start end)`, or #f; the input forgotten |
+> | `responding` | `write-completed`, the 101's last | `handed-off` | `disarm-deadline`, `read-stop`, `(hand-off take-over retained)`: the pending input, `(bv start end)`, or #f; the input forgotten |
 > | `handling` | `handler-responded`, a switch, the door closed | `responding` | `log invalid-response not-an-upgrade`, `write` 500, `arm-deadline write`; close-after `invalid-response` |
 > | `handling` | `handler-responded`, a switch with a fault | `responding` | `log invalid-response` with the fault, `write` 500, `arm-deadline write` |
 > | `handed-off` | `closed` | `closed` | — |
@@ -898,6 +898,12 @@ pause answers `#f`.
 > head/body hand-off row above is retired: the parser's own hand-off on its pause
 > channel never comes, and the core refuses one, an assertion violation. A 101 a read
 > error cuts short closes as any write does, the take-over let go.
+>
+> *Amended 2026-10-11 (decision 0016's amendment, by form):* the hand-off row stops
+> reading. Since decision 0020 the connection reads on past a request's end, so it was
+> still reading at the hand-off, and what the client sent before the taker's read-start
+> was read for the core, which drops what it reads once handed off. Now it waits in the
+> kernel for the taker, as 0016's context had it.
 >
 > *Amended 2026-10-04 (decision 0023, on the owner's word by form):* a take-over may
 > answer `(awaiting thunk)`. The core is unchanged: it hands off as above, and the shell

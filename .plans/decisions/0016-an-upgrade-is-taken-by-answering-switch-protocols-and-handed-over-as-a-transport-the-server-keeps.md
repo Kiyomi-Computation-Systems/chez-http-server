@@ -303,3 +303,29 @@ once `transport-close!` has been asked for, each write the close waits for has
 aborted past it. The taker's own deadline still runs beside the bound, the earlier
 first: the second deadline this record weighed is two instants on the stream's one
 wheel entry.
+
+## Amendment (2026-10-11, the door replay) — what the client sends after the 101 waits for the taker
+
+Decided on the owner's form ("Keep them"; weighed: documenting it). The context's "what
+the client sent after that waits in the kernel" stopped holding with decision 0020, which
+reads on past a request's end to notice the client's close. Nothing stopped reading again
+at the hand-off.
+- **What happened instead.** Until the taker called `transport-read-start!`, the libuv
+  shell read with the core's callbacks. The core, handed off, dropped what it read.
+- **Found by a prototype door replay** (plan §14's open item), then measured:
+  - A waiting taker that started reading 50 ms after its take-over never got a frame its
+    client sent once it had the 101, only the client's end.
+  - A taker that starts reading inside its take-over, as chez-websocket's does, lost
+    nothing.
+  - The fake instead called an `on-bytes` not yet given. That is a taker failure, which
+    aborted the stream.
+- **Now** the core stops reading as it hands the stream over: `(read-stop)`, before
+  `(hand-off ...)` so a read-start the take-over makes stands. What the client sends
+  next waits in the kernel for the taker's read-start, in both shells.
+- **Peers keep it too.**
+  - Go's hijack aborts the server's pending read and hands over what it had read
+    (`net/http/server.go` 318-337, go1.27.2).
+  - Node takes its listeners off the socket and sets `readableFlowing = null` before
+    the `upgrade` event (`lib/_http_server.js` 1048-1066, v24.21.0).
+- **A taker that never reads** hears of the client's end only at its close, as before:
+  the core dropped the end too.

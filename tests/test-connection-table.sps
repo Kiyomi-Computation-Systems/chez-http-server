@@ -581,11 +581,14 @@
            `(responding upgrade (,(written the-101-line the-101-fields) (arm-deadline write)))))
 
    ;; The 101 is the one write outstanding, its bytes what it wrote.
-   (row 'W2 "responding, the 101's last write-completed -> handed-off: disarm, the hand-off, the bytes read past the request"
+   ;; Reading stops before the hand-off, so what the client sends next
+   ;; waits for the taker's read-start (decision 0016's amendment of
+   ;; 2026-10-11): the core reads nothing once handed off.
+   (row 'W2 "responding, the 101's last write-completed -> handed-off: disarm, stop reading, the hand-off, the bytes read past the request"
         (i (switching (ws) ws-switch) `(write-completed ,(string-length the-101))
-           `(handed-off upgrade ((disarm-deadline) (hand-off ,take-over (,ws-wire ,ws-end ,(+ ws-end 5))))))
+           `(handed-off upgrade ((disarm-deadline) (read-stop) (hand-off ,take-over (,ws-wire ,ws-end ,(+ ws-end 5))))))
         (i (switching (ws ws-end) ws-switch) `(write-completed ,(string-length the-101))
-           `(handed-off upgrade ((disarm-deadline) (hand-off ,take-over #f)))))
+           `(handed-off upgrade ((disarm-deadline) (read-stop) (hand-off ,take-over #f)))))
 
    ;; Item 4: a request that does not upgrade; one below HTTP/1.1, which
    ;; closes after its response, or is kept alive by its Connection; a

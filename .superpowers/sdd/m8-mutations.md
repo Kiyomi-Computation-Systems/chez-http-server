@@ -2623,3 +2623,54 @@ WV-10 on the shell suite. **Every mutant loaded:** 170 logs, none with `Exceptio
 second, WV-5, WV-6 and WV-7; the waits suite's first, WV-1 (parked) and WV-2 (early); its
 second, WV-8 (parked) and WV-9 (early); the shell suite's, WV-1, and its teardown WV-10.
 
+## After M8 — what a client sends after the 101 waits for the taker (2026-10-11)
+
+Plan §14's "a door script in the cross-shell contract test", measured first by a prototype
+door replay on the owner's "let's keep working on the §14 open list". The prototype found
+that after the 101 the libuv shell read on with the core's callbacks until the taker's
+read-start, and the core, handed off, dropped what it read. On the owner's form ("Keep
+them"), on `fix/hand-off-read-stop`, the core's hand-off row stops reading before the
+hand-off, `(disarm-deadline) (read-stop) (hand-off ...)`, so what the client sends next
+waits in the kernel for the taker (decision 0016's amendment). Two checks are new and two
+are changed:
+
+- **the table's W2**, both instances, and **the switch suite's** "the core's part, from
+  the handler's call: the 101 written, then the hand-off, disarmed and reading stopped
+  first, and nothing after": the read-stop, before the hand-off;
+- **the switch suite's** "a taker that starts reading once its deadline passes reads what
+  the client sent after the 101, none of it read before", `(0 <the frames> 0
+  handed-off)`;
+- **the shell suite's** "a waiting taker that starts reading after a sleep reads what its
+  client sent once it had the 101: the frame comes back, then the client's end closes the
+  stream", through a new `/door-read-later` taker.
+
+Every prediction was written and hashed before its run (sha256 below). Darwin arm64.
+
+- **Test first, on main's core** (5d8d0153…): the five red alone, by value. W2's two
+  without the read-stop; the switch suite's "core's part" the same; the fake's late
+  reader `(19 #vu8() 1 closed)`, the frames delivered after the hand-off to an `on-bytes`
+  not yet given, the stream aborted; the shell's late reader `(satisfied
+  iterations-exhausted <the 101> satisfied ((eof)))`, the frame read by the handed-off
+  core and dropped.
+- **The fix** (4287e250…): the table 368, the switch suite 39, the shell suite 217.
+- **Four rows** (0b31636f…), each with the values-printing `testing.sls`: **one
+  prediction error.** Under HR-2 the shell suite's "through the door: the 101, then the
+  frame sent with the handshake, written back" stayed green, where it was predicted red:
+  its frame comes with the handshake, so the core holds it and hands it over as retained,
+  and nothing has to be read after the hand-off. Its second check, "a frame sent later
+  comes back after it", is red. HR-2's two reds in the serve suite were not named in the
+  prediction; they are the facade's taker, which reads in its take-over, as the shell
+  suite's do. The rest as predicted.
+
+| Row | Mutant | Red, by value |
+|---|---|---|
+| B-0 | none, every suite | none; 2,014 expected passes in all |
+| HR-1 | main's hand-off, no read-stop, every suite | W2's two; the switch suite's "core's part" and its late reader `(19 #vu8() 1 closed)`; the shell suite's late reader `(satisfied iterations-exhausted <the 101> satisfied ((eof)))`; every other suite green |
+| HR-2 | the read-stop after the hand-off, undoing a take-over's read-start, every suite | W2's two and "the core's part", by order; and each taker that reads in its take-over reads nothing more: the switch suite 4 red, "at every delivery size" among them; the serve suite 2, its taker's echo `(satisfied "…101…ping" open)`; the shell suite 19, "a frame sent later comes back after it" first. The two late readers stay green |
+| HR-3 | the read-stop before the disarm, three suites | W2's two and "the core's part", by order; the shell suite green |
+
+HR-3 ran on the table, switch and shell suites; the others over every suite. **Every
+mutant loaded:** 156 logs, none with `Exception` or `HARNESS`.
+
+**Every new or changed check has a killer by value:** W2's two instances and the switch
+suite's "core's part", HR-1, HR-2 and HR-3; the two late readers, HR-1.

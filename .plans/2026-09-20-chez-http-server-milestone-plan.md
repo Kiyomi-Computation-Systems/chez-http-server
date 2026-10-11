@@ -1794,6 +1794,17 @@ failure.*
   door events into the fake (0016 has no door script). Decision 0024 found four
   differences that way. A replay would find the next; it needs the contract test to
   drive a taker on both shells.
+  - **Measured 2026-10-11 by a prototype** (at f357adb), on the owner's "let's keep
+    working on the §14 open list". It added five trace points to the libuv shell's door,
+    three to the fake's, and ten door scripts, and replayed the libuv shell's door events
+    into the fake. 224 checks passed and 9 parted: 6 were one bug, and 3 were the fake.
+  - **The bug, fixed on `fix/hand-off-read-stop`** by the owner's form ("Keep them"):
+    after the 101, the libuv shell read on with the core's callbacks until the taker's
+    read-start, and the core, handed off, dropped what it read. The core now stops
+    reading before the hand-off (decision 0016's amendment).
+  - **The replay lands next** on the same form ("Land the replay"), with the fake's two
+    differences fixed: an abort after a write libuv had already sent, and when a write
+    after the close is told ECANCELED.
 
 *Settled: the smuggler corpus on 2026-10-04 (decision 0021); the signal gap after
 `listening`, a taken stream's close bounded from the server's side (decision 0027), and

@@ -816,6 +816,12 @@
                                (set! woken-waits #f)
                                (transport-write! t (await (lambda (resume) (set! woken-waits #t) (set! resume-to resume))))
                                (loop))))))))
+          ((bytevector=? target (b "/door-read-later"))
+           (switching (lambda (t retained)
+                        (awaiting (lambda ()
+                                    (sleep-ms door-ms)
+                                    (transport-read-start! t (lambda (bv from to) (transport-write! t bv from to))
+                                                           (lambda (why) (took! 'ended why) (transport-close! t))))))))
           ((bytevector=? target (b "/door-wait-raise"))
            (switching (lambda (t retained)
                         (awaiting (lambda () (sleep-ms 1) (raise (make-message-condition "the waiting taker failed")))))))
@@ -2754,6 +2760,25 @@
                             '((eof)) '(()) 'closed)
                       (list again (client-bytes (car p)) gone ended (client-end (car p))
                             (took-of 'ended) (took-of 'closed) (if (connection? c) (phase c) 'none)))))
+      (client-close! (car p)))
+
+    ;; Decision 0016's amendment (2026-10-11): the stream reads nothing
+    ;; between the hand-off and the taker's read-start, so what the client
+    ;; sends after the 101 waits for the taker.  A waiting taker that starts
+    ;; reading after a sleep of door-ms: the client sends a frame once it has
+    ;; the 101, inside the sleep, and gets it back once the taker reads.
+    (set! took '())
+    (let* ((p (open-adopted! (door-handshake "/door-read-later")))
+           (c (cdr p))
+           (heard (wait-for (lambda () (>= (bytevector-length (client-bytes (car p))) (bytevector-length door-101))))))
+      (client-send! (car p) hello-frame)
+      (let ((back (wait-for (lambda () (>= (bytevector-length (client-bytes (car p)))
+                                           (+ (bytevector-length door-101) (bytevector-length hello-frame)))))))
+        (client-shut! (car p))
+        (let ((gone (wait-for (lambda () (closed-and-gone? shell c)))))
+          (test-equal "a waiting taker that starts reading after a sleep reads what its client sent once it had the 101: the frame comes back, then the client's end closes the stream"
+                      (list 'satisfied 'satisfied (joined (list door-101 hello-frame)) 'satisfied '((eof)))
+                      (list heard back (client-bytes (car p)) gone (took-of 'ended)))))
       (client-close! (car p)))
 
     ;; A taker that raises as it takes the stream: logged, and the stream

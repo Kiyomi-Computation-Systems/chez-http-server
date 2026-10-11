@@ -421,3 +421,27 @@ MERGED to main on 2026-10-11, on the owner's "do closing ritual": **what a wake 
 `make test` green on main: fifty-one suites, 2,012 expected passes, every pin ok.
 
 NEXT: the docs-only PR in chez-websocket, by the owner's form, for its four records of the 2.9 KB: decision 0007, its research record of 2026-10-09, its design doc, and test-socket.sps's oracle note. Plan §14's open list holds four items: a door script in the cross-shell contract test, the two load-only timing items the owner's form stopped, and the linger check's one red. Main's run is read once when CI returns. The wake-value fix, 0027 and the signal fix are Unreleased, for the server's next release.
+
+**A door script, measured; what a client sends after the 101 waits for the taker (2026-10-11),** on the owner's "let's keep working on the §14 open list". Two stacked branches from main at f357adb: `fix/hand-off-read-stop`, then `test/door-replay` on it.
+- **Measured first, by a prototype door replay** (Darwin arm64, at f357adb). It added five trace points in the libuv shell's door, three in the fake's, and ten door scripts in the contract test, and replayed the libuv shell's door events into the fake. The traced events are each read and end, whether to the taker or dropped while its close lingers, each write's completion, and each pass of its wheel entry. 224 checks passed and 9 parted: 6 were one bug, and 3 were the fake.
+- **The bug.** After the 101, the libuv shell read on with the core's callbacks until the taker called `transport-read-start!`, and the core, handed off, dropped what it read.
+  - A taker that started reading 50 ms after its take-over never got the `hello` its client sent once it had the 101. The handed-off core's trace read `(event (bytes-arrived "hello"))`, then the taker got only the end.
+  - A taker that reads in its take-over, as chez-websocket's does, lost nothing.
+  - The fake instead called an `on-bytes` not yet given, a taker failure that aborted the stream.
+  - Why: 0016's context had what the client sends next waiting in the kernel, by decision 0004's stop at a message's end. Decision 0020 reads on past a request's end, and nothing stopped reading again at the hand-off.
+  - Peers keep these bytes: Go's hijack aborts its pending read and hands over what it read (`net/http/server.go` 318-337, go1.27.2). Node sets `readableFlowing = null` before its `upgrade` event (`lib/_http_server.js` 1048-1066, v24.21.0).
+  - The fake's three: an abort after a write libuv had already sent at the call is ECANCELED in the fake but `#f` in libuv, and its client read the write; and a write after the close is told ECANCELED at the fake's next completion, where libuv tells it at the next turn.
+- **DECIDED by form**, both recommended:
+  - "Keep them"; weighed: documenting it.
+  - "Land the replay"; weighed: paired checks only, with the item closed as not wanted.
+  - Stacked: the fix first, the replay on it.
+- **Built (`fix/hand-off-read-stop`).** The core's hand-off row stops reading before the hand-off: `(disarm-deadline) (read-stop) (hand-off ...)`. A read-start the take-over makes stands, and what the client sends next waits in the kernel for the taker, in both shells. Records: decision 0016's amendment, the design's row, `docs/handlers.org`, CHANGELOG.md's Unreleased (Fixed), and plan §14's door item.
+- **Checks:**
+  - the table's W2 (both instances) and the switch suite's "the core's part" hold the read-stop;
+  - new, the switch suite's "a taker that starts reading once its deadline passes reads what the client sent after the 101, none of it read before";
+  - new, the shell suite's "a waiting taker that starts reading after a sleep reads what its client sent once it had the 101", through `/door-read-later`.
+  - Test first, each prediction hashed: red alone by value on main, `(19 #vu8() 1 closed)` and `(satisfied iterations-exhausted <the 101> satisfied ((eof)))`.
+  - Four mutation rows, one prediction error (m8-mutations.md, its last section).
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 2,014 expected passes (main's 2,012 and the two checks), every pin ok.
+
+NEXT: the replay on `test/door-replay`: the door scripts, the trace points guarded so nothing is built untraced, and the fake's two differences fixed. Then the PRs, stacked.
