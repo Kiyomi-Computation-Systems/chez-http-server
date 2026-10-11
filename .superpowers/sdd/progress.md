@@ -330,3 +330,12 @@ NEXT: #164 rebases onto main, its ledger entries after these, then its closing r
 - `make test` green before the commit (Darwin arm64), on the tree as committed: fifty-one suites, 1,990 expected passes, every pin ok; the shell suite's 205, as on main; the clients suite read 5,155 and 5,154 B a GET over two runs. On 455a88d's tree the same counts, 5,154 and 5,156 B; before the rebases, 1,989 and 204. In the noble image (aarch64, libuv 1.48.0), every suite once on the tree as committed, and on 455a88d's: fifty green, 1,952 expected passes; the clients suite stops at its first tool, `ab`, which the image lacks, as on main's tree.
 
 NEXT: this PR, #164, then the closing ritual when the owner asks. Here, plan §14's open list holds three items.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual": **the timer-stop waits read from the trace, and the taker's arm time read after it, #164** (the entry above). 3ebc20a was squashed as fd45967 (tree 48f0a64, the tested head's; parent 68ce7ad).
+- **CI.** The PR's run, 38145693708, and main's run on the squash, 38145842069: the billing block, the `linux` job with 0 steps and the payments annotation. The local runs in the entry stand in, as the PR body said.
+- **The owner's form** ("Land two, stop two", relayed by the review session and confirmed here with "do closing ritual"): #164 lands; no more soaks, and no follow-up tasks from them. Of the chips the entry names, the MiB write's and the slow body's were stopped and archived on that form. A stopping rule for timing checks goes into AGENTS.md through #165.
+- **Branches.** The shared checkout held `main`, so the merge ran without `--delete-branch`: the branch was deleted on the remote and here by hand, and this session's worktree was left detached at the squash for this reflect. The shared checkout's `main` is fast-forwarded after it.
+
+`make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
+
+NEXT: #165 (the stopping rule) rebases onto main, its entries after these, then its closing ritual when the owner asks. When main's runs start again, re-run main's latest run once. Here, plan §14's open list holds three items.
