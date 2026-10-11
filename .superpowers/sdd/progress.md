@@ -414,3 +414,33 @@ MERGED to main on 2026-10-11, on the owner's "do closing ritual on #168": **plan
 `make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
 
 NEXT: the lost close (`feat/0026-linger`, another session's). Here, plan §14's open list holds six items.
+
+**Decision 0026, a taken stream's close half-closes and lingers (2026-10-11),** on the owner's "lets start the server slice for the lost close", once #163 had merged. chez-websocket's decision 0008, item 6, asked for it ("Server slice after the lane"). Three stacked branches by form ("Three stacked PRs (Recommended)"), cut from 455a88d and rebased onto f672faf before the PRs: `docs/0026-linger-decision` (the records), `feat/0026-linger` (the code and its checks) and `docs/0026-ledger`.
+- **Measured first** (Darwin arm64, and Linux aarch64 in the noble image; the spike `research/spike/taker-close-*`, 100 runs a cell). A taker reads 1 MiB, writes a close frame (1009) and calls `transport-close!`, while its client streams 4 MiB.
+  - On main a Node client read the close in 14 of 100 runs (70 EPIPE, 25 ECONNRESET). C clients read it, but 94 and 100 of 100 ended in a reset on Darwin, and 46 and 56 of 100 on Linux.
+  - A prototype that reads on, dropping, half-closes once the writes are out and lingers: every cell 100 of 100, clean.
+  - python-websockets 17.2 and ws 8.22.0 close a failing connection that way (chez-websocket's research record of 2026-10-09).
+- **DECIDED by form**, the recommended of each: `transport-close!` always lingers; its bound is `CHEZ_HTTP_LINGER_TIMEOUT`; the close call runs once the socket has closed; three stacked PRs. Weighed: an opt-in verb, a half-close verb only, the taker's own deadline, a shorter limit of its own, the close call at the half-close, one PR.
+- **Built.** The libuv shell's close is staged: `drop-reads!`, `taker-dropped-end!`, `taker-linger!`, the taker's `ended?` and `lingering?`. The fake shell's door does the same, its linger on its clock. Settled by precedent and flagged in the decision:
+  - a client that has already ended is closed once the writes are out, with no half-close;
+  - a half-close refused at the call closes the stream;
+  - from the close on, the taker's read-stop is ignored, and once the stream lingers its deadline too;
+  - the drain is unchanged.
+- **Tests first,** four stages, each named and hashed before its run (m8-mutations.md): 1,992 and six red by value; 1,995; 1,998; then the check that the linger is armed after a hold, red on main's shell and green: 1,999. Stage 0's in-suite client read the close and then `ECONNRESET`: the lost close, inside the suite.
+- **Mutants:** 25 rows, 24 mutants and the baseline.
+  - Run 1: 5 mismatches, four of them prediction errors. The fifth was a weak check: F2 read "not closed yet" before the fake's close could show, so it now settles first. late-raises was put back as main's.
+  - Run 2: 1 mismatch, load.
+  - Every new or changed check has a killer by value. LS-6 is equivalent: libuv reports EOF again.
+- **Measured on the finished tree.**
+  - The spike, Darwin: Node read the close in 100 of 100 runs, clean, and C in 100 of 100. Linux aarch64: 100 of 100, clean.
+  - Linux aarch64: every suite, 1,961 expected passes, the clients suite at status 2 with no tools built. The shell suite ran 100 times, four at once, none red.
+  - Linux x86_64 under emulation: 1,960, the serve suite's SIGINT-after-return check red as on main's code there.
+- **Rebased onto f672faf** (#164 to #168 and their reflects) before the PRs, the three branches together; #168 is docs only.
+  - #164 changed the door-timed check, which this slice changed too; the two merged without a conflict. CHANGELOG.md's Unreleased keeps the v0.9.0 pin's entry first.
+  - Re-measured at chez-libuv v0.9.0, the shim rebuilt: `make test` 1,990, 1,999 and 1,999 on the three layers; run 3, the 25 rows and their predictions unchanged, 0 mismatches.
+  - Linux aarch64: every suite, 1,961 expected passes; the spike's two cells 100 of 100, clean. Linux x86_64 under emulation: 1,960, the shell suite 210 and the switch suite 38; the serve suite's SIGINT check red, as at main (#167's reading).
+- **A correction to #163's record.** It said the serve suite's "once serve has returned, a SIGINT ends the process at once", red under emulation, ran out of loop turns waiting on a slow child. That was a guess. #167 read the cause: the parent's SIGTERM lands before `serve` watches signals (serve.sls:75-80).
+- **Records:** decision 0026; 0016's amendment; the design's door note; plan §15; `docs/handlers.org` and `docs/connections.org`; the transport's notes; CHANGELOG.md's Unreleased (Changed).
+- `make test` green on each layer before its commit (Darwin arm64), and again on each after the rebase, at v0.9.0: fifty-one suites, and 1,990, 1,999 and 1,999 expected passes; every pin ok.
+
+NEXT: the PRs; review and the closing ritual when the owner asks; then the server's next release, for chez-websocket to pin alone and measure `none` again for 3.4, 4.1.5 and 4.2.5.

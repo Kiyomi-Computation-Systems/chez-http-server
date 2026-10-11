@@ -2279,3 +2279,125 @@ unchanged. On the last tree, 1 to 7 turns, and one run went red elsewhere: "a Mi
 
 **The changed checks have their killers by value:** the held-connection check, M8H-4 and
 M8H-2; the taker check, M8DH-8, M8DC-2, FW-EARLY and FW-LATE (and FW-NP2, its own wait).
+
+## After M8 — a taken stream's close half-closes and lingers (2026-10-11)
+
+Decision 0026, from chez-websocket's decision 0008 item 6 ("Server slice after the lane").
+Three stacked branches by form: `docs/0026-linger-decision` (the records),
+`feat/0026-linger` (the code and its checks) and `docs/0026-ledger`. Platform: Darwin
+25.6.0 arm64, Chez Scheme 10.4.1, libuv 1.52.1, 2026-10-11, chez-libuv v0.8.0 for runs 1
+and 2 and v0.9.0 for run 3; Linux 6.12.76 aarch64 in
+`chez-libuv-noble-scratch:10.4.1` (libuv 1.48.0, a dev shim) and x86_64 in
+`chez-websocket-ci-amd64:10.4.1` under emulation.
+
+- **The code:** `src/http-server/private/shell.sls` (`taker-close!`, `drop-reads!`,
+  `taker-dropped-end!`, `taker-linger!`, `taker-deadline!`, `taker-passed!`, the
+  read-stop verb, the taker's `ended?` and `lingering?`) and `tests/fake-shell.sls` (its
+  door's close staged the same way; `fake-shell-shut?` exported).
+- **The checks:**
+  - `tests/test-shell.sps`, 210: five new, a taker that fails a client still sending, a
+    client that ends while the close's writes are under way, the linger's bound on time,
+    the linger armed after a hold, and the verbs once lingering; eight changed, their
+    client closing once it reads the stream's end (`closed-by-client`): the late write,
+    the 4 MiB write, the write off the loop's thread, the deadline with the timer
+    stopped, the disarm, the hold at the take-over, and the two drains that say goodbye.
+  - `tests/test-connection-switch.sps`, 38: four new, the fake's close lingering, its
+    linger passing or a read error closing it, a client that ended during the writes,
+    and the verbs once lingering; three changed, the client's end delivered before
+    reading the stream closed.
+  - `tests/test-serve.sps`, 18: `dones-at-stop`'s server lingers 1 s
+    (`CHEZ_HTTP_LINGER_TIMEOUT`), where its drain's close would have waited for the
+    drain's 10 s.
+
+**The oracles:** the decision's measured cells, the suite's loop clock (`uv-now`, and
+`hold-until!`'s second loop for the hold), the suite's own limits (`linger-limits`: a
+100 ms linger, a 10 ms tick), and RFC 6455's close frame, 1009.
+
+### The test-first runs
+
+Each stage's red set and values were named and hashed before its run.
+- **Stage 0**, the new and changed checks on dc5f11f's `src/`: 1,992 expected passes, the
+  six predicted red by value. The shell's in-suite client read the close frame and then
+  `ECONNRESET`, both its read and its write: the lost close, inside the suite.
+- **Stage 1**, the libuv shell: 1,995, the fake's three still red.
+- **Stage 2**, the fake: 1,998, every suite green.
+- **Stage 3**, the check that the linger is armed after a hold, written after a mutant of
+  `uv-update-time!` in `taker-linger!` was found with no killer: red on dc5f11f's shell
+  `(satisfied stale #f satisfied)`, green on the branch's, 210.
+
+### The mutants
+
+25 rows, the baseline and 24 mutants, against every suite, three at a time, each with a
+copy of `(testing)` that prints a failure's values. Kills are read from each suite's own
+log, which lists every FAIL (`compare-logs.py`).
+
+| id | mutant | red, seen in run 2 |
+|---|---|---|
+| B-0 | none (a comment) | none |
+| LS-1 | the old close: read-stop, and closed once the writes are out | shell 4: the failing taker's, the bound's, the hold's, the verbs' |
+| LS-2 | no half-close | shell 9: the failing taker's, the bound's, the verbs', the late write, the 4 MiB write, the write off the thread, both goodbye drains, the refused write |
+| LS-3 | the close reads nothing | shell 14: the failing taker's, the verbs' (the 4 MiB never read), the hold's, the ended client's, the eight changed, and the suite's two leak checks |
+| LS-4 | the client's end while the stream closes ignored | shell 13: the failing taker's, the hold's, the ended client's, the eight changed, and the two leak checks |
+| LS-5 | a client that has ended still half-closes and lingers | shell 8: the five flows a client's end closes (the echo, the waiting taker, the paused one, the one started twice, the capped server's next client), the ended client's, and the two leak checks; serve 1: "shut down, the server leaves nothing on the loop" |
+| LS-6 | the taker's own end not remembered | none: equivalent (below) |
+| LS-7 | a deadline asked for while lingering armed | shell 1: the verbs', `(… #t #f #f …)` |
+| LS-8 | the linger's passing calls the taker's deadline call | shell 1: the bound's, the taker's call run and the stream left open |
+| LS-9 | the linger deadline not armed | shell 2: the bound's (the taker's own deadline closed it early) and the hold's (`#f`) |
+| LS-10 | the linger armed from the loop's time not brought up to date | shell 1: the hold's, `(satisfied stale 0 satisfied)` |
+| LS-11 | the linger by the idle limit | shell 1: the bound's |
+| LS-12 | a read-stop while the stream closes stops it | shell 1: the verbs', the client's 4 MiB never written |
+| LS-13 | a half-close refused at the call does not close | shell 1: the refused write's stream never closed |
+| LF-1 | the fake's old close | switch 3: the fake's lingering, its linger passing, its verbs |
+| LF-2 | the fake does not shut | switch 1: the lingering check, `(#f 30000 0 handed-off)` |
+| LF-3 | the fake's linger deadline not armed | switch 3: the lingering check (`1000`, the taker's), its passing (closed at 29,999), its verbs |
+| LF-4 | the fake drops the client's end while the stream closes | switch 5: the lingering check, the client that ended, and the three changed |
+| LF-5 | the fake ignores a read error while the stream closes | switch 1: the passing check's second stream left open |
+| LF-6 | the fake arms a deadline asked for while lingering | switch 1: the verbs' |
+| LF-7 | the fake's read-stop while the stream closes stops it | switch 1: the verbs' |
+| LF-8 | the fake's linger passing calls the taker's deadline call | switch 1: the passing check |
+| LF-9 | the fake lingers for a client that has ended | switch 3: the client that ended, and two waiting takers that close at the client's end |
+| LF-10 | the fake stops reading as the stream closes | switch 1: the verbs' |
+| M6-A | re-cut: `run-until-stopped!` makes no deferred call | serve 2: both `dones-at-stop` checks |
+
+- **Run 1: 5 mismatches, four prediction errors and a weak check.**
+  - LS-3, LS-4 and LS-5 also reddened the shell suite's two leak checks, "and no handle is
+    left on the loop" and "nor a TCP handle, a read buffer or a write request": a stream
+    left lingering is left on the loop. LS-5 reddened the serve suite's too.
+  - LF-4 left late-raises green: its write's callback raises, and the raise aborts the
+    stream, so it closes without the client's end. The change that delivered the end
+    there was taken out, and late-raises is main's again.
+  - LF-3 left the passing check green: the fake's close completes on a later turn, so a
+    reading taken just after the first firing could not see an early close. The check now
+    settles first, and LF-3 reddens it.
+- **Run 2, re-predicted: 1 mismatch, load.** LF-10, a fake mutant, reddened the shell
+  suite's "a connection held in its handler, nothing armed, the timer stopped, is closed at
+  the drain's deadline, on time", its wait `iterations-exhausted`: the shell suite loads no
+  fake, and its run alone was green five times of five, 210. Every other row as named.
+- **Run 3, on the stack rebased onto 68f29e5** (#164 to #167; chez-libuv v0.9.0, the shim
+  rebuilt): the same 25 rows and predictions, hashed again. **0 mismatches.**
+- **Every mutant loaded**, and every row reported 51 suites.
+
+**Every new or changed check has a killer by value:**
+- the failing taker's: LS-1, LS-2, LS-3, LS-4;
+- the client that ended during the writes: LS-3, LS-4, LS-5;
+- the bound's: LS-1, LS-2, LS-8, LS-9, LS-11;
+- the hold's: LS-1, LS-3, LS-4, LS-9, LS-10;
+- the verbs': LS-1, LS-2, LS-3, LS-7, LS-12;
+- the eight changed shell checks: LS-3 and LS-4 each, and LS-2 the five that read the
+  client's end;
+- the fake's lingering: LF-1, LF-2, LF-3, LF-4; its passing: LF-1, LF-3, LF-5, LF-8; its
+  client that ended: LF-4, LF-9; its verbs: LF-1, LF-3, LF-6, LF-7, LF-10;
+- the three changed switch checks: LF-4;
+- the two `dones-at-stop` checks: M6-A.
+
+**LS-6 is equivalent.** Read again after EOF, libuv reports EOF again: EOF leaves the
+stream readable, and `uv_read_start` clears the EOF flag (1.52.1, `src/unix/stream.c`
+931-938, `src/uv-common.c` 926-935). So a close asked for at the client's end that does not
+remember it starts reading, reads EOF at once, and closes then: one turn later, and with a
+half-close first, which a client that has ended does not read. The flag stays: it saves
+the turn, and the fake keeps the same one.
+
+**Taken out rather than left unwatched:** a half-close whose completion reports an error
+closed the stream. No check could provoke one alone, since a write side that fails as it
+shuts fails the reads too. It is left to the reads and to the linger deadline (the
+decision's record says so).
