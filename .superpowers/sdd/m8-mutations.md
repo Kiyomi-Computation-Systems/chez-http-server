@@ -1804,3 +1804,72 @@ M7W-8 and M7X-1 were re-cut from M7's log.
 
 **No longer a survivor:** M7X-1, since the drain's continuation is full. Kept, it holds the
 last coroutine resumed, and the shell suite's idle check reddens.
+
+## After M8 — the held shutdown's check timed by the loop's clock (2026-10-10)
+
+The shell suite's "a shutdown asked once the loop has been held 300 ms dates its drain
+after the hold", on `test/held-shutdown-loop-clock`. It held the loop 300 ms of Chez's
+monotonic clock and took the drain's date, on libuv's loop clock, at 299 ms past `before`
+or more. Now `hold-until!` times the hold by the loop's clock, read on a loop made for the
+hold, and the bound is 300. Tests only: nothing under `src/` moved.
+
+Platform: Darwin 25.6.0 arm64 (Apple M1), Chez 10.4.1 `tarm64osx`, libuv 1.52.1; and Linux
+6.12.76-linuxkit aarch64 in Docker, `chez-libuv-noble-scratch:10.4.1` (Ubuntu 24.04, libuv
+1.48.0, CI's), Chez 10.4.1. 2026-10-10, the library path as above.
+
+**The oracles:**
+- libuv's source: every loop in a process reads one clock, `uv__hrtime(UV_CLOCK_FAST)`,
+  which never steps back (1.52.1: `src/unix/internal.h:467-471`; `linux.c:1603-1637`, one
+  fast clock id a process; `darwin.c:60-63`; `win/core.c:325-329`, `win/util.c:464-483`);
+- on Linux that clock is CLOCK_MONOTONIC_COARSE where it ticks every millisecond or finer,
+  and Chez's is CLOCK_MONOTONIC (chez-websocket's `.plans/research/2026-10-10-s-silent-clock.md`).
+
+### The probe
+
+`.plans/research/spike/held-shutdown-clock.sps` repeats the check with the real shell,
+each round on loops of its own, both ways in turn: the old hold, 300 ms of Chez's clock,
+and the new one, a spin on a second loop until its time reads `before + 300`. It prints
+the drain's date less `before`, in the loop's ms.
+
+| where | rounds | Chez's clock: date − before | under 299 | the loop's clock: date − before | under 300 |
+|---|---|---|---|---|---|
+| Darwin, alone | 100 | 299 to 301; 299 in 86 | 0 | 300 in 100 | 0 |
+| Darwin, four at once | 400 | 299 to 300; 299 in 351 | 0 | 300 to 301; 300 in 399 | 0 |
+| Linux, alone | 300 | 299 to 300; 299 in 285 | 0 | 300 in 300 | 0 |
+| Linux, four at once | 1,200 | 269 to 339; 299 in 1,026 | 53 | 300 to 356; 300 in 1,109 | 0 |
+
+- **The old bound was not derived.** Four at once on Linux, the date fell under it in 53
+  rounds of 1,200; in the least, Chez's clock moved 302.5 ms over the hold and the loop's
+  269. Alone, on either, it never fell under; over all four rows it sat at the bound, 299,
+  in 1,748 rounds of 2,000.
+- **The new bound is exact.** The date never fell under 300 in 2,000 rounds. A loop's 300
+  ms of hold took 288.5 to 356.3 ms of Chez's clock on Linux four at once, 298.8 to 300.5
+  alone, and 299.0 to 301.0 on Darwin.
+
+Run: `CHEZSCHEMELIBDIRS=<make build's library path> chez --program
+.plans/research/spike/held-shutdown-clock.sps N` (300 rounds alone and 300 each in four
+containers at once on Linux; 100 alone and 100 each four at once on Darwin).
+
+### The mutants
+
+Four rows, every suite each (scratchpad `mut/run1`, four at a time), each red set named
+and its spec hashed before the run (sha256 `d30a2d50` HS-0, `c93febcb` M8H-9, `537b3bbf`
+HS-SAME, `d1387144` HS-SAME+M8H-9). Every mutant loaded, and every row reported 51 suites.
+
+| id | mutant | red, predicted and seen |
+|---|---|---|
+| HS-0 | none: a comment's text in the shell suite | none: 51 suites, 1,989 expected passes |
+| M8H-9 | the shutdown dated by the loop's cached time: `stopping!` without `uv-update-time!` (re-cut on this tree) | shell 1: this check, `(#f stopped)` |
+| HS-SAME | the hold spins on the suite's own loop | none |
+| HS-SAME+M8H-9 | both | none: M8H-9 survives |
+
+- **0 mismatches.**
+- **M8H-9 dates the drain before the hold.** Run with its shell, the probe read the date
+  less `before` as 0 in every round, both ways.
+- **HS-SAME+M8H-9 is why the hold runs on a loop of its own.** Spun on the suite's loop,
+  the hold leaves that loop's time at its end, and M8H-9's shutdown reads it. A scope
+  statement, kept to say so.
+- **On Linux** (the noble image, the shell suite, each row three times): the same. M8H-9
+  red at this check, `(#f stopped)`, each time; the other three green, 204 expected passes.
+
+**The changed check has its killer by value:** M8H-9.

@@ -384,6 +384,19 @@
 (define (hold! ms)
   (let ((until (+ (monotonic-ms) ms)))
     (let spin () (when (< (monotonic-ms) until) (spin)))))
+;; hold-until! : Nat -> Void — keep the loop's thread busy until libuv's
+;; loop clock reads `until` or later, read on a loop made for the hold.
+;; Every loop in a process reads one clock, which never steps back (libuv
+;; 1.52.1's uv__hrtime: src/unix/linux.c's one fast clock id, darwin.c's
+;; mach_continuous_time, win/util.c's performance counter), so the hold is
+;; timed in the suite's loop's milliseconds, and that loop keeps its cached
+;; time.
+(define (hold-until! until)
+  (call-with-uv-loop
+   (lambda (clock)
+     (let spin ()
+       (uv-update-time! clock)
+       (when (< (uv-now clock) until) (spin))))))
 (define parked #f)
 (define waker #f)
 ;; How far the handlers of `/leave`, `/half-close` and `/held-wait` have
@@ -2435,19 +2448,22 @@
 
 ;; A shutdown is dated by the loop's time brought up to date as it is
     ;; asked for, as a deadline is armed (chez-libuv #28): one asked once the
-    ;; loop has been held 300 ms dates its drain after the hold.
+    ;; loop has been held 300 ms dates its drain after the hold.  The hold
+    ;; is timed by the loop's clock, read on a loop of its own, so the bound
+    ;; is exact, and the suite's loop keeps its time from before the hold,
+    ;; which a shutdown dated without bringing it up to date reads.  300 ms
+    ;; of Chez's monotonic clock ran 299 or 300 of the loop's, and on Linux,
+    ;; whose loop clock is CLOCK_MONOTONIC_COARSE, as few as 269 with four
+    ;; processes holding at once (measured 2026-10-10).
     (let ((late (make-shell loop handler drain-limits clock log! trace!)))
       (uv-update-time! loop)
       (let ((before (uv-now loop)))
-        (hold! slow-ms)
+        (hold-until! (+ before slow-ms))
         (shell-shutdown! late)
         (let ((asked (find (lambda (e) (and (eq? (car e) 'shutdown) (eq? (cadr e) late))) timed)))
-          ;; The hold is read on Chez's monotonic clock and the loop's time on
-          ;; libuv's, each in whole milliseconds, so the two may round apart
-          ;; by one.
           (test-equal "a shutdown asked once the loop has been held 300 ms dates its drain after the hold"
                       '(#t stopped)
-                      (list (and asked (>= (- (caddr asked) before) (- slow-ms 1)) #t)
+                      (list (and asked (>= (- (caddr asked) before) slow-ms) #t)
                             (server-phase (shell-server late)))))))
 
     ;; Told to finish, each connection is told under its own guard, as each
