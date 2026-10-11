@@ -273,3 +273,11 @@ NEXT: the follow-ups' PRs, then the closing ritual for each when the owner asks.
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,990 expected passes, every pin ok; the clients suite read 5,157 B a GET.
 
 NEXT: #163's closing ritual when the owner asks. chez-websocket's m4-mutations.md still calls SC-1 a scope statement; the server's shell suite now kills it.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual": **a taker's deadline armed at the loop's time brought up to date, #163** (the entry above). 54c4c91 was squashed as 5f97368 (tree 93aec9e, the tested head's; parent 67024b0).
+- **CI.** The PR's run on 54c4c91, 38140550760, ran and passed on ubuntu-24.04: fifty-one suites, 1,990 expected passes, the clients suite 5,144 B a GET, as counted here. The squash's tree is that head's. The block is not over: main's run on the squash, 38140866674, and on 67024b0 before it, 38139099120, each ended with its `linux` job not started (0 steps, the payments annotation), as did the PR's first run, on d85c5cc (38103733108).
+- **Branches.** Deleted on the remote and here; this session's worktree was left detached at the squash for this reflect. The shared checkout, clean on `main`, is fast-forwarded after it.
+
+`make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
+
+NEXT: the follow-ups' PRs (the 20 ms sleep check and the timer's waits under load, each in a session of its own), then the closing ritual for each when the owner asks. When main's runs start again, re-run main's latest run once. Here, plan §14's open list holds three items.
