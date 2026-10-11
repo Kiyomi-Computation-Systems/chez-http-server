@@ -2516,3 +2516,110 @@ Every prediction was written and hashed before its run. Darwin arm64.
 
 **Every new check has a killer by value:** C1, CB-1 and CB-3; C2, CB-2 and CB-3; C3,
 CB-1, CB-3, CB-4, CB-5 and CB-6; C4, CB-1, CB-3, CB-4 and CB-5; C5, CB-1, CB-3 and CB-7.
+
+## After M8 — what a wake gave, let go once handed over (2026-10-11)
+
+Plan §14's "what the full drain keeps after a big read", on `fix/wake-value-let-go`, on
+the owner's form ("Fix it, settle the item"). Measured first: the full drain keeps
+nothing, and the 2.9 KB chez-websocket read was the heap falling between two readings
+(the plan's settled entry has the numbers). The measuring found that a waiting coroutine
+kept the last value a wake handed it. The drain now lets it go as it hands it over
+(`resume!`); and a wait answered while `register` runs lets go what its cell kept for
+it, which whoever registered kept with the resume (`wait!`). Three checks are new, each
+by weak pairs:
+
+- **the scheduler suite's**: "a coroutine woken with a value it lets go, parked again,
+  keeps none of it, and one it keeps is held", `(waiting held let-go)`. The value the
+  coroutine keeps is the instrument's calibration;
+- **the waits suite's**: "a wait's value, let go by its code waiting again, is kept by
+  nothing, though the resume is kept: given while register runs, and given to the wait
+  parked", `((early waiting let-go resume-kept) (parked waiting let-go resume-kept))`.
+  The resume is read after the collection, so that it is still kept there;
+- **the shell suite's**: "a waiting taker woken with a read's bytes, written back, keeps
+  none of them once it waits for the next read", `(satisfied satisfied let-go)`, through
+  a new `/door-woken` taker.
+
+Every prediction was written and hashed before its run (sha256 below). Darwin arm64.
+
+- **Test first, on main's scheduler** (4e45e96f…, 52d2a14e…): the scheduler suite's
+  check red alone, by value `(waiting held held)`; the shell suite's red alone,
+  `(satisfied satisfied held)`. The shell suite's first run tested nothing: `/door-woken`
+  had a parenthesis too many, and the suite did not read. The second run was the one
+  predicted.
+- **The scheduler's fix** (de3c95ff…): the scheduler suite 27, the shell suite 216, the
+  waits suite 38.
+- **The early path, found checking the fix's reach.** A probe: a wait answered while
+  `register` ran, its registrant keeping the resume, kept its value, on main and on the
+  fix alike. The waits suite's check was then written test first (148ee883…), red alone
+  by value `((early waiting held resume-kept) (parked waiting let-go resume-kept))` on
+  the scheduler's fix, and `((early waiting held resume-kept) (parked waiting held
+  resume-kept))` on main's scheduler. With `wait!`'s fix, the waits suite 39.
+- **Four rows** (f92ddd17…), each with the values-printing `testing.sls`, every suite but
+  WV-4's (the scheduler suite alone): **0 mismatches.**
+
+| Row | Mutant | Red, by value (every other suite green) |
+|---|---|---|
+| B-0 | none | none; 2,010 expected passes in all |
+| WV-1 | the scheduler hands the value over and keeps it, main's `resume!` | the scheduler suite's `(waiting held held)`; the shell suite's `(satisfied satisfied held)`; the waits suite's `((early waiting let-go resume-kept) (parked waiting held resume-kept))` |
+| WV-2 | the wait answers an early value and keeps it, main's `wait!` | the waits suite's alone, `((early waiting held resume-kept) (parked waiting let-go resume-kept))` |
+| WV-4 | the scheduler check's coroutine lets its first value go too | the scheduler suite's, `(waiting let-go let-go)` |
+
+- **Every mutant loaded:** 153 logs for the three all-suite rows, 51 each, and WV-4's one;
+  none with `Exception` or `HARNESS`. Other sessions' containers ran on the machine
+  meanwhile; no timing check went red.
+
+**Every new check has a killer by value:** the scheduler suite's, WV-1 and WV-4; the
+waits suite's, WV-1 (parked) and WV-2 (early); the shell suite's, WV-1.
+
+**The review** (the same day; a code review's eight findings, on the owner's "fix all of
+them"). Two were records: the ten-connection figure had not been measured again, and the
+wake value's steps were misquoted. Measured: ten connections read 9,216 to 9,344 B for a
+big message then a small one, and 8,480 to 9,336 B for two 1-byte ones (the plan's
+entry). Two were more of the same defect, fixed with checks, test first:
+
+- **the scheduler suite's second**: "a coroutine's record, kept, keeps its thunk no longer
+  once entered, nor once it has ended what it ended with or its end procedure",
+  `(let-go not-waiting let-go let-go)`;
+- **the waits suite's second**: "a resume kept once its wait is over keeps nothing of the
+  coroutine that waited, ended: …", `((early returned let-go resume-kept) (parked returned
+  let-go resume-kept))`.
+
+The other four were the shell check's instrument (now the suite's own
+`state-after-collection`), its state reset and its teardown asserted, and two records'
+words.
+
+- **Test first** (000c9a0e…): the waits check red by value, `((early returned held
+  resume-kept) (parked returned held resume-kept))`. **A prediction error**: the
+  scheduler check read `(let-go not-waiting held let-go)`, not `(held not-waiting held
+  held)`. Its closures read their bytevectors' lengths, which Chez folds for a bytevector
+  it saw made, so neither captured one. They read a byte now; predicted again
+  (d84a9df6…), red by `(held not-waiting held held)`.
+- **The fixes** (76e40813…): **a prediction error.** The waits suite 40 and the shell
+  suite 216, as predicted, but the scheduler suite's first check went red,
+  `(waiting let-go let-go)`: its calibration's value was held only because the record
+  kept the thunk, which closed over the box it was kept in. The check reads the box after
+  the collection now; predicted again (9c5173de…), the scheduler suite 28. A wake and park
+  still allocates 288 B.
+- **Ten rows** (00a2c729…), each with the values-printing `testing.sls`: **0 mismatches.**
+
+| Row | Mutant | Red, by value |
+|---|---|---|
+| B-0 | none, every suite | none; 2,012 expected passes in all |
+| WV-1 | main's `resume!`, the wake value kept, every suite | the scheduler suite's first, `(waiting held held)`; the shell suite's, `(satisfied satisfied held satisfied)`; the waits suite's first, its parked case `held` |
+| WV-2 | `wait!` keeps the early value, every suite | the waits suite's first alone, its early case `held` |
+| WV-4 | the first check's coroutine lets its first value go | `(waiting let-go let-go)` |
+| WV-5 | `enter!` keeps the thunk | the scheduler suite's second, `(held not-waiting let-go let-go)` |
+| WV-6 | the end value kept | the scheduler suite's second, `(let-go not-waiting held let-go)` |
+| WV-7 | the end procedure kept | the scheduler suite's second, `(let-go not-waiting let-go held)` |
+| WV-8 | a parked wait's cell keeps its coroutine | the waits suite's second, its parked case `held` |
+| WV-9 | an early wait's cell keeps its coroutine | the waits suite's second, its early case `held` |
+| WV-10 | the shell check's client never shuts | `(satisfied satisfied released iterations-exhausted)` |
+
+WV-5 to WV-9 ran on the scheduler, waits and shell suites, WV-4 on the scheduler suite,
+WV-10 on the shell suite. **Every mutant loaded:** 170 logs, none with `Exception` or
+`HARNESS`.
+
+**Every new check has a killer by value:** the scheduler suite's first, WV-1 and WV-4; its
+second, WV-5, WV-6 and WV-7; the waits suite's first, WV-1 (parked) and WV-2 (early); its
+second, WV-8 (parked) and WV-9 (early); the shell suite's, WV-1, and its teardown WV-10.
+

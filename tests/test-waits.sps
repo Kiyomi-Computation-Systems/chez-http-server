@@ -17,6 +17,12 @@
 ;;;   - R4: a resume called again is logged as `late-resume`, naming the
 ;;;     verb, and wakes nothing, not even the coroutine waiting again on a
 ;;;     second wait; and so for a resume called twice while `register` runs;
+;;;   - what a resume gave, let go by the code once it waits again, is kept
+;;;     by nothing of the wait, though the resume is kept: given while
+;;;     `register` runs, and given to the wait parked (plan §14,
+;;;     2026-10-11); and a resume kept once its wait is over keeps nothing
+;;;     of the coroutine that waited, once it has ended (the same day's
+;;;     review);
 ;;;   - one coroutine's resume, called by another, wakes it in the same
 ;;;     drain;
 ;;;   - a raise out of `register` comes out of the wait, and nothing parks;
@@ -85,6 +91,7 @@
 ;;;     nothing;
 ;;;   - R4: a resume after a close ended its wait is logged as `late-resume`.
 (import (rnrs) (srfi :64) (testing)
+        (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?)
         (only (http-server awaiting) deadline-passed? client-closed? resolve-error? resolve-error-reason)
         (http-server private scheduler)
         (http-server private waits))
@@ -208,6 +215,65 @@
     (turns! s 4)
     (list (seen) (logged))))
 
+;; resumed-kept : Symbol -> (List Symbol Symbol Symbol Symbol)
+;; A coroutine waits with `await`, its registrant keeping the resume, which
+;; is called with a bytevector the check holds only weakly: while `register`
+;; runs, for 'early, or once the wait has parked, for 'parked.  The code
+;; lets the value go and waits again, on a resume no one calls.  Then, after
+;; a full collection: `how`, whether the coroutine waits, whether the value
+;; is still on the heap, 'held, or collected, 'let-go, and whether the
+;; resume is still kept, read after the collection so that it is.
+(define (resumed-kept how)
+  (let*-values (((s logged) (waiting '()))
+                ((kept) #f)
+                ((value) (weak-cons (make-bytevector 1000 7) #f)))
+    (let ((c (scheduler-spawn! s
+               (lambda ()
+                 (bytevector-length
+                  (await (lambda (r)
+                           (set! kept r)
+                           (when (eq? how 'early) (r (car value))))))
+                 (await (lambda (r) #f)))
+               (lambda (kind v) #f))))
+      (scheduler-drain! s)
+      (when (eq? how 'parked)
+        (kept (car value))
+        (scheduler-drain! s))
+      (collect (collect-maximum-generation))
+      (list how
+            (if (coroutine-suspending? c) 'waiting 'not-waiting)
+            (if (bwp-object? (car value)) 'let-go 'held)
+            (if (procedure? kept) 'resume-kept 'resume-gone)))))
+
+;; resumed-coroutine : Symbol -> (List Symbol Symbol Symbol Symbol)
+;; A coroutine waits with `await`, its registrant keeping the resume, which
+;; is called while `register` runs, for 'early, or once the wait has parked,
+;; for 'parked; then the coroutine ends.  The check holds the coroutine only
+;; weakly.  After a full collection: `how`, how it ended, whether the
+;; coroutine is still on the heap, 'held, or collected, 'let-go, and whether
+;; the resume is still kept, read after the collection so that it is.
+(define (resumed-coroutine how)
+  (let*-values (((s logged) (waiting '()))
+                ((kept) #f)
+                ((seen) #f)
+                ((ended) 'not-ended))
+    (scheduler-spawn! s
+      (lambda ()
+        (set! seen (weak-cons (current-coroutine) #f))
+        (await (lambda (r)
+                 (set! kept r)
+                 (when (eq? how 'early) (r 'early))))
+        'done)
+      (lambda (kind v) (set! ended kind)))
+    (scheduler-drain! s)
+    (when (eq? how 'parked)
+      (kept 'parked)
+      (scheduler-drain! s))
+    (collect (collect-maximum-generation))
+    (list how ended
+          (if (bwp-object? (car seen)) 'let-go 'held)
+          (if (procedure? kept) 'resume-kept 'resume-gone))))
+
 ;; waiting : (Listof (Listof (-> Any))) -> (values Scheduler (-> (Listof Any)))
 ;; A scheduler polling `batches`, with waits that log, and the log.
 (define (waiting batches)
@@ -276,6 +342,16 @@
         (test-equal "R4: a resume called twice while register runs: the wait answers the first, and the second is logged"
           '((returned 1) ((end returned once)) ((late-resume await)))
           (list t (seen) (logged)))))
+
+    ;; What a resume gave is the waiting code's to keep or let go (plan §14,
+    ;; 2026-10-11): once that code waits again, nothing of the wait keeps
+    ;; it, though whoever registered keeps the resume, for R4.
+    (test-equal "a wait's value, let go by its code waiting again, is kept by nothing, though the resume is kept: given while register runs, and given to the wait parked"
+      '((early waiting let-go resume-kept) (parked waiting let-go resume-kept))
+      (list (resumed-kept 'early) (resumed-kept 'parked)))
+    (test-equal "a resume kept once its wait is over keeps nothing of the coroutine that waited, ended: answered while register runs, and parked"
+      '((early returned let-go resume-kept) (parked returned let-go resume-kept))
+      (list (resumed-coroutine 'early) (resumed-coroutine 'parked)))
 
     ;; One request can wake another (decision 0015 item 1).
     (let*-values (((note! seen) (recorder))

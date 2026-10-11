@@ -59,9 +59,17 @@
 ;;;     entered, its park cost a fresh stack segment);
 ;;;   - a coroutine parked keeps on the heap under half of what a one-shot
 ;;;     continuation held at the same depth keeps (decision 0025: parked by
-;;;     a one-shot continuation, it kept that stack segment).
+;;;     a one-shot continuation, it kept that stack segment);
+;;;   - a coroutine woken with a value it lets go keeps none of it once it
+;;;     parks again, and one it keeps is held, which calibrates the weak
+;;;     pairs the check reads (plan §14, 2026-10-11: the scheduler kept a
+;;;     wake's value until the next wake);
+;;;   - a coroutine's record, kept, keeps its thunk no longer once it has
+;;;     been entered, nor, once the coroutine has ended, what it ended with
+;;;     or its end procedure (the same day's review).
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) make-parameter parameterize statistics sstats-bytes call/1cc)
+        (only (chezscheme) make-parameter parameterize statistics sstats-bytes call/1cc
+              collect collect-maximum-generation weak-cons bwp-object?)
         (http-server private scheduler))
 
 ;; scripted : (Listof (Listof (-> Any))) -> (values (Symbol -> Boolean) (-> (Listof Symbol)))
@@ -294,6 +302,76 @@
     (let ((before (sstats-bytes (statistics))))
       (run!)
       (div (- (sstats-bytes (statistics)) before) n))))
+
+;; woken-kept : -> (List Symbol Symbol Symbol)
+;; A coroutine woken twice, each time with a bytevector the check holds
+;; only weakly: the first it keeps, the second it lets go, and it parks
+;; again.  Then, after a full collection: whether it waits, and whether
+;; each is still on the heap, 'held, or collected, 'let-go.  The first is
+;; the instrument's calibration: a value the coroutine keeps is held.  The
+;; box it keeps it in is read after the collection, so that it is kept:
+;; once the record let its thunk go, nothing else held the box.
+(define (woken-kept)
+  (let* ((s (make-scheduler (lambda (mode) #f)))
+         (box (make-vector 1 #f))
+         (c (scheduler-spawn! s
+              (lambda ()
+                (vector-set! box 0 (coroutine-park!))
+                (let next ()
+                  (bytevector-length (coroutine-park!))
+                  (next)))
+              (lambda (kind v) #f)))
+         (first (weak-cons (make-bytevector 1000 1) #f))
+         (second (weak-cons (make-bytevector 1000 2) #f)))
+    (scheduler-drain! s)
+    (coroutine-wake! c (car first))
+    (scheduler-drain! s)
+    (coroutine-wake! c (car second))
+    (scheduler-drain! s)
+    (collect (collect-maximum-generation))
+    (list (if (coroutine-suspending? c) 'waiting 'not-waiting)
+          (cond ((bwp-object? (car first)) 'let-go)
+                ((eq? (car first) (vector-ref box 0)) 'held)
+                (else 'held-elsewhere))
+          (if (bwp-object? (car second)) 'let-go 'held))))
+
+;; ended-kept : -> (List Symbol Symbol Symbol Symbol)
+;; A coroutine whose thunk reads a byte of a bytevector it captured, then
+;; parks, and once woken ends with a bytevector of its own, handed to an end
+;; procedure that reads a byte of one it captured: each held by the check
+;; only weakly, the coroutine record itself strongly, as whatever keeps it
+;; would.  A byte, not the length: Chez folds the length of a bytevector it
+;; saw made, and the closure then captures nothing.  After a
+;; full collection: the thunk's while the coroutine is parked; then, once it
+;; has ended, its state, its end's and its end procedure's: 'held, or
+;; collected, 'let-go.
+(define (ended-kept)
+  (let* ((s (make-scheduler (lambda (mode) #f)))
+         (captured #f) (ended-with #f) (told #f)
+         (thunk (let ((t (make-bytevector 1000 1)))
+                  (set! captured (weak-cons t #f))
+                  (lambda ()
+                    (bytevector-u8-ref t 0)
+                    (coroutine-park!)
+                    (make-bytevector 1000 2))))
+         (on-end (let ((e (make-bytevector 1000 3)))
+                   (set! told (weak-cons e #f))
+                   (lambda (kind v)
+                     (bytevector-u8-ref e 0)
+                     (set! ended-with (weak-cons v #f)))))
+         (c (scheduler-spawn! s thunk on-end)))
+    (set! thunk #f)
+    (set! on-end #f)
+    (scheduler-drain! s)
+    (collect (collect-maximum-generation))
+    (let ((while-parked (if (bwp-object? (car captured)) 'let-go 'held)))
+      (coroutine-wake! c #t)
+      (scheduler-drain! s)
+      (collect (collect-maximum-generation))
+      (list while-parked
+            (if (coroutine-suspending? c) 'waiting 'not-waiting)
+            (cond ((not ended-with) 'not-ended) ((bwp-object? (car ended-with)) 'let-go) (else 'held))
+            (if (bwp-object? (car told)) 'let-go 'held)))))
 
 ;; bytes-each : Nat (-> Any) -> Nat
 ;; The bytes each of `n` coroutines running `thunk` allocates, all spawned
@@ -612,4 +690,12 @@
          (string-append "a one-shot continuation held 4 calls deep no longer keeps a stack segment here: "
                         (number->string reference) " B each")))
       (test-equal "a coroutine parked 4 calls deep keeps on the heap under half of what a one-shot continuation held 4 calls deep keeps, 1,000 of each, footprints back to back"
-        'under-half (if (< (* 2 parked) reference) 'under-half (list parked reference))))))
+        'under-half (if (< (* 2 parked) reference) 'under-half (list parked reference))))
+    ;; What a wake gave, the coroutine's to keep or let go: the scheduler
+    ;; keeps none of it once the drain has handed it over.
+    (test-equal "a coroutine woken with a value it lets go, parked again, keeps none of it, and one it keeps is held"
+      '(waiting held let-go) (woken-kept))
+    ;; And what it ran and ended with: its record, kept, keeps none of them
+    ;; once each is used.
+    (test-equal "a coroutine's record, kept, keeps its thunk no longer once entered, nor once it has ended what it ended with or its end procedure"
+      '(let-go not-waiting let-go let-go) (ended-kept))))

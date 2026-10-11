@@ -148,7 +148,9 @@
 ;;;     writes back the frame its client sent with the handshake, then what
 ;;;     it reads, however the kernel split the reads, and closes once its
 ;;;     client ends; a taker that raises has its stream closed, logged; a
-;;;     write after the close is asked for is cancelled; a taken stream
+;;;     taker that waits, woken with a read's bytes, keeps none of them once
+;;;     it waits for the next read; a write after the close is asked for is
+;;;     cancelled; a taken stream
 ;;;     counts against max-connections; a taker's deadline is met on time,
 ;;;     and armed at the loop's time brought up to date, so a taker that
 ;;;     holds the loop arms it after the hold; a taker's close is staged
@@ -798,6 +800,22 @@
                                (let loop ()
                                  (transport-write! t (await (lambda (resume) (set! resume-to resume))))
                                  (loop)))))))))
+          ((bytevector=? target (b "/door-woken"))
+           (let ((resume-to #f))
+             (switching (lambda (t retained)
+                          (transport-read-start! t
+                                                 (lambda (bv from to)
+                                                   (let ((r resume-to) (piece (bytes-between bv from to)))
+                                                     (set! resume-to #f)
+                                                     (set! woken (weak-cons piece #f))
+                                                     (when r (r piece))))
+                                                 (lambda (why) (transport-close! t)))
+                          (awaiting
+                           (lambda ()
+                             (let loop ()
+                               (set! woken-waits #f)
+                               (transport-write! t (await (lambda (resume) (set! woken-waits #t) (set! resume-to resume))))
+                               (loop))))))))
           ((bytevector=? target (b "/door-wait-raise"))
            (switching (lambda (t retained)
                         (awaiting (lambda () (sleep-ms 1) (raise (make-message-condition "the waiting taker failed")))))))
@@ -1158,6 +1176,11 @@
 
 ;; The transport of /door-bye's taker, to reach once its stream lingers.
 (define lingering-transport #f)
+
+;; The piece /door-woken's taker was last woken with, held weakly in the
+;; car of a weak pair, or #f; and whether its thunk has begun its next wait.
+(define woken #f)
+(define woken-waits #f)
 
 ;; Limits whose linger lasts 100 ms, the timer firing every 10 ms.
 (define linger-limits
@@ -2765,6 +2788,25 @@
                       (list opened echoed (client-bytes (car p)) gone told (took-of 'told)
                             (filter (lambda (e) (eq? (car e) 'taker-failed)) logged)))))
       (client-close! (car p)))
+
+    ;; A waiting taker woken with a read's bytes (plan §14, 2026-10-11): once
+    ;; it waits for the next read, nothing keeps the piece it was woken
+    ;; with, which it wrote back and let go.  The scheduler kept a wake's
+    ;; value until the next wake.
+    (set! woken #f)
+    (set! woken-waits #f)
+    (let* ((p (open-adopted! (door-handshake "/door-woken")))
+           (opened (wait-for (lambda () (= (bytevector-length (client-bytes (car p))) (bytevector-length door-101))))))
+      (client-send! (car p) hi-frame)
+      (let* ((echoed (wait-for (lambda () (and woken-waits
+                                                (= (bytevector-length (client-bytes (car p)))
+                                                   (+ (bytevector-length door-101) (bytevector-length hi-frame)))))))
+             (kept (if woken (state-after-collection woken) 'never-woken)))
+        (client-shut! (car p))
+        (let ((gone (wait-for (lambda () (closed-and-gone? shell (cdr p))))))
+          (client-close! (car p))
+          (test-equal "a waiting taker woken with a read's bytes, written back, keeps none of them once it waits for the next read; the client's end closes the stream"
+                      '(satisfied satisfied released satisfied) (list opened echoed kept gone)))))
 
     ;; A waiting taker whose thunk raises anything else: logged
     ;; taker-failed, and the stream closed after the 101.

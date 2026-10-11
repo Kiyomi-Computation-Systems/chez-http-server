@@ -121,15 +121,18 @@
   ;; At 0 the timer is stopped, or stops the next time it fires.
   (define (waits-timed w) (heap-count (waits-heap w)))
 
-  ;; A cell is one wait: the verb that made it, the coroutine waiting, its
-  ;; loop's waits, how far the wait has come, the value a resume gave while
-  ;; `register` ran, and what it waits on that a deadline takes back, a
-  ;; sleep's entry in the heap or a lookup's request, or #f.
+  ;; A cell is one wait: the verb that made it, the coroutine waiting, until
+  ;; the wait is over, its loop's waits, how far the wait has come, the value
+  ;; a resume gave while `register` ran, until the wait answers it, and what
+  ;; it waits on that a deadline takes back, a sleep's entry in the heap or a
+  ;; lookup's request, or #f.  Whoever registered may keep the resume, and so
+  ;; the cell, after the wait: it keeps neither the coroutine nor a value
+  ;; then (plan §14, 2026-10-11, and its review).
   ;;   registering  `register` runs: a resume keeps its value, 'early
   ;;   parked       the coroutine has parked: a resume wakes it, 'resumed
   ;;   early, resumed  the wait is over: a resume is late (R4)
   (define-record-type cell
-    (fields who coroutine waits (mutable state) (mutable value) (mutable pending))
+    (fields who (mutable coroutine) waits (mutable state) (mutable value) (mutable pending))
     (sealed #t))
 
   ;; A coroutine's context, from its first deadline or its notice: the wait
@@ -297,7 +300,10 @@
       (let ((cell (make-cell who c w 'registering #f #f)))
         (start! cell)
         (if (eq? (cell-state cell) 'early)
-            (cell-value cell)
+            (let ((v (cell-value cell)))
+              (cell-coroutine-set! cell #f)
+              (cell-value-set! cell #f)
+              v)
             (begin
               (cell-state-set! cell 'parked)
               (when x (context-cell-set! x cell))
@@ -321,7 +327,11 @@
   (define (resume! cell v)
     (case (cell-state cell)
       ((registering) (cell-value-set! cell v) (cell-state-set! cell 'early))
-      ((parked) (cell-state-set! cell 'resumed) (coroutine-wake! (cell-coroutine cell) v))
+      ((parked)
+       (let ((c (cell-coroutine cell)))
+         (cell-coroutine-set! cell #f)
+         (cell-state-set! cell 'resumed)
+         (coroutine-wake! c v)))
       (else ((waits-log (cell-waits cell)) 'late-resume (list (cell-who cell))))))
 
   ;; sleep-ms : Nat -> Void
