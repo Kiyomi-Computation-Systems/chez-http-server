@@ -2674,3 +2674,99 @@ mutant loaded:** 156 logs, none with `Exception` or `HARNESS`.
 
 **Every new or changed check has a killer by value:** W2's two instances and the switch
 suite's "core's part", HR-1, HR-2 and HR-3; the two late readers, HR-1.
+
+## After M8 — the cross-shell contract test replays the door (2026-10-11)
+
+Plan §14's "a door script in the cross-shell contract test", on `test/door-replay`
+(stacked on `fix/hand-off-read-stop`), on the owner's form ("Land the replay").
+- **The libuv shell traces each event of a taken stream's** as `door`, made only when
+  traced, and the fake traces its own door the same:
+  - a read and the end of its reads, whether the taker's or dropped while its close
+    lingers;
+  - a write's completion;
+  - its wheel entry passing;
+  - its close's two stages, the half-close and the close begun.
+- **The replay gives the fake each event.** A write's completion comes with the libuv
+  shell's outcome. The close's stages are held by the traces alone.
+- **The fake tells a write after the close ECANCELED at its next drain,** as the libuv
+  shell does on its next turn.
+- **The taker's code marks its calls and what it is told** into each shell's trace.
+- **Twelve door scripts.** Eleven play to the direct shell and the coroutine shell, and
+  one stalls under short limits. That is 91 checks, three a script through each shell
+  and two more through the coroutine shell, each held to the direct shell's.
+
+Scripts: E1 an echo; E2 bytes with the request; G1 a goodbye, G2 one to a client that
+sends on; A1 an abort with a write, A2 with none; D a deadline; W a waiting taker; R a
+raise; C a write after the close; L a late reader; S a goodbye to a client that never
+ends. The checks: 1, the libuv shell read what was sent, then the end, and closed; 2, the
+client read the fake's bytes; 3, the traces are identical; alike1 and alike2, through the
+coroutine shell, the direct shell's bytes and its answer on credit.
+
+Every prediction was written and hashed before its run (sha256 below). Darwin arm64.
+
+- **Measured first, by the prototype** (the plan's settled entry): on main, 224 passed and
+  9 parted. 6 were the bug `fix/hand-off-read-stop` fixes, and 3 were the fake's two
+  differences fixed here.
+- **Fifteen rows** (2b182214…), with the values-printing `testing.sls`. **One prediction
+  error**, the replay's own:
+  - DR-14, a fake that closes at once when its writes are out and never lingers, reddened
+    only S's check 3, where G1 G2 D W C were predicted too.
+  - The replay completes the fake's close where the libuv shell's completed, and nothing
+    traced when a close began, so an early close traced the same.
+  - Both shells now trace the close's two stages, `stream-shut` and `stream-close`.
+- **Rerun on the final tree with four rows for the stages** (86917ccc…): **0
+  mismatches.** Every row reddened exactly the predicted scripts and checks.
+- **The two alike checks of the door scripts had no killer among those rows.** Three rows
+  re-cut from M7.3 (be94f33f…), each reddening the door's as predicted:
+  - DA-1, the suite's `waiting` answering the handler itself, reddened the 11 alike2
+    checks;
+  - DA-2, the libuv shell never dispatching a waiting handler's answer, reddened all
+    five checks of the 11;
+  - DA-3, the core answering a switch given on credit as a response, reddened the 11
+    alike1 checks.
+
+  **A prediction error outside the door:** DA-1 also left the two scripts whose handler
+  raises unanswered through the coroutine shell, and the suite raised at its teardown.
+  The suite turns every shell's loop through the direct shell's (wait-for). Its guard
+  answers a handler's raise only for its own calling connection (run-guarded), so a plain
+  handler's raise on another shell went unanswered. That is the suite's harness: a
+  server runs one shell to a loop.
+
+| Row | Mutant | Red, by value (contract unless named) |
+|---|---|---|
+| B-0 | none, every suite, on the first run's tree | none; 2,105 expected passes in all, as `make test` on the final tree |
+| DR-1 | the libuv shell traces no read of the taker's | E1 E2 L, checks 1 2 3, both: 18 |
+| DR-2 | … no read dropped while the close lingers | G2 check 1, both: 2 |
+| DR-3 | … no end of the taker's reads | E1 E2 L, checks 1 3, both: 12 |
+| DR-4 | … no end read while the close lingers | G1 G2 D W C, checks 1 3, both: 20 |
+| DR-5 | … no taker's write completing | check 3 of E1 E2 G1 G2 A1 D W L both, and S; A1 check 2 both: 19 |
+| DR-6 | … no pass of a taken stream's entry | D L checks 2 3 both, S check 3: 9 |
+| DR-7 | the fake traces no delivery to its door | E1 E2 G1 G2 D W C L check 3, both: 16; switch, fake-shell green |
+| DR-8 | … no taker's write at its turn | check 3 of E1 E2 G1 G2 A1 D W L both, and S: 17; switch, fake-shell green |
+| DR-9 | … no pass of its door's deadline | D L check 3 both, S: 5; switch, fake-shell green |
+| DR-10 | the replay gives a taker's write the fake's own outcome | A1 checks 2 3, both: 4 |
+| DR-11 | the fake tells a write after the close ECANCELED on the completion queue, as before | C check 3, both: 2; switch, fake-shell green |
+| DR-12 | the hand-off stops no reading (main's) | D W L checks 1 3, both: 12 |
+| DR-13 | the replay's taker marks reach no trace | check 3 of all 11 both, and S: 23 |
+| DR-14 | the fake's door closes at once when its writes are out | G1 G2 D W C check 3 both, and S: 11; switch 3 |
+| DR-15 | the fake's door does not close at the client's end read while it closes | G1 G2 D W C check 3, both: 10; switch 4 |
+| DR-16 | the libuv shell traces no half-close of a taken stream | G1 G2 D W C check 3 both, and S: 11 |
+| DR-17 | … no taken stream's close begun | check 3 of all 11 both, and S: 23 |
+| DR-18 | the fake traces no half-close of its door | as DR-16: 11; switch, fake-shell green |
+| DR-19 | … no close begun of its door | as DR-17: 23; switch, fake-shell green |
+| DA-1 | the coroutine shell's handler does not wait (M7C-3) | the 11 door scripts' alike2; the 19 scripts' alike2; the raising two's 1 2 3 alike1, unanswered (the error above) |
+| DA-2 | a waiting handler's answer never dispatched (M7A-9) | every check of the 11 through the coroutine shell, 55; the coroutine pass's others too |
+| DA-3 | the core answers a switch given on credit as a response | alike1 of the 11; A1 A2 R check 1 too |
+
+B-0 ran over every suite; the DR and DA rows on the contract suite, and the fake's rows on
+the switch and fake-shell suites too. **Every mutant loaded:** the first run's 78 logs and
+the final tree's 38, none with `Exception`; DA-1 and DA-2 end `HARNESS-ERROR` at the
+suite's teardown, as above.
+
+**Every new check has a killer by value:** checks 1 of the door scripts, DR-1 to DR-4 and
+DR-12; checks 2, DR-1, DR-5, DR-6 and DR-10; checks 3, DR-13, DR-17 and DR-19 each all 12;
+alike1, DA-2 and DA-3; alike2, DA-1 and DA-2.
+
+**Not reached by a script:** a read error on a taken stream (`stream-end` with an errno).
+No script resets its connection, as the contract's header says. The paired checks in
+the shell and switch suites hold it.

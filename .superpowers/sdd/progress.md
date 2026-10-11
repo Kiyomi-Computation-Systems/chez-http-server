@@ -445,3 +445,24 @@ NEXT: the docs-only PR in chez-websocket, by the owner's form, for its four reco
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,014 expected passes (main's 2,012 and the two checks), every pin ok.
 
 NEXT: the replay on `test/door-replay`: the door scripts, the trace points guarded so nothing is built untraced, and the fake's two differences fixed. Then the PRs, stacked.
+
+**The cross-shell contract test replays the door (2026-10-11),** on `test/door-replay`, stacked on `fix/hand-off-read-stop` (the entry above), on the owner's form ("Land the replay").
+- **Built.**
+  - The libuv shell traces each event of a taken stream's as `door`: each read and end, whether the taker's or dropped while the close lingers; each write's completion; its wheel entry passing; and the close's two stages, the half-close and the close begun. Each datum is made by a guarding macro only when the shell has a trace.
+  - The fake traces its own door the same.
+  - The replay gives the fake each event, a write's completion with the libuv shell's outcome. The close's stages are held by the traces alone.
+  - The taker's code marks its calls and what it is told into each shell's trace.
+  - Twelve door scripts: eleven to the direct and the coroutine shell, one stalled under short limits. That is 91 checks; the contract suite has 291.
+- **The fake's two differences, fixed.**
+  - `fake-shell-deliver-later!` takes an outcome, which the replay gives a taker's write, since whether libuv had written it when its stream was aborted is the kernel's.
+  - A write after the close is told ECANCELED at the fake's next drain, as the libuv shell's is on its next turn.
+- **Measured: the trace points cost nothing untraced.** A probe ran five rounds of 1,000 taker reads with no trace: 4,240.8 to 4,345.3 B a read here, against 4,239.7 to 4,345.5 on `fix/hand-off-read-stop`. A trace point that built its datum anyway read 4,307.8 to 4,408.5, about 64 B more at each rank.
+- **Mutants** (m8-mutations.md, its last section).
+  - Fifteen rows, one prediction error: DR-14, a fake that never lingers, reddened only the stalled script. The replay completes the fake's close where libuv's completed, and nothing traced when a close began, so the close's stages are traced now.
+  - Rerun on the final tree with four rows for the stages: 0 mismatches.
+  - Three rows re-cut from M7.3 kill the door scripts' two alike checks. Their one prediction error is outside the door: the suite drives every shell through the direct shell's guard, so a plain handler's raise on another shell went unanswered under DA-1.
+  - Every new check has a killer by value. A read error on a taken stream is reached by no script, and paired checks hold it.
+- **Records:** design §8.4's note, decision 0016's amendment, and plan §14 (the item settled; the open list holds three).
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 2,105 expected passes (2,014 and the contract suite's 91), every pin ok.
+
+NEXT: the Linux runs and chez-websocket's suites on this branch; then the two PRs, stacked. Plan §14's open list holds three items: the two load-only timing items the owner's form stopped, and the linger check's one red. The late-bytes fix is Unreleased, beside 0027, the signal fix and the wake-value fix.

@@ -37,9 +37,16 @@
 ;;; M4.4: A TRACE sees what the shell does in the order it does it, as the
 ;;; libuv shell's does, so the cross-shell contract test (design §8.4) can
 ;;; compare the two: each event as it is dispatched, and each action as it
-;;; runs, before it is performed.  And the events a later turn brings are
-;;; delivered one at a time on request, so that test can deliver them where
-;;; the libuv shell delivered its own.
+;;; runs, before it is performed; and, once the stream is taken, each event
+;;; of the door's, `door`, as the libuv shell traces its own: a delivery to
+;;; the taker or dropped, `(stream-read bv start end)` or `(stream-end why)`;
+;;; a taker's write at its turn, `(stream-wrote why)`; the timer firing
+;;; past the stream's deadline, `(stream-passed now)`; and its close's two
+;;; stages, the half-close, `(stream-shut)`, and the close begun,
+;;; `(stream-close)`.  And the events a
+;;; later turn brings are delivered one at a time on request, so that test
+;;; can deliver them where the libuv shell delivered its own, a taker's
+;;; write with the libuv shell's outcome for it.
 ;;;
 ;;; M5.3: THE WHEEL.  A fake connection keeps its deadline in a wheel of its
 ;;; own, as the libuv shell keeps its connections' (decision 0005): armed at
@@ -103,7 +110,8 @@
 ;;; taker's: the fake transport's verbs act on it as the libuv shell's do.
 ;;; A write's bytes, copied at the call, are the client's on a later turn,
 ;;; after the 101, and its callback is told then, #f; one asked for once the
-;;; close has been is not written, and its callback is told ECANCELED.
+;;; close has been is not written, and its callback is told ECANCELED at the
+;;; connection's next drain, as the libuv shell tells it on its next turn.
 ;;; Reading delivers each delivery to the taker, `(on-bytes bv start end)`,
 ;;; and the client's end or a read error to its `on-end`, once, reading
 ;;; then stopped; none reaches the core.  The close comes on a later turn, after the writes asked for
@@ -131,7 +139,9 @@
 ;;; abort, `transport-abort!`, begins the close at once: each write
 ;;; outstanding is told ECANCELED on its turn, and the client reads none of
 ;;; it.  (The libuv shell's client may still get what the system already
-;;; held: part of a write; the fake keeps to whole writes.)  Every call into the taker's
+;;; held: a write libuv had written at the call, or part of one.  The fake
+;;; keeps to whole writes, and is told the libuv shell's outcome of each
+;;; where the contract test replays it: fake-shell-deliver-later!.)  Every call into the taker's
 ;;; code is guarded, as the libuv shell's taker-call! guards it: the
 ;;; take-over, its reads and its end, its deadline's, drain and close calls,
 ;;; and a write's callback.  A raise there, or from a waiting thunk, is the
@@ -297,7 +307,11 @@
       (assertion-violation 'fake-shell-deliver! "no progress: the dispatch cap was reached"
                            dispatch-cap event))
     (if (and (fake-shell-taker s) (memq (car event) '(bytes-arrived eof read-error)))
-        (begin (taker-read! s (fake-shell-taker s) event)
+        (begin (trace! s 'door (case (car event)
+                                 ((bytes-arrived) (cons 'stream-read (cdr event)))
+                                 ((eof) '(stream-end eof))
+                                 (else (list 'stream-end (cadr event)))))
+               (taker-read! s (fake-shell-taker s) event)
                (unless (fake-shell-held? s) (schedule! s))
                '())
         (step-event! s event)))
@@ -406,6 +420,7 @@
       (cond ((not (pair? (wheel-advance! wheel now))) '())
             ((fake-shell-taker s)
              (let ((tk (fake-shell-taker s)))
+               (trace! s 'door (list 'stream-passed now))
                (if (fake-taker-lingering? tk)
                    (close-begun! s tk)
                    (let ((passed (fake-taker-on-passed tk)))
@@ -421,19 +436,35 @@
   (define (later! s event)
     (fake-shell-later-set! s (append (fake-shell-later s) (list event))))
 
-  ;; fake-shell-deliver-later! : FakeShell -> (U Event (-> Any) #f)
+  ;; fake-shell-deliver-later! : FakeShell [(U #f Symbol)] -> (U Event (-> Any) DoorWrite #f)
   ;; Deliver the oldest event waiting for a later turn, a write's completion,
   ;; a half-close's or a close's, and return it; #f if none waits.  A
-  ;; taker's completion or close waits as a procedure, called then (THE
-  ;; DOOR).
-  (define (fake-shell-deliver-later! s)
+  ;; taker's close waits as a procedure, called then, and its write as a
+  ;; door-write (THE DOOR).  Given an outcome, #f or the errno, the oldest
+  ;; must be a taker's write, and its turn has that outcome, as the libuv
+  ;; shell's write had: whether libuv had written it when its stream was
+  ;; aborted is the kernel's, as how it divides the reads is.  Otherwise the
+  ;; write's outcome is the fake's own: ECANCELED once aborted, else #f.
+  (define fake-shell-deliver-later!
+    (case-lambda
+      ((s) (deliver-later! s #f #f))
+      ((s outcome) (deliver-later! s #t outcome))))
+
+  ;; deliver-later! : FakeShell Boolean (U #f Symbol) -> (U Event (-> Any) DoorWrite #f)
+  (define (deliver-later! s given? outcome)
     (let ((later (fake-shell-later s)))
       (and (pair? later)
-           (begin (fake-shell-later-set! s (cdr later))
-                  (if (procedure? (car later))
-                      (begin ((car later)) (unless (fake-shell-held? s) (schedule! s)))
-                      (fake-shell-deliver! s (car later)))
-                  (car later)))))
+           (let ((item (car later)))
+             (when (and given? (not (door-write? item)))
+               (assertion-violation 'fake-shell-deliver-later! "an outcome for a write, and no taker's write waits"
+                                    outcome item))
+             (fake-shell-later-set! s (cdr later))
+             (cond ((door-write? item)
+                    ((door-write-turn item) given? outcome)
+                    (unless (fake-shell-held? s) (schedule! s)))
+                   ((procedure? item) (item) (unless (fake-shell-held? s) (schedule! s)))
+                   (else (fake-shell-deliver! s item)))
+             item))))
 
   ;; fake-shell-settle! : FakeShell -> Void
   ;; Deliver the events waiting for a later turn, oldest first, until none
@@ -557,6 +588,11 @@
 
   ;; --- the door (M8.2) ----------------------------------------------------------
 
+  ;; door-write : a taker's write waiting for its turn, `turn` called then
+  ;; with whether an outcome was given and the outcome
+  ;; (fake-shell-deliver-later!).
+  (define-record-type door-write (fields turn))
+
   ;; The calls a taker has registered, how far its stream has gone, the
   ;; notice its waits are told the close by, once a take-over has answered
   ;; `awaiting` (decision 0023), how many of its writes are outstanding,
@@ -629,6 +665,7 @@
           ((fake-taker-ended? tk) (close-begun! s tk))
           (else
            (fake-taker-lingering?-set! tk #t)
+           (trace! s 'door '(stream-shut))
            (fake-shell-shut?-set! s #t)
            (wheel-arm! (fake-shell-wheel s) (fake-shell-entry s)
                        (+ (fake-shell-now s) (fake-taker-linger-ms tk))))))
@@ -654,6 +691,7 @@
   ;; taker's waits are told, and its close call runs.
   (define (close-begun! s tk)
     (unless (fake-shell-closing? s)
+      (trace! s 'door '(stream-close))
       (fake-shell-closing?-set! s #t)
       (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s))
       (later! s (lambda ()
@@ -672,10 +710,15 @@
     (make-transport
      (lambda (bv start end written)
        (if (fake-taker-closing? tk)
-           (when written (later! s (lambda () (taker-call! s tk (lambda () (written 'ECANCELED))))))
+           (when written
+             (scheduler-call! (fake-shell-scheduler s)
+                              (lambda () (taker-call! s tk (lambda () (written 'ECANCELED))))))
            (let ((bytes (copy-of bv start end)))
              (fake-taker-writes-set! tk (fx+ (fake-taker-writes tk) 1))
-             (later! s (lambda () (taker-wrote! s tk bytes written))))))
+             (later! s (make-door-write
+                        (lambda (given? outcome)
+                          (taker-wrote! s tk bytes written
+                                        (if given? outcome (and (fake-taker-aborted? tk) 'ECANCELED)))))))))
      (lambda (on-bytes on-end)
        (fake-taker-on-bytes-set! tk on-bytes)
        (fake-taker-on-end-set! tk on-end)
@@ -696,17 +739,18 @@
        (when (fake-taker-closed? tk) (taker-call! s tk thunk)))
      (lambda () (taker-abort! s tk))))
 
-  ;; taker-wrote! : FakeShell FakeTaker Bytevector (U #f ((U #f Symbol) -> Any)) -> Void
-  ;; A write's turn: no longer outstanding, its bytes the client's and its
-  ;; callback told #f, or, the stream aborted before it, neither but
-  ;; ECANCELED; then the close begun if it was asked for and no write is
-  ;; left.
-  (define (taker-wrote! s tk bytes written)
+  ;; taker-wrote! : FakeShell FakeTaker Bytevector (U #f ((U #f Symbol) -> Any)) (U #f Symbol) -> Void
+  ;; A write's turn, its outcome `why`: no longer outstanding, and, written,
+  ;; its bytes the client's and its callback told #f; or neither, its
+  ;; callback told the errno, ECANCELED for a stream aborted before it; then
+  ;; the close begun if it was asked for and no write is left.
+  (define (taker-wrote! s tk bytes written why)
+    (trace! s 'door (list 'stream-wrote why))
     (fake-taker-writes-set! tk (fx- (fake-taker-writes tk) 1))
-    (unless (fake-taker-aborted? tk)
+    (unless why
       (fake-shell-writes-rev-set! s (cons bytes (fake-shell-writes-rev s))))
     (when written
-      (taker-call! s tk (lambda () (written (if (fake-taker-aborted? tk) 'ECANCELED #f)))))
+      (taker-call! s tk (lambda () (written why))))
     (when (and (fake-taker-closing? tk) (fxzero? (fake-taker-writes tk)))
       (linger-begun! s tk)))
 

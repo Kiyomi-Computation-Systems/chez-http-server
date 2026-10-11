@@ -329,3 +329,12 @@ at the hand-off.
     the `upgrade` event (`lib/_http_server.js` 1048-1066, v24.21.0).
 - **A taker that never reads** hears of the client's end only at its close, as before:
   the core dropped the end too.
+
+## Amendment (2026-10-11) — the cross-shell contract test holds door scripts
+
+"The cross-shell contract test (design §8.4) holds no door script" no longer holds.
+- On the owner's form ("Land the replay"; weighed: paired checks only), the libuv shell
+  traces each event of a taken stream's, and the contract test replays them into the
+  fake's door (design §8.4's note of this date).
+- Twelve door scripts are held there. Paired checks in the shell and switch suites
+  still hold what a script cannot reach, a read error among them.

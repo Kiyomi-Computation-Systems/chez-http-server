@@ -310,7 +310,16 @@
   ;; steps and each action of its the shell performs, as (shell 'server-event
   ;; datum) and (shell 'server-action datum).  The datum is the event or the
   ;; action itself, not a copy: a trace that keeps it keeps what it holds, a
-  ;; response's body among them.  Made `on-credit?`, the shell answers with
+  ;; response's body among them.  Once a stream is taken (THE DOOR), each
+  ;; event libuv brings it is traced as (connection 'door datum): a read,
+  ;; `(stream-read bv start end)`, whether the taker's or dropped while its
+  ;; close lingers; the end of its reads, `(stream-end why)`, 'eof or the
+  ;; errno; a write's completion, `(stream-wrote why)`, #f or the errno; and
+  ;; its wheel entry passing, `(stream-passed now)`.  And two stages of its
+  ;; close: the half-close as the close lingers, `(stream-shut)`, and the
+  ;; handle's close begun, `(stream-close)`.  The cross-shell contract test
+  ;; replays the events into the fake's door, and holds the stages to the
+  ;; fake's.  Made `on-credit?`, the shell answers with
   ;; each handler's answer and `credit`, `(handler-responded answer credit)`
   ;; (M6.2): a streaming reader it answers then owes credit for the pieces
   ;; it is handed, and reading waits for connection-body-credit!.
@@ -829,6 +838,15 @@
     (let ((trace (shell-trace (connection-shell c))))
       (when trace (trace c kind datum))))
 
+  ;; door-trace! : Connection Datum -> Void  (syntax)
+  ;; An event of a taken stream's, traced as `(c 'door datum)` (make-shell's
+  ;; trace), `datum` made only when the shell has a trace: a server, which
+  ;; has none, makes nothing per read.
+  (define-syntax door-trace!
+    (syntax-rules ()
+      ((_ c datum) (let ((trace (shell-trace (connection-shell c))))
+                     (when trace (trace c 'door datum))))))
+
   (define (log! sh what details) ((shell-log sh) what details))
 
   ;; --- the executors ------------------------------------------------------------
@@ -1267,6 +1285,7 @@
   ;; stream lingering if its close was asked for and no write is outstanding,
   ;; or, writes still outstanding, its write bound armed again.
   (define (taker-wrote! c tk written why)
+    (door-trace! c (list 'stream-wrote why))
     (taker-writes-set! tk (fx- (taker-writes tk) 1))
     (when written (taker-call! c (lambda () (written why))))
     (when (taker-closing? tk)
@@ -1284,6 +1303,7 @@
     (unless (or (connection-closing? c) (taker-closing? tk))
       (let ((tcp (connection-tcp c)))
         (define (ended why)
+          (door-trace! c (list 'stream-end why))
           (connection-reading?-set! c #f)
           (taker-ended?-set! tk #t)
           (taker-call! c (lambda () (on-end why))))
@@ -1291,7 +1311,9 @@
         (connection-reading?-set! c #t)
         (guard (e ((transport-condition? e) (ended (errno e))))
           (uv-read-start! tcp
-                          (lambda (bv start end) (taker-call! c (lambda () (on-bytes bv start end))))
+                          (lambda (bv start end)
+                            (door-trace! c (list 'stream-read bv start end))
+                            (taker-call! c (lambda () (on-bytes bv start end))))
                           (lambda () (ended 'eof))
                           (lambda (e) (ended (errno e))))))))
 
@@ -1345,9 +1367,9 @@
         (connection-reading?-set! c #t)
         (guard (e ((transport-condition? e) (connection-close! c)))
           (uv-read-start! tcp
-                          (lambda (bv start end) #t)
-                          (lambda () (taker-dropped-end! c tk))
-                          (lambda (e) (connection-close! c)))))))
+                          (lambda (bv start end) (door-trace! c (list 'stream-read bv start end)) #t)
+                          (lambda () (door-trace! c '(stream-end eof)) (taker-dropped-end! c tk))
+                          (lambda (e) (door-trace! c (list 'stream-end (errno e))) (connection-close! c)))))))
 
   ;; taker-dropped-end! : Connection Taker -> Void
   ;; The client's end, read while the stream closes: it has nothing more to
@@ -1375,6 +1397,7 @@
              (wheel-arm! (shell-wheel sh) (connection-entry c)
                          (+ (uv-now (shell-loop sh)) (limits-deadline-ms (shell-limits sh) 'linger)))
              (start-ticking! sh)
+             (door-trace! c '(stream-shut))
              (guard (e ((transport-condition? e) (connection-close! c)))
                (uv-shutdown! (connection-tcp c) (lambda (err) #f)))))))
 
@@ -1402,6 +1425,7 @@
   (define (taker-passed! c)
     (let ((tk (connection-taker c))
           (now (uv-now (shell-loop (connection-shell c)))))
+      (door-trace! c (list 'stream-passed now))
       (cond ((taker-lingering? tk) (connection-close! c))
             ((let ((bound (taker-bound tk))) (and bound (<= bound now)))
              (connection-close! c))
@@ -1549,6 +1573,8 @@
   (define (handle-close! sh h)
     (let ((c (hashtable-ref (shell-table sh) h #f)))
       (when c
+        (when (and (connection-taker c) (not (connection-closing? c)))
+          (door-trace! c '(stream-close)))
         (connection-closing?-set! c #t)
         (connection-reading?-set! c #f)
         (disarm! c)))

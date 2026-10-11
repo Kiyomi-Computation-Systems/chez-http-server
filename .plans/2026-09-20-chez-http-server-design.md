@@ -2076,6 +2076,41 @@ fake, so the fake's taker would read nothing past the hand-off. The door's contr
 held at every delivery size by `tests/test-connection-switch.sps`, on the fake shell's
 transport, and on a real socket by the socket lane.
 
+*Noted 2026-10-11 (plan §14's door script, by form):* it holds door scripts now.
+- **The libuv shell traces each event of a taken stream's** as `door`:
+  - each read and the end of its reads, whether the taker's or dropped while its close
+    lingers;
+  - each of the taker's writes completing;
+  - its wheel entry passing;
+  - two stages of its close, the half-close and the close begun.
+
+  Each is made only when the shell has a trace, so a server makes nothing per read.
+  Measured, five rounds of 1,000 reads a run: 4,240.8 to 4,345.3 B a read through the
+  probe, against 4,239.7 to 4,345.5 before. A trace point that built its datum anyway
+  read 4,307.8 to 4,408.5.
+- **The fake traces its own door the same,** and the replay gives it each event:
+  - a read and an end are delivered;
+  - a completion is the fake's oldest write, with the libuv shell's outcome. Whether
+    libuv had written a write when its stream was aborted is the kernel's, as how it
+    divides the reads is.
+  - a pass is the fake's timer firing.
+  - The close's stages are each shell's own. The traces hold them to each other: the
+    replay completes the fake's close where the libuv shell's completed, so without
+    them a fake that closed at once, never lingering, read the same.
+- **The taker's code marks each call it makes and each it is told,** so the traces hold
+  what the taker saw.
+- **Eleven door scripts play to the direct and the coroutine shell, and one stalls.**
+  They cover an echo, bytes with the request, a goodbye with and without a client still
+  sending, two aborts, a deadline, a waiting taker, a raise, a write after the close, and
+  a late reader. The stalled one plays under short limits, where its linger's deadline
+  closes it.
+- **Its prototype found a bug and two differences in the fake.**
+  - The bug: bytes sent after the 101 were dropped before the taker's read-start
+    (decision 0016's amendment).
+  - In the fake: an abort after a write libuv had already sent, and a write after the
+    close told ECANCELED at the next completion where the libuv shell tells it on its
+    next turn.
+
 ### 8.5 The socket lane
 
 chez-libuv's own shape, which its `tests/test-echo.sps` is the template for: bind

@@ -1787,28 +1787,39 @@ failure.*
   thread from the loop during the write, past a tick (10 ms). Its fix, the least of
   three writes, was stopped before its counts were recorded.
 
-*Noted 2026-10-08, from decision 0024's review, with its reason; not decided.*
-
-- **A door script in the cross-shell contract test.** The fake's door is held to the
-  libuv shell's by paired checks in the two suites, not by a replay of the libuv shell's
-  door events into the fake (0016 has no door script). Decision 0024 found four
-  differences that way. A replay would find the next; it needs the contract test to
-  drive a taker on both shells.
-  - **Measured 2026-10-11 by a prototype** (at f357adb), on the owner's "let's keep
-    working on the §14 open list". It added five trace points to the libuv shell's door,
-    three to the fake's, and ten door scripts, and replayed the libuv shell's door events
-    into the fake. 224 checks passed and 9 parted: 6 were one bug, and 3 were the fake.
-  - **The bug, fixed on `fix/hand-off-read-stop`** by the owner's form ("Keep them"):
-    after the 101, the libuv shell read on with the core's callbacks until the taker's
-    read-start, and the core, handed off, dropped what it read. The core now stops
-    reading before the hand-off (decision 0016's amendment).
-  - **The replay lands next** on the same form ("Land the replay"), with the fake's two
-    differences fixed: an abort after a write libuv had already sent, and when a write
-    after the close is told ECANCELED.
-
 *Settled: the smuggler corpus on 2026-10-04 (decision 0021); the signal gap after
-`listening`, a taken stream's close bounded from the server's side (decision 0027), and
-what the full drain keeps after a big read, on 2026-10-11.*
+`listening`, a taken stream's close bounded from the server's side (decision 0027), what
+the full drain keeps after a big read, and a door script in the cross-shell contract
+test, on 2026-10-11.*
+
+- ~~A door script in the cross-shell contract test~~, **settled 2026-10-11** on
+  `fix/hand-off-read-stop` and `test/door-replay`, on the owner's forms ("Keep them",
+  "Land the replay"). The item, noted 2026-10-08 from decision 0024's review: the fake's
+  door was held to the libuv shell's by paired checks, not a replay, and a replay would
+  find the next difference.
+  - **Measured first by a prototype** (at f357adb). It added five trace points to the
+    libuv shell's door, three to the fake's, and ten door scripts, and replayed the libuv
+    shell's door events into the fake. 224 checks passed and 9 parted: 6 were one bug,
+    and 3 were the fake.
+  - **The bug.** After the 101, the libuv shell read on with the core's callbacks until
+    the taker's read-start, and the core, handed off, dropped what it read. A taker that
+    started reading 50 ms after its take-over never got what its client sent once it had
+    the 101. The core now stops reading before the hand-off (decision 0016's amendment),
+    as Go's hijack and Node's upgrade keep those bytes.
+  - **The fake's two differences, fixed.**
+    - An abort after a write libuv had already sent was ECANCELED in the fake, where
+      libuv told `#f` and the client read it. The replay now gives the fake libuv's
+      outcome of each write: whether it was written is the kernel's.
+    - A write after the close was told ECANCELED at the fake's next completion, where
+      libuv tells it on its next turn. The fake now tells it at its next drain.
+  - **Landed.**
+    - The libuv shell traces each event of a taken stream's as `door`, and its close's
+      two stages, made only when traced: 0 B a read, measured against the trace point
+      unguarded at about 64 B.
+    - Twelve door scripts play to the direct shell, eleven of them to the coroutine
+      shell too, and the stalled one under short limits.
+    - The taker's calls and what it is told are marked in each shell's trace.
+    - 91 checks.
 
 - ~~What the full drain keeps after a big read~~, **settled 2026-10-11 by measurement** on
   `fix/wake-value-let-go`, on the owner's form ("Fix it, settle the item"). The item,
