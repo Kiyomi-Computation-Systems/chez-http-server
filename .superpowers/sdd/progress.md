@@ -253,3 +253,12 @@ NEXT: in chez-websocket, the pin to v0.4.1 (520f70e) alone, then M5. Here, plan 
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,989 expected passes, every pin ok; the shell suite's 204, as before. In the noble image (aarch64, libuv 1.48.0), every suite once: fifty green, 1,951 expected passes; the clients suite stops at its first tool, `ab`, which the image lacks, as on main's tree.
 
 NEXT: this PR, then the closing ritual when the owner asks. Here, plan §14's open list holds three items. In chez-websocket, the v0.4.1 pin (#59), M5 (#60 to #65) and #66 are merged.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual": **the held shutdown's check timed by the loop's clock, #162** (the entry above). 3896f38 was squashed as 9b1b5f8 (tree 10f6b1c, the tested head's; parent 6191d47).
+- **CI.** Actions is billing-blocked. The PR's run, 38103643691, and main's on the squash, 38138878516, each ended with its `linux` job not started: 0 steps, and the annotation "The job was not started because recent account payments have failed or your spending limit needs to be increased". The local runs in the entry above stood in for it, as the PR body said, and it merged past the red check on the owner's word.
+- **Branches.** Deleted on the remote and here. The shared checkout, clean on `main`, was fast-forwarded. No PR is open.
+- **Follow-ups**, each in a session of its own: the 20 ms sleep check timed by the loop's clock; the drain-deadline and taker-deadline checks red under load. Another session has `test/taker-arm-refreshes-clock` (chez-websocket#66's SC-1). Each appends to this file, so it rebases onto this.
+
+`make test` green on main: fifty-one suites, 1,989 expected passes, every pin ok.
+
+NEXT: the follow-ups' PRs, then the closing ritual for each when the owner asks. When Actions returns, re-run main's latest run once. Here, plan §14's open list holds three items.
