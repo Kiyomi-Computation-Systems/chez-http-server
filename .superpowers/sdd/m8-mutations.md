@@ -1873,3 +1873,92 @@ HS-SAME, `d1387144` HS-SAME+M8H-9). Every mutant loaded, and every row reported 
   red at this check, `(#f stopped)`, each time; the other three green, 204 expected passes.
 
 **The changed check has its killer by value:** M8H-9.
+
+## After M8 — a taker's arm brings the loop's clock up to date (2026-10-10, rebased 2026-10-11)
+
+chez-websocket's #66 recorded SC-1 as a survivor (its `.superpowers/sdd/m4-mutations.md`):
+`taker-deadline!` without its `uv-update-time!` left every server suite green. On
+`test/taker-arm-refreshes-clock`, cut from 6191d47; tests only. `tests/test-shell.sps`
+gains one check and its taker (`/door-held`). Built first with a helper of its own,
+`hold-past!`; rebased onto 67024b0 once #162 merged, on the owner's word, it holds the
+loop with #162's `hold-until!`, the same helper, and `hold-past!` is gone.
+
+Platform: Darwin 25.6.0 arm64, Chez Scheme 10.4.1, libuv 1.52.1, 2026-10-10 and 11. Linux
+6.12.76-linuxkit aarch64, libuv 1.48.0, in `chez-libuv-noble-scratch:10.4.1`, on a dev
+shim; and x86_64 in `chez-websocket-ci-amd64:10.4.1`, under emulation.
+
+**The check**, "a taker that holds the loop 300 ms as it takes the stream arms its
+deadline after the hold, at the loop's time brought up to date". The taker reads the
+loop's time as it takes the stream (`stale`). It holds the loop until libuv's clock reads
+`stale` + 300, reads the loop's time again, arms a deadline of a minute, and reads the
+connection's deadline. The check holds two things, and a failing side answers what it
+read:
+- the premise: the loop's time after the hold is still `stale`, so the arm has a stale
+  time to bring up to date;
+- the deadline, less the minute, is at least 300 ms past `stale`.
+
+**The oracle:** libuv's clock, read on a loop made for the hold (the section above), so
+the suite's loop's time is left as it was and the bound is exact. A bound of "the hold
+less 1 ms" on Chez's clock could flake on Linux, whose loop clock is the coarse one.
+
+### The runs
+
+Each row's red set and the new check's values were named and hashed before each run; six
+rows, every suite each, three at a time. The values were read through a copy of
+`(testing)` in each mutant's root that prints a failure's actual and expected values.
+
+| id | mutant | red, predicted and seen |
+|---|---|---|
+| B-0 | none (a comment) | none: shell 205 passes |
+| SC-1 | `taker-deadline!` without `uv-update-time!` | shell: the new check, `(satisfied stale 0 satisfied)` |
+| SC-2 | the clock brought up to date after the arm | shell: the new check, `0` |
+| TK-1 | the taker's hold leaves the loop's time brought up to date | shell: the new check, the premise reading the loop's time after the hold |
+| TK-1+SC-1 | both | shell: the new check, the premise alone; the bound holds, by the hold's refresh |
+| TK-2 | the taker's hold holds nothing | shell: the new check, a small number |
+
+- **Run 1, on d85c5cc (`hold-past!`), 2026-10-10: 0 mismatches.** TK-1 spun the hold on
+  the suite's loop, TK-2 spun it not at all. TK-1 read `3503466694`, TK-2 `6`. The clients
+  suite stopped at status 2 in every row, its tools not yet built in this worktree; every
+  suite 1,952 passes in B-0.
+- **On the rebased tree, TK-1 and TK-2 are cut at the taker's call to `hold-until!`,** so
+  neither reaches the held shutdown's check, which shares the helper: TK-1 brings the
+  loop's time up to date after the call, TK-2 holds until `stale`.
+- **Run 2: 6 mismatches, one prediction error.** The clients suite was green in every
+  row: the `make test` run since run 1 had built its tools. Every shell red set and value
+  matched: SC-1 and SC-2 `0`, TK-1 `3542140092`, TK-1+SC-1 `3542140072`, TK-2 `0`; B-0
+  1,990 passes.
+- **Run 3, re-predicted: 1 mismatch, load.** B-0 went red on "a connection held in its
+  handler, nothing armed, the timer stopped, is closed at the drain's deadline, on time",
+  its drain wait `iterations-exhausted`: the check #162's entry measured red under load on
+  main's tree too. It runs before the new check. B-0's shell suite alone: green, 205, five
+  runs of five; run 2's B-0 was green. Every other row as run 2.
+- **The gap run.** SC-1's library under main's `tests/test-shell.sps`: green, 204 passes,
+  three runs of three, on 6191d47's suite and on 67024b0's. The same root reddens the new
+  suite, so the mutant loaded.
+- **Linux aarch64.** SC-1 is red by value there too, `0`, on both trees.
+- **Linux, the rebased tree.**
+  - aarch64: every suite 1,951 passes, the clients suite at status 2.
+  - The shell suite 100 times on aarch64, four containers at a time, beside another
+    session's eight. The new check passed all 100. Seven runs were red, each on one older
+    check that runs before it: the 20 ms sleep's twice and a connection held in its
+    handler five times. #162's held shutdown was never red.
+  - x86_64: the shell suite 205, SC-1 `0`, every suite 1,951 passes.
+- **Linux, the first tree** (d85c5cc).
+  - aarch64: every suite 1,952 passes.
+  - The shell suite 200 times, beside the same eight. The new check passed all 200. Five
+    runs were red on older checks: the held shutdown's twice, the held handler twice and
+    the door-timed once.
+  - x86_64: every suite 1,951 passes.
+- **The serve suite's "once serve has returned, a SIGINT ends the process at once"** was
+  red in each x86_64 run (5 of 5 on the first tree) and once on aarch64 beside the eight
+  containers. It waits on a child process by loop turns, so a slow child can run out of
+  them. That suite and `src/` are main's, and main's CI passed the check on a real x86_64
+  runner (run 38006078331).
+
+**The new check's killers by value:**
+- SC-1 and SC-2, the code;
+- TK-1 and TK-1+SC-1, the premise. Without it, a hold that refreshed the loop's time would
+  let SC-1 through, as TK-1+SC-1 shows;
+- TK-2: the bound needs the hold.
+
+No other check changed. **No longer a survivor:** SC-1.

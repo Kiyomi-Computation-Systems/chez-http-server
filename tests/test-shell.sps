@@ -148,11 +148,12 @@
 ;;;     it reads, however the kernel split the reads, and closes once its
 ;;;     client ends; a taker that raises has its stream closed, logged; a
 ;;;     write after the close is asked for is cancelled; a taken stream
-;;;     counts against max-connections; a taker's deadline is met on time;
-;;;     and the drain runs a taker's drain call, which says goodbye and
-;;;     closes, before the deadline, at once for one registered as the
-;;;     server drains, and closes at the deadline a stream whose taker
-;;;     ignores it, telling it so;
+;;;     counts against max-connections; a taker's deadline is met on time,
+;;;     and armed at the loop's time brought up to date, so a taker that
+;;;     holds the loop arms it after the hold; and the drain runs a taker's
+;;;     drain call, which says goodbye and closes, before the deadline, at
+;;;     once for one registered as the server drains, and closes at the
+;;;     deadline a stream whose taker ignores it, telling it so;
 ;;;   - the shell's one timer: four connections add one timer to the loop;
 ;;;     its wheel empty, it stops, and the shell keeps it for its next
 ;;;     deadline, and closes it once shut down with no connection left; when
@@ -168,8 +169,10 @@
 ;;; condition, provoked by a feed from inside a callback; the weak-pair
 ;;; instrument, calibrated below; for deadlines, the loop's time (uv_now)
 ;;; each was armed at, read where it was armed, and each write began at, and
-;;; the suite's own limits; and for the drain, the loop's time each shutdown
-;;; was asked at, which the server is told, plus the suite's drain timeout.
+;;; the suite's own limits, and a hold of the loop timed by libuv's clock,
+;;; read on a loop made for the hold (hold-until!); and for the drain, the
+;;; loop's time each shutdown was asked at, which the server is told, plus
+;;; the suite's drain timeout.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?
               current-time time-second time-nanosecond fork-thread)
@@ -699,6 +702,14 @@
                         (transport-deadline! t #f)
                         (took! 'disarmed (shell-deadlines adopting))
                         (transport-close! t))))
+          ((bytevector=? target (b "/door-held"))
+           (switching (lambda (t retained)
+                        (let ((stale (uv-now loop)))
+                          (hold-until! (+ stale slow-ms))
+                          (let ((unrefreshed (uv-now loop)))
+                            (transport-deadline! t 60000 (lambda () (took! 'passed)))
+                            (took! 'held stale unrefreshed (connection-deadline (newest)))
+                            (transport-close! t))))))
           ((bytevector=? target (b "/door-redrain"))
            (switching (lambda (t retained)
                         (transport-on-drain! t (lambda ()
@@ -2801,6 +2812,32 @@
                           (wait-for (lambda () (closed-and-gone? disarmer (cdr p))))))
         (client-close! (car p)))
       (shell-shutdown! disarmer)
+      (set! adopting shell))
+
+    ;; A taker's deadline is armed at the loop's time brought up to date, as
+    ;; a connection's is (chez-libuv #28): a taker that holds the loop 300 ms
+    ;; by libuv's clock as it takes the stream, the loop's time left where
+    ;; its turn read it, arms a deadline of a minute after the hold.  Each
+    ;; side failing answers what it read.
+    (let ((holder (make-shell loop handler drain-limits clock log! trace!)))
+      (set! adopting holder)
+      (set! took '())
+      (let* ((p (open-adopted! (door-handshake "/door-held")))
+             (done (wait-for (lambda () (pair? (took-of 'held)))))
+             (seen (let ((h (took-of 'held))) (if (pair? h) (car h) '(#f #f #f))))
+             (stale (car seen))
+             (unrefreshed (cadr seen))
+             (deadline (caddr seen)))
+        (test-equal "a taker that holds the loop 300 ms as it takes the stream arms its deadline after the hold, at the loop's time brought up to date"
+                    '(satisfied stale after-the-hold satisfied)
+                    (list done
+                          (if (and stale (eqv? unrefreshed stale)) 'stale unrefreshed)
+                          (if (and stale deadline (>= (- deadline 60000 stale) slow-ms))
+                              'after-the-hold
+                              (and stale deadline (- deadline 60000 stale)))
+                          (wait-for (lambda () (closed-and-gone? holder (cdr p))))))
+        (client-close! (car p)))
+      (shell-shutdown! holder)
       (set! adopting shell))
 
     ;; The drain tells a taken stream and waits (decision 0016 item 3): the
