@@ -360,3 +360,11 @@ NEXT: #165 (the stopping rule) rebases onto main, its entries after these, then 
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 1,990 expected passes, every pin ok. Nothing tested changed: AGENTS.md, the plan and the ledger only.
 
 NEXT: this PR's closing ritual, then the chez-libuv v0.9.0 pin alone. Then the lost close (`feat/taker-close-lingers`). Here, plan §14's open list holds five items.
+
+MERGED to main on 2026-10-11, on the owner's "do closing ritual on #165 once the others land": **the timing work cut back, #165** (the entry above), after #166 and #164. f71c29e was rebased onto 58f9307 as 7b500e7 (the ledger rebuilt as main's text plus this entry), `make test` green on that tree (fifty-one suites, 1,990 expected passes, every pin ok), pushed with the lease, and squashed as 16102ed (tree e5d11b4, the tested head's; parent 58f9307).
+- **CI.** Billing-blocked: the PR's run 38146145470 and main's run on the squash 38146175945 each ended with the `linux` job not started, 0 steps, and the payments annotation. Nothing tested changed.
+- **Branches.** Deleted on the remote and here. The shared checkout, clean on `main`, was fast-forwarded. No PR is open.
+
+`make test` green on main: fifty-one suites, 1,990 expected passes, every pin ok.
+
+NEXT: the chez-libuv v0.9.0 pin alone, by the owner's form. Then the lost close (`feat/taker-close-lingers`). Here, plan §14's open list holds five items.
