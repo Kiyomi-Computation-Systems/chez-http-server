@@ -326,7 +326,9 @@ What the transport does:
   your writes waiting, in memory. Count what you have written and not yet
   had ~done~ for; past a bound you choose, stop writing, or stop reading what
   you would echo. To close a client that never catches up, arm a deadline
-  that calls ~transport-abort!~: ~transport-close!~ would wait for it to read.
+  that calls ~transport-abort!~. Once you call ~transport-close!~, the server
+  gives each write still waiting ~CHEZ_HTTP_WRITE_TIMEOUT~ (60 s), and aborts
+  the stream past it.
   A client that reads again after an abort may still get part of a write
   already under way.
 - Each ~transport-write!~ is a write of its own: the server does not join
@@ -339,9 +341,11 @@ What the transport does:
   when the client closes too, or after ~CHEZ_HTTP_LINGER_TIMEOUT~ (30 s). So a
   client still sending reads your goodbye instead of a reset. Your close call
   runs then. Until it does, the stream still counts toward
-  ~CHEZ_HTTP_MAX_CONNECTIONS~. After ~transport-close!~, ~transport-read-stop!~
-  changes nothing, and once your writes are out neither does a deadline;
-  ~transport-abort!~ still closes at once.
+  ~CHEZ_HTTP_MAX_CONNECTIONS~. A client that reads nothing gets each write
+  ~CHEZ_HTTP_WRITE_TIMEOUT~ (60 s), then the stream is aborted. After
+  ~transport-close!~, ~transport-read-stop!~ changes nothing, and once your
+  writes are out neither does a deadline; ~transport-abort!~ still closes at
+  once. A deadline of yours that passes before then still runs.
 - A write after ~transport-close!~ is not sent: its ~done~ gets ~ECANCELED~.
   That ~done~, and the one for a write refused as you ask for it, comes on
   the server's next turn, or, if the server stops first, before ~serve~

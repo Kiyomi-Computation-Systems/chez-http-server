@@ -6,6 +6,16 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A taker's close no longer waits forever on a client that reads nothing.** Once a
+  taker calls `transport-close!`, each write the close still waits for gets
+  `CHEZ_HTTP_WRITE_TIMEOUT` (60 s), as the server's own writes do, and the stream is
+  aborted past it: each write is told `ECANCELED`, and the close call runs. A taker
+  that armed no deadline of its own held such a client, and its connection slot, until
+  the server drained. A deadline the taker arms still runs, and the earlier of the two
+  comes first, so chez-websocket's 10 s close timeout is unchanged (decision 0027).
+
 ### Fixed
 
 - **A signal sent the moment `serve` logs `listening` drains the server.** `serve`

@@ -47,9 +47,10 @@
 ;;; Nothing bounds a taker's writes outstanding but the taker (decided on the
 ;;; owner's word, by form, at M8.2's review): `written` tells it what each
 ;;; write has become, so it can count what is still outstanding, and stop
-;;; past a bound of its own.  A client that stops reading never takes them,
-;;; so `transport-close!` would wait for it: a deadline whose call aborts
-;;; closes it (decision 0024).
+;;; past a bound of its own.  A client that stops reading never takes them:
+;;; a deadline whose call aborts closes it (decision 0024).  Once the taker
+;;; asks for `transport-close!`, the server bounds each write the close waits
+;;; for by its write timeout, and aborts the stream past it (decision 0027).
 ;;;
 ;;; A write of no bytes is refused: chez-libuv completes a write that ends in
 ;;; an empty span a turn late, and a close then cancels it.  PURE: imports
