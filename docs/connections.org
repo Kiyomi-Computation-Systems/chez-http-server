@@ -92,7 +92,9 @@ Send the process ~SIGTERM~ (what Docker, Kubernetes and systemd send) or
 6. Once no connection is left, ~serve~ returns.
 
 It logs ~draining~ with the connections it waits for, ~drain-timeout~ if step 5
-closed any, and ~stopped~ at the end. A second signal changes nothing. If the
+closed any, and ~stopped~ at the end. A second signal changes nothing. The server
+watches for both signals before it logs ~listening~, so one sent the moment that line
+appears drains it too. If the
 listener fails (on Windows only), the server drains the same way, so whatever
 supervises it can start it again.
 

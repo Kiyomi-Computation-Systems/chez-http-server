@@ -6,6 +6,15 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A signal sent the moment `serve` logs `listening` drains the server.** `serve`
+  watched for SIGTERM and SIGINT only after writing the line, so a supervisor that
+  signalled as soon as it read it could end the process at once, with no drain and
+  nothing logged. `serve` now watches for them first. The gap showed in an x86_64
+  image run under emulation, where the serve suite's own signal check went red in three
+  runs of three.
+
 ## [0.5.0] - 2026-10-11
 
 The sixth release. A taker's `transport-close!` now closes as the server's own closes

@@ -991,7 +991,8 @@ ask for nothing.
   200 ms with a handler waiting).
 - **SIGTERM and SIGINT** (decided on the owner's word, 2026-10-03) reach the server
   through a signal handle each, which `serve` asks for and the shell closes once it
-  serves no more. `serve` returns when the server has stopped, whatever waits are still
+  serves no more. `serve` asks for them before it logs `listening` (2026-10-11), so a
+  supervisor that signals as soon as it reads the line finds them watched. `serve` returns when the server has stopped, whatever waits are still
   armed: the loop's teardown closes their timers and cancels the lookups not yet begun,
   and waits for one already running (M8.1's review). On Windows libuv delivers no
   SIGTERM, so Ctrl-C alone drains there.

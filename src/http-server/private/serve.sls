@@ -18,6 +18,8 @@
 ;;; literal is refused by the listener's bind, and is a config error too; the
 ;;; shell has closed the listener by then.  A server that listens logs
 ;;; `listening`, with its host and port, the kernel's choice for port 0.
+;;; `serve` watches the process's signals before that line, so a supervisor
+;;; that signals the moment it reads it finds them watched.
 ;;;
 ;;; THE CONDITIONS (design §6.4):
 ;;;
@@ -67,16 +69,16 @@
   ;; turn are made before it returns (run-until-stopped!).
   ;; `lookup` stands in for the process's environment, as `getenv` does by
   ;; default.  A malformed setting raises &http-server-config-error before
-  ;; anything listens.
+  ;; anything listens.  The signals are watched before `listening` is
+  ;; logged; one sent before that meets what the process does with it, by
+  ;; default ending it, before anything is served.
   (define serve
     (case-lambda
       ((handler) (serve handler getenv))
       ((handler lookup)
        (call-with-uv-loop
         (lambda (loop)
-          (let ((sh (start-server loop handler lookup log-line)))
-            (shell-watch-signals! sh)
-            (run-until-stopped! sh)))))))
+          (run-until-stopped! (start-server loop handler lookup log-line shell-watch-signals!)))))))
 
   ;; run-until-stopped! : Shell -> Void
   ;; Turn the shell's loop until its server stops, then make the taker's
@@ -88,24 +90,29 @@
     (shell-call-deferred! sh))
 
   ;; start-server : UvLoop (Request -> Response) (String -> (U String #f))
-  ;;                (Symbol (Listof Any) -> Any) -> Shell
+  ;;                (Symbol (Listof Any) -> Any) [(Shell -> Any)] -> Shell
   ;; A server on `loop`, serving `handler`, configured through `lookup` and
   ;; logging to `log`, listening where `lookup` says: the start `serve`
-  ;; makes, on a loop the caller runs.  It logs `listening` with the host
-  ;; and the port it listens on.
-  (define (start-server loop handler lookup log)
-    (let-values (((limits host port) (settings lookup)))
-      (let* ((sh (make-shell loop handler limits wall-clock log))
-             (bound (guard (e ((bad-address? e)
-                               (raise (condition
-                                       (make-http-server-config-error)
-                                       (make-message-condition
-                                        "CHEZ_HTTP_HOST is not an IPv4 or IPv6 literal")
-                                       (make-irritants-condition (list "CHEZ_HTTP_HOST" host))
-                                       e))))
-                      (shell-listen! sh host port))))
-        (log 'listening (list host bound))
-        sh)))
+  ;; makes, on a loop the caller runs.  Once it listens, it calls `ready`
+  ;; with the shell, if given, and then logs `listening` with the host and
+  ;; the port it listens on: `serve` watches the process's signals there.
+  (define start-server
+    (case-lambda
+      ((loop handler lookup log) (start-server loop handler lookup log (lambda (sh) #f)))
+      ((loop handler lookup log ready)
+       (let-values (((limits host port) (settings lookup)))
+         (let* ((sh (make-shell loop handler limits wall-clock log))
+                (bound (guard (e ((bad-address? e)
+                                  (raise (condition
+                                          (make-http-server-config-error)
+                                          (make-message-condition
+                                           "CHEZ_HTTP_HOST is not an IPv4 or IPv6 literal")
+                                          (make-irritants-condition (list "CHEZ_HTTP_HOST" host))
+                                          e))))
+                         (shell-listen! sh host port))))
+           (ready sh)
+           (log 'listening (list host bound))
+           sh)))))
 
   ;; settings : (String -> (U String #f)) -> (values Limits String Nat)
   ;; The limits and the address `lookup` gives.  What the pure parsers refuse,
