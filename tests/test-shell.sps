@@ -28,15 +28,16 @@
 ;;;   - the verbs a handler waits with (decision 0015, M7.2): a handler that
 ;;;     waits on `await` is woken by another request's handler, and a second
 ;;;     resume is logged as `late-resume` (R4); a handler that holds the
-;;;     loop, then sleeps 20 ms, sleeps 18 ms or more by the monotonic clock,
-;;;     its sleep armed on the loop's clock brought up to date, and one whose
-;;;     deadline ends a sleep of a minute is answered at once, nothing left
-;;;     armed after either; once a shell on the loop serves no more, which
-;;;     closes the timer of the loop's waits, a sleep makes another; and a
-;;;     handler that resolves localhost is answered what uv-getaddrinfo!
-;;;     itself answers, one that resolves a name libuv refuses at the call,
-;;;     empty, with a NUL or too long, `invalid-name`, and one that resolves
-;;;     a name with an empty label `EAI_NONAME`;
+;;;     loop, then sleeps 20 ms, sleeps 20 ms or more by the loop's clock,
+;;;     its sleep armed on the loop's clock brought up to date, which a
+;;;     timer due 19 ms in finds still armed, and one whose deadline ends a
+;;;     sleep of a minute is answered at once, nothing left armed after
+;;;     either; once a shell on the loop serves no more, which closes the
+;;;     timer of the loop's waits, a sleep makes another; and a handler that
+;;;     resolves localhost is answered what uv-getaddrinfo! itself answers,
+;;;     one that resolves a name libuv refuses at the call, empty, with a NUL
+;;;     or too long, `invalid-name`, and one that resolves a name with an
+;;;     empty label `EAI_NONAME`;
 ;;;   - an idle connection carries no coroutine (decision 0003; the M7
 ;;;     exit): once a handler that sleeps, looks a name up and meets a
 ;;;     deadline, its reader's pieces and end and its producer sleeping too,
@@ -360,9 +361,12 @@
 ;; M7.2): `/await-wake` waits on `await`, keeping its resume in `waker`,
 ;; and answers what it was given; `/wake` calls `waker` twice, with
 ;; "woken by another" and then "again", and answers "woke"; `/sleep` holds
-;; the loop 30 ms, then sleeps 20 ms, and answers how many microseconds of
-;; the monotonic clock it slept, read with no update of the loop's own,
-;; which the sleep must make itself;
+;; the loop 30 ms, then sleeps 20 ms, and answers how many milliseconds it
+;; slept, the hold and the sleep each timed by the loop's clock read on a
+;; loop of its own (loop-ms), so the suite's loop keeps its time from
+;; before the hold, which the sleep must bring up to date itself; and what
+;; a timer on the suite's loop due 19 ms into the sleep read of the timed
+;; waits armed as it fired, or `not-fired`;
 ;; `/deadline` sleeps a minute inside a deadline of 10 ms, and answers
 ;; "passed" when the deadline's raise comes, or "slept"; `/resolve` resolves
 ;; "localhost" and answers the addresses, a space between each;
@@ -400,6 +404,10 @@
      (let spin ()
        (uv-update-time! clock)
        (when (< (uv-now clock) until) (spin))))))
+;; loop-ms : -> Nat — libuv's loop clock now, read as hold-until! reads it,
+;; on a loop made for the read: the suite's loop keeps its cached time.
+(define (loop-ms)
+  (call-with-uv-loop (lambda (clock) (uv-update-time! clock) (uv-now clock))))
 (define parked #f)
 (define waker #f)
 ;; How far the handlers of `/leave`, `/half-close` and `/held-wait` have
@@ -423,10 +431,6 @@
     (resolve host)
     "resolved"))
 
-;; monotonic-us : -> Nat — the monotonic clock, in microseconds.
-(define (monotonic-us)
-  (let ((t (current-time 'time-monotonic)))
-    (+ (* 1000000 (time-second t)) (div (time-nanosecond t) 1000))))
 (define counted-calls 0)
 (define credit-pieces '())
 (define credit-held 0)
@@ -473,10 +477,16 @@
           ((bytevector=? target (b "/sleep"))
            (awaiting
             (lambda ()
-              (hold! 30)
-              (let ((before (monotonic-us)))
+              (hold-until! (+ (loop-ms) 30))
+              (let ((before (loop-ms)) (seen (vector 'not-fired)) (witness (make-uv-timer loop)))
+                (uv-timer-start! witness (lambda (t) (vector-set! seen 0 (shell-waits-timed shell)))
+                                 (- (+ before 19) (uv-now loop)) 0)
                 (sleep-ms 20)
-                (make-response 200 #f '() (string->utf8 (number->string (- (monotonic-us) before))))))))
+                (uv-close! witness)
+                (let ((slept (- (loop-ms) before)) (w (vector-ref seen 0)))
+                  (make-response 200 #f '()
+                                 (string->utf8 (string-append (number->string slept) " "
+                                                              (if (symbol? w) (symbol->string w) (number->string w))))))))))
           ((bytevector=? target (b "/deadline"))
            (awaiting
             (lambda ()
@@ -1266,18 +1276,31 @@
       (client-close! waiting))
     ;; The timed waits (decision 0015 item 3): the loop's waits have their
     ;; own timer, and nothing is left armed once each wait is over.  A sleep
-    ;; of 20 ms is armed on the loop's clock, which counts whole
-    ;; milliseconds and may trail the monotonic clock by one: by that clock
-    ;; it lasts 18 ms at least.  Armed on the loop's clock as the hold left
-    ;; it, 30 ms behind, it would end at once.
+    ;; of 20 ms is armed at the loop's time brought up to date, a reading of
+    ;; the one clock every loop reads taken after `before`, and ends once
+    ;; that clock, read again, is 20 ms on; the handler reads it last.  So
+    ;; the sleep lasts 20 of the loop's milliseconds at least: the bound is
+    ;; exact.  Timed by Chez's monotonic clock, as until 2026-10-11, a sleep
+    ;; ran as little as 8.3 ms on Linux, whose loop clock is
+    ;; CLOCK_MONOTONIC_COARSE, with four processes at once.  Armed on the
+    ;; loop's time as the hold left it, 30 ms behind, the sleep would be due
+    ;; already, and a pause in its wake could still make it last 20 ms.  So
+    ;; the witness, a timer started from that time, due at `before` plus 19,
+    ;; reads how many timed waits are armed as it fires.  libuv runs due
+    ;; timers in the order they are due (1.52.1 src/timer.c, the same since
+    ;; 1.48.0), so it fires before the waits' timer, due at 20 past
+    ;; `before` or later, and reads the sleep: 1.  A sleep due already goes
+    ;; first, and the witness reads 0, or has not fired.
     (let ((cl (open-client! (b "GET /sleep HTTP/1.1\r\nHost: x\r\n\r\nGET /deadline HTTP/1.1\r\nHost: x\r\n\r\n"))))
-      (test-equal "a handler that holds the loop 30 ms, then sleeps 20 ms, sleeps 18 ms or more by the monotonic clock; one whose deadline of 10 ms ends a sleep of a minute is answered passed; nothing is left armed"
-                  '(satisfied (200 at-least-18-ms) (200 "passed") 0)
+      (test-equal "a handler that holds the loop 30 ms, then sleeps 20 ms, sleeps 20 ms or more by the loop's clock, a timer due 19 ms in firing while the sleep is armed; one whose deadline of 10 ms ends a sleep of a minute is answered passed; nothing is left armed"
+                  '(satisfied (200 at-least-20-ms 1) (200 "passed") 0)
                   (list (wait-for (lambda () (= 2 (length (responses (client-bytes cl))))))
                         (let ((rs (responses (client-bytes cl))))
                           (if (pair? rs)
-                              (let ((n (string->number (body (car rs)))))
-                                (list (status (car rs)) (if (and n (>= n 18000)) 'at-least-18-ms n)))
+                              (let* ((p (open-string-input-port (body (car rs))))
+                                     (n (read p))
+                                     (w (read p)))
+                                (list (status (car rs)) (if (and (number? n) (>= n 20)) 'at-least-20-ms n) w))
                               'no-response))
                         (let ((rs (responses (client-bytes cl))))
                           (if (= 2 (length rs)) (list (status (cadr rs)) (body (cadr rs))) 'no-response))

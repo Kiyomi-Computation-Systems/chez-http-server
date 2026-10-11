@@ -1962,3 +1962,172 @@ rows, every suite each, three at a time. The values were read through a copy of
 - TK-2: the bound needs the hold.
 
 No other check changed. **No longer a survivor:** SC-1.
+
+## After M8 — the 20 ms sleep's check timed by the loop's clock (2026-10-11)
+
+The shell suite's "a handler that holds the loop 30 ms, then sleeps 20 ms, sleeps 18 ms
+or more by the monotonic clock; …", on `test/sleep-by-loop-clock`. Its `/sleep` handler
+held the loop 30 ms of Chez's monotonic clock, then timed its sleep of 20 ms by that
+clock. The check took 18,000 µs or more, saying the loop's clock "may trail the monotonic
+clock by one". Now:
+- the hold and the sleep are each timed by the loop's clock, read on a loop made for the
+  read (`loop-ms`, beside `hold-until!`), and the bound is 20;
+- a witness, a timer on the suite's loop due at `before` plus 19, reads how many timed
+  waits are armed as it fires, and must read 1.
+
+The check reads "… sleeps 20 ms or more by the loop's clock, a timer due 19 ms in firing
+while the sleep is armed; …". Tests only: nothing under `src/` moved.
+
+Platform: Darwin 25.6.0 arm64 (Apple M1), Chez 10.4.1 `tarm64osx`, libuv 1.52.1; and Linux
+6.12.76-linuxkit aarch64 in Docker, `chez-libuv-noble-scratch:10.4.1` (Ubuntu 24.04, libuv
+1.48.0, CI's), Chez 10.4.1. 2026-10-11, the library path as above.
+
+**The oracles:**
+- libuv's one clock, as for the held shutdown above: every loop in a process reads
+  `uv__hrtime(UV_CLOCK_FAST)`, which never steps back;
+- libuv's timers: `uv_timer_start` dates a timer `loop->time` plus its timeout, and
+  `uv__run_timers` runs the due ones in the order they are due, then the order they were
+  started (1.52.1 `src/timer.c`: `timer_less_than`, `uv_timer_start`, `uv__run_timers`;
+  the file's only change since 1.48.0 drops an include). chez-libuv's `uv-timer-start!`
+  calls `uv_timer_start` and refreshes nothing (v0.8.0 `src/libuv/timer.sls:50-65`);
+- the waits' own code: `sleep-ms` arms its time at the loop's time brought up to date
+  (`loop-clock!` in `shell.sls`: `uv-update-time!`, then `uv-now`) and starts the waits'
+  timer for its delay; `waits-fire!`, the waits' timer's callback, ends a sleep only once
+  a reading brought up to date is at or past it (`heap-advance!`, `<=`).
+
+**What follows.**
+- The length: `before` is read no later than the sleep's arming, the sleep ends no earlier
+  than 20 ms after that, and the answer's reading is later still. So the sleep lasts 20 of
+  the loop's milliseconds at least, on any platform and under any load.
+- The witness: started from the cached time `cached` with a delay of `before` plus 19 less
+  `cached`, it is due at `before` plus 19. The waits' timer is due at the arming plus 20,
+  `before` plus 20 or later, so the witness runs first and reads the sleep: 1.
+- Under M7T-21 the sleep and the waits' timer are dated from `cached`, at least 30 before
+  `before`. The sleep is due first, `waits-fire!` takes it out, and the witness, if it has
+  fired by the wake, reads 0. That holds whatever the wake's latency. The length does
+  not: M7T-21's sleep lasts as long as its wake takes.
+
+### The probes
+
+`.plans/research/spike/sleep-clock.sps` repeats the `/sleep` handler with the real shell
+and a client on its loop, two ways a round: the old hold, 30 ms of Chez's clock, and the
+new one, a spin on a second loop until its time reads 30 ms on. Either way it times the
+sleep by both clocks: Chez's in µs, as the check read it until now, and the loop's in ms,
+read on a loop of its own, as the check reads it since.
+
+| where | rounds a way | old hold: Chez µs | under 18,000 | old hold: loop ms | new hold: Chez µs | under 18,000 | new hold: loop ms |
+|---|---|---|---|---|---|---|---|
+| Darwin, alone | 200 | 19,281 to 45,858 | 0 | 20 to 46 | 19,498 to 54,755 | 0 | 20 to 54 |
+| Darwin, four at once | 800 | 19,331 to 76,516 | 0 | 20 to 76 | 19,414 to 76,702 | 0 | 20 to 76 |
+| Linux, alone | 300 | 15,685 to 52,316 | 5 | 20 to 52 | 18,140 to 80,632 | 0 | 20 to 80 |
+| Linux, four at once | 1,200 | 8,295 to 110,310 | 35 | 20 to 108 | 14,936 to 89,534 | 7 | 20 to 89 |
+
+- **The old bound was not derived.** On Linux the sleep fell under 18,000 µs of Chez's
+  clock alone (5 of 300) and four at once (35 of 1,200). In the least, the sleep spanned
+  24 of the loop's ms and 8,295 µs of Chez's. Timing the hold by the loop's clock does
+  not save it: 7 of 1,200. On Darwin it never fell under 19,281 µs.
+- **The new bound is exact.** By the loop's clock the sleep never fell under 20 ms in
+  5,000 rounds, and sat at 20 in 1,393 of them.
+- **The two clocks part by more than the sleep on Linux.** A hold of 30 ms of Chez's clock
+  moved the loop's 19 to 160 ms four at once; one of 30 of the loop's ms took 4,092 to
+  108,160 µs of Chez's.
+
+`.plans/research/spike/sleep-witness.sps` is the same with the witness, and prints what it
+read. Run with the shell as built, and with M7T-21's shell first on the library path:
+
+| where | shell | rounds | sleep 20 ms or more by the loop's clock | witness read 1 |
+|---|---|---|---|---|
+| Linux, one probe beside ten other containers | as built | 600 | 600 | 600 |
+| Linux, the same | M7T-21 | 600 | **20** | 0: not-fired 585, 0 in 15 |
+| Darwin, alone | as built | 400 | 400 | 400 |
+| Darwin, alone | M7T-21 | 400 | **6** | 0: not-fired 397, 0 in 3 |
+
+- **The length alone let M7T-21 pass** in 26 rounds of 1,000. In 23 of them Chez's clock
+  moved within a millisecond of the loop's or more, up to 210,428 µs for 210 ms: real pauses in the
+  wake, not the loop's clock jumping. Bigger margins would have to outrun them.
+- **The witness never did.** It read 1 in all 1,000 rounds as built, and never under
+  M7T-21.
+
+Run: `CHEZSCHEMELIBDIRS=[<mutant root>:]<make build's library path> chez --program
+.plans/research/spike/sleep-clock.sps N` (300 rounds alone and 300 each in four
+containers at once on Linux; 200 alone and 200 each four at once on Darwin), and
+`sleep-witness.sps` the same way (300 and 200 rounds, each shell). A read of `loop-ms`
+costs 8 to 12 µs on Darwin (1,000 reads, three rounds).
+
+### The first run: the length alone
+
+Four rows, every suite each (scratchpad `mut/run1`), specs hashed before the first run of
+the changed check (sha256 `571f9068` SL-0, `090ca529` M7T-21, `da1cd439` SL-SAME,
+`2bdb7922` SL-SAME+M7T-21), three runs on Darwin and two of the shell suite three times
+on Linux:
+- M7T-21 reddened the check alone, `(200 n)`, n 8, 1 and 2 on Darwin, where I predicted
+  0 or 1, and 2, 2, 2, 2 and 4 on Linux. SL-0, SL-SAME and SL-SAME+M7T-21 stayed green.
+- **But in Linux's fourth run M7T-21 passed:** its wake took 20 of the loop's ms or more.
+  Its red rested on the wake's latency, as the old check's had (18 ms of Chez's clock).
+  The probe then measured how often (the second table above).
+- The first run's clients suite stopped in every row: `build/oha` was not fetched in this
+  worktree. With it in place (`tests/fetch-oha.sh` kept the pinned binary by its
+  sha256), the later runs read it green.
+
+### Decided by form
+
+Asked with the length's misses (1 of 6 Linux runs of the shell suite; with sleep-witness.sps
+under M7T-21, the new hold's sleep 20 ms or more in 7 rounds of 300, beside other
+sessions' containers) and the witness's 600 Linux rounds each way, the owner chose "Add
+the witness (Recommended)". Weighed:
+"Length check only", shipping M7T-21's red as one that rests on latency; and "Bigger
+margin", a hold of 300 ms and a sleep of 200 ms, which M7T-21 passes only past a 200 ms
+pause, about 0.5 s more a run, and still not derived.
+
+### The mutants
+
+Eight rows (scratchpad `mut/run2`, four at a time), each red set and value named and its
+spec hashed before the first run of the witness check (sha256 `32aef28a` W-0, `fe858d3b`
+M7T-21, `6684909d` SL-SAME, `3159defa` SL-SAME+M7T-21, `7c29bc6f` W-PAUSE, `510bdea1`
+W-PAUSE+M7T-21, `c703d1b0` W-STALE, `477d3219` W-STALE+M7T-21). The first four ran over
+every suite, the four W- rows over the shell suite, which alone runs their edit. The
+runner put a `(testing)` that prints a failing check's values after the mutant's root.
+Every mutant loaded, and every row reported its suites.
+
+| id | mutant | red, predicted and seen |
+|---|---|---|
+| W-0 | none: a comment's text in the shell suite | none: 51 suites, 1,989 expected passes |
+| M7T-21 | the waits' clock read with no update: `loop-clock!`'s now without `uv-update-time!` (re-cut on this tree) | shell 1: this check, `(200 3 not-fired)` |
+| SL-SAME | `loop-ms` reads the suite's own loop, bringing its time up to date | none |
+| SL-SAME+M7T-21 | both | none: M7T-21 survives |
+| W-PAUSE | the handler holds 25 of the loop's ms after the wake, before the answer reads the loop's clock | none |
+| W-PAUSE+M7T-21 | both: a pause in M7T-21's wake | shell 1: this check, `(200 at-least-20-ms not-fired)` |
+| W-STALE | the witness started 19 ms on from the cached time, not from `before` | none |
+| W-STALE+M7T-21 | both | shell 1: this check, `(200 4 1)` |
+
+- **0 mismatches.** SL-SAME's shell suite also went red, at "a MiB answer's write holds
+  the loop less than a tick: …" (10), with other sessions' ten containers running; alone
+  it was green 3/3, and the soaks below see that check red on main's tree too: load.
+- **W-PAUSE+M7T-21 is what the witness is for.** The pause makes M7T-21's sleep last 20
+  ms, so the length passes, and the witness, closed before it was due, reads not-fired.
+- **W-STALE+M7T-21 is why the witness is timed from `before`.** Started 19 ms on from the
+  cached time, it is due just before M7T-21's stale sleep and reads it armed, 1; only
+  the length is red.
+- **SL-SAME+M7T-21 is why `loop-ms` runs on a loop of its own.** Read on the suite's
+  loop, `before` brings that loop's time up to date, M7T-21's sleep is armed at `before`,
+  and both parts hold. A scope statement, kept to say so.
+- **The hold needs a loop of its own too** (`hold-until!`, #162's). Spun on the suite's
+  loop (#162's HS-SAME edit), it leaves that loop's time at the hold's end, so M7T-21's
+  sleep lasts nearly 20 ms. HS-SAME+M7T-21 against the length alone (sha256 `e0b9114e`,
+  predicted mostly green), the shell suite ten times: green at this check 10/10. Run 7
+  went red at "a MiB answer's write holds the loop less than a tick" (11), with the first
+  soak running: load.
+- **Load in the first run's rows:** SL-SAME+M7T-21 went red once at the serve suite's
+  "once serve has returned, a SIGINT ends the process at once", `(satisfied satisfied ()
+  (0 sigterm))`, and once at the contract's "through the coroutine shell, three requests
+  in one write, the client's end at once, …" (one shell's third answer carried
+  `Connection: close`, the other's did not). Each was green in that row's other runs and
+  in M7T-21's (the same `src/` edit), and alone green 3/3 under each of the two rows.
+- **On Linux** (the noble image, the tree as committed, the shell suite, each row three
+  times, beside other sessions' containers): W-0 and SL-SAME+M7T-21 green, 204 expected
+  passes; M7T-21 red at this check, `(200 1 not-fired)`, `(200 2 not-fired)` and `(200 3
+  not-fired)`; W-PAUSE+M7T-21 `(200 at-least-20-ms not-fired)` each time; W-STALE+M7T-21
+  `(200 2 1)`, `(200 2 1)` and `(200 4 1)`.
+
+**The changed check has its killers by value:** M7T-21 (both parts), W-PAUSE+M7T-21
+(the witness alone) and W-STALE+M7T-21 (the length alone).
