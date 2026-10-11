@@ -325,3 +325,21 @@ MERGED to main on 2026-10-11, on the owner's "do closing ritual": **v0.4.1's ent
 `make test` green on main: fifty-one suites, 1,999 expected passes, every pin ok.
 
 NEXT: in chez-websocket, its own repository: the pin to v0.5.0 (02ef95d) alone. Its `test-binding` and `test-driver` load this server's fake, whose door's close now lingers. Then `none` measured again for 3.4, 4.1.5 and 4.2.5. Here, v0.5.0's entries move to `v0.5.0-progress.md` at the next release. When main's runs start again, re-run main's latest run once. Plan §14's open list holds six items.
+
+**The signals watched before `listening`, on `fix/signals-before-listening` (2026-10-11),** on the owner's "let's work on the §14 open list": its first item, noted from #167's run in an amd64 image. Cut from 9ee88b2.
+- **What was wrong.** `start-server` logged `listening HOST PORT`, and only once it had returned did `serve` watch SIGTERM and SIGINT. A signal in between met its default disposition: the process ended at once, with no drain and nothing logged. The serve suite's "once serve has returned, a SIGINT ends the process at once" sends SIGTERM as soon as it reads the line, and was red there in three runs of three under x86_64 emulation (#167).
+- **The fix.** `start-server` takes an optional `ready`, called with the shell once it listens and before it logs `listening`; `serve` passes `shell-watch-signals!`. Started with four arguments it watches nothing, as before.
+- **Three checks,** in the serve suite:
+  - the child's: the child, started with `sigterm-at-listening`, sends itself SIGTERM from inside the write of the `listening` line, so the signal lands in the gap on every run;
+  - the default's: a four-argument start watches no signal;
+  - the order's: `ready` sees the listener open and nothing logged.
+- **Test first**, each prediction hashed before its run (m8-mutations.md, its last section). On main's `serve.sls` the child's check went red alone, by value `(satisfied #t () (0 sigterm))`. The first run tested nothing: the child used `parameterize` without importing it from `(chezscheme)`, and did not load.
+- **Mutants:** six rows in two runs. Run 1, five rows over every suite: 1 mismatch, a prediction error. SG-3 also reddened the clients suite's "and the listener is the one handle left, beside the timer the shell keeps", a check that already held the default. SG-5, `ready` before the bind, was green and loaded. No check held the docstring's "once it listens", so the order's check was added. Run 2, the six rows on the serve suite: 0 mismatches. Every new check has a killer by value.
+- **Measured on Linux,** on the tree before the order's check:
+  - aarch64 (`chez-libuv-noble-scratch:10.4.1`, libuv 1.48.0): main's `serve.sls` reddened the child's check alone, by the same value;
+  - x86_64 under emulation (`chez-websocket-ci-amd64:10.4.1`): main's `serve.sls` red in three runs of three, the child's check and the SIGINT one, each at `(0 sigterm)`; the fix green in three of three.
+- **On the final tree:** every suite once in each image, the clients suite at status 2 with no tools built, as before, and every other green: aarch64 1,964 expected passes, x86_64 under emulation 1,964 (main's 1,960 there, the SIGINT check green again, and the three). The serve suite 21 in both.
+- **Records:** the plan's open list (the item settled, five left); the design's signal note; `docs/connections.org`; CHANGELOG.md's Unreleased (Fixed).
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 2,002 expected passes (main's 1,999 and the three checks), every pin ok.
+
+NEXT: the PR; the closing ritual when the owner asks. Plan §14's open list holds five items: the next are what the full drain keeps after a big read, a door script in the cross-shell contract test, and a taken stream's close bounded from the server's side, which is the owner's to decide; the two load-only timing items stay stopped by the owner's form.

@@ -2401,3 +2401,59 @@ the turn, and the fake keeps the same one.
 closed the stream. No check could provoke one alone, since a write side that fails as it
 shuts fails the reads too. It is left to the reads and to the linger deadline (the
 decision's record says so).
+
+## After M8 — the signals watched before `listening` (2026-10-11)
+
+Plan §14's signal gap, on `fix/signals-before-listening`. `start-server` takes a `ready`
+call, made once it listens and before it logs `listening`; `serve` passes
+`shell-watch-signals!`. Three checks are new in the serve suite:
+
+- **the child's**: "serve, sent SIGTERM as it logs listening, drains, as it does a moment
+  later, the process exiting 0". The child, started with `sigterm-at-listening`, sends
+  itself SIGTERM from inside the write of the `listening` line, so the signal lands in
+  the gap on every run, with no timing to miss;
+- **the default's**: "started with no ready, it watches no signal: that is serve's",
+  `(shell-signals sh)` after a four-argument start;
+- **the order's**: "started with a ready, it calls it once it listens, before it logs
+  listening", in process: what `ready` sees, the listener open and nothing logged,
+  `(listening ())`.
+
+Every prediction was written and hashed before its run (sha256 below). Darwin arm64.
+
+- **Test first, on main's `serve.sls`** (4e1eac2e…): the child's check red alone, by value
+  `(satisfied #t () (0 sigterm))`: the child wrote `listening` and was killed, nothing
+  after. Its first run tested nothing: `parameterize` is not `(rnrs)`'s, so the child did
+  not load and five checks raised. The child imports it from `(chezscheme)` now; the
+  second run was the one predicted.
+- **The fix** (978239e4…): the serve suite 19; `make test` fifty-one suites, 2,000.
+- **The default's and the order's checks** were added after: main has no `ready` to break,
+  so neither was red first. SG-3 kills the default's; SG-2 and SG-5 the order's.
+- **Run 1, five rows** (1d15e196…), each with the values-printing `testing.sls`, every suite
+  but SG-4's (the serve suite alone), before the order's check: **1 mismatch, a prediction
+  error** (below).
+- **SG-5, `ready` before the bind** (e6c36068…), every suite: green, as predicted. A probe
+  showed the mutant loaded: its `ready` saw no listener, `#f`, where the tree's saw it
+  listening. No check held the docstring's "once it listens", so the order's check was
+  added.
+- **Run 2, the six rows on the serve suite** (5b4eac36…), with the order's check: **0
+  mismatches**. The other suites' files did not change.
+
+| Row | Mutant | Red, by value |
+|---|---|---|
+| B-0 | a comment | none; serve 21 |
+| SG-1 | `serve` passes no `ready`: nothing watches | serve's SIGTERM drain `… ("handling" "holding") (0 sigterm)`; its SIGINT drain `… (255 #f)`; the child's `(satisfied #t () (0 sigterm))`; "once serve has returned …" `(satisfied satisfied () (0 sigterm))` |
+| SG-2 | `ready` after the log, main's order | the child's, `(satisfied #t () (0 sigterm))`; run 2, the order's too, `(listening (listening))` |
+| SG-3 | the four-argument start watches | the default's, two signal handles; **and** the clients suite's "and the listener is the one handle left, beside the timer the shell keeps", `(#t #t 4)` for `(#t #t 2)` |
+| SG-4 | the child never signals itself | the child's alone, `(iterations-exhausted #t () #f)` |
+| SG-5 | `ready` before the bind | run 1, none; run 2, the order's alone, `(#f ())` |
+
+- **The mismatch.** SG-3's clients red was not predicted: that check counts the loop's
+  handles after an in-process start, and the two signal handles made four. A check that
+  was already there holds the default too.
+- **SG-1's SIGINT value** was left unpredicted: with no handle watching, Chez's own
+  keyboard interrupt ended the child with status 255.
+- **Every mutant loaded**: run 1's 204 logs for the four all-suite rows, 51 each, SG-5's 51,
+  and run 2's six; none with `Exception` or `HARNESS`.
+
+**Every new check has a killer by value:** the child's, SG-1, SG-2 and SG-4; the default's,
+SG-3; the order's, SG-2 and SG-5.

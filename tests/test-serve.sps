@@ -18,7 +18,8 @@
 ;;; flight is answered, saying the connection closes, one held past the
 ;;; drain's deadline is closed at it, the drain is logged, and `serve`
 ;;; returns once its last connection has closed: the child exits 0, where it
-;;; was killed by SIGTERM and kept on by SIGINT before.  Once `serve` has
+;;; was killed by SIGTERM and kept on by SIGINT before.  It drains so even
+;;; when the SIGTERM comes as it logs `listening`.  Once `serve` has
 ;;; returned, a SIGINT ends the process at once.
 ;;;
 ;;; Oracles:
@@ -44,7 +45,7 @@
         (only (chezscheme) library-exports with-output-to-string putenv getenv)
         (libuv) (uv-testing) (shell-testing) (response-reader)
         (http-server)
-        (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-scheduler)
+        (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-scheduler shell-signals)
         (only (http-server private scheduler) scheduler-call!)
         (only (http-server private serve) start-server run-until-stopped! log-line))
 
@@ -274,6 +275,17 @@
              (ended (run-loop-until loop exited cap)))
         (list listening ended (lines-after-listening (text)) (exited))))))
 
+;; signalled-at-listening : -> Datum
+;; Start the child with `sigterm-at-listening`, which sends itself SIGTERM
+;; as `serve` writes `listening`.  How the wait for its exit ended, whether
+;; it wrote where it listens, the lines it wrote after that, and how it
+;; exited.
+(define (signalled-at-listening)
+  (with-child '("sigterm-at-listening")
+    (lambda (loop text exited process)
+      (let ((ended (run-loop-until loop exited cap)))
+        (list ended (and (listening-port (text)) #t) (lines-after-listening (text)) (exited))))))
+
 ;; lines-after-listening : String -> (Listof String)
 ;; The whole lines of `text` after the first that starts `listening `.
 (define (lines-after-listening text)
@@ -355,6 +367,24 @@
                                (and (eqv? (caddr entry) (uv-tcp-getsockname-port (shell-listener sh)))
                                     (> (caddr entry) 0))))
                        logged))
+      (test-equal "started with no ready, it watches no signal: that is serve's"
+                  '()
+                  (shell-signals sh))
+      (test-equal "started with a ready, it calls it once it listens, before it logs listening"
+                  '(listening ())
+                  (let* ((rloop (make-uv-loop))
+                         (said '())
+                         (seen #f)
+                         (rsh (start-server rloop handler (env '("CHEZ_HTTP_PORT" . "0"))
+                                            (lambda (what details) (set! said (cons what said)))
+                                            (lambda (s)
+                                              (set! seen (list (let ((l (shell-listener s)))
+                                                                 (and l (uv-handle-open? l) 'listening))
+                                                               said))))))
+                    (shell-shutdown! rsh)
+                    (run-until-drained rloop cap)
+                    (uv-loop-teardown! rloop)
+                    seen))
       (test-equal "a request reaches the handler, read through the facade's names, and its answer the client"
                   '(200 "GET /p q=1 example.test:81 v" complete)
                   (exchange loop sh port
@@ -449,6 +479,12 @@
                   (200 "waited" "close") (() eof)
                   ("handling" "holding" "draining 3" "drain-timeout" "stopped") (0 #f))
                 (drained-by-a-child 'sigint))
+    ;; `serve` watches the signals before it logs `listening`, so a
+    ;; supervisor that signals the moment it reads the line finds them
+    ;; watched (plan §14's open list, from #167's run under emulation).
+    (test-equal "serve, sent SIGTERM as it logs listening, drains, as it does a moment later, the process exiting 0"
+                '(satisfied #t ("draining 0" "stopped") (0 #f))
+                (signalled-at-listening))
     ;; Once `serve` has returned it watches no signal, and chez-libuv leaves
     ;; SIGINT's default disposition, not Chez's keyboard interrupt, so the
     ;; next one ends the process (docs/handlers.org; decided 2026-10-03).
