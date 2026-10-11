@@ -1752,6 +1752,21 @@ on the way.
 
 ### Open, and not sliced
 
+*Noted 2026-10-11, under AGENTS.md's rule for timing flakes: seen once, with other
+sessions' suites running on the machine; not chased.*
+
+- **The linger check's one red.** The shell suite's "a client that reads the close and
+  never closes: closed at the linger deadline, armed once the writes are out, met the
+  first time the timer fires at or after it; the taker's deadline it replaced never
+  passes" went red once in 64 runs of decision 0027's shell (Darwin arm64), in a full
+  `make test`. Its values were not captured: the full run prints none.
+  - It was green in the other 63, among them 50 runs of the shell suite alone with
+    values printed, and in 10 runs on #174's shell.
+  - Other sessions' Chez suites were seen running on the machine during these runs.
+  - 0027 leaves this check's path as it was. The taker's 50 ms deadline stays the
+    entry's instant at the close, since the 60 s bound is later, and the linger replaces
+    it once the write is out.
+
 *Noted 2026-10-11, by the owner's form ("Land two, stop two"), under AGENTS.md's rule for
 timing flakes: each went red only under synthetic load, so it is noted, not fixed. CI ran
 the full suite 214 times from 2026-10-01 to the 2026-10-10 billing block with no test
@@ -1789,22 +1804,26 @@ plan's open list"); not decided.*
     heap after a large read against a small one, or a drain that keeps none, would
     settle it. chez-websocket's own check allows up to 8,004 B at 16,000 bytes.
 
-*Noted 2026-10-08, from decision 0024's review, each with its reason; neither is decided.*
+*Noted 2026-10-08, from decision 0024's review, with its reason; not decided.*
 
-- **A taken stream's close bounded from the server's side.** `transport-close!` still
-  waits for a client that reads nothing until the server drains. A taker that arms no
-  aborting deadline holds a connection, and its writes, that long. The server bounds
-  every other connection's writes with its write deadline; it could abort a close that
-  waits past it. Not done: M8.2's review decided by form that a taker owns its bounds,
-  and undoing that is the owner's choice.
 - **A door script in the cross-shell contract test.** The fake's door is held to the
   libuv shell's by paired checks in the two suites, not by a replay of the libuv shell's
   door events into the fake (0016 has no door script). Decision 0024 found four
   differences that way. A replay would find the next; it needs the contract test to
   drive a taker on both shells.
 
-*Settled: the smuggler corpus on 2026-10-04 (decision 0021), and the signal gap after
-`listening` on 2026-10-11.*
+*Settled: the smuggler corpus on 2026-10-04 (decision 0021); the signal gap after
+`listening`, and a taken stream's close bounded from the server's side, on 2026-10-11
+(decision 0027).*
+
+- ~~A taken stream's close bounded from the server's side~~, **settled 2026-10-11
+  (decision 0027)** on `feat/taker-close-write-timeout`, on the owner's form ("Write
+  timeout after close"; weighed: leaving it to the taker, the linger from the close
+  call). Measured first: with both timeouts at 1 s, a taker's stream whose client read
+  nothing was still open after 6.5 s, where a response's connection was closed. Once
+  `transport-close!` has been asked for, each write the close waits for has
+  `write-timeout-ms`, from the close and again at each write's end, and the stream is
+  aborted past it; the taker's own deadline still runs beside it, the earlier first.
 
 - ~~A signal in the gap after `listening`~~, **settled 2026-10-11** on
   `fix/signals-before-listening`, on the owner's "let's work on the §14 open list".

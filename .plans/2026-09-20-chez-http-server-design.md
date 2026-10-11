@@ -925,6 +925,13 @@ pause answers `#f`.
 > when the client ends, a read fails, or the linger deadline passes; a client that had
 > already ended is closed once the writes are out. The core is unchanged. The fake
 > shell's door stages its close the same way.
+>
+> *Amended 2026-10-11, later ([0027](decisions/0027-a-taken-streams-close-gives-each-write-it-waits-for-the-write-timeout.md), on the owner's word by form):*
+> until the writes are out, each write the close waits for has `write-timeout-ms`, from
+> the close and again at each write's end, and the stream is aborted past it. The
+> taker keeps two instants, its own deadline and this bound, and its one wheel entry is
+> armed at the earlier; once that passes, the later is armed again. The core and the
+> fake shell are unchanged: the fake's writes never outlast a turn.
 
 ### 4.5 Run-to-completion
 
