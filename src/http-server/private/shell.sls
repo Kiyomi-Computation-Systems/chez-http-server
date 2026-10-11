@@ -143,12 +143,17 @@
 ;;; deadline's place, until the client ends, a read fails or that deadline
 ;;; passes.  A client that has ended is closed once the writes are out, with
 ;;; no half-close.  From the close on, the taker's read-stop is ignored, and
-;;; once the stream lingers its deadline too.  The abort closes the handle at
+;;; once the stream lingers its deadline too.  Until then each write the
+;;; close waits for has write-timeout-ms, as the server's own writes have,
+;;; from the close and again from each write's end, and the stream is
+;;; aborted past it (decision 0027).  The abort closes the handle at
 ;;; once, at any stage, as a taker's raise does, libuv cancelling each write
 ;;; (decision 0024).  The
 ;;; deadline is the connection's one entry in the wheel, armed at the loop's
 ;;; time brought up to date, as a connection's are, and the timer, as it
-;;; fires, calls it for a connection taken where it ticks any other.  The
+;;; fires, calls it for a connection taken where it ticks any other; while
+;;; the close's write bound is armed too, the entry is armed at the earlier
+;;; of the two, and the later is armed again once the earlier has passed.  The
 ;;; drain, `finish-all`, runs a taker's drain call, once, where it tells any
 ;;; other connection to finish, and runs at once one registered while the
 ;;; server drains; the drain waits for the stream's close, and its deadline
@@ -1115,12 +1120,15 @@
   ;; call has run, whether the stream has closed, the notice its waits are
   ;; told the close by, once a take-over has answered `awaiting` (#f until
   ;; then; decision 0023), whether the client's end, or a read error, has
-  ;; come, and whether the stream lingers (decision 0026).
+  ;; come, and whether the stream lingers (decision 0026); and the instants,
+  ;; by the loop's clock, its own deadline passes at and its close's write
+  ;; bound does, each #f when none is armed (decision 0027).
   (define-record-type taker
     (fields (mutable on-passed) (mutable on-drain) (mutable on-close)
             (mutable writes) (mutable closing?) (mutable drained?) (mutable closed?)
-            (mutable notice) (mutable ended?) (mutable lingering?))
-    (protocol (lambda (new) (lambda () (new #f #f #f 0 #f #f #f #f #f #f)))))
+            (mutable notice) (mutable ended?) (mutable lingering?)
+            (mutable due) (mutable bound))
+    (protocol (lambda (new) (lambda () (new #f #f #f 0 #f #f #f #f #f #f #f #f)))))
 
   ;; hand-off! : Connection (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) -> Void
   ;; The 101 is written: call the switch's take-over with a transport over
@@ -1256,12 +1264,15 @@
 
   ;; taker-wrote! : Connection Taker (U #f ((U #f Symbol) -> Any)) (U #f Symbol) -> Void
   ;; A write has completed, or failed for `why`: its callback told, and the
-  ;; stream closed if its close was asked for and no write is outstanding.
+  ;; stream lingering if its close was asked for and no write is outstanding,
+  ;; or, writes still outstanding, its write bound armed again.
   (define (taker-wrote! c tk written why)
     (taker-writes-set! tk (fx- (taker-writes tk) 1))
     (when written (taker-call! c (lambda () (written why))))
-    (when (and (taker-closing? tk) (fxzero? (taker-writes tk)))
-      (taker-linger! c tk)))
+    (when (taker-closing? tk)
+      (if (fxzero? (taker-writes tk))
+          (taker-linger! c tk)
+          (taker-bound! c tk))))
 
   ;; taker-read-start! : Connection Taker (Bytevector Nat Nat -> Any) (Symbol -> Any) -> Void
   ;; libuv's reads started again with the taker's callbacks, each guarded;
@@ -1287,12 +1298,41 @@
   ;; taker-close! : Connection Taker -> Void
   ;; The staged close (decision 0026): the taker is read nothing more, the
   ;; stream reading on, dropping each read, and once no write is
-  ;; outstanding it lingers (taker-linger!).
+  ;; outstanding it lingers (taker-linger!); until then its writes are
+  ;; bounded (taker-bound!).
   (define (taker-close! c tk)
     (unless (taker-closing? tk)
       (taker-closing?-set! tk #t)
       (drop-reads! c tk)
-      (when (fxzero? (taker-writes tk)) (taker-linger! c tk))))
+      (if (fxzero? (taker-writes tk))
+          (taker-linger! c tk)
+          (taker-bound! c tk))))
+
+  ;; taker-bound! : Connection Taker -> Void
+  ;; The close waits for a write: it has write-timeout-ms from the loop's
+  ;; time brought up to date, as the server's own writes have, and the
+  ;; stream is aborted past it (decision 0027).  Armed beside the taker's
+  ;; own deadline (taker-arm!).
+  (define (taker-bound! c tk)
+    (unless (connection-closing? c)
+      (let ((sh (connection-shell c)))
+        (uv-update-time! (shell-loop sh))
+        (taker-bound-set! tk (+ (uv-now (shell-loop sh)) (limits-deadline-ms (shell-limits sh) 'write)))
+        (taker-arm! c tk))))
+
+  ;; taker-arm! : Connection Taker -> Void
+  ;; The stream's one entry in the wheel armed at the earlier of the taker's
+  ;; own deadline and its close's write bound, the timer running, or
+  ;; disarmed when neither is armed.  A stream closing is armed no more.
+  (define (taker-arm! c tk)
+    (let ((due (taker-due tk)) (bound (taker-bound tk)))
+      (cond ((connection-closing? c))
+            ((or due bound)
+             (let ((sh (connection-shell c)))
+               (wheel-arm! (shell-wheel sh) (connection-entry c)
+                           (if (and due bound) (min due bound) (or due bound)))
+               (start-ticking! sh)))
+            (else (disarm! c)))))
 
   ;; drop-reads! : Connection Taker -> Void
   ;; Read on for the close, dropping each read, unless the client has ended:
@@ -1339,30 +1379,37 @@
                (uv-shutdown! (connection-tcp c) (lambda (err) #f)))))))
 
   ;; taker-deadline! : Connection Taker (U #f Nat) (U #f (-> Any)) -> Void
-  ;; The stream's one deadline, `ms` from the loop's time brought up to date,
-  ;; replacing the one armed, and the timer running; #f disarms it.  A stream
+  ;; The taker's own deadline, `ms` from the loop's time brought up to date,
+  ;; replacing the one it armed, and the timer running; #f disarms it.  The
+  ;; close's write bound stays armed beside it (taker-arm!).  A stream
   ;; closing is armed no more, as a connection's is not (arm!), and one that
   ;; lingers keeps the linger's (decision 0026).
   (define (taker-deadline! c tk ms passed)
     (unless (taker-lingering? tk)
       (taker-on-passed-set! tk passed)
-      (cond ((not ms) (disarm! c))
+      (cond ((not ms) (taker-due-set! tk #f) (taker-arm! c tk))
             ((not (connection-closing? c))
              (let ((sh (connection-shell c)))
                (uv-update-time! (shell-loop sh))
-               (wheel-arm! (shell-wheel sh) (connection-entry c) (+ (uv-now (shell-loop sh)) ms))
-               (start-ticking! sh))))))
+               (taker-due-set! tk (+ (uv-now (shell-loop sh)) ms))
+               (taker-arm! c tk))))))
 
   ;; taker-passed! : Connection -> Void
-  ;; Its deadline has passed: its call, or, the stream lingering, its close.
-  ;; The wheel lets an entry go as it passes, so the call is made once a
-  ;; deadline armed.
+  ;; Its entry has passed: the stream lingering, its close; its close's
+  ;; write bound passed, its abort (decision 0027); else its own deadline,
+  ;; whose call is made, once a deadline armed, and then whichever is still
+  ;; armed is armed again.
   (define (taker-passed! c)
-    (let ((tk (connection-taker c)))
-      (if (taker-lingering? tk)
-          (connection-close! c)
-          (let ((passed (taker-on-passed tk)))
-            (when passed (taker-call! c passed))))))
+    (let ((tk (connection-taker c))
+          (now (uv-now (shell-loop (connection-shell c)))))
+      (cond ((taker-lingering? tk) (connection-close! c))
+            ((let ((bound (taker-bound tk))) (and bound (<= bound now)))
+             (connection-close! c))
+            (else
+             (taker-due-set! tk #f)
+             (let ((passed (taker-on-passed tk)))
+               (when passed (taker-call! c passed)))
+             (taker-arm! c tk)))))
 
   ;; taker-drain! : Connection -> Void — the server drains: its drain call, once.
   (define (taker-drain! c)

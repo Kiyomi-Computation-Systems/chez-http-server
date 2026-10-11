@@ -717,6 +717,14 @@
                                              (lambda ()
                                                (took! 'passed)
                                                (raise (make-message-condition "the deadline's call failed")))))))
+          ((bytevector=? target (b "/door-unbounded"))
+           (switching (lambda (t retained) (closing-behind! t (list big-door) #f #f))))
+          ((bytevector=? target (b "/door-rearm"))
+           (switching (lambda (t retained) (closing-behind! t (list big-door huge-door) #f #f))))
+          ((bytevector=? target (b "/door-own-first"))
+           (switching (lambda (t retained) (closing-behind! t (list big-door) 100 #f))))
+          ((bytevector=? target (b "/door-own-later"))
+           (switching (lambda (t retained) (closing-behind! t (list big-door) 600 #t))))
           ((bytevector=? target (b "/door-disarm"))
            (switching (lambda (t retained)
                         (transport-deadline! t 60000 (lambda () (took! 'passed)))
@@ -751,6 +759,14 @@
                         (let ((stale (uv-now loop)))
                           (hold-until! (+ stale slow-ms))
                           (let ((unrefreshed (uv-now loop)))
+                            (transport-close! t)
+                            (took! 'held stale unrefreshed (connection-deadline (newest))))))))
+          ((bytevector=? target (b "/door-held-bound"))
+           (switching (lambda (t retained)
+                        (let ((stale (uv-now loop)))
+                          (hold-until! (+ stale slow-ms))
+                          (let ((unrefreshed (uv-now loop)))
+                            (transport-write! t big-door)
                             (transport-close! t)
                             (took! 'held stale unrefreshed (connection-deadline (newest))))))))
           ((bytevector=? target (b "/door-held"))
@@ -1147,6 +1163,10 @@
 (define linger-limits
   (limits-with default-limits '((linger-timeout-ms . 100) (tick-ms . 10))))
 
+;; Limits whose write timeout is 300 ms, the timer firing every 10 ms.
+(define bound-limits
+  (limits-with default-limits '((write-timeout-ms . 300) (tick-ms . 10))))
+
 ;; closed-by-client : Shell (Pair Client Connection) -> Symbol
 ;; A taken stream whose taker has closed lingers until its client closes
 ;; (decision 0026).  Once the client has read the stream's end it closes, as
@@ -1179,6 +1199,36 @@
 (define big-door
   (let ((bv (make-bytevector (* 4 1024 1024))))
     (do ((i 0 (+ i 1))) ((= i (bytevector-length bv)) bv) (bytevector-u8-set! bv i (mod i 251)))))
+
+;; 16 MiB, more than a client's receive buffer grows to while it reads, so
+;; a write of it waits once the client stops (decision 0027).
+(define huge-door (make-bytevector (* 16 1024 1024) 7))
+
+;; The client /door-rearm's first write stops reading once it is out.
+(define reading-client #f)
+
+;; closing-behind! : Transport (Listof Bytevector) (U #f Nat) Boolean -> Void
+;; A taker that writes each of `writes` and closes, noting the close's
+;; instant by the loop's clock, each write's end, `(written N why AT)`, and
+;; its close call; with `ms`, it then asks for a deadline of its own, whose
+;; call notes when it passed and, if `abort?`, aborts.  The first write's
+;; end stops `reading-client` reading, when one is set.
+(define (closing-behind! t writes ms abort?)
+  (transport-on-close! t (lambda () (took! 'closed)))
+  (let each ((ws writes) (n 1))
+    (unless (null? ws)
+      (transport-write! t (car ws) 0 (bytevector-length (car ws))
+                        (lambda (err)
+                          (took! 'written n err (uv-now loop))
+                          (when (and (= n 1) reading-client)
+                            (uv-read-stop! (client-tcp reading-client)))))
+      (each (cdr ws) (+ n 1))))
+  (took! 'closing (uv-now loop))
+  (transport-close! t)
+  (when ms
+    (transport-deadline! t ms (lambda ()
+                                (took! 'passed (uv-now loop))
+                                (when abort? (transport-abort! t))))))
 
 ;; The transport of /door-thread's taker, written to from another thread, and
 ;; what that write raised, once it has.
@@ -3042,6 +3092,105 @@
                           (took-of 'passed)))
         (client-close! (car p)))
       (shell-shutdown! lingerer)
+      (set! adopting shell))
+
+    ;; Decision 0027: once a taker has asked to close, each write it waits
+    ;; for has write-timeout-ms, 300 here, from the loop's time brought up
+    ;; to date, as the server's own writes have; past it the stream is
+    ;; aborted.  The taker's own deadline still runs beside it, the earlier
+    ;; first.  Each client here reads nothing (the server's send buffer is
+    ;; 4 KiB), but /door-rearm's, which reads from 150 ms after the close
+    ;; until the first write is out, the send buffer 1 MiB from then, so that
+    ;; write is out in a few milliseconds.
+    (let ((bounder (make-shell loop handler bound-limits clock log! trace!)))
+      (define (bounded target before)
+        (set! took '())
+        (set! logged '())
+        (set! adopting bounder)
+        (set! small-send-buffer 4096)
+        (let* ((p (open-adopted! (door-handshake target) #f))
+               (c (cdr p))
+               (noted (wait-for (lambda () (pair? (took-of 'closing)))))
+               (closing (let ((e (took-of 'closing))) (and (pair? e) (car (car e))))))
+          (set! small-send-buffer #f)
+          (before p closing)
+          (let* ((gone (wait-for (lambda () (closed-and-gone? bounder c))))
+                 (closed-at (let ((e (find (lambda (e) (and (eq? (car e) 'closed) (eq? (cadr e) c))) timed)))
+                              (and e (caddr e))))
+                 (seen (list gone
+                             (map (lambda (w) (list (car w) (cadr w))) (took-of 'written))
+                             (took-of 'closed)
+                             (map car (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))
+                             (and closing closed-at (- closed-at closing))
+                             (map (lambda (e) (- (car e) closing)) (took-of 'passed))
+                             (let ((w (find (lambda (w) (eqv? (car w) 1)) (took-of 'written))))
+                               (and w closing (- (caddr w) closing))))))
+            (set! reading-client #f)
+            (client-close! (car p))
+            (when (and (connection? c) (not (closed-and-gone? bounder c)))
+              (connection-close! c)
+              (wait-for (lambda () (closed-and-gone? bounder c))))
+            seen)))
+      (define (nothing p closing) #f)
+      (define (bound-met? seen from)
+        (and (list-ref seen 4) from (>= (list-ref seen 4) (+ from 300)) #t))
+      (let ((seen (bounded "/door-unbounded" nothing)))
+        (test-equal "a close waiting on a write the client reads nothing of, the taker arming no deadline: aborted at the write timeout from the close, the write told ECANCELED, its close call once, nothing logged"
+                    '(satisfied ((1 ECANCELED)) (()) () #t)
+                    (list (car seen) (cadr seen) (caddr seen) (cadddr seen) (bound-met? seen 0))))
+      (let ((seen (bounded "/door-rearm"
+                           (lambda (p closing)
+                             (wait-for (lambda () (>= (uv-now loop) (+ closing 150))))
+                             (when (connection? (cdr p))
+                               (uv-send-buffer-size! (connection-tcp (cdr p)) (* 1024 1024)))
+                             (set! reading-client (car p))
+                             (client-read! (car p))))))
+        (test-equal "each write it waits for has the write timeout: a first write out 150 ms or more after the close moves the bound to 300 ms past it, where the second is aborted"
+                    '(satisfied ((1 #f) (2 ECANCELED)) (()) #t #t)
+                    (list (car seen) (cadr seen) (caddr seen)
+                          (and (list-ref seen 6) (>= (list-ref seen 6) 150) #t)
+                          (bound-met? seen (list-ref seen 6)))))
+      (let ((seen (bounded "/door-own-first" nothing)))
+        (test-equal "a taker's own deadline, earlier, runs first, and its call, which does not abort, leaves the bound armed: aborted at the write timeout"
+                    '(satisfied ((1 ECANCELED)) (()) #t 1 #t)
+                    (list (car seen) (cadr seen) (caddr seen)
+                          (bound-met? seen 0)
+                          (length (list-ref seen 5))
+                          (and (pair? (list-ref seen 5)) (>= (car (list-ref seen 5)) 100) #t))))
+      (let ((seen (bounded "/door-own-later" nothing)))
+        (test-equal "a taker's own deadline later than the bound: aborted at the write timeout, the taker's call never made"
+                    '(satisfied ((1 ECANCELED)) (()) #t ())
+                    (list (car seen) (cadr seen) (caddr seen)
+                          (and (bound-met? seen 0) (< (list-ref seen 4) 600) #t)
+                          (list-ref seen 5))))
+      ;; The bound is armed at the loop's time brought up to date, as the
+      ;; linger's is (decision 0026 item 2): a taker that holds the loop
+      ;; 300 ms by libuv's clock, then closes behind a write the client reads
+      ;; nothing of, has its bound armed after the hold.
+      (set! took '())
+      (set! small-send-buffer 4096)
+      (let* ((p (open-adopted! (door-handshake "/door-held-bound") #f))
+             (c (cdr p))
+             (done (wait-for (lambda () (pair? (took-of 'held)))))
+             (seen (let ((h (took-of 'held))) (if (pair? h) (car h) '(#f #f #f))))
+             (stale (car seen))
+             (unrefreshed (cadr seen))
+             (deadline (caddr seen)))
+        (set! small-send-buffer #f)
+        (let ((gone (wait-for (lambda () (closed-and-gone? bounder c)))))
+          (test-equal "a taker that holds the loop 300 ms, then closes behind a write the client reads nothing of: the bound armed after the hold, at the loop's time brought up to date, and met"
+                      '(satisfied stale after-the-hold satisfied)
+                      (list done
+                            (if (and stale (eqv? unrefreshed stale)) 'stale unrefreshed)
+                            (if (and stale deadline (>= (- deadline 300 stale) slow-ms))
+                                'after-the-hold
+                                (and stale deadline (- deadline 300 stale)))
+                            gone)))
+        (client-close! (car p))
+        (when (and (connection? c) (not (closed-and-gone? bounder c)))
+          (connection-close! c)
+          (wait-for (lambda () (closed-and-gone? bounder c)))))
+      (shell-shutdown! bounder)
       (set! adopting shell))
 
     ;; The linger deadline is armed at the loop's time brought up to date

@@ -73,7 +73,8 @@ the answer, and the end of a long response could be lost. Decision 0011 in
 
 A connection handed to a taker (a WebSocket, say) closes the same way when the
 taker calls ~transport-close!~ (decision 0026), so the client reads the taker's
-goodbye.
+goodbye. From that call on, a write it waits for has ~CHEZ_HTTP_WRITE_TIMEOUT~
+too (decision 0027).
 
 * When the server shuts down
 
