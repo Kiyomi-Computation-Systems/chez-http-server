@@ -315,7 +315,7 @@ What the transport does:
 | ~(transport-write! t bv [start end] [done])~ | sends the bytes; ~done~ gets ~#f~ once sent, or the error |
 | ~(transport-read-start! t on-bytes on-end)~ | each read as ~(on-bytes bv start end)~; ~(on-end why)~ once: ~eof~ or the error |
 | ~(transport-read-stop! t)~            | stops reading                                                  |
-| ~(transport-close! t)~                | closes, once your writes have gone out                         |
+| ~(transport-close! t)~                | closes, once your writes have gone out and the client closes too |
 | ~(transport-deadline! t ms proc)~     | calls ~proc~ once ~ms~ milliseconds pass; ~(transport-deadline! t #f)~ cancels |
 | ~(transport-on-drain! t proc)~        | calls ~proc~ when the server shuts down                        |
 | ~(transport-on-close! t proc)~        | calls ~proc~ once the stream has closed, whoever closed it (at once if it has) |
@@ -332,6 +332,16 @@ What the transport does:
 - Each ~transport-write!~ is a write of its own: the server does not join
   small ones together, as it does for a response. Many small writes are
   slower than one, so join small pieces into one bytevector first.
+- ~transport-close!~ closes gently, as the server closes its own connections
+  ([[file:connections.org][connections.org]]): it stops handing you reads, but
+  keeps reading and throws away what the client still sends. Once your writes
+  have gone out it tells the client it has finished writing, and it closes
+  when the client closes too, or after ~CHEZ_HTTP_LINGER_TIMEOUT~ (30 s). So a
+  client still sending reads your goodbye instead of a reset. Your close call
+  runs then. Until it does, the stream still counts toward
+  ~CHEZ_HTTP_MAX_CONNECTIONS~. After ~transport-close!~, ~transport-read-stop!~
+  changes nothing, and once your writes are out neither does a deadline;
+  ~transport-abort!~ still closes at once.
 - A write after ~transport-close!~ is not sent: its ~done~ gets ~ECANCELED~.
   That ~done~, and the one for a write refused as you ask for it, comes on
   the server's next turn, or, if the server stops first, before ~serve~

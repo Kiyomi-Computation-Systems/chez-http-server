@@ -22,6 +22,14 @@
 ;;; A raise in any of the taker's calls is its failure and closes the stream
 ;;; at once, as the libuv shell's taker-call! has it.
 ;;;
+;;; Decision 0026: a taker's close is staged.  Once its writes are written
+;;; the write side is shut and the stream lingers, the linger deadline armed
+;;; in the taker's deadline's place, reading and dropping what comes, until
+;;; the client's end, a read error or that deadline closes it.  A client
+;;; whose end came during the close's writes is closed once they are
+;;; written.  Once lingering, the stream is the server's: a deadline, its
+;;; cancel and a read-stop change nothing; an abort closes it at once.
+;;;
 ;;; Oracles: decision 0016; RFC 9110 §7.8 and §15.2.2; RFC 6455 §5.7's
 ;;; masked "Hello" frame, two of its bytes after the header; the inputs'
 ;;; own bytes; design §6.5's 500; decision 0011's staged close.
@@ -268,9 +276,10 @@
                   (client-bytes sh))
       (test-equal "each write's callback is told it is written, in order" '((one #f) (two #f))
                   (reverse (taker-written t))))
-    ;; The taker's close: once its writes are written, the connection closes,
-    ;; its close call runs once, and the core ends closed.  A write asked for
-    ;; after the close is not written: its callback is told ECANCELED.
+    ;; The taker's close: once its writes are written, the connection
+    ;; lingers until the client ends (decision 0026), then closes, its close
+    ;; call runs once, and the core ends closed.  A write asked for after the
+    ;; close is not written: its callback is told ECANCELED.
     (let* ((t (make-taker))
            (sh (run eager (bytevector-length eager)
                     (taking t (lambda (tr)
@@ -278,6 +287,8 @@
                                 (transport-close! tr)
                                 (transport-write! tr (b "late") 0 4
                                                   (lambda (err) (taker-written-set! t (cons err (taker-written t))))))))))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
       (test-equal "closed by the taker: its write first, its close call once, a later write cancelled, the core closed"
                   (list (concat (list the-101 (b "bye"))) 1 '(ECANCELED) 'closed)
                   (list (client-bytes sh) (taker-closes t) (taker-written t)
@@ -287,6 +298,8 @@
     ;; eighth).
     (let* ((t (make-taker))
            (sh (run eager (bytevector-length eager) (taking t (lambda (tr) (transport-close! tr))))))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
       (let ((before (taker-closes t)))
         (transport-on-close! (taker-transport t) (lambda () (taker-closes-set! t (+ 10 (taker-closes t)))))
         (test-equal "a close call registered after the stream has closed runs at once"
@@ -296,6 +309,8 @@
     ;; as the libuv shell's arms none (M8.2's review, the seventh).
     (let* ((t (make-taker))
            (sh (run eager (bytevector-length eager) (taking t (lambda (tr) (transport-close! tr))))))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
       (transport-deadline! (taker-transport t) 1000 (lambda () (taker-passes-set! t (+ 1 (taker-passes t)))))
       (let ((armed (fake-shell-armed sh)))
         (fake-shell-advance! sh 2000)
@@ -303,6 +318,84 @@
         (test-equal "on a stream that has closed, a deadline arms nothing and never passes"
                     '(closed #f 0)
                     (list (conn-phase (fake-shell-conn-state sh)) armed (taker-passes t)))))
+    ;; --- the close lingers (decision 0026) ----------------------------------
+    ;; Once the close's writes are written, the write side is shut and the
+    ;; stream lingers, the linger deadline armed in place of the taker's: a
+    ;; read then is dropped, the taker reading nothing, and the client's end
+    ;; closes the stream, its close call once.  The core is told nothing until
+    ;; then.
+    (let* ((t (make-taker))
+           (sh (run eager (bytevector-length eager)
+                    (taking t (lambda (tr)
+                                (transport-deadline! tr 1000 (lambda () (taker-passes-set! t (+ 1 (taker-passes t)))))
+                                (transport-write! tr (b "bye"))
+                                (transport-close! tr))))))
+      (let ((lingering (list (fake-shell-shut? sh) (fake-shell-armed sh) (taker-closes t)
+                             (conn-phase (fake-shell-conn-state sh)))))
+        (fake-shell-deliver! sh (list 'bytes-arrived hi-frame 0 (bytevector-length hi-frame)))
+        (let ((read (taker-read t)))
+          (fake-shell-deliver! sh '(eof))
+          (fake-shell-settle! sh)
+          (test-equal "a taker's close: once its writes are out, the write side shut and the linger deadline armed in place of the taker's; a read then dropped, not the taker's; the client's end closes the stream, its close call once"
+                      (list (list #t (limits-linger-timeout-ms default-limits) 0 'handed-off)
+                            '() (concat (list the-101 (b "bye"))) 1 'closed '())
+                      (list lingering read (client-bytes sh) (taker-closes t)
+                            (conn-phase (fake-shell-conn-state sh)) (taker-ends t))))))
+    ;; The linger deadline passing closes the stream, the taker's deadline it
+    ;; replaced never passing; so does a read error while it lingers.
+    (let* ((t1 (make-taker))
+           (sh1 (run eager (bytevector-length eager)
+                     (taking t1 (lambda (tr)
+                                  (transport-deadline! tr 1000 (lambda () (taker-passes-set! t1 (+ 1 (taker-passes t1)))))
+                                  (transport-close! tr)))))
+           (t2 (make-taker))
+           (sh2 (run eager (bytevector-length eager) (taking t2 (lambda (tr) (transport-close! tr))))))
+      (fake-shell-advance! sh1 (- (limits-linger-timeout-ms default-limits) 1))
+      (fake-shell-fire! sh1)
+      (fake-shell-settle! sh1)
+      (let ((before (list (taker-closes t1) (taker-passes t1))))
+        (fake-shell-advance! sh1 1)
+        (fake-shell-fire! sh1)
+        (fake-shell-settle! sh1)
+        (fake-shell-deliver! sh2 '(read-error ECONNRESET))
+        (fake-shell-settle! sh2)
+        (test-equal "the linger deadline passing closes the stream, the taker's deadline it replaced never passing; a read error while it lingers closes it too, the taker told nothing"
+                    '((0 0) 1 0 closed 1 closed ())
+                    (list before (taker-closes t1) (taker-passes t1) (conn-phase (fake-shell-conn-state sh1))
+                          (taker-closes t2) (conn-phase (fake-shell-conn-state sh2)) (taker-ends t2)))))
+    ;; A client that ends while the close's writes are outstanding has nothing
+    ;; more to send: the stream closes once they are written, with no linger.
+    (let* ((t (make-taker))
+           (sh (unread handshake (taking t (lambda (tr) (transport-write! tr (b "bye")) (transport-close! tr))))))
+      (fake-shell-deliver! sh '(eof))
+      (let ((waiting (list (taker-closes t) (conn-phase (fake-shell-conn-state sh)))))
+        (fake-shell-settle! sh)
+        (test-equal "a client that ends while the close's writes are outstanding: the stream closes once they are written, with no linger"
+                    (list '(0 handed-off) (concat (list the-101 (b "bye"))) 1 'closed #f '())
+                    (list waiting (client-bytes sh) (taker-closes t) (conn-phase (fake-shell-conn-state sh))
+                          (fake-shell-shut? sh) (taker-ends t)))))
+    ;; A lingering stream is the server's: a deadline asked for then is not
+    ;; armed, nor its cancel, a read-stop leaves it reading, and an abort
+    ;; closes it at once.
+    (let* ((t (make-taker))
+           (sh (run eager (bytevector-length eager) (taking t (lambda (tr) (transport-close! tr)))))
+           (tr (taker-transport t))
+           (armed (fake-shell-armed sh)))
+      (transport-deadline! tr 5 (lambda () (taker-passes-set! t (+ 1 (taker-passes t)))))
+      (let ((after-arm (fake-shell-armed sh)))
+        (transport-deadline! tr #f)
+        (let ((after-cancel (fake-shell-armed sh)))
+          (transport-read-stop! tr)
+          (let ((reading (fake-shell-reading? sh)))
+            (fake-shell-advance! sh 5)
+            (fake-shell-fire! sh)
+            (let ((open (list (taker-passes t) (taker-closes t))))
+              (transport-abort! tr)
+              (fake-shell-settle! sh)
+              (test-equal "once a stream lingers, a deadline asked for is not armed, nor its cancel, and a read-stop leaves it reading; an abort closes it at once, its close call once"
+                          (list (limits-linger-timeout-ms default-limits) #t #t #t '(0 0) 1 'closed)
+                          (list armed (eqv? after-arm armed) (eqv? after-cancel armed) reading open
+                                (taker-closes t) (conn-phase (fake-shell-conn-state sh)))))))))
     ;; The client's end reaches the taker, not the core; so does a read
     ;; error, as its errno.
     (let* ((t (make-taker)) (sh (run eager (bytevector-length eager) (taking t))))

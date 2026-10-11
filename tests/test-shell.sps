@@ -151,10 +151,18 @@
 ;;;     write after the close is asked for is cancelled; a taken stream
 ;;;     counts against max-connections; a taker's deadline is met on time,
 ;;;     and armed at the loop's time brought up to date, so a taker that
-;;;     holds the loop arms it after the hold; and the drain runs a taker's
-;;;     drain call, which says goodbye and closes, before the deadline, at
-;;;     once for one registered as the server drains, and closes at the
-;;;     deadline a stream whose taker ignores it, telling it so;
+;;;     holds the loop arms it after the hold; a taker's close is staged
+;;;     (decision 0026): a client still sending reads the close and the
+;;;     stream's end, its sends read and dropped, and the stream lingers
+;;;     until the client closes, or until the linger deadline, on time, in
+;;;     place of the taker's, armed at the loop's time brought up to date;
+;;;     a client that ended during the close's writes is closed once they
+;;;     are out; once lingering, a deadline, its cancel and a read-stop
+;;;     change nothing, and an abort closes it at once; and the drain runs
+;;;     a taker's drain call, which says goodbye and closes, before the
+;;;     deadline, at once for one registered as the server drains, and
+;;;     closes at the deadline a stream whose taker ignores it, telling it
+;;;     so;
 ;;;   - the shell's one timer: four connections add one timer to the loop;
 ;;;     its wheel empty, it stops, and the shell keeps it for its next
 ;;;     deadline, and closes it once shut down with no connection left; when
@@ -256,7 +264,8 @@
   (case (car datum)
     ((arm-deadline) (time! (list 'arm c (cadr datum) (uv-now loop))))
     ((write) (time! (list 'write c (uv-now loop))))
-    ((tick) (time! (list (if (connection? c) 'tick 'fire) c (cadr datum)))))
+    ((tick) (time! (list (if (connection? c) 'tick 'fire) c (cadr datum))))
+    ((closed) (when (eq? kind 'event) (time! (list 'closed c (uv-now loop))))))
   (when (and (eq? kind 'server-event) (eq? (car datum) 'shutdown-requested))
     (time! (list 'shutdown c (cadr datum))))
   (when (and (eq? kind 'server-action) (eq? (car datum) 'force-close-all))
@@ -290,7 +299,8 @@
 ;; timer fired, as (fire shell now), which it tells its server; and each
 ;; shutdown a shell's server was asked for, as (shutdown shell now), and
 ;; each time it asked for every connection to be closed, as (forced shell)
-;; (M8.1).  The first
+;; (M8.1); and each connection's close, as (closed connection at), `at`
+;; the loop's time as the close completed (decision 0026).  The first
 ;; idle deadline, which the shell arms as it adopts a connection, is
 ;; recorded where the suite's listener adopts it.
 (define timed '())
@@ -714,6 +724,35 @@
                         (transport-deadline! t #f)
                         (took! 'disarmed (shell-deadlines adopting))
                         (transport-close! t))))
+          ((bytevector=? target (b "/door-fail"))
+           (switching (lambda (t retained)
+                        (let ((n (bytevector-length retained)))
+                          (transport-on-close! t (lambda () (took! 'closed)))
+                          (transport-read-start!
+                           t
+                           (lambda (bv from to)
+                             (set! n (+ n (- to from)))
+                             (took! 'read (- to from))
+                             (when (and (>= n fail-cap) (null? (took-of 'failed)))
+                               (took! 'failed n)
+                               (transport-write! t close-frame)
+                               (transport-close! t)))
+                           (lambda (why) (took! 'ended why)))))))
+          ((bytevector=? target (b "/door-bye"))
+           (switching (lambda (t retained)
+                        (set! lingering-transport t)
+                        (transport-on-close! t (lambda () (took! 'closed)))
+                        (transport-deadline! t door-ms (lambda () (took! 'passed)))
+                        (transport-write! t close-frame)
+                        (took! 'closing (uv-now loop))
+                        (transport-close! t))))
+          ((bytevector=? target (b "/door-held-close"))
+           (switching (lambda (t retained)
+                        (let ((stale (uv-now loop)))
+                          (hold-until! (+ stale slow-ms))
+                          (let ((unrefreshed (uv-now loop)))
+                            (transport-close! t)
+                            (took! 'held stale unrefreshed (connection-deadline (newest))))))))
           ((bytevector=? target (b "/door-held"))
            (switching (lambda (t retained)
                         (let ((stale (uv-now loop)))
@@ -1091,6 +1130,48 @@
 
 ;; How long a taker's deadline lasts, under drain-limits' 10 ms tick.
 (define door-ms 50)
+
+;; A WebSocket close frame, 1009 (RFC 6455 §5.5.1, §7.4.1): what a taker
+;; that fails its client writes before its close (decision 0026).
+(define close-frame (u8-list->bytevector '(#x88 #x02 #x03 #xf1)))
+
+;; How much /door-fail's taker reads before it fails its client, and what
+;; that client, still sending, writes after its handshake: 4 MiB.
+(define fail-cap 65536)
+(define client-flood (make-bytevector (* 4 1024 1024) 0))
+
+;; The transport of /door-bye's taker, to reach once its stream lingers.
+(define lingering-transport #f)
+
+;; Limits whose linger lasts 100 ms, the timer firing every 10 ms.
+(define linger-limits
+  (limits-with default-limits '((linger-timeout-ms . 100) (tick-ms . 10))))
+
+;; closed-by-client : Shell (Pair Client Connection) -> Symbol
+;; A taken stream whose taker has closed lingers until its client closes
+;; (decision 0026).  Once the client has read the stream's end it closes, as
+;; a WebSocket client does once the server's close comes (RFC 6455 §7.1.1):
+;; whether the stream was then let go.
+(define (closed-by-client sh p)
+  (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))
+  (client-close! (car p))
+  (wait-for (lambda () (closed-and-gone? sh (cdr p)))))
+
+;; lingering? : Shell Connection -> Symbol
+;; 'lingering while the stream is open in `sh`, its handle open; else
+;; 'closed.
+(define (lingering? sh c)
+  (if (and (connection? c) (memq c (shell-connections sh)) (uv-handle-open? (connection-tcp c)))
+      'lingering
+      'closed))
+
+;; client-wrote : Client Bytevector -> (-> Symbol)
+;; Write `bytes` as one write of the client's: a procedure that answers
+;; 'pending until the write completes, then its err->symbol.
+(define (client-wrote cl bytes)
+  (let ((status 'pending))
+    (uv-write! (client-tcp cl) bytes (lambda (err) (set! status (err->symbol err))))
+    (lambda () status)))
 
 ;; What the taker of /door-big writes, then closes: more than a loopback
 ;; socket takes at once, so its write is still under way as the close is
@@ -2664,10 +2745,12 @@
 
     ;; A write asked for once the close has been is not written: its
     ;; callback is told ECANCELED, and the close waits for the write before
-    ;; it, which the client reads.
+    ;; it, which the client reads.  From here on, a client that reads a
+    ;; taker's close closes in turn (closed-by-client), which ends the
+    ;; stream's linger (decision 0026).
     (set! took '())
     (let* ((p (open-adopted! (door-handshake "/door-late")))
-           (gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+           (gone (closed-by-client shell p))
            (told (wait-for (lambda () (pair? (took-of 'late)))))
            (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
       (test-equal "the taker's close follows its write; a write after the close is cancelled, its callback told so"
@@ -2679,7 +2762,7 @@
     ;; takes at once, so the write is still under way as the close is asked
     ;; for.  Its client reads all of it, then the stream's end.
     (let* ((p (open-adopted! (door-handshake "/door-big")))
-           (gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+           (gone (closed-by-client shell p))
            (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
       (test-equal "the taker's close waits for a write still under way: its client reads all of it, then the stream's end"
                   (list 'satisfied 'satisfied 'eof #t)
@@ -2757,7 +2840,7 @@
                              'returned))))
       (let ((raised (wait-for (lambda () (and thread-raised #t)))))
         (transport-close! thread-transport)
-        (let* ((gone (wait-for (lambda () (closed-and-gone? shell (cdr p)))))
+        (let* ((gone (closed-by-client shell p))
                (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
           (test-equal "a write refused off the loop's thread raises to its caller, and leaves the taker's close free to close"
                       (list 'satisfied 'satisfied #t 'satisfied 'satisfied door-101 'eof)
@@ -2830,7 +2913,7 @@
              (still (firings-of timed-shell))
              (sent (begin (client-send! (car p) hello-frame) 'sent))
              (passed (wait-for (lambda () (pair? (took-of 'passed)))))
-             (gone (wait-for (lambda () (closed-and-gone? timed-shell (cdr p)))))
+             (gone (closed-by-client timed-shell p))
              (armed (let ((a (took-of 'armed))) (and (pair? a) (car (car a)))))
              (at (let ((a (took-of 'passed))) (and (pair? a) (car (car a)))))
              (fires (map caddr (filter (lambda (e) (and (eq? (car e) 'fire) (eq? (cadr e) timed-shell)))
@@ -2855,7 +2938,7 @@
         (test-equal "a taker's deadline is the stream's one entry in the wheel, and disarmed leaves none"
                     '(satisfied ((1)) ((0)) satisfied)
                     (list done (took-of 'armed) (took-of 'disarmed)
-                          (wait-for (lambda () (closed-and-gone? disarmer (cdr p))))))
+                          (closed-by-client disarmer p)))
         (client-close! (car p)))
       (shell-shutdown! disarmer)
       (set! adopting shell))
@@ -2881,10 +2964,134 @@
                           (if (and stale deadline (>= (- deadline 60000 stale) slow-ms))
                               'after-the-hold
                               (and stale deadline (- deadline 60000 stale)))
-                          (wait-for (lambda () (closed-and-gone? holder (cdr p))))))
+                          (closed-by-client holder p)))
         (client-close! (car p)))
       (shell-shutdown! holder)
       (set! adopting shell))
+
+    ;; A taker's close is staged (decision 0026), as the server's own are
+    ;; (decision 0011).  A taker that fails a client still sending writes its
+    ;; close and closes: the client reads the close, then the stream's end,
+    ;; not a reset, and its 4 MiB all go out, read and dropped, none of it
+    ;; the taker's.  The stream lingers until the client closes, and its close
+    ;; call runs then, once.
+    (set! took '())
+    (let* ((p (open-adopted! (door-handshake "/door-fail")))
+           (c (cdr p))
+           (switched (wait-for (lambda () (>= (bytevector-length (client-bytes (car p))) (bytevector-length door-101)))))
+           (sent (client-wrote (car p) client-flood))
+           (ended (wait-for (lambda () (and (not (eq? (client-end (car p)) 'open)) (not (eq? (sent) 'pending))))))
+           (state (lingering? shell c))
+           (told-before (took-of 'closed)))
+      (client-close! (car p))
+      (let ((gone (wait-for (lambda () (closed-and-gone? shell c)))))
+        (test-equal "a taker that fails a client still sending: the client reads the close and the stream's end, its 4 MiB read and dropped, none of it the taker's; the stream lingers until the client closes, its close call run then, once"
+                    (list 'satisfied 'satisfied (joined (list door-101 close-frame)) 'eof 'no-error
+                          'lingering '() 'satisfied '(()) #t)
+                    (list switched ended (client-bytes (car p)) (client-end (car p)) (sent)
+                          state told-before gone (took-of 'closed)
+                          (let ((f (took-of 'failed)))
+                            (and (pair? f) (= (car (car f)) (apply + (map car (took-of 'read))))))))))
+
+    ;; A client whose end comes while the close's writes are under way has
+    ;; nothing more to send: the stream closes once they are out, with no
+    ;; linger.  The client reads nothing until it has ended, so the taker's
+    ;; 4 MiB wait for it, as door-unread's do.
+    (set! small-send-buffer 4096)
+    (let* ((before (newest))
+           (cl (open-client! (door-handshake "/door-big") #f))
+           (taken (wait-for (lambda () (let ((c (adopted-since before))) (and c (eq? (phase c) 'handed-off))))))
+           (c (adopted-since before)))
+      (set! small-send-buffer #f)
+      (client-shut! cl)
+      (run-loop-until loop (lambda () #f) 20)
+      (client-read! cl)
+      (let* ((gone (wait-for (lambda () (closed-and-gone? shell c))))
+             (ended (wait-for (lambda () (not (eq? (client-end cl) 'open))))))
+        (test-equal "a client that ends while the close's writes are under way: it reads them all, then the stream's end, and the stream closes once they are out, with no linger"
+                    (list 'satisfied 'satisfied 'satisfied 'eof #t)
+                    (list taken gone ended (client-end cl)
+                          (equal? (client-bytes cl) (joined (list door-101 big-door))))))
+      (client-close! cl))
+
+    ;; The linger's bound (decision 0026 item 2): a client that reads the
+    ;; close and never closes is closed at the linger deadline, armed once
+    ;; the close's writes are out, linger-timeout-ms past then, and met the
+    ;; first time the timer fires at or after it.  It takes the place of the
+    ;; deadline the taker armed before its close, whose call never runs.
+    (let ((lingerer (make-shell loop handler linger-limits clock log! trace!)))
+      (set! adopting lingerer)
+      (set! took '())
+      (let* ((p (open-adopted! (door-handshake "/door-bye")))
+             (c (cdr p))
+             (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open)))))
+             (armed (and (connection? c) (connection-deadline c)))
+             (gone (wait-for (lambda () (closed-and-gone? lingerer c))))
+             (closing (let ((e (took-of 'closing))) (and (pair? e) (car (car e)))))
+             (closed-at (let ((e (find (lambda (e) (and (eq? (car e) 'closed) (eq? (cadr e) c))) timed)))
+                          (and e (caddr e))))
+             (fires (map caddr (filter (lambda (e) (and (eq? (car e) 'fire) (eq? (cadr e) lingerer)))
+                                       (reverse timed))))
+             (first-fire (and armed (find (lambda (f) (>= f armed)) fires))))
+        (test-equal "a client that reads the close and never closes: closed at the linger deadline, armed once the writes are out, met the first time the timer fires at or after it; the taker's deadline it replaced never passes"
+                    '(satisfied eof satisfied #t #t #t ())
+                    (list ended (client-end (car p)) gone
+                          (and armed closing (>= armed (+ closing 100)) #t)
+                          (and armed closed-at (>= closed-at armed) #t)
+                          (and first-fire closed-at (<= (- closed-at first-fire) 10) #t)
+                          (took-of 'passed)))
+        (client-close! (car p)))
+      (shell-shutdown! lingerer)
+      (set! adopting shell))
+
+    ;; The linger deadline is armed at the loop's time brought up to date
+    ;; (decision 0026 item 2): a taker that holds the loop 300 ms by libuv's
+    ;; clock, then closes with nothing to write, has its stream's linger
+    ;; armed after the hold.  Each side failing answers what it read.
+    (set! took '())
+    (let* ((p (open-adopted! (door-handshake "/door-held-close")))
+           (done (wait-for (lambda () (pair? (took-of 'held)))))
+           (seen (let ((h (took-of 'held))) (if (pair? h) (car h) '(#f #f #f))))
+           (stale (car seen))
+           (unrefreshed (cadr seen))
+           (deadline (caddr seen))
+           (linger (limits-linger-timeout-ms default-limits)))
+      (test-equal "a taker that holds the loop 300 ms, then closes with nothing to write: the linger deadline armed after the hold, at the loop's time brought up to date"
+                  '(satisfied stale after-the-hold satisfied)
+                  (list done
+                        (if (and stale (eqv? unrefreshed stale)) 'stale unrefreshed)
+                        (if (and stale deadline (>= (- deadline linger stale) slow-ms))
+                            'after-the-hold
+                            (and stale deadline (- deadline linger stale)))
+                        (closed-by-client shell p)))
+      (client-close! (car p)))
+
+    ;; A lingering stream is the server's (decision 0026): a deadline the
+    ;; taker asks for then is not armed, nor is its cancel, and its read-stop
+    ;; leaves the stream reading, so a client's 4 MiB still go out, read and
+    ;; dropped.  Its abort still closes the stream at once.
+    (set! took '())
+    (set! lingering-transport #f)
+    (let* ((p (open-adopted! (door-handshake "/door-bye")))
+           (c (cdr p))
+           (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open)))))
+           (armed (and (connection? c) (connection-deadline c))))
+      (transport-deadline! lingering-transport 1 (lambda () (took! 'late-passed)))
+      (let ((after-arm (and (connection? c) (connection-deadline c))))
+        (transport-deadline! lingering-transport #f)
+        (let ((after-cancel (and (connection? c) (connection-deadline c))))
+          (transport-read-stop! lingering-transport)
+          (let* ((sent (client-wrote (car p) client-flood))
+                 (written (wait-for (lambda () (not (eq? (sent) 'pending)))))
+                 (state (lingering? shell c)))
+            (transport-abort! lingering-transport)
+            (let ((gone (wait-for (lambda () (closed-and-gone? shell c)))))
+              (test-equal "once a stream lingers, a deadline asked for is not armed, nor its cancel, and a read-stop leaves it reading: a client's 4 MiB go out, dropped; an abort then closes it at once, its close call once"
+                          (list 'satisfied #t #t #t 'satisfied 'no-error 'lingering 'satisfied '(()) '())
+                          (list ended (and armed #t) (eqv? after-arm armed) (eqv? after-cancel armed)
+                                written (sent) state gone (took-of 'closed) (took-of 'late-passed)))))))
+      (client-close! (car p)))
+    (set! lingering-transport #f)
 
     ;; The drain tells a taken stream and waits (decision 0016 item 3): the
     ;; taker's drain call says goodbye and closes, and the drain ends then,
@@ -2897,7 +3104,7 @@
       (let* ((p (open-adopted! (door-handshake "/door")))
              (taken (wait-for (lambda () (and (connection? (cdr p)) (eq? (phase (cdr p)) 'handed-off))))))
         (shell-shutdown! door-drainer)
-        (let* ((gone (wait-for (lambda () (closed-and-gone? door-drainer (cdr p)))))
+        (let* ((gone (closed-by-client door-drainer p))
                (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
           (test-equal "told the server drains, a taker says goodbye and closes; the drain ends then, before its deadline"
                       (list 'satisfied 'satisfied 'satisfied (joined (list door-101 (b "bye"))) 'eof
@@ -2956,7 +3163,7 @@
              (waiting (wait-for (lambda () (and parked #t)))))
         (shell-shutdown! late-drainer)
         (when parked (coroutine-wake! parked 'woken))
-        (let* ((gone (wait-for (lambda () (closed-and-gone? late-drainer (cdr p)))))
+        (let* ((gone (closed-by-client late-drainer p))
                (ended (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))))
           (test-equal "a switch answered while the server drains: its taker's drain call runs as it is registered"
                       (list 'satisfied 'satisfied 'satisfied (joined (list door-101 (b "bye"))) '(()) 'never-forced)

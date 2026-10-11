@@ -119,7 +119,8 @@
 ;; recording its number and what it is told; with `again?`, a `done` so told
 ;; asks for one more, until three have been asked for.  As the stream
 ;; closes, other work is queued on the scheduler too, which notes that it
-;; ran.  The taker's drain call closes its stream.  Once the client has been
+;; ran.  The taker's drain call closes its stream, which lingers (decision
+;; 0026) for the server's 1 s, its client open.  Once the client has been
 ;; handed over, the server is shut down and run as `serve` runs it
 ;; (run-until-stopped!): what the `done`s had been told when that run
 ;; returned, and once the loop had turned on until only timers were left;
@@ -150,7 +151,7 @@
                                                                              (lambda () (set! other #t)))
                                                             (do ((i 0 (+ i 1))) ((= i writes))
                                                               (write-late!)))))))
-                              (env '("CHEZ_HTTP_PORT" . "0"))
+                              (env '("CHEZ_HTTP_PORT" . "0") '("CHEZ_HTTP_LINGER_TIMEOUT" . "1"))
                               (lambda (what details) #f)))
             (cl (open-client loop (uv-tcp-getsockname-port (shell-listener sh))
                              (b "GET / HTTP/1.1\r\nHost: h\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
