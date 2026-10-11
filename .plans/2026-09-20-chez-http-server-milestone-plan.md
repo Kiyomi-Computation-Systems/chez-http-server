@@ -1752,6 +1752,20 @@ on the way.
 
 ### Open, and not sliced
 
+*Noted 2026-10-11, on the owner's word, from #167's run in an amd64 image; not decided.*
+
+- **A signal in the gap after `listening`.** `start-server` logs `listening HOST PORT`
+  (serve.sls:107), and only once it has returned does `serve` watch SIGTERM and SIGINT
+  (serve.sls:78). A signal between the two meets its default disposition: the process
+  ends at once, with no drain and nothing logged, where one a moment later drains.
+  - Seen only under emulation. In `chez-websocket-ci-amd64:10.4.1` (x86_64 on an arm64
+    host), the serve suite's "once serve has returned, a SIGINT ends the process at
+    once", whose parent sends SIGTERM as soon as it reads `listening`, was red in three
+    runs of three at chez-libuv v0.8.0 and v0.9.0 alike: `(0 sigterm)`. CI's native
+    x86_64 runs never were.
+  - A supervisor that signals the moment it reads `listening` would meet it. Watching
+    the signals before logging `listening` would close it.
+
 *Noted 2026-10-11, by the owner's form ("Land two, stop two"), under AGENTS.md's rule for
 timing flakes: each went red only under synthetic load, so it is noted, not fixed. CI ran
 the full suite 214 times from 2026-10-01 to the 2026-10-10 billing block with no test
