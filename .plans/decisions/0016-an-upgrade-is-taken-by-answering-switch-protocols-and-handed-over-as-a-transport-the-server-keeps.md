@@ -281,3 +281,14 @@ writes a client that stops reading never takes. A taker may now abort its stream
 `transport-abort!`, which drops what is unsent. `make-transport` takes an eighth
 procedure for it; a transport made of seven refuses the abort. And a handler may read
 every line of a field, `request-header-values`.
+
+## Amendment (2026-10-11) — a taken stream's close lingers (decision 0026)
+
+"A taken stream has no staged close" lost a taker's goodbye to a reset. chez-websocket's
+binding fails a client still sending by writing its close and calling `transport-close!`,
+and the server then closed the socket with the client's bytes unread. A Node client read
+the close in 14 of 100 runs. Now `transport-close!` stages the close as the server's own
+closes are staged (0011). It reads on, dropping what comes, and half-closes once the
+writes are out. It lingers until the client ends, a read fails, or `linger-timeout-ms`
+passes. The close call runs once the socket has closed, as before. `transport-abort!`
+still closes at once.

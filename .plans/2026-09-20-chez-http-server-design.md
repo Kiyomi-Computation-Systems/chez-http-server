@@ -917,6 +917,14 @@ pause answers `#f`.
 > what the libuv shell's does for a client that stops reading. A close it is asked for
 > waits for the writes outstanding, and every call into the taker's code is guarded, a
 > raise closing the stream at once.
+>
+> *Amended 2026-10-11 ([0026](decisions/0026-a-taken-streams-close-half-closes-and-lingers-as-the-servers-own-closes-do.md), on the owner's word by form):*
+> a taker's close is staged, as the server's own closes are (decision 0011). Asked for,
+> it reads on, dropping what comes; once the writes are out, the shell shuts the write
+> side and arms `linger-timeout-ms` in the taker's deadline's place. The stream closes
+> when the client ends, a read fails, or the linger deadline passes; a client that had
+> already ended is closed once the writes are out. The core is unchanged. The fake
+> shell's door stages its close the same way.
 
 ### 4.5 Run-to-completion
 
