@@ -343,3 +343,27 @@ NEXT: in chez-websocket, its own repository: the pin to v0.5.0 (02ef95d) alone. 
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,002 expected passes (main's 1,999 and the three checks), every pin ok.
 
 NEXT: the PR; the closing ritual when the owner asks. Plan §14's open list holds five items: the next are what the full drain keeps after a big read, a door script in the cross-shell contract test, and a taken stream's close bounded from the server's side, which is the owner's to decide; the two load-only timing items stay stopped by the owner's form.
+
+**Decision 0027, a taken stream's close gives each write it waits for the write timeout (2026-10-11),** on the owner's "let's work on the §14 open list": its item "a taken stream's close bounded from the server's side", from 0024's review. Three stacked branches, as 0026's were, cut from `fix/signals-before-listening` (a0cdafa): `docs/0027-close-bound` (the records), `feat/taker-close-write-timeout` (the code and its checks) and `docs/0027-ledger`.
+- **Measured first** (Darwin arm64, at a0cdafa). With `CHEZ_HTTP_WRITE_TIMEOUT` and `CHEZ_HTTP_LINGER_TIMEOUT` at 1 s, the client reading nothing:
+  - a taker that wrote 32 MiB and called `transport-close!`, arming no deadline, still had its stream in the table after 6.5 s, and had been told nothing;
+  - a response of 32 MiB was closed.
+- **Peers**, read from source by a Sonnet agent, and every cited line checked against its saved copy:
+  - Go clears the deadlines at `Hijack`, Node removes its timeout listener at an upgrade, and hyper's `Upgraded` has no timer;
+  - ws and python-websockets, which hold their socket, bound their own close: 30 s from `close()`, and 10 s, then abort.
+- **DECIDED by form**, "Write timeout after close (Recommended)". Weighed: leaving it to the taker, M8.2's form; and the linger armed from the close call. Settled by precedent and flagged in the decision:
+  - the taker's own deadline runs beside the bound, the earlier first;
+  - nothing is logged at the bound;
+  - the fake shell is unchanged, since its writes never outlast a turn.
+- **Built.** The taker keeps two instants, `due` and `bound`. `taker-arm!` arms the stream's one wheel entry at the earlier of the two. `taker-bound!` arms the bound at the close and again at each write's end, from the loop's time brought up to date. `taker-passed!` aborts once the bound has passed; otherwise it makes the taker's call and arms the rest again.
+- **Five checks** in the shell suite, on a 300 ms write timeout: the bound alone; each write; the taker's own deadline earlier, and later; a held loop.
+  - Test first: C1 to C4 red by value on #174's shell.
+  - C2 was red in two of five runs at first. That was the check: through the 4 KiB send buffer, the client needed more than 150 ms to read the first write, so the server's send buffer now widens to 1 MiB once the client reads. Then 20 of 20 green.
+  - C5 was added for the bound's `uv-update-time!`.
+  - Eight mutant rows over every suite: 0 mismatches, and every check has a killer by value (m8-mutations.md, its last section).
+- **One red not chased.** 0026's linger check, "a client that reads the close and never closes …", went red once in 64 runs of this shell, in a full `make test`; its values were not captured. It was green in the other 63, and in 10 on #174's shell. Other sessions' Chez suites were running on the machine. 0027 leaves that check's path as it was. Noted in plan §14's open list, under AGENTS.md's rule for timing flakes.
+- **Measured on Linux,** every suite once: Linux aarch64 (`chez-libuv-noble-scratch:10.4.1`, libuv 1.48.0) and x86_64 under emulation (`chez-websocket-ci-amd64:10.4.1`), 1,969 expected passes each (#174's 1,964 and the five), the shell suite 215 in both, and the clients suite at status 2 with no tools built, as before.
+- **Records:** decision 0027; 0016's amendment; the design's door note; the plan's open list (the item settled, and the linger check's red noted); `docs/handlers.org` and `docs/connections.org`; the transport's notes; CHANGELOG.md's Unreleased (Changed).
+- `make test` green before each commit (Darwin arm64): fifty-one suites; 2,002 on the records, 2,007 on the code and on this ledger; every pin ok.
+
+NEXT: the PRs, #174 then these three; the closing ritual when the owner asks, bottom-up. Plan §14's open list then holds five items: what the full drain keeps after a big read, a door script in the cross-shell contract test, the two load-only timing items the owner's form stopped, and the linger check's one red.
