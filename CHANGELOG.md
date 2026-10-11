@@ -6,6 +6,18 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-11
+
+The sixth release. A taker's `transport-close!` now closes as the server's own closes
+do: it half-closes, throws away what the client still sends, and closes once the client
+closes too. A client still sending reads the taker's last words where it got a reset.
+chez-websocket asked for it, for its close frame (decision 0026). What a taker sees
+changes: its close call, and a waiting taker's `&client-closed`, come once the client
+has closed, up to `CHEZ_HTTP_LINGER_TIMEOUT` later, and the test fake's door closes the
+same way. So the release is 0.5.0, though no export changes. chez-libuv is pinned at
+v0.9.0, which still needs libuv 1.48 or later. chez-httparse v0.4.5 with byte-machine
+v0.7.0, and uriparse v0.6.2, are 0.4.1's.
+
 ### Changed
 
 - **chez-libuv is pinned at v0.9.0.** Run `make build` after pulling: its C shim gained
@@ -23,6 +35,14 @@ All notable changes to chez-http-server are recorded here. The format follows
   and now in 100 of 100; on Linux, 46 to 56 of 100 clients ended in a reset, and now
   none. The close call, and a waiting taker's `&client-closed`, come once the client
   has closed. `transport-abort!` still closes at once (decision 0026).
+- **The test fake's door closes the same way** (`tests/fake-shell.sls`, which a taker's
+  own tests may put on their library path). After `transport-close!` it reads on,
+  dropping what comes. Once the writes are out it shuts its write side, which the new
+  `(fake-shell-shut? sh)` tells, and lingers, the linger deadline armed on the fake
+  clock in the taker's deadline's place. The client's end (`(fake-shell-deliver! sh
+  '(eof))`), a read error, or the linger passing (`fake-shell-advance!`, then
+  `fake-shell-fire!`) closes it. A test that read the stream closed just after the
+  close now delivers the client's end first (decision 0026).
 
 ### Fixed
 
@@ -284,7 +304,8 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.2.0...v0.3.0
