@@ -1122,6 +1122,17 @@ collection). An idle keep-alive connection carries no coroutine at all.
 > A park entered a second time ends the coroutine whose turn it is, through the drain,
 > so no handler of the frames entered sees it.
 
+> *Amended 2026-10-11 (plan §14's open list, and its review):* the drain hands a woken
+> coroutine what its wake gave and keeps it no longer, and a wait answered while
+> `register` runs lets go what its cell kept for it: each was kept while the coroutine
+> waited again, until its next wake, or for as long as whoever registered kept the
+> resume. A coroutine's record lets its thunk go once entered, and what it ended with
+> and its end procedure once its end is handed over; a wait's cell lets its coroutine
+> go once the wait is over. The full drain itself keeps nothing after a big read. Each wake's full capture uses up the thread's
+> stack segment, about 8 B for each call of the drain's depth, until Chez gives it a
+> fresh one, so a heap read after each message falls between readings and rises by a
+> segment, about 64 KB, now and then: chez-websocket's 2.9 KB "kept" was that fall.
+
 ### 5.3 The invariants, as checks
 
 Decision 0003 item 2 adopts R1–R5 of the two-level proposal as checks, not comments:

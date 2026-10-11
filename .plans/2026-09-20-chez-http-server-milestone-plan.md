@@ -1787,23 +1787,6 @@ failure.*
   thread from the loop during the write, past a tick (10 ms). Its fix, the least of
   three writes, was stopped before its counts were recorded.
 
-*Noted 2026-10-09, from chez-websocket#57's review (its decision 0007), by form ("Server
-plan's open list"); not decided.*
-
-- **What the full drain keeps after a big read.** Since decision 0025's review the drain
-  enters and resumes coroutines on a full continuation. Measured through chez-websocket's
-  socket suite (Darwin arm64; its research record, 2026-10-09), the heap after a WebSocket
-  message of 4,000 bytes stays 2,832 to 2,952 B above the heap after a 1-byte one, until
-  the connection's next message.
-  - It is not the message: 2,872 to 2,888 B at 40,000 and 400,000 bytes.
-  - It grows with connections: 9,344 to 9,360 B at ten, where v0.4.0 kept 104 to 112 B
-    at one and 976 to 1,120 B at ten. So about 620 B a connection more than v0.4.0.
-  - It goes with the drain: with the drain alone on a one-shot continuation again, 0 to
-    200 B; with the park alone, 2,696 to 2,704 B.
-  - Not explained, and nothing here bounds it. A check through the libuv shell of the
-    heap after a large read against a small one, or a drain that keeps none, would
-    settle it. chez-websocket's own check allows up to 8,004 B at 16,000 bytes.
-
 *Noted 2026-10-08, from decision 0024's review, with its reason; not decided.*
 
 - **A door script in the cross-shell contract test.** The fake's door is held to the
@@ -1813,8 +1796,53 @@ plan's open list"); not decided.*
   drive a taker on both shells.
 
 *Settled: the smuggler corpus on 2026-10-04 (decision 0021); the signal gap after
-`listening`, and a taken stream's close bounded from the server's side, on 2026-10-11
-(decision 0027).*
+`listening`, a taken stream's close bounded from the server's side (decision 0027), and
+what the full drain keeps after a big read, on 2026-10-11.*
+
+- ~~What the full drain keeps after a big read~~, **settled 2026-10-11 by measurement** on
+  `fix/wake-value-let-go`, on the owner's form ("Fix it, settle the item"). The item,
+  noted 2026-10-09 from chez-websocket#57's review (its decision 0007): through that
+  suite, the heap after a 4,000-byte message stayed 2,832 to 2,952 B above the heap
+  after a 1-byte one; 9,344 to 9,360 B with ten connections; 0 to 200 B with the drain
+  alone one-shot again. Measured at ab5062c (Darwin arm64), it keeps nothing:
+  - **The 2.9 KB is the heap falling between the two readings.** S-LETGO's shape on
+    main read 2,888 to 3,064 B for a big message then a small one, and 2,872 to
+    3,088 B for two 1-byte messages, two runs each at 4,000 and 16,000 bytes. With ten
+    connections, at 4,000 bytes, two runs: 9,216 to 9,344 B, and 8,480 to 9,336 B for
+    two 1-byte messages (a reading of −55,096 to −55,168 B is a fresh segment, about
+    64 KB less the step's fall). Ten connections are woken ten times a step.
+  - **Why it falls.** Each wake's full capture uses up the thread's stack segment, by
+    the drain's depth, until Chez gives it a fresh one. The scheduler alone, its drain
+    called 0, 50 and 200 calls deep: the heap fell about 248, 648 and 1,848 B a wake
+    (8 B a call), then rose 62,504 to 64,240 B every 244, 97 and 34 wakes; 2,000 wakes
+    0 calls deep ended 12,992 B below where they began. With no scheduler, a capture
+    20 calls deep each step, full, one-shot or none, the heap rose 16 B a step, the
+    list the probe kept.
+  - **Bounded.** 400 messages through the libuv shell to a waiting taker: each hundred
+    spanned 63,376 to 65,432 B, one segment's band; all four, 68,384 B, the probe's own
+    list of readings adding 16 B a step.
+  - **What the measuring found instead.** A waiting coroutine kept the last value a
+    wake handed it, until its next wake or its end: through the libuv shell, a taker
+    whose code resumed its wait with a 4,000-byte read's copy kept about 4,000 B while
+    it waited (a step −1,744 to −2,080 B, against −5,976 to −6,192 B for a 1-byte
+    message after another, four runs), let go at the next wake. A wait answered while `register` runs kept the
+    value in its cell, which whoever registered kept with the resume.
+  - **Fixed.** The drain lets a wake's value go as it hands it over (`resume!`), and a
+    wait the value it answers (`wait!`). The review of the same day found the rest of
+    the kind, fixed with it: a coroutine's record kept its thunk after entering it, and
+    once it had ended, what it ended with and its end procedure; and a resume kept
+    after its wait kept the coroutine that waited, through the cell. Each is let go
+    once used. None costs anything: a wake and park allocates 288 B, as before. Peers
+    keep nothing of a value handed to a waiter: Go clears its waiting record's pointer
+    before the receiver runs (`runtime/chan.go` 339-342 at go1.27.2), and CPython
+    pushes a value sent to a generator onto its frame's stack (`Objects/genobject.c`
+    244-246 at v3.14.0).
+  - **Five checks, by weak pairs**, each watched to fail on the code before it: the
+    scheduler suite's two (a woken coroutine's value, a kept value calibrating the
+    instrument; and its record's thunk, end and end procedure); the waits suite's two
+    (a value given while `register` runs and one given to the wait parked; and the
+    coroutine through a kept resume); and the shell suite's (a waiting taker woken with
+    a read's bytes).
 
 - ~~A taken stream's close bounded from the server's side~~, **settled 2026-10-11
   (decision 0027)** on `feat/taker-close-write-timeout`, on the owner's form ("Write

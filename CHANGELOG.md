@@ -24,6 +24,12 @@ All notable changes to chez-http-server are recorded here. The format follows
   nothing logged. `serve` now watches for them first. The gap showed in an x86_64
   image run under emulation, where the serve suite's own signal check went red in three
   runs of three.
+- **A waiting coroutine no longer keeps what woke it.** The value given to an `await`'s
+  `resume` stayed on the heap while the code waited again, until its next wake, even
+  once the code had let it go: a taker whose code resumed its wait with each read's
+  bytes kept the last read. A value given while `register` ran stayed for as long as
+  whoever registered kept the resume, and so did the coroutine that waited, with what it
+  ended with, after it had ended. Each is let go once used, at no cost per wake.
 
 ## [0.5.0] - 2026-10-11
 

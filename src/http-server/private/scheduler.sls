@@ -109,12 +109,17 @@
   ;; coroutine-scheduler : Coroutine -> Scheduler — the one that runs it
   ;; coroutine-waits : Coroutine -> Any — what its waits keep of it, or #f
   ;; coroutine-waits-set! : Coroutine Any -> Void
-  ;; A coroutine is 'ready, 'running, 'parked or 'ended.  `k` is its
-  ;; continuation while parked, `value` what a wake gave it, and then its
-  ;; end: what it returned or raised.  `parks` numbers its parks and their
-  ;; landings: 2n+1 while its n+1st park waits to land, 2n once it has.
+  ;; A coroutine is 'ready, 'running, 'parked or 'ended.  `thunk` is what it
+  ;; runs, until it is entered, and `on-end` its end procedure, until its
+  ;; end is handed over.  `k` is its continuation while parked, `value` what
+  ;; a wake gave it, until the drain hands it over, and then its end, what it
+  ;; returned or raised, until the end procedure is called with it.  Each is
+  ;; let go once used, so a record kept, by a resume kept with its wait
+  ;; among others, keeps none of them (plan §14, 2026-10-11, and its review).
+  ;; `parks` numbers its parks and their landings: 2n+1 while its n+1st park
+  ;; waits to land, 2n once it has.
   (define-record-type (coroutine make-coroutine coroutine?)
-    (fields scheduler thunk on-end
+    (fields scheduler (mutable thunk) (mutable on-end)
             (mutable state) (mutable k) (mutable value) (mutable raised?)
             (mutable waits)                 ; what its waits keep of it, which it never reads
             (mutable parks))
@@ -285,7 +290,10 @@
   ;; 0025's review): a park's full capture made a one-shot one multi-shot,
   ;; so Chez could not reuse its segment, and a coroutine that parked once
   ;; 4 calls deep, one at a time, allocated 4,256 to 4,257 B, where this
-  ;; allocates 1,177 to 1,242 (a one-shot park, 720).
+  ;; allocates 1,177 to 1,242 (a one-shot park, 720).  A woken coroutine is
+  ;; handed what its wake gave, and the coroutine keeps it no longer: kept,
+  ;; it stayed on the heap while the coroutine waited again, until its next
+  ;; wake (plan §14, 2026-10-11).
   (define (resume! s c)
     (coroutine-state-set! c 'running)
     (set! running c)
@@ -294,14 +302,20 @@
                   (scheduler-k-set! s k)
                   (let ((k0 (coroutine-k c)))
                     (if k0
-                        (begin (coroutine-k-set! c #f) (k0 (coroutine-value c)))
+                        (let ((v (coroutine-value c)))
+                          (coroutine-k-set! c #f)
+                          (coroutine-value-set! c #f)
+                          (k0 v))
                         (enter! s c)))))))
       (set! running #f)
       (scheduler-k-set! s #f)
       (case how
         ((yielded) (scheduler-later-set! s (cons c (scheduler-later s))))
         ((ended)
-         ((coroutine-on-end c) (if (coroutine-raised? c) 'raised 'returned) (coroutine-value c))))))
+         (let ((on-end (coroutine-on-end c)) (v (coroutine-value c)))
+           (coroutine-on-end-set! c #f)
+           (coroutine-value-set! c #f)
+           (on-end (if (coroutine-raised? c) 'raised 'returned) v))))))
 
   ;; enter! : Scheduler Coroutine -> [does not return]
   ;; The coroutine's first run: its thunk, then the jump to the drain's
@@ -318,7 +332,10 @@
        (coroutine-raised?-set! c #t)
        (coroutine-value-set! c e)
        (end! s c))
-     (lambda () (coroutine-value-set! c ((coroutine-thunk c)))))
+     (lambda ()
+       (let ((thunk (coroutine-thunk c)))
+         (coroutine-thunk-set! c #f)
+         (coroutine-value-set! c (thunk)))))
     (end! s c))
 
   ;; end! : Scheduler Coroutine -> [does not return]
