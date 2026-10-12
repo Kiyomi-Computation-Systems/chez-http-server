@@ -253,14 +253,42 @@
                                                               "Connection: Upgrade\r\nExpect: 100-continue\r\n\r\n")))))
                        (sh (run input (bytevector-length input) (taking (make-taker)))))
                   (client-bytes sh)))
-    (test-equal "the core's part, from the handler's call: the 101 written, then the hand-off, disarmed first, and nothing after"
-                '((call-handler (GET "/chat")) (write 101) (arm-deadline write) (disarm-deadline) hand-off)
+    (test-equal "the core's part, from the handler's call: the 101 written, then the hand-off, disarmed and reading stopped first, and nothing after"
+                '((call-handler (GET "/chat")) (write 101) (arm-deadline write) (disarm-deadline) (read-stop) hand-off)
                 (let ((sh (run eager (bytevector-length eager) (taking (make-taker)))))
                   (map (lambda (a) (if (eq? (car a) 'hand-off) 'hand-off a))
                        (let from ((as (rendered-actions sh)))
                          (cond ((null? as) '())
                                ((eq? (caar as) 'call-handler) as)
                                (else (from (cdr as))))))))
+
+    ;; Decision 0016's amendment (2026-10-11): nothing is read between the
+    ;; hand-off and the taker's read-start, so what the client sends after
+    ;; the 101 waits for the taker, as Go's hijack and Node's upgrade keep
+    ;; it.  A taker that starts reading only once its deadline passes: the
+    ;; frames sent after the handshake are read by no one until then, and
+    ;; are then all the taker's.
+    (test-equal "a taker that starts reading once its deadline passes reads what the client sent after the 101, none of it read before"
+                (list 0 frames 0 'handed-off)
+                (let* ((t (make-taker))
+                       (sh (unread handshake
+                                   (lambda (request)
+                                     (switch-protocols
+                                      (list (cons (b "Upgrade") (b "websocket")) accept)
+                                      (lambda (tr retained)
+                                        (transport-deadline!
+                                         tr 1000
+                                         (lambda ()
+                                           (transport-read-start!
+                                            tr
+                                            (lambda (bv from to) (taker-read-set! t (cons (slice bv from to) (taker-read t))))
+                                            (lambda (why) (taker-ends-set! t (cons why (taker-ends t))))))))))))
+                       (before (fake-shell-feed-input! sh frames 64)))
+                  (fake-shell-advance! sh 1000)
+                  (fake-shell-fire! sh)
+                  (fake-shell-feed-input! sh frames 64)
+                  (list before (concat (reverse (taker-read t))) (length (fake-shell-taker-failures sh))
+                        (conn-phase (fake-shell-conn-state sh)))))
 
     ;; --- the transport (decision 0016 item 2) ------------------------------
     ;; The taker's writes follow the 101, in order, each callback told once

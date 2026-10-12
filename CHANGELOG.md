@@ -18,6 +18,12 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ### Fixed
 
+- **A taker no longer loses what its client sends before it starts reading.** Once the
+  `101` was written, the server read on for itself until the taker called
+  `transport-read-start!`, and dropped what it read: a taker that started reading
+  later, from a thunk that waits or at a deadline, never got what the client sent
+  first. Now nothing is read until the taker asks, and those bytes wait for it. A
+  taker that starts reading in its take-over, as chez-websocket's does, lost nothing.
 - **A signal sent the moment `serve` logs `listening` drains the server.** `serve`
   watched for SIGTERM and SIGINT only after writing the line, so a supervisor that
   signalled as soon as it read it could end the process at once, with no drain and
