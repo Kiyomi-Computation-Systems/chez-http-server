@@ -487,4 +487,15 @@ NEXT: the Linux runs and chez-websocket's suites on this branch; then the two PR
   - Mutants HE-1 to HE-12, one prediction error, HE-8 (m8-mutations.md, its last section).
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,115 expected passes (2,107 and the eight checks: the table's two, the switch suite's three, the shell suite's three), every pin ok.
 
-NEXT: the Linux runs and chez-websocket's suites on `fix/taker-end-once`; #180 updated with the first fix, and the second as a PR stacked on it; the closing ritual on the owner's word, bottom-up. The review's other eleven findings wait for the owner's word.
+- **The review's other eleven (2026-10-12),** on the owner's word ("fix 10, 6, 7, 11, and 12 - put the rest in 14s open list"), on `test/door-review-notes`, stacked on `fix/taker-end-once` (#181).
+  - **Finding 10, documentation.** `docs/handlers.org` said nothing is read until `transport-read-start!`, but a close reads too, dropping what it reads (decision 0026). It says so now, and so does CHANGELOG.md's entry for #179.
+  - **Findings 6 and 7, the late readers' window.** The contract test's `(heard)` waited for any byte, and neither late-reader check held that the client's bytes came between the hand-off and the read-start. A slow turn could skip the window and leave both green on main's core.
+    - `(heard)` now waits for the whole 101 and the taker's `taken` mark.
+    - A new step, `(sent-before-read)`, holds as the client sends that the stream was handed over with no bytes and the taker had not started reading; otherwise `(window empty? reading?)` parts check 1.
+    - The shell suite's late reader holds the same as its client sends: `(handed-off ())`.
+  - **Findings 11 and 12, the door's helpers once.** `event->door-read` and `door-read->event` in the fake serve the fake, the replay and check 1. `echo-reads!` in `door-taker` serves `/echo` and `/door-reads-later`.
+  - **Noted in plan §14's open list:** findings 4, 5, 8, 9, 13 and 14, each with why it waits.
+  - Mutants WT-1 to WT-4b, WS-1, DH-1 and DH-2; two prediction errors, WT-3 and WT-4 (m8-mutations.md, its last section).
+- `make test` green before the commits (Darwin arm64): fifty-one suites, 2,115 expected passes, as before (the checks changed, none added), every pin ok.
+
+NEXT: the Linux runs and chez-websocket's suites on `test/door-review-notes`; its PR, stacked on #181; the closing ritual on the owner's word, bottom-up: #179, #180, #181, then this one. Plan §14's open list holds nine items: the three timing items and the review's six.

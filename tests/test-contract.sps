@@ -84,7 +84,12 @@
 ;;; so the traces hold what the taker saw too.  A script marked `(aborts)`
 ;;; is one whose stream the server closes at once, the client's end never
 ;;; read; `(heard)` waits until the client has read the 101, as a WebSocket
-;;; client waits for it (RFC 6455 §4.1).  The door scripts play to the
+;;; client waits for it (RFC 6455 §4.1), and the taker has taken the stream;
+;;; and `(sent-before-read)`, after a send, holds that what the client sent
+;;; came after the hand-off and before the taker's read-start: the stream
+;;; was handed over with no bytes and the taker had not started reading as
+;;; it was sent, so the late reader's window is the one played, not one a
+;;; slow turn skipped.  The door scripts play to the
 ;;; direct shell and to the coroutine shell, whose handler answers the
 ;;; switch from a coroutine; one whose client never ends its stream plays to
 ;;; a shell with short limits, where its linger's deadline closes it.
@@ -266,16 +271,18 @@
     (door-mark! (list 'taken retained))
     (transport-on-close! t (lambda () (door-mark! '(on-close)))))
   (define (close! t) (door-mark! '(close)) (transport-close! t))
+  (define (echo-reads! t)
+    (transport-read-start! t
+                           (lambda (bv start end)
+                             (door-mark! (list 'read (bytes-between bv start end)))
+                             (door-write! t (bytes-between bv start end)))
+                           (lambda (why) (door-mark! (list 'end why)) (close! t))))
   (cond
    ((is? "/echo")
     (lambda (t retained)
       (taken t retained)
       (when (positive? (bytevector-length retained)) (door-write! t retained))
-      (transport-read-start! t
-                             (lambda (bv start end)
-                               (door-mark! (list 'read (bytes-between bv start end)))
-                               (door-write! t (bytes-between bv start end)))
-                             (lambda (why) (door-mark! (list 'end why)) (close! t)))))
+      (echo-reads! t)))
    ((is? "/goodbye")
     (lambda (t retained) (taken t retained) (door-write! t (b "goodbye")) (close! t)))
    ((is? "/door-abort")
@@ -297,11 +304,7 @@
         (lambda ()
           (door-mark! '(passed))
           (door-mark! '(read-start))
-          (transport-read-start! t
-                                 (lambda (bv start end)
-                                   (door-mark! (list 'read (bytes-between bv start end)))
-                                   (door-write! t (bytes-between bv start end)))
-                                 (lambda (why) (door-mark! (list 'end why)) (close! t)))))))
+          (echo-reads! t)))))
    ((is? "/door-raises")
     (lambda (t retained) (taken t retained) (raise (make-message-condition "the taker failed"))))
    ((is? "/write-after-close")
@@ -427,8 +430,10 @@
 
 ;; The door's scripts (THE DOOR), each its request to a take-over of
 ;; door-taker's: `(aborts)` marks one whose stream the server closes at
-;; once, so the client's end is never read, and `(heard)` waits until the
-;; client has read the 101.
+;; once, so the client's end is never read, `(heard)` waits until the
+;; client has read the 101 and the taker has taken the stream, and
+;; `(sent-before-read)` holds that the send before it came between the
+;; hand-off and the taker's read-start (THE DOOR, the header).
 (define door-scripts
   `(("an upgrade echoed, then the client's end"
      (send ,(upgrade "/echo")) (read) (send "hello") (read) (send "world"))
@@ -445,7 +450,7 @@
     ("a taker that raises" (send ,(upgrade "/door-raises")) (aborts))
     ("a write after a taker's close" (send ,(upgrade "/write-after-close")))
     ("a taker that starts reading 50 ms after its take-over, the client sending once it has the 101"
-     (send ,(upgrade "/door-reads-later")) (heard) (send "hello"))))
+     (send ,(upgrade "/door-reads-later")) (heard) (send "hello") (sent-before-read))))
 
 ;; A door script whose client never ends its stream, played to the shell
 ;; with short limits, where the linger's deadline closes it.
@@ -546,6 +551,15 @@
     (or (null? cs)
         (and (memq (conn-phase (connection-state (car cs))) '(idle lingering closing closed handed-off))
              #t))))
+
+;; head-read? : Client -> Boolean — whether the client has read a whole
+;; head, its blank line among what it read.
+(define (head-read? cl) (and (find-from (latin-1 (client-bytes cl)) "\r\n\r\n" 0) #t))
+
+;; taken? : -> Boolean — whether the script's taker has taken its stream:
+;; its `taken` mark is in the libuv shell's trace (THE DOOR'S MARKS).
+(define (taken?)
+  (exists (lambda (e) (and (eq? (car e) 'taker) (eq? (car (cadr e)) 'taken))) traced))
 
 ;; latin-1 : Bytevector -> String — one character per byte, so two byte
 ;; strings render alike only if they are alike.
@@ -762,7 +776,14 @@
                             ((stall) (step '() waits))
                             ((heard)
                              (step (cdr steps)
-                                   (cons (wait (lambda () (positive? (bytevector-length (client-bytes cl)))))
+                                   (cons (wait (lambda () (and (head-read? cl) (taken?)))) waits)))
+                            ((sent-before-read)
+                             (step (cdr steps)
+                                   (cons (let ((empty? (member '(taker (taken (bytes ""))) traced))
+                                               (reading? (member '(taker (read-start)) traced)))
+                                           (if (and empty? (not reading?))
+                                               'satisfied
+                                               (list 'window (and empty? #t) (and reading? #t))))
                                          waits)))
                             ((bare-close end-early aborts) (step (cdr steps) waits)))
                           (let ((waits (if (or (stalls? script) (closes-bare? script) (ends-early? script))
@@ -844,9 +865,7 @@
                       ;; A taken stream's (THE DOOR): a read and an end
                       ;; delivered, a write's completion with the libuv
                       ;; shell's outcome, and a pass as the timer firing.
-                      ((stream-read) (fake-shell-deliver! fake (cons 'bytes-arrived (cdr event))))
-                      ((stream-end)
-                       (fake-shell-deliver! fake (if (eq? (cadr event) 'eof) '(eof) (list 'read-error (cadr event)))))
+                      ((stream-read stream-end) (fake-shell-deliver! fake (door-read->event event)))
                       ((stream-wrote) (fake-shell-deliver-later! fake (cadr event)))
                       ((stream-passed) (fake-shell-fire! fake))
                       ;; Where the libuv shell's handler code ended a wait,
@@ -884,7 +903,7 @@
       (check name "the libuv shell read what the client sent, then its end alone, and closed"
              (list 'identical (if (or (stalls? script) (closes-bare? script) (aborts? script)) '() '(eof)) 'satisfied)
              (list (compare-bytes sent (collector-bytes delivered))
-                   (map (lambda (e) (if (eq? (car e) 'stream-end) (if (eq? (cadr e) 'eof) 'eof 'read-error) (car e)))
+                   (map (lambda (e) (car (if (eq? (car e) 'stream-end) (door-read->event e) e)))
                         (filter (lambda (e) (memq (car e) '(eof read-error stream-end))) (map cddr evs)))
                    finished))
       ;; compare-bytes names the first byte that differs, the fake's then

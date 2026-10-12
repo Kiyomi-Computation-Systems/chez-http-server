@@ -198,6 +198,7 @@
           fake-shell-deliver-later! fake-shell-settle! fake-shell-feed-input!
           fake-shell-writes fake-shell-date-writes! written-status write-wire
           fake-shell-fire-waits! fake-shell-answer-lookup! fake-shell-drain! fake-shell-armed
+          event->door-read door-read->event
           fake-shell-shut? fake-shell-hold! fake-shell-schedule! fake-shell-taker-failures)
   (import (rnrs)
           (byte-machine runtime)
@@ -310,14 +311,28 @@
       (assertion-violation 'fake-shell-deliver! "no progress: the dispatch cap was reached"
                            dispatch-cap event))
     (if (and (fake-shell-taker s) (memq (car event) '(bytes-arrived eof read-error)))
-        (begin (trace! s 'door (case (car event)
-                                 ((bytes-arrived) (cons 'stream-read (cdr event)))
-                                 ((eof) '(stream-end eof))
-                                 (else (list 'stream-end (cadr event)))))
+        (begin (trace! s 'door (event->door-read event))
                (taker-read! s (fake-shell-taker s) event)
                (unless (fake-shell-held? s) (schedule! s))
                '())
         (step-event! s event)))
+
+  ;; event->door-read : Event -> Datum
+  ;; A read's event, `bytes-arrived`, `eof` or `read-error`, as a taken
+  ;; stream's trace has it (THE DOOR): `(stream-read bv start end)`, or
+  ;; `(stream-end why)`, 'eof or the errno, as the libuv shell traces its own.
+  (define (event->door-read event)
+    (case (car event)
+      ((bytes-arrived) (cons 'stream-read (cdr event)))
+      ((eof) '(stream-end eof))
+      (else (list 'stream-end (cadr event)))))
+
+  ;; door-read->event : Datum -> Event — a taken stream's read or end, as
+  ;; its trace has it, as the read's event: event->door-read's inverse.
+  (define (door-read->event datum)
+    (cond ((eq? (car datum) 'stream-read) (cons 'bytes-arrived (cdr datum)))
+          ((eq? (cadr datum) 'eof) '(eof))
+          (else (list 'read-error (cadr datum)))))
 
   ;; step-event! : FakeShell Event -> (Listof Action) — fake-shell-deliver!'s
   ;; dispatch to the step.
