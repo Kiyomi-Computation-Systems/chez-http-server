@@ -820,6 +820,7 @@
            (switching (lambda (t retained)
                         (awaiting (lambda ()
                                     (sleep-ms door-ms)
+                                    (took! 'read-start)
                                     (transport-read-start! t (lambda (bv from to) (transport-write! t bv from to))
                                                            (lambda (why) (took! 'ended why) (transport-close! t))))))))
           ((bytevector=? target (b "/door-ended-early"))
@@ -2794,19 +2795,23 @@
     ;; between the hand-off and the taker's read-start, so what the client
     ;; sends after the 101 waits for the taker.  A waiting taker that starts
     ;; reading after a sleep of door-ms: the client sends a frame once it has
-    ;; the 101, inside the sleep, and gets it back once the taker reads.
+    ;; the 101, inside the sleep, and gets it back once the taker reads.  As
+    ;; the frame is sent, the stream is handed off and the taker has not
+    ;; started reading, so the window is the one played, not one a slow turn
+    ;; skipped.
     (set! took '())
     (let* ((p (open-adopted! (door-handshake "/door-read-later")))
            (c (cdr p))
            (heard (wait-for (lambda () (>= (bytevector-length (client-bytes (car p))) (bytevector-length door-101))))))
       (client-send! (car p) hello-frame)
-      (let ((back (wait-for (lambda () (>= (bytevector-length (client-bytes (car p)))
-                                           (+ (bytevector-length door-101) (bytevector-length hello-frame)))))))
+      (let* ((at-send (list (phase c) (took-of 'read-start)))
+             (back (wait-for (lambda () (>= (bytevector-length (client-bytes (car p)))
+                                            (+ (bytevector-length door-101) (bytevector-length hello-frame)))))))
         (client-shut! (car p))
         (let ((gone (wait-for (lambda () (closed-and-gone? shell c)))))
-          (test-equal "a waiting taker that starts reading after a sleep reads what its client sent once it had the 101: the frame comes back, then the client's end closes the stream"
-                      (list 'satisfied 'satisfied (joined (list door-101 hello-frame)) 'satisfied '((eof)))
-                      (list heard back (client-bytes (car p)) gone (took-of 'ended)))))
+          (test-equal "a waiting taker that starts reading after a sleep reads what its client sent once it had the 101: sent before its read-start, the frame comes back, then the client's end closes the stream"
+                      (list 'satisfied '(handed-off ()) 'satisfied (joined (list door-101 hello-frame)) 'satisfied '((eof)))
+                      (list heard at-send back (client-bytes (car p)) gone (took-of 'ended)))))
       (client-close! (car p)))
 
     ;; A client's end read while the 101 is written, a client that reads

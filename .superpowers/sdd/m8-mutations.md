@@ -2847,3 +2847,38 @@ stopped) before it reads, and HE-8 reddens it alone (3f49dade…).
 **Each new or changed check has a killer by value:** TW2-1 and TW2-2, HE-12; TW2-3 and
 TW2-4, HE-1; SW-E, HE-1, HE-3, HE-7 and HE-10; SW-EC, HE-1, HE-3, HE-7 and HE-9; SW-R,
 HE-5; SH-E, HE-1, HE-2, HE-6 and HE-11; SH-EC, HE-1, HE-2, HE-6 and HE-8; SH-R, HE-4.
+
+**The rest, on `test/door-review-notes`:** findings 6, 7, 11 and 12 (10 is documentation).
+The checks are the contract test's L, the late reader, whose check 1 now holds its new
+`(sent-before-read)` step and a `(heard)` that waits for the 101 and the take-over; the
+shell suite's late reader (LS), which now holds `(handed-off ())` as its client sends; and
+the door scripts' checks 1 and 3, through the fake's two conversions.
+
+- **The changed tree:** contract 291, shell 220, fake 20, switch 44, as before.
+- **Eight rows** (6f07624b…), then two more (4550cdda…), on the suites each names:
+
+| Row | Mutant | Red, by value |
+|---|---|---|
+| WT-1 | the contract's late reader reads in its take-over | L check 1, both: `(identical (eof) (satisfied (window #t #t) satisfied satisfied))` |
+| WT-2 | L's request carries "early", handed over | L check 1, both: `(identical (eof) (satisfied (window #f #f) satisfied satisfied))` |
+| WT-3 | `(heard)` waits for one byte; the libuv shell hands off a turn late | none (the error below) |
+| WT-4 | `(heard)` as fixed; the hand-off a turn late | none |
+| WT-3b | `(heard)` waits for one byte; the hand-off 20 ms late, on a timer | L check 1, both: `(identical (eof) (satisfied (window #f #f) satisfied satisfied))` |
+| WT-4b | `(heard)` as fixed; the hand-off 20 ms late | none: the fixed `(heard)` waits for it |
+| WS-1 | the shell suite's late reader reads in its take-over | LS: `(satisfied (handed-off (())) …)` |
+| DH-1 | `door-read->event` makes an eof a read error | check 1 of E1 E2 G1 G2 D W C L, both: 16, `(identical (read-error) satisfied)`; no check 3 |
+| DH-2 | `event->door-read` keeps a read's bytevector alone | check 3 of E1 E2 G2 L, both: 8, as `(differs-at 17 libuv (door (stream-read (bytes "hello") 0 5)) fake (door (stream-read (bytes "hello"))))` |
+
+**Two prediction errors, WT-3 and WT-4.** WT-3's L was predicted red: a hand-off deferred
+to the next turn's drain, with a `(heard)` content with one byte, should have let the
+client send before the take-over. Every check stayed green. My reading, not measured: the
+deferred call made that turn's poll not wait, and loopback had not yet delivered the 101,
+so the client read it a turn later, after the take-over, and the window never opened. A
+20 ms timer opened it (WT-3b), and the fixed `(heard)` keeps it shut (WT-4b).
+
+**Every mutant loaded:** 17 logs, none with `Exception` or `HARNESS`.
+
+**Each changed check has a killer by value:** L's check 1, WT-1, WT-2 and WT-3b; LS, WS-1;
+the door scripts' checks 1, DH-1, and checks 3, DH-2. `echo-reads!` is the take-overs'
+own code, the same in both shells, so no contract check tells it from its two copies; the
+suite's 291, with no mismatch, holds the refactor.

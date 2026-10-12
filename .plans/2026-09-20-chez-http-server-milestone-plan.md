@@ -1787,6 +1787,35 @@ failure.*
   thread from the loop during the write, past a tick (10 ms). Its fix, the least of
   three writes, was stopped before its counts were recorded.
 
+*Noted 2026-10-12, from the `/code-review` of #179 and #180 (xhigh), on the owner's word
+("put the rest in 14s open list"). Each was found by reading the code, not by a run, and no
+script or check reaches it today. The review's other eight were fixed (#180, #181, and the
+PR after them).*
+
+- **The fake shell reads past a hand-off whatever it is handed.** `fake-shell-deliver!`'s
+  taker branch does not ask `fake-shell-reading?`. A test that delivers bytes before the
+  taker's read-start reaches an `on-bytes` not yet given, which records a taker failure
+  and aborts the stream; the libuv shell's kernel would keep the bytes. Only
+  `fake-shell-feed-input!` asks, and the suites deliver through it, or through the
+  contract test's replay, which gives the fake only what libuv read.
+- **The fake shell's door has no write bound (decision 0027).** A taker's entry passing
+  makes its deadline call there, where the libuv shell aborts the stream once the close's
+  write bound has passed. No door script leaves a write unread past write-timeout-ms, so
+  the replay never gives the fake that pass.
+- **An outcome given to an empty queue is dropped.** `fake-shell-deliver-later!` with an
+  outcome asserts that the oldest waiting is a taker's write only when something waits;
+  with nothing waiting it answers `#f`. A trace check then names the difference a step
+  later, instead of the event that caused it.
+- **A read refused at its start ends the taker inside its read-start** in the libuv shell.
+  The replay can give the fake that end only as the next event, after the take-over, so
+  a replay of it would part the traces where the shells agree. No script's read-start is
+  refused.
+- **The contract test's handler asks `door-taker` first,** for every request of every
+  script, which makes up to nine bytevectors and three closures before it answers `#f`.
+  The suite measures no allocation, so it costs time alone.
+- **`door-trace!` evaluates its connection twice.** Every use passes a variable, so
+  nothing is done twice today.
+
 *Settled: the smuggler corpus on 2026-10-04 (decision 0021); the signal gap after
 `listening`, a taken stream's close bounded from the server's side (decision 0027), what
 the full drain keeps after a big read, and a door script in the cross-shell contract

@@ -22,7 +22,8 @@ All notable changes to chez-http-server are recorded here. The format follows
   `101` was written, the server read on for itself until the taker called
   `transport-read-start!`, and dropped what it read: a taker that started reading
   later, from a thunk that waits or at a deadline, never got what the client sent
-  first. Now nothing is read until the taker asks, and those bytes wait for it. A
+  first. Now nothing is read until the taker starts reading or closes, and those
+  bytes wait for it; once it closes, what the client sends is read and dropped. A
   taker that starts reading in its take-over, as chez-websocket's does, lost nothing.
 - **A taker hears its client's end once.** A taker that called
   `transport-read-start!` again after its `on-end` was told the end a second time,
