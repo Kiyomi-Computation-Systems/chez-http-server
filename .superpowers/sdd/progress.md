@@ -261,3 +261,14 @@ NEXT: 0.6.0's release, stacked on this, by the owner's form ("0.6.0 (Recommended
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,115 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
 
 NEXT: the closing ritual for both PRs, bottom-up, and the tag, when the owner asks. Then, in chez-websocket: the pin to v0.6.0 alone.
+
+MERGED to main on 2026-10-12, on the owner's "Do closing ritual": **v0.5.0's entries archived and 0.6.0's release, as two stacked PRs** (the two entries above), bottom-up.
+- **#183, v0.5.0's entries archived:** cff63a3 squashed as 55020eb (tree 7d3eda5, the tested head's; parent 605f666). It merged without `--delete-branch`, since #184 was based on it and the shared checkout holds `main`.
+- **#184, 0.6.0's release:** retargeted to main and rebased from cff63a3 onto 55020eb, bf809c1 becoming a54b940 (tree 7678e2b, unchanged), pushed with the lease read from `ls-remote`. It squashed as 47c787d (tree 7678e2b; parent 55020eb).
+- **CI.** Billing-blocked throughout. Each run ended with its `linux` job not started (0 steps, the payments annotation): the PRs' 38247368667 (cff63a3) and 38247399215 (bf809c1), the rebased head's 38249181195 (a54b940), and main's on each squash, 38249101449 (55020eb) and 38249224128 (47c787d). By the owner's form ("Tag on local runs (Recommended)"), the release entry's local runs stood in: Darwin 2,115 expected passes, Linux aarch64 and x86_64 under emulation 2,077 each, and chez-websocket's fifteen suites 395.
+- **TAGGED v0.6.0** on 47c787d, annotated and signed as v0.5.0 was: "chez-http-server v0.6.0 — a taker's close gives up on a client that reads nothing", its body pointing at CHANGELOG.md's `[0.6.0]`. `git tag -v` read a good signature. `git ls-remote --tags` shows the tag object ff52f41 and its commit 47c787d. No GitHub Release, as for the earlier tags.
+- **Branches.** Both deleted, remote and local. This session's worktree was left detached at 47c787d for this reflect; the shared checkout, clean on `main`, was fast-forwarded after each squash and is again after this. No PR is open.
+
+`make test` green on main: fifty-one suites, 2,115 expected passes, every pin ok.
+
+NEXT: in chez-websocket, its own repository: the pin to v0.6.0 (47c787d) alone. Its `test-binding` and `test-driver` load this server's fake, whose door changed in #180 to #182; its fifteen suites passed on this tree. Here, v0.6.0's entries move to `v0.6.0-progress.md` at the next release. When main's runs start again, re-run main's latest run once. Plan §14's open list holds nine items.
