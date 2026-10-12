@@ -2796,3 +2796,54 @@ the close is told ECANCELED at the next turn, not in its call" (SW-B).
 | FX-3 | a write after the close told ECANCELED at the next completion (DR-11 again) | SW-D, `()`; the contract's C, check 3, both: `(differs-at 20 libuv (taker (written ECANCELED)) fake (door (stream-end eof)))` |
 
 **Each new check has a killer by value:** SW-D, FX-1 and FX-3; SW-B, FX-2.
+
+**The second, a client's end read before the hand-off** (`fix/taker-end-once`). The
+checks: the table's W2, its four instances (TW2-1 to TW2-4, the last two new); the switch
+suite's "a client's end read while the 101 is written: the taker, reading, is told eof on
+the next turn, and its close closes the stream at once" (SW-E), "… the taker closing in its
+take-over: it is told nothing, and the stream closes" (SW-EC) and "a taker told its end
+that starts reading again: the stream reads no more, and its end is told once" (SW-R); the
+shell suite's "a client's end read while the 101 is written: the taker reading in its
+take-over is told eof on a later turn, with no read for it, and its close closes the
+stream" (SH-E), "… the taker closing in its take-over: …" (SH-EC) and "a taker told its
+end that starts reading again is told nothing more, then its deadline closes the stream"
+(SH-R).
+
+- **Measured first** by probes: the core read the end in `responding`, then the hand-off;
+  the libuv taker got `eof` from libuv's second read, on Darwin and Linux; the fake's taker
+  nothing.
+- **Test first** (9dc5477b…), red alone by value: W2's four, the hand-off without its fourth
+  element; SW-E `(() handed-off 0 30000)`, SW-R `((eof) #t)`; SH-E `(satisfied satisfied
+  ((eof)) 1)`, SH-R `(satisfied satisfied ((eof) (eof)) (()))`. The table first failed to
+  load: its own `ended` helper took the name, so the new one is `end-read`. Not a value.
+- **The fix:** table 370, switch 43, shell 219. Then SW-E and SH-E gained what the taker
+  was told inside its take-over, and SW-EC and SH-EC came: switch 44, shell 220.
+- **Twelve rows** (5a3a4241…; 3f49dade… and fdc6a67a… for the last), on the table, switch,
+  shell, contract and fake suites, HE-1 on every suite:
+
+| Row | Mutant | Red, by value |
+|---|---|---|
+| HE-1 | the hand-off says the end never came | TW2-3 `(… (hand-off tk (ws-wire 72 77) #f))`, TW2-4 `(handed-off client-closed (… (hand-off tk #f #f)))`; SW-E `(() () handed-off 0 30000)`, SW-EC `(() handed-off 0)`; SH-E `(satisfied satisfied ((0)) ((eof)) 1)`, SH-EC `(satisfied satisfied ((0)) () 1)`; no other suite |
+| HE-2 | libuv: `hand-off!` ignores the end | SH-E, SH-EC, as HE-1's |
+| HE-3 | fake: `hand-off!` ignores the end | SW-E, SW-EC, as HE-1's |
+| HE-4 | libuv: a read-start after a told end starts reads again | SH-R `(satisfied satisfied ((eof) (eof)) (()))` |
+| HE-5 | fake: a read-start after a told end reads again | SW-R `((eof) #t)` |
+| HE-6 | libuv: the end told in the read-start's call | SH-E and SH-EC `(satisfied satisfied ((1)) ((eof)) 0)` |
+| HE-7 | fake: the end told in the read-start's call | SW-E `((eof) (eof) closed 1 #f)`, SW-EC `((eof) closed 1)` |
+| HE-8 | libuv: the end told after the taker's close | first: SH-R `(satisfied iterations-exhausted ((eof) (eof)) ())` and the shell's two handle checks (the error below); then SH-EC `(satisfied satisfied ((0)) ((eof)) 0)` alone |
+| HE-9 | fake: the end told after the taker's close | SW-EC `((eof) closed 1)` |
+| HE-10 | fake: the end never told | SW-E `(() () closed 1 #f)` |
+| HE-11 | libuv: the end never told | SH-E `(satisfied iterations-exhausted ((0)) () 0)`; its stream never closes, so the shell's two handle checks too, `(1 1 0)` |
+| HE-12 | the hand-off says the end came, always (table) | TW2-1 `(… (hand-off tk (ws-wire 72 77) #t))`, TW2-2 `(… (hand-off tk #f #t))` |
+
+**One prediction error, HE-8.** SH-EC stayed green. Its close completed in the libuv run its
+take-over ran in, so its wait ended before the next turn's drain, and the late `eof` was
+told during SH-R, whose taker then never armed its deadline. SH-EC now makes the calls
+deferred to the next turn (`shell-call-deferred!`, as `serve` does once its server has
+stopped) before it reads, and HE-8 reddens it alone (3f49dade…).
+
+**Every mutant loaded:** 125 logs, none with `Exception` or `HARNESS`.
+
+**Each new or changed check has a killer by value:** TW2-1 and TW2-2, HE-12; TW2-3 and
+TW2-4, HE-1; SW-E, HE-1, HE-3, HE-7 and HE-10; SW-EC, HE-1, HE-3, HE-7 and HE-9; SW-R,
+HE-5; SH-E, HE-1, HE-2, HE-6 and HE-11; SH-EC, HE-1, HE-2, HE-6 and HE-8; SH-R, HE-4.

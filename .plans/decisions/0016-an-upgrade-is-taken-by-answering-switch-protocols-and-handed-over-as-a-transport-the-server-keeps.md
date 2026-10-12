@@ -338,3 +338,30 @@ at the hand-off.
   fake's door (design §8.4's note of this date).
 - Twelve door scripts are held there. Paired checks in the shell and switch suites
   still hold what a script cannot reach, a read error among them.
+
+## Amendment (2026-10-12, the door replay's review) — a client's end read before the hand-off is handed over
+
+Decided on the owner's form ("Core hands the end over"; weighed: the fake mimicking the
+kernel, and noting it only).
+- **What happened.** A client whose end came while the 101 was written had it read by the
+  core, which told the request's code (decision 0020) and then handed off without it.
+  The taker heard of it only because libuv reads the end again when the taker starts
+  reading.
+  - Measured with a 101 too big to complete while the client read nothing: on Darwin
+    (libuv 1.52.1) and Linux (1.48.0) the taker reading in its take-over got `eof`.
+  - The fake shell's taker heard nothing, and its stream stayed open with nothing armed.
+  - Go keeps no such end for a hijacker either: its background read hands the error to
+    `handleReadErrorLocked`, which cancels the request's context (`net/http/server.go`
+    745-783 and 813-821, go1.27.2), and the hijacked connection's next read goes to the
+    kernel (318-338).
+- **Now** the hand-off is `(hand-off take-over retained ended?)`.
+  - Given the end, each shell counts the stream as ended. The taker's read-start is told
+    `eof` after the turn, from the scheduler, unless the stream is closing by then, and
+    its close closes at once.
+  - A stream that has ended starts no reads, so a taker that starts reading again after
+    its end is told nothing more. libuv had read the end again and told it twice.
+  - This no longer leans on the kernel to report an end twice, which is unmeasured on
+    Windows.
+- **Not reached by the contract test's scripts:** their client reads as it plays, so a
+  101 completes before its end is read. Paired checks hold it, in the table (W2), the
+  switch suite and the shell suite.

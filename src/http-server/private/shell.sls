@@ -135,7 +135,10 @@
 ;;; one asked for once the close has been, or the handle's, is not written,
 ;;; and its callback is told ECANCELED after the turn, or, the server
 ;;; stopping first, as `serve` returns (shell-call-deferred!).  Reading starts
-;;; libuv's reads again with the taker's callbacks, its end reported once.  The
+;;; libuv's reads again with the taker's callbacks, its end reported once: a
+;;; stream that has ended starts none, and the end the core read as the 101
+;;; was written, handed over with the stream, is told to the taker's
+;;; read-start after the turn (decision 0016's amendment of 2026-10-12).  The
 ;;; close is staged, as a connection's after its response is (decision 0026,
 ;;; after 0011): the taker is read nothing more, but the stream reads on,
 ;;; dropping each read; once no write is outstanding the write side is shut,
@@ -818,7 +821,7 @@
       ((log) (log! (connection-shell c) (cadr a) (cddr a)))
       ((arm-deadline) (arm! c (cadr a)))
       ((disarm-deadline) (disarm! c))
-      ((hand-off) (hand-off! c (cadr a) (caddr a)))
+      ((hand-off) (hand-off! c (cadr a) (caddr a) (cadddr a)))
       ((client-closed) (notice-close! (request-notice c)))
       (else (values))))
 
@@ -1138,24 +1141,32 @@
   ;; call has run, whether the stream has closed, the notice its waits are
   ;; told the close by, once a take-over has answered `awaiting` (#f until
   ;; then; decision 0023), whether the client's end, or a read error, has
-  ;; come, and whether the stream lingers (decision 0026); and the instants,
+  ;; come, and whether the stream lingers (decision 0026); the instants,
   ;; by the loop's clock, its own deadline passes at and its close's write
-  ;; bound does, each #f when none is armed (decision 0027).
+  ;; bound does, each #f when none is armed (decision 0027); and the end
+  ;; the core handed over, 'eof, until the taker is told it at its
+  ;; read-start, else #f (0016's amendment of 2026-10-12).
   (define-record-type taker
     (fields (mutable on-passed) (mutable on-drain) (mutable on-close)
             (mutable writes) (mutable closing?) (mutable drained?) (mutable closed?)
             (mutable notice) (mutable ended?) (mutable lingering?)
-            (mutable due) (mutable bound))
-    (protocol (lambda (new) (lambda () (new #f #f #f 0 #f #f #f #f #f #f #f #f)))))
+            (mutable due) (mutable bound) (mutable unheard))
+    (protocol (lambda (new) (lambda () (new #f #f #f 0 #f #f #f #f #f #f #f #f #f)))))
 
-  ;; hand-off! : Connection (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) -> Void
+  ;; hand-off! : Connection (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) Boolean -> Void
   ;; The 101 is written: call the switch's take-over with a transport over
   ;; the connection and a copy of the bytes handed over, empty when none
-  ;; were.  A take-over that answers `(awaiting thunk)` has the thunk run on
-  ;; a coroutine (taker-wait!, decision 0023); anything else it answers is
-  ;; dropped, as before.
-  (define (hand-off! c take-over retained)
+  ;; were.  A client's end the core read as the 101 was written, `ended?`,
+  ;; is the taker's: the stream has ended, and its read-start is told it
+  ;; (taker-read-start!), libuv's reads not asked again (0016's amendment
+  ;; of 2026-10-12).  A take-over that answers `(awaiting thunk)` has the
+  ;; thunk run on a coroutine (taker-wait!, decision 0023); anything else
+  ;; it answers is dropped, as before.
+  (define (hand-off! c take-over retained ended?)
     (let ((tk (make-taker)) (answer #f))
+      (when ended?
+        (taker-ended?-set! tk #t)
+        (taker-unheard-set! tk 'eof))
       (connection-taker-set! c tk)
       (taker-call! c (lambda ()
                        (call-with-values
@@ -1298,9 +1309,19 @@
   ;; reading already started is restarted with them.  The end, 'eof or the
   ;; errno, reading stopped, a read refused at the start among them: libuv
   ;; reports one end a start, and reads no more after it.  A stream closing
-  ;; reads no more.
+  ;; reads no more, and one that has ended starts no reads: libuv would
+  ;; read its end again, so the end is told once.  The end the core handed
+  ;; over is told after the turn, from the scheduler's drain, as libuv's
+  ;; would come, unless the stream is closing by then.
   (define (taker-read-start! c tk on-bytes on-end)
-    (unless (or (connection-closing? c) (taker-closing? tk))
+    (cond
+     ((or (connection-closing? c) (taker-closing? tk)))
+     ((taker-ended? tk)
+      (let ((why (taker-unheard tk)))
+        (when why
+          (taker-unheard-set! tk #f)
+          (taker-later! c (lambda () (unless (or (connection-closing? c) (taker-closing? tk)) (on-end why)))))))
+     (else
       (let ((tcp (connection-tcp c)))
         (define (ended why)
           (door-trace! c (list 'stream-end why))
@@ -1315,7 +1336,7 @@
                             (door-trace! c (list 'stream-read bv start end))
                             (taker-call! c (lambda () (on-bytes bv start end))))
                           (lambda () (ended 'eof))
-                          (lambda (e) (ended (errno e))))))))
+                          (lambda (e) (ended (errno e)))))))))
 
   ;; taker-close! : Connection Taker -> Void
   ;; The staged close (decision 0026): the taker is read nothing more, the

@@ -24,6 +24,12 @@ All notable changes to chez-http-server are recorded here. The format follows
   later, from a thunk that waits or at a deadline, never got what the client sent
   first. Now nothing is read until the taker asks, and those bytes wait for it. A
   taker that starts reading in its take-over, as chez-websocket's does, lost nothing.
+- **A taker hears its client's end once.** A taker that called
+  `transport-read-start!` again after its `on-end` was told the end a second time,
+  since the system reports it again to each new read. Now a stream that has ended
+  starts no reads. An end that came while the `101` was being written is told by the
+  server itself, on the turn after the taker's read-start, instead of relying on the
+  system to report it twice.
 - **A signal sent the moment `serve` logs `listening` drains the server.** `serve`
   watched for SIGTERM and SIGINT only after writing the line, so a supervisor that
   signalled as soon as it read it could end the process at once, with no drain and

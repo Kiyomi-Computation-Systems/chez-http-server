@@ -822,6 +822,23 @@
                                     (sleep-ms door-ms)
                                     (transport-read-start! t (lambda (bv from to) (transport-write! t bv from to))
                                                            (lambda (why) (took! 'ended why) (transport-close! t))))))))
+          ((bytevector=? target (b "/door-ended-early"))
+           (switch-protocols (list (cons (b "Upgrade") (b "websocket"))
+                                   (cons (b "Sec-WebSocket-Accept") (b "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="))
+                                   (cons (b "X-Pad") (make-bytevector door-pad 97)))
+                             (lambda (t retained)
+                               (transport-read-start! t (lambda (bv from to) #t)
+                                                      (lambda (why) (took! 'ended why) (transport-close! t)))
+                               (took! 'told-in-take-over (length (took-of 'ended)))
+                               (when door-closes-early (transport-close! t)))))
+          ((bytevector=? target (b "/door-reads-again"))
+           (switching (lambda (t retained)
+                        (define (on-end why)
+                          (took! 'ended why)
+                          (when (= (length (took-of 'ended)) 1)
+                            (transport-read-start! t (lambda (bv from to) #t) on-end)
+                            (transport-deadline! t door-ms (lambda () (took! 'passed) (transport-close! t)))))
+                        (transport-read-start! t (lambda (bv from to) #t) on-end))))
           ((bytevector=? target (b "/door-wait-raise"))
            (switching (lambda (t retained)
                         (awaiting (lambda () (sleep-ms 1) (raise (make-message-condition "the waiting taker failed")))))))
@@ -1170,6 +1187,17 @@
 
 ;; How long a taker's deadline lasts, under drain-limits' 10 ms tick.
 (define door-ms 50)
+
+;; door-pad : Nat — the bytes of a field that keep a 101's write from
+;; completing while its client reads nothing: more than loopback holds for
+;; one connection on Darwin and Linux, where 8 MiB kept the 101 outstanding
+;; past the client's end in the probe of 2026-10-12.  The check that uses
+;; it waits for the end to be read first, so a pad too small fails there.
+(define door-pad (* 8 1024 1024))
+
+;; door-closes-early : Boolean — whether /door-ended-early's taker closes in
+;; its take-over, after its read-start.
+(define door-closes-early #f)
 
 ;; A WebSocket close frame, 1009 (RFC 6455 §5.5.1, §7.4.1): what a taker
 ;; that fails its client writes before its close (decision 0026).
@@ -2779,6 +2807,53 @@
           (test-equal "a waiting taker that starts reading after a sleep reads what its client sent once it had the 101: the frame comes back, then the client's end closes the stream"
                       (list 'satisfied 'satisfied (joined (list door-101 hello-frame)) 'satisfied '((eof)))
                       (list heard back (client-bytes (car p)) gone (took-of 'ended)))))
+      (client-close! (car p)))
+
+    ;; A client's end read while the 101 is written, a client that reads
+    ;; nothing keeping it outstanding (door-pad): the core hands the end
+    ;; over (decision 0016's amendment of 2026-10-12), and the taker reading
+    ;; in its take-over is told eof from it, its reads not started again, so
+    ;; no end is read for it; its close at the end closes the stream.
+    ;; Told on a later turn, not in the read-start's call; and a taker that
+    ;; closes in its take-over, after its read-start, is told nothing, not
+    ;; even by the calls deferred to the next turn.
+    (for-each
+     (lambda (closes?)
+       (set! took '())
+       (set! door-closes-early closes?)
+       (let* ((p (open-adopted! (door-handshake "/door-ended-early") #f))
+              (c (cdr p)))
+         (client-shut! (car p))
+         (let ((ended (wait-for (lambda () (and (member (list c 'event 'eof) traced) #t)))))
+           (client-read! (car p))
+           (let ((gone (wait-for (lambda () (closed-and-gone? shell c)))))
+             ;; The close can complete in the turn the take-over ran in,
+             ;; before the next turn's drain: what was deferred to it is
+             ;; made now, as `serve` makes it once its server has stopped.
+             (shell-call-deferred! shell)
+             (test-equal (if closes?
+                             "a client's end read while the 101 is written, the taker closing in its take-over: it is told nothing, with no read for it, and the stream closes"
+                             "a client's end read while the 101 is written: the taker reading in its take-over is told eof on a later turn, with no read for it, and its close closes the stream")
+                         (list 'satisfied 'satisfied '((0)) (if closes? '() '((eof))) 0)
+                         (list ended gone (took-of 'told-in-take-over) (took-of 'ended)
+                               (length (filter (lambda (e) (and (eq? (car e) c) (eq? (cadr e) 'door) (eq? (caddr e) 'stream-end)))
+                                               traced))))))
+         (client-close! (car p))))
+     '(#f #t))
+    (set! door-closes-early #f)
+
+    ;; Once told its end, a taker that starts reading again is told nothing
+    ;; more: libuv's reads are not started again, so the end is not read
+    ;; again.  Its deadline then closes the stream.
+    (set! took '())
+    (let* ((p (open-adopted! (door-handshake "/door-reads-again")))
+           (c (cdr p))
+           (heard (wait-for (lambda () (>= (bytevector-length (client-bytes (car p))) (bytevector-length door-101))))))
+      (client-shut! (car p))
+      (let ((gone (wait-for (lambda () (closed-and-gone? shell c)))))
+        (test-equal "a taker told its end that starts reading again is told nothing more, then its deadline closes the stream"
+                    (list 'satisfied 'satisfied '((eof)) '(()))
+                    (list heard gone (took-of 'ended) (took-of 'passed))))
       (client-close! (car p)))
 
     ;; A taker that raises as it takes the stream: logged, and the stream

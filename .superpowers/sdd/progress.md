@@ -473,3 +473,18 @@ NEXT: the Linux runs and chez-websocket's suites on this branch; then the two PR
   - New, the switch suite's "a write a deadline's call asks for after its close is told ECANCELED once the timer's turn ends" and "a write asked for between turns after the close is told ECANCELED at the next turn, not in its call". Test first, red alone by value: `()` and `(() ())`.
   - Mutants FX-1 to FX-3 (m8-mutations.md, its last section).
   - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,107 expected passes (2,105 and the two checks), every pin ok.
+- **The second, on `fix/taker-end-once`, stacked on `test/door-replay`: a client's end read before the hand-off.** An end that came while the 101 was written was read by the core, told to the request's code (decision 0020), then dropped at the hand-off.
+  - Measured with a 101 too big to complete while the client read nothing: on Darwin (libuv 1.52.1) and Linux (1.48.0) the taker reading in its take-over still got `eof`, since libuv reads the end again at a new read-start. The fake's taker heard nothing, and its stream stayed open with nothing armed.
+  - Go keeps no such end for a hijacker: `handleReadErrorLocked` cancels the request's context, and the hijacked connection's next read goes to the kernel (`net/http/server.go` 745-783, 813-821 and 318-338, go1.27.2).
+- **DECIDED by form**, the recommended option: "Core hands the end over"; weighed: the fake mimicking the kernel, and noting it only.
+- **Built.** The hand-off is `(hand-off take-over retained ended?)`. Given the end, each shell counts the stream as ended: the taker's read-start is told `eof` after the turn, from the scheduler, unless the stream is closing by then, and its close closes at once. A stream that has ended starts no reads, which fixes the review's third finding too: a taker that started reading again after its end was told it twice, libuv reading it again.
+  - Records: decision 0016's amendment of 2026-10-12, the design's hand-off row and its note, CHANGELOG.md's Unreleased (Fixed).
+- **Checks:**
+  - the table's W2 holds `ended?`: its two instances `#f`, and two new ones `#t`, the end read while the 101 is written, with bytes held and with none;
+  - new, the switch suite (the fake): the taker reading is told `eof` on the next turn, not in its read-start, and its close closes at once; one that closes in its take-over is told nothing; one told its end that starts reading again reads no more;
+  - new, the shell suite (libuv), a client that reads nothing keeping the 101 outstanding (`door-pad`, 8 MiB): the same two, no read started for the end; and a taker told its end that starts reading again is told nothing more.
+  - Test first, red alone by value: W2's four; the switch suite's `(() handed-off 0 30000)` and `((eof) #t)`; the shell suite's `(satisfied satisfied ((eof)) 1)` and `(satisfied satisfied ((eof) (eof)) (()))`.
+  - Mutants HE-1 to HE-12, one prediction error, HE-8 (m8-mutations.md, its last section).
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 2,115 expected passes (2,107 and the eight checks: the table's two, the switch suite's three, the shell suite's three), every pin ok.
+
+NEXT: the Linux runs and chez-websocket's suites on `fix/taker-end-once`; #180 updated with the first fix, and the second as a PR stacked on it; the closing ritual on the owner's word, bottom-up. The review's other eleven findings wait for the owner's word.
