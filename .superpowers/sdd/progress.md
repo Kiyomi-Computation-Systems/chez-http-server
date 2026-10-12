@@ -499,3 +499,17 @@ NEXT: the Linux runs and chez-websocket's suites on this branch; then the two PR
 - `make test` green before the commits (Darwin arm64): fifty-one suites, 2,115 expected passes, as before (the checks changed, none added), every pin ok.
 
 NEXT: the Linux runs and chez-websocket's suites on `test/door-review-notes`; its PR, stacked on #181; the closing ritual on the owner's word, bottom-up: #179, #180, #181, then this one. Plan §14's open list holds nine items: the three timing items and the review's six.
+
+MERGED to main on 2026-10-12, on the owner's "Do closing ritual": **the door replay and its review**, four stacked PRs, bottom-up (the entries above).
+- **The squashes**, each with `--match-head-commit` on the full SHA, its tree the tested tip's:
+  - #179 `fix/hand-off-read-stop`: 92fb208 squashed as c54bffb, on f357adb (tree b7ddd55).
+  - #180 `test/door-replay`, retargeted to main and rebased from 92fb208: eabb252 squashed as ec703fd (tree 439d1d4, d9f2cc8's).
+  - #181 `fix/taker-end-once`, rebased from d9f2cc8: bbe4fcc squashed as 214637a (tree 269e48f, e4b3c38's).
+  - #182 `test/door-review-notes`, rebased from e4b3c38: 7db24e7 squashed as 473943c (tree ec91b17, d98f025's).
+  - Each force-push took its lease from `ls-remote`; the first read after each showed the old head CONFLICTING/DIRTY, the second the rebased head mergeable.
+- **CI.** Billing-blocked. Every run's `linux` job was not started (0 steps, the payments annotation): the PRs' 38183152054, 38245520481, 38245621103 and 38245709522 (read once each, two after their merge, on the same trees' blocked runs 38233378390 and 38236798476), and main's 38245452317, 38245556722, 38245645551 and 38245732218 on the squashes. The runs in the entries above stood in, as each PR body said. They merged past the red check on the owner's word.
+- **Branches.** None merged with `--delete-branch`, since the shared checkout holds `main`. The four were deleted on the remote in one push, and locally once this session's worktree was detached at 473943c for this reflect. The shared checkout, clean on `main`, was fast-forwarded after each squash and is again after this. No PR is open.
+
+`make test` green on main: fifty-one suites, 2,115 expected passes, every pin ok.
+
+NEXT: a release when the owner asks. Unreleased since v0.5.0: the late bytes (#179) and the end told once (#181), beside 0027, the signal fix and the wake-value fix; then chez-websocket's pin. Plan §14's open list holds nine items: the three timing items and the door replay review's six. Main's runs are read once when CI returns.
