@@ -240,3 +240,24 @@ NEXT: a release when the owner asks. Unreleased since v0.5.0: the late bytes (#1
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,115 expected passes, every pin ok. Nothing tested changed: the ledger only.
 
 NEXT: 0.6.0's release, stacked on this, by the owner's form ("0.6.0 (Recommended)", "Tag on local runs (Recommended)"). Then chez-websocket's pin to it alone.
+
+**0.6.0's release, on `chore/release-0.6.0` (2026-10-12),** on the owner's "Prepare release", after #179-#182's merges. Stacked on `docs/ledger-archive-v0.5.0`.
+- **What it carries.** Every PR since v0.5.0, #174 to #182, was read against CHANGELOG.md's Unreleased.
+  - Those an embedder meets are in it: the signals watched before `listening` (#174), under Fixed; decision 0027 (#176), under Changed; the wake value let go (#178), the late bytes (#179, with #182's correction that a close reads too) and the end told once (#181), under Fixed.
+  - #180, #181 and #182 changed the test fake, which a taker's own tests load (chez-websocket's `test-binding` and `test-driver` do), and had no entry: one is added under Changed.
+  - The other two are records only: #175 and #177.
+- **Semantic versioning, by form** ("0.6.0 (Recommended)"; weighed: 0.5.1). No export line changed since v0.5.0. But what `transport-close!` does changes as a taker sees it: a close that waited forever on a client reading nothing now ends once the write timeout passes (decision 0027), as v0.5.0 was a minor for a close a taker sees change. The core's `hand-off` action gained a field (#181), which only the shells read; no document offers `(http-server connection)` to an embedder.
+- **The pins** are v0.5.0's: chez-libuv 3c4e7f0 (v0.9.0), chez-httparse 0b7058e (v0.4.5, byte-machine v0.7.0 at c338a57), uriparse 5ecd88f (v0.6.2), chez-srfi 7879b52, vtest2 803dcd0.
+- **Built.**
+  - CHANGELOG.md: Unreleased moved under `[0.6.0] - 2026-10-12`, with an intro naming the minor, what changes and the pins, and the fake's entry added.
+  - A fresh, empty Unreleased above it, and `[0.6.0]` comparing v0.5.0 with v0.6.0.
+  - README.org's status names v0.6.0 the current release and what it changes.
+- **CI is billing-blocked.** Main's run on 605f666, 38245933693, ended with `linux` not started (0 steps, the payments annotation). By the owner's form ("Tag on local runs (Recommended)"; weighed: waiting for CI), these runs stand in, on this branch's tree before this entry:
+  - Darwin arm64, `make test`: fifty-one suites, 2,115 expected passes, every pin ok;
+  - Linux aarch64 (`chez-libuv-noble-scratch:10.4.1`, libuv 1.48.0), every suite once: fifty green, 2,077 expected passes; the clients suite at status 2 with no tools built, as before;
+  - Linux x86_64 under emulation (`chez-websocket-ci-amd64:10.4.1`, libuv 1.48.0), every suite once: fifty green, 2,077, the same;
+  - chez-websocket's main (50017c4), exported, its fifteen suites on this tree: 395 expected passes, all green.
+- **The tag.** After the merges, the billing block proved again on main's run on the release's squash, `v0.6.0` goes on that squash, annotated and signed as v0.5.0 was: "chez-http-server v0.6.0 — a taker's close gives up on a client that reads nothing", its body pointing at CHANGELOG.md's `[0.6.0]`. Main's run is read once when CI returns. The merges and the tag wait for "do closing ritual".
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 2,115 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
+
+NEXT: the closing ritual for both PRs, bottom-up, and the tag, when the owner asks. Then, in chez-websocket: the pin to v0.6.0 alone.
