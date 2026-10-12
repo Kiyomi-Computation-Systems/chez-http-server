@@ -466,3 +466,10 @@ NEXT: the replay on `test/door-replay`: the door scripts, the trace points guard
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,105 expected passes (2,014 and the contract suite's 91), every pin ok.
 
 NEXT: the Linux runs and chez-websocket's suites on this branch; then the two PRs, stacked. Plan §14's open list holds three items: the two load-only timing items the owner's form stopped, and the linger check's one red. The late-bytes fix is Unreleased, beside 0027, the signal fix and the wake-value fix.
+
+**The review of #179 and #180 (2026-10-12),** a `/code-review` at xhigh over both: fourteen findings. On the owner's "Fix those two first", its first two.
+- **The first, on `test/door-replay`: a write after the close, told on no turn.** #180 moved its ECANCELED to the fake's scheduler. `fake-shell-fire!`'s taker branch and `fake-shell-settle!` never drained it, so a write asked for after the close from a deadline's call, or between turns, was never told.
+  - Now each drains the connection's scheduler unless held: a taker's deadline ends its turn as a delivery does, and each later turn begins with the drain, as the libuv shell's does. The contract test's fake is held, so its replay is unchanged.
+  - New, the switch suite's "a write a deadline's call asks for after its close is told ECANCELED once the timer's turn ends" and "a write asked for between turns after the close is told ECANCELED at the next turn, not in its call". Test first, red alone by value: `()` and `(() ())`.
+  - Mutants FX-1 to FX-3 (m8-mutations.md, its last section).
+  - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,107 expected passes (2,105 and the two checks), every pin ok.

@@ -2770,3 +2770,29 @@ alike1, DA-2 and DA-3; alike2, DA-1 and DA-2.
 **Not reached by a script:** a read error on a taken stream (`stream-end` with an errno).
 No script resets its connection, as the contract's header says. The paired checks in
 the shell and switch suites hold it.
+
+## After M8 — the review of the door replay (2026-10-12)
+
+A `/code-review` at xhigh of #179 and #180 found fourteen; the owner had the first two
+fixed. Every prediction was written and hashed before its run (sha256 below). Darwin
+arm64, with the values-printing `testing.sls`.
+
+**The first, a write after the close told on no turn** (`test/door-replay`). Two checks are
+new in the switch suite: "a write a deadline's call asks for after its close is told
+ECANCELED once the timer's turn ends" (SW-D) and "a write asked for between turns after
+the close is told ECANCELED at the next turn, not in its call" (SW-B).
+
+- **Test first** (3ed02216…): the two red alone, by value, `()` and `(() ())`; switch 39
+  green.
+- **The fix**: switch 41, contract 291, fake 20.
+- **Three rows** (5a3a4241…), on the table, switch, shell, contract and fake suites. They
+  ran on the final tree, the second fix with it:
+
+| Row | Mutant | Red, by value |
+|---|---|---|
+| B-0 | none | none: table 370, switch 44, shell 220, contract 291, fake 20 |
+| FX-1 | a taker's deadline passing ends with no scheduler drain | SW-D, `()` |
+| FX-2 | `fake-shell-settle!` drains no scheduler | SW-B, `(() ())` |
+| FX-3 | a write after the close told ECANCELED at the next completion (DR-11 again) | SW-D, `()`; the contract's C, check 3, both: `(differs-at 20 libuv (taker (written ECANCELED)) fake (door (stream-end eof)))` |
+
+**Each new check has a killer by value:** SW-D, FX-1 and FX-3; SW-B, FX-2.

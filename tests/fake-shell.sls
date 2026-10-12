@@ -411,8 +411,11 @@
   ;; A fake connection's timer fires at the injected now: its wheel is
   ;; advanced to now, and the connection ticked, `(tick now)`, only if its
   ;; deadline has passed.  Returns the tick's actions, or none when nothing
-  ;; was ticked.  A stub step's shell keeps no wheel, and firing it is an
-  ;; assertion violation.
+  ;; was ticked.  Once the stream is taken, the taker's deadline passing
+  ;; makes its call, or its linger's close, and the turn ends with the
+  ;; connection's scheduler drained unless held, as a delivery's does.  A
+  ;; stub step's shell keeps no wheel, and firing it is an assertion
+  ;; violation.
   (define (fake-shell-fire! s)
     (let ((wheel (fake-shell-wheel s)) (now (fake-shell-now s)))
       (unless wheel
@@ -425,6 +428,7 @@
                    (close-begun! s tk)
                    (let ((passed (fake-taker-on-passed tk)))
                      (when passed (taker-call! s tk passed))))
+               (unless (fake-shell-held? s) (schedule! s))
                '()))
             (else (fake-shell-deliver! s (list 'tick now))))))
 
@@ -468,8 +472,12 @@
 
   ;; fake-shell-settle! : FakeShell -> Void
   ;; Deliver the events waiting for a later turn, oldest first, until none
-  ;; wait: a write's completion, a close's `closed`.
+  ;; wait: a write's completion, a close's `closed`.  Each turn begins as
+  ;; the libuv shell's does, with the connection's scheduler drained unless
+  ;; held, so what was deferred to it between turns is called: a write's
+  ;; ECANCELED, asked for after the close (THE DOOR).
   (define (fake-shell-settle! s)
+    (unless (fake-shell-held? s) (schedule! s))
     (when (fake-shell-deliver-later! s)
       (fake-shell-settle! s)))
 
