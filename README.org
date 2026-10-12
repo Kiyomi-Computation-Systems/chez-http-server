@@ -31,9 +31,12 @@ HTTP/1.2 to 1.9 is served as 1.1. Since v0.3.0 code that speaks the new
 protocol after an upgrade can wait as a handler does. Since v0.4.0 it can close
 at once a client that stopped reading, and a handler can read every line of a
 field. Since v0.4.1 a handler that waits holds about 0.7 KB until its wait
-ends, about 3 KB less. Since v0.5.0, the current release, code that took an
-upgrade closes as the server closes its own connections, so a client still
-sending reads its last words, not a reset (see [[file:docs/handlers.org][docs/handlers.org]]). [[file:CHANGELOG.md][CHANGELOG.md]] has what
+ends, about 3 KB less. Since v0.5.0 code that took an upgrade closes as the
+server closes its own connections, so a client still sending reads its last
+words, not a reset (see [[file:docs/handlers.org][docs/handlers.org]]). Since v0.6.0, the current release,
+that close gives up on a client that reads nothing once the write timeout
+passes, and what a client sends after the upgrade waits for code that starts
+reading late. [[file:CHANGELOG.md][CHANGELOG.md]] has what
 each release does, and the numbers measured for v0.1.0. See
 [[file:.plans/2026-09-19-chez-http-server-project-brief.md][the project brief]] for the milestone map.
 
