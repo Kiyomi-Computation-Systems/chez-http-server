@@ -568,6 +568,11 @@
   (conn-step s `(handler-responded ,sw))
   s)
 
+;; end-read : ConnState -> ConnState — `s`, its client's end read.
+(define (end-read s)
+  (conn-step s '(eof))
+  s)
+
 ;; refused-switch : Symbol -> Datum — a switch answered 500 for `fault`.
 (define (refused-switch fault)
   `(responding invalid-response
@@ -583,12 +588,20 @@
    ;; The 101 is the one write outstanding, its bytes what it wrote.
    ;; Reading stops before the hand-off, so what the client sends next
    ;; waits for the taker's read-start (decision 0016's amendment of
-   ;; 2026-10-11): the core reads nothing once handed off.
-   (row 'W2 "responding, the 101's last write-completed -> handed-off: disarm, stop reading, the hand-off, the bytes read past the request"
+   ;; 2026-10-11): the core reads nothing once handed off.  A client's end
+   ;; read while the 101 is written is handed over too, so the shell tells
+   ;; the taker, which would otherwise never hear it (0016's amendment of
+   ;; 2026-10-12): with the bytes held before it, or with none, the
+   ;; request's client then closed.
+   (row 'W2 "responding, the 101's last write-completed -> handed-off: disarm, stop reading, the hand-off, the bytes read past the request and whether the client's end came"
         (i (switching (ws) ws-switch) `(write-completed ,(string-length the-101))
-           `(handed-off upgrade ((disarm-deadline) (read-stop) (hand-off ,take-over (,ws-wire ,ws-end ,(+ ws-end 5))))))
+           `(handed-off upgrade ((disarm-deadline) (read-stop) (hand-off ,take-over (,ws-wire ,ws-end ,(+ ws-end 5)) #f))))
         (i (switching (ws ws-end) ws-switch) `(write-completed ,(string-length the-101))
-           `(handed-off upgrade ((disarm-deadline) (read-stop) (hand-off ,take-over #f)))))
+           `(handed-off upgrade ((disarm-deadline) (read-stop) (hand-off ,take-over #f #f))))
+        (i (end-read (switching (ws) ws-switch)) `(write-completed ,(string-length the-101))
+           `(handed-off upgrade ((disarm-deadline) (read-stop) (hand-off ,take-over (,ws-wire ,ws-end ,(+ ws-end 5)) #t))))
+        (i (end-read (switching (ws ws-end) ws-switch)) `(write-completed ,(string-length the-101))
+           `(handed-off client-closed ((disarm-deadline) (read-stop) (hand-off ,take-over #f #t)))))
 
    ;; Item 4: a request that does not upgrade; one below HTTP/1.1, which
    ;; closes after its response, or is kept alive by its Connection; a

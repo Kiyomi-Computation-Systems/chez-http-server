@@ -114,7 +114,10 @@
 ;;; connection's next drain, as the libuv shell tells it on its next turn.
 ;;; Reading delivers each delivery to the taker, `(on-bytes bv start end)`,
 ;;; and the client's end or a read error to its `on-end`, once, reading
-;;; then stopped; none reaches the core.  The close comes on a later turn, after the writes asked for
+;;; then stopped; none reaches the core.  An end the core read as the 101
+;;; was written comes with the hand-off, and is told to the taker's
+;;; read-start at the connection's next drain; a stream that has ended
+;;; reads no more.  The close comes on a later turn, after the writes asked for
 ;;; before it, as `closed` to the core and the taker's close call, which,
 ;;; registered after it, runs at once.  The
 ;;; deadline is the connection's one wheel entry, and `fake-shell-fire!`
@@ -581,7 +584,7 @@
       ((close) (fake-shell-reading?-set! s #f) (fake-shell-closing?-set! s #t) (later! s '(closed)))
       ((arm-deadline) (arm! s limits (cadr a)))
       ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
-      ((hand-off) (hand-off! s (cadr a) (caddr a) (limits-deadline-ms limits 'linger)))
+      ((hand-off) (hand-off! s (cadr a) (caddr a) (cadddr a) (limits-deadline-ms limits 'linger)))
       ((client-closed) (notice-close! (request-notice s)))
       (else (values))))
 
@@ -605,21 +608,29 @@
   ;; notice its waits are told the close by, once a take-over has answered
   ;; `awaiting` (decision 0023), how many of its writes are outstanding,
   ;; whether it aborted, whether the client's end has come (decision 0024),
-;; whether the stream lingers, and how long it may (decision 0026).
+  ;; whether the stream lingers, and how long it may (decision 0026); and the
+  ;; end the core handed over, 'eof, until the taker is told it at its
+  ;; read-start, else #f (0016's amendment of 2026-10-12).
   (define-record-type fake-taker
     (fields (mutable on-bytes) (mutable on-end) (mutable on-passed) (mutable on-drain)
             (mutable on-close) (mutable closing?) (mutable drained?) (mutable closed?)
             (mutable notice) (mutable writes) (mutable aborted?) (mutable ended?)
-            (mutable lingering?) linger-ms)
-    (protocol (lambda (new) (lambda (linger-ms) (new #f #f #f #f #f #f #f #f #f 0 #f #f #f linger-ms)))))
+            (mutable lingering?) (mutable unheard) linger-ms)
+    (protocol (lambda (new) (lambda (linger-ms) (new #f #f #f #f #f #f #f #f #f 0 #f #f #f #f linger-ms)))))
 
-  ;; hand-off! : FakeShell (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) Nat -> Void
+  ;; hand-off! : FakeShell (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) Boolean Nat -> Void
   ;; The switch's take-over, called with a transport over the connection and
-  ;; the bytes handed over, a copy, empty when none were.
+  ;; the bytes handed over, a copy, empty when none were.  A client's end
+  ;; the core read as the 101 was written, `ended?`, is the taker's: the
+  ;; stream has ended, and its read-start is told it, as the libuv shell's
+  ;; is (0016's amendment of 2026-10-12).
   ;; A take-over that answers `(awaiting thunk)` has the thunk run on a
   ;; coroutine, as the libuv shell runs it (taker-wait!, decision 0023).
-  (define (hand-off! s take-over retained linger-ms)
+  (define (hand-off! s take-over retained ended? linger-ms)
     (let ((tk (make-fake-taker linger-ms)) (answer #f))
+      (when ended?
+        (fake-taker-ended?-set! tk #t)
+        (fake-taker-unheard-set! tk 'eof))
       (fake-shell-taker-set! s tk)
       (taker-call! s tk
         (lambda ()
@@ -730,7 +741,16 @@
      (lambda (on-bytes on-end)
        (fake-taker-on-bytes-set! tk on-bytes)
        (fake-taker-on-end-set! tk on-end)
-       (unless (fake-taker-closing? tk) (fake-shell-reading?-set! s #t)))
+       (cond ((fake-taker-closing? tk))
+             ((fake-taker-ended? tk)
+              (let ((why (fake-taker-unheard tk)))
+                (when why
+                  (fake-taker-unheard-set! tk #f)
+                  (scheduler-call! (fake-shell-scheduler s)
+                                   (lambda ()
+                                     (unless (or (fake-taker-closing? tk) (fake-shell-closing? s))
+                                       (taker-call! s tk (lambda () (on-end why)))))))))
+             (else (fake-shell-reading?-set! s #t))))
      (lambda () (unless (fake-taker-closing? tk) (fake-shell-reading?-set! s #f)))
      (lambda () (taker-close! s tk))
      (lambda (ms passed)

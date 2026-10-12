@@ -347,6 +347,46 @@
         (test-equal "a write asked for between turns after the close is told ECANCELED at the next turn, not in its call"
                     '(() (ECANCELED))
                     (list in-call (taker-written t)))))
+    ;; A client's end read while the 101 is written is handed over with the
+    ;; stream (decision 0016's amendment of 2026-10-12): the taker, reading
+    ;; in its take-over, is told 'eof on the next turn, as the libuv shell
+    ;; tells it, and its close closes the stream at once, the end having
+    ;; come, with no linger.
+    ;; Not in the read-start's call: on the next turn.  A taker that closes
+    ;; in its take-over, after its read-start, is told nothing.
+    (let* ((t (make-taker))
+           (in-take-over #f)
+           (sh (make-fake-connection default-limits (taking t (lambda (tr) (set! in-take-over (taker-ends t)))))))
+      (fake-shell-deliver! sh (list 'bytes-arrived handshake 0 (bytevector-length handshake)))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
+      (let ((ends (taker-ends t)))
+        (transport-close! (taker-transport t))
+        (fake-shell-settle! sh)
+        (test-equal "a client's end read while the 101 is written: the taker, reading, is told eof on the next turn, and its close closes the stream at once"
+                    (list '() '(eof) 'closed 1 #f)
+                    (list in-take-over ends (conn-phase (fake-shell-conn-state sh)) (taker-closes t) (fake-shell-armed sh)))))
+    (let* ((t (make-taker))
+           (sh (make-fake-connection default-limits (taking t (lambda (tr) (transport-close! tr))))))
+      (fake-shell-deliver! sh (list 'bytes-arrived handshake 0 (bytevector-length handshake)))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
+      (test-equal "a client's end read while the 101 is written, the taker closing in its take-over: it is told nothing, and the stream closes"
+                  (list '() 'closed 1)
+                  (list (taker-ends t) (conn-phase (fake-shell-conn-state sh)) (taker-closes t))))
+    ;; Once told its end, a taker that starts reading again reads nothing
+    ;; more, and is told nothing more: the stream reads no more, as the
+    ;; libuv shell's does not start reading again.
+    (let* ((t (make-taker))
+           (sh (run handshake (bytevector-length handshake) (taking t))))
+      (fake-shell-deliver! sh '(eof))
+      (transport-read-start! (taker-transport t)
+                             (lambda (bv from to) (taker-read-set! t (cons (slice bv from to) (taker-read t))))
+                             (lambda (why) (taker-ends-set! t (cons why (taker-ends t)))))
+      (fake-shell-settle! sh)
+      (test-equal "a taker told its end that starts reading again: the stream reads no more, and its end is told once"
+                  '((eof) #f)
+                  (list (taker-ends t) (fake-shell-reading? sh))))
     ;; A close call registered once the stream has closed runs at once, so a
     ;; taker that asks late still hears of the close (M8.2's review, the
     ;; eighth).

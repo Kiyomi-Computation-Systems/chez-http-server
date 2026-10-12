@@ -35,7 +35,7 @@
 ;;;            (call-handler request)  (deliver-body bv start end)
 ;;;            (deliver-body-end)  (notify-producer)  (arm-deadline kind)
 ;;;            (disarm-deadline)  (shutdown)  (close reason)
-;;;            (log what . details)  (hand-off take-over retained)
+;;;            (log what . details)  (hand-off take-over retained ended?)
 ;;;            (client-closed)
 ;;;
 ;;; A parser-result's `offset` is the parser's own count of the bytes it has
@@ -191,8 +191,9 @@
 ;;; is then `handed-off`, its input forgotten, its deadline disarmed and its
 ;;; reading stopped, so what the client sends next waits for the taker's
 ;;; read-start (decision 0016's amendment of 2026-10-11); the shell hands
-;;; the taker the stream, and the core asks for nothing more but ends at the
-;;; stream's close.  A switch answered to any other request, and
+;;; the taker the stream, with the client's end if it was read as the 101
+;;; was written (the amendment of 2026-10-12), and the core asks for nothing
+;;; more but ends at the stream's close.  A switch answered to any other request, and
 ;;; one the serializer finds a fault in (switch-fault), is answered 500,
 ;;; logged `invalid-response`, as a response with a fault is (decision 0010
 ;;; item 2).
@@ -1053,18 +1054,21 @@
   ;; responding, the 101's last write completed -> handed-off (M8.2;
   ;; decision 0016): the deadline disarmed, reading stopped, and the
   ;; hand-off, with the switch's take-over and the bytes read past the
-  ;; request, the pending input the message's pause kept, or #f.  The input
-  ;; is forgotten, and the take-over with it.  Reading stops before the
-  ;; take-over is called, so a read-start it makes stands, and nothing is
-  ;; read for the core, which drops what it reads once handed off: what
-  ;; the client sends next waits for the taker (0016's amendment).
+  ;; request, the pending input the message's pause kept, or #f, and
+  ;; whether the client's end has come, read while the 101 was written.  The
+  ;; input is forgotten, and the take-over with it.  Reading stops before
+  ;; the take-over is called, so a read-start it makes stands, and nothing
+  ;; is read for the core, which drops what it reads once handed off: what
+  ;; the client sends next waits for the taker (0016's amendment of
+  ;; 2026-10-11).  The end is the taker's to hear, and the shell tells it,
+  ;; not the kernel (the amendment of 2026-10-12).
   (define (hand-off s)
-    (let ((take-over (conn-taker s)) (retained (conn-pending s)))
+    (let ((take-over (conn-taker s)) (retained (conn-pending s)) (ended? (conn-ended? s)))
       (conn-taker-set! s #f)
       (forget-input! s)
       (conn-phase-set! s 'handed-off)
       (conn-deadline-set! s #f)
-      (values s (list '(disarm-deadline) '(read-stop) (list 'hand-off take-over retained)))))
+      (values s (list '(disarm-deadline) '(read-stop) (list 'hand-off take-over retained ended?)))))
 
   ;; stream-completed : ConnState -> (values ConnState (Listof Action))
   ;; A completion while a streamed body is written (M6.3).  A producer that

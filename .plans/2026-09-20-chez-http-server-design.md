@@ -883,7 +883,7 @@ pause answers `#f`.
 > | State | Event | State' | Actions |
 > |---|---|---|---|
 > | `handling` | `handler-responded`, a switch, the door open | `responding` | the 101's `write`, `arm-deadline write`; the take-over kept |
-> | `responding` | `write-completed`, the 101's last | `handed-off` | `disarm-deadline`, `read-stop`, `(hand-off take-over retained)`: the pending input, `(bv start end)`, or #f; the input forgotten |
+> | `responding` | `write-completed`, the 101's last | `handed-off` | `disarm-deadline`, `read-stop`, `(hand-off take-over retained ended?)`: the pending input, `(bv start end)`, or #f, and whether the client's end was read as the 101 was written; the input forgotten |
 > | `handling` | `handler-responded`, a switch, the door closed | `responding` | `log invalid-response not-an-upgrade`, `write` 500, `arm-deadline write`; close-after `invalid-response` |
 > | `handling` | `handler-responded`, a switch with a fault | `responding` | `log invalid-response` with the fault, `write` 500, `arm-deadline write` |
 > | `handed-off` | `closed` | `closed` | — |
@@ -904,6 +904,12 @@ pause answers `#f`.
 > still reading at the hand-off, and what the client sent before the taker's read-start
 > was read for the core, which drops what it reads once handed off. Now it waits in the
 > kernel for the taker, as 0016's context had it.
+>
+> *Amended 2026-10-12 (decision 0016's amendment, by form):* the hand-off carries the
+> client's end, `ended?`, when it was read as the 101 was written. The core had told the
+> request's code and then forgotten it, so only the kernel could tell the taker: libuv
+> reads the end again at the taker's read-start. Now each shell tells it from the
+> hand-off, after the turn, and starts no reads for a stream that has ended.
 >
 > *Amended 2026-10-04 (decision 0023, on the owner's word by form):* a take-over may
 > answer `(awaiting thunk)`. The core is unchanged: it hands off as above, and the shell
