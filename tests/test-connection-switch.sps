@@ -321,6 +321,32 @@
                   (list (concat (list the-101 (b "bye"))) 1 '(ECANCELED) 'closed)
                   (list (client-bytes sh) (taker-closes t) (taker-written t)
                         (conn-phase (fake-shell-conn-state sh)))))
+    ;; That ECANCELED is told on the next turn, as the libuv shell tells it
+    ;; from its scheduler's drain (taker-later!): after a deadline's call
+    ;; that closes, then writes, once the timer's turn ends; and after a
+    ;; close and a write asked for between turns, at the next turn, not in
+    ;; the write's call.
+    (let* ((t (make-taker))
+           (sh (unread handshake
+                       (taking t (lambda (tr)
+                                   (transport-deadline! tr 1000
+                                                        (lambda ()
+                                                          (transport-close! tr)
+                                                          (transport-write! tr (b "late") 0 4 (noting t)))))))))
+      (fake-shell-advance! sh 1000)
+      (fake-shell-fire! sh)
+      (test-equal "a write a deadline's call asks for after its close is told ECANCELED once the timer's turn ends"
+                  '(ECANCELED)
+                  (taker-written t)))
+    (let* ((t (make-taker))
+           (sh (unread handshake (taking t))))
+      (transport-close! (taker-transport t))
+      (transport-write! (taker-transport t) (b "late") 0 4 (noting t))
+      (let ((in-call (taker-written t)))
+        (fake-shell-settle! sh)
+        (test-equal "a write asked for between turns after the close is told ECANCELED at the next turn, not in its call"
+                    '(() (ECANCELED))
+                    (list in-call (taker-written t)))))
     ;; A close call registered once the stream has closed runs at once, so a
     ;; taker that asks late still hears of the close (M8.2's review, the
     ;; eighth).

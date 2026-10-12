@@ -67,6 +67,28 @@
 ;;; line's value aside, since each run dates its own seconds (decided by
 ;;; form, 2026-10-02).
 ;;;
+;;; THE DOOR (decision 0016; plan §14's door script, 2026-10-11).  A door
+;;; script's request asks to switch, `Upgrade: echo`, at a target the
+;;; handler takes (door-taker, below).  Once its 101 is written the stream
+;;; is the taker's, and what the stream does then is no event of the
+;;; core's.  The libuv shell traces it as `door`: each read and the end of
+;;; its reads, whether the taker's or dropped while its close lingers; each
+;;; of the taker's writes completing; its wheel entry passing; and its
+;;; close's two stages, the half-close and the close begun, which are its
+;;; own.  The fake traces its own door the same.  The replay gives the fake each: a read
+;;; and an end delivered; a completion as the fake's oldest write waiting,
+;;; with the outcome the libuv shell's had, since whether libuv had written
+;;; a write when its stream was aborted is the kernel's, as how it divides
+;;; the reads is; and a pass as the fake's timer firing.  The taker's code
+;;; marks each call it makes and each it is told (THE DOOR'S MARKS, below),
+;;; so the traces hold what the taker saw too.  A script marked `(aborts)`
+;;; is one whose stream the server closes at once, the client's end never
+;;; read; `(heard)` waits until the client has read the 101, as a WebSocket
+;;; client waits for it (RFC 6455 §4.1).  The door scripts play to the
+;;; direct shell and to the coroutine shell, whose handler answers the
+;;; switch from a coroutine; one whose client never ends its stream plays to
+;;; a shell with short limits, where its linger's deadline closes it.
+;;;
 ;;; HANDLER CODE THAT WAITS (M7.3), with the server's verbs (decision
 ;;; 0015), plays to the direct shell, whose handler waits where a target
 ;;; asks: a sleep, a deadline, a lookup, a reader and a producer that sleep,
@@ -102,6 +124,7 @@
         (http-server body)
         (only (http-server awaiting) awaiting deadline-passed? client-closed? resolve-error? resolve-error-reason)
         (only (http-server private waits) sleep-ms with-deadline resolve)
+        (http-server switch) (http-server transport)
         (fake-shell) (shell-testing) (producers))
 
 (define (b s) (string->utf8 s))
@@ -134,11 +157,15 @@
 ;; producer that sleeps 5 ms before each call; and `/read-then-wait`, an
 ;; ordinary handler, reads the body with a reader whose end answers
 ;; `awaiting`, its thunk sleeping 5 ms.
+;; And it takes an upgrade (THE DOOR): a target door-taker names is answered
+;; with a switch to `echo`, its take-over the one named.
 ;; Both shells call it, so it keeps nothing between calls: each answer
 ;; makes a producer of its own.
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
-    (cond ((bytevector=? target (b "/close"))
+    (cond ((door-taker target)
+           => (lambda (take-over) (switch-protocols (list (cons (b "Upgrade") (b "echo"))) take-over)))
+          ((bytevector=? target (b "/close"))
            (make-response 200 #f (list (cons (b "Connection") (b "close"))) target))
           ((bytevector=? target (b "/raise"))
            (raise (make-message-condition "the handler failed")))
@@ -204,6 +231,82 @@
            (read-body (lambda (bv start end) #t)
                       (lambda () (awaiting (lambda () (slept 5) (make-response 200 #f '() target))))))
           (else (make-response 200 #f '() target)))))
+
+;; THE DOOR'S MARKS.  A taker's code marks each call it makes on its
+;; transport and each it is told, `(taker what)`, into the trace of the
+;; shell it runs on: the libuv shell's as a script plays, the fake's as it
+;; is replayed (play! and replay set door-marks).  So a difference in what
+;; the taker was told, or when, parts the traces where it happens.
+(define door-marks #f)
+
+;; door-mark! : Datum -> Void
+(define (door-mark! what) (when door-marks (door-marks what)))
+
+;; door-write! : Transport Bytevector -> Void — a write, marked, its
+;; callback marked with what it is told.
+(define (door-write! t bv)
+  (door-mark! (list 'write bv))
+  (transport-write! t bv 0 (bytevector-length bv) (lambda (why) (door-mark! (list 'written why)))))
+
+;; door-taker : Bytevector -> (U #f (Transport Bytevector -> Any))
+;; The take-over a door script's target names, or #f for any other target.
+;; Each marks the stream taken, with the bytes handed over, and its close
+;; call.  `/echo` writes back what it was handed and each read, and closes
+;; at the client's end; `/goodbye` writes "goodbye" and closes;
+;; `/door-abort` writes "never" and aborts at once, and `/door-abort-idle`
+;; aborts with nothing written; `/door-deadline` arms 10 ms, its call
+;; writing "late" and closing; `/door-waits` answers `awaiting`, its thunk
+;; sleeping 5 ms, then writing "woke" and closing; `/door-reads-later`
+;; starts reading, writing back each read, only once a 50 ms deadline
+;; passes; `/door-raises` raises as it takes the stream; and
+;; `/write-after-close` closes, then writes.
+(define (door-taker target)
+  (define (is? s) (bytevector=? target (b s)))
+  (define (taken t retained)
+    (door-mark! (list 'taken retained))
+    (transport-on-close! t (lambda () (door-mark! '(on-close)))))
+  (define (close! t) (door-mark! '(close)) (transport-close! t))
+  (cond
+   ((is? "/echo")
+    (lambda (t retained)
+      (taken t retained)
+      (when (positive? (bytevector-length retained)) (door-write! t retained))
+      (transport-read-start! t
+                             (lambda (bv start end)
+                               (door-mark! (list 'read (bytes-between bv start end)))
+                               (door-write! t (bytes-between bv start end)))
+                             (lambda (why) (door-mark! (list 'end why)) (close! t)))))
+   ((is? "/goodbye")
+    (lambda (t retained) (taken t retained) (door-write! t (b "goodbye")) (close! t)))
+   ((is? "/door-abort")
+    (lambda (t retained) (taken t retained) (door-write! t (b "never")) (door-mark! '(abort)) (transport-abort! t)))
+   ((is? "/door-abort-idle")
+    (lambda (t retained) (taken t retained) (door-mark! '(abort)) (transport-abort! t)))
+   ((is? "/door-deadline")
+    (lambda (t retained)
+      (taken t retained)
+      (transport-deadline! t 10 (lambda () (door-mark! '(passed)) (door-write! t (b "late")) (close! t)))))
+   ((is? "/door-waits")
+    (lambda (t retained)
+      (taken t retained)
+      (awaiting (lambda () (slept 5) (door-write! t (b "woke")) (close! t)))))
+   ((is? "/door-reads-later")
+    (lambda (t retained)
+      (taken t retained)
+      (transport-deadline! t 50
+        (lambda ()
+          (door-mark! '(passed))
+          (door-mark! '(read-start))
+          (transport-read-start! t
+                                 (lambda (bv start end)
+                                   (door-mark! (list 'read (bytes-between bv start end)))
+                                   (door-write! t (bytes-between bv start end)))
+                                 (lambda (why) (door-mark! (list 'end why)) (close! t)))))))
+   ((is? "/door-raises")
+    (lambda (t retained) (taken t retained) (raise (make-message-condition "the taker failed"))))
+   ((is? "/write-after-close")
+    (lambda (t retained) (taken t retained) (close! t) (door-write! t (b "too late"))))
+   (else #f)))
 
 ;; THE WAITS' MARKS (M7.3).  The libuv shell's waits end inside libuv's run,
 ;; where the suite cannot see them: a timer of the loop's fires, or a
@@ -318,6 +421,38 @@
      (send "POST /read HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n")
      (read) (send "hello"))))
 
+;; upgrade : String -> String — a request to switch to `echo` at `target`.
+(define (upgrade target)
+  (string-append "GET " target " HTTP/1.1\r\nHost: x\r\nConnection: upgrade\r\nUpgrade: echo\r\n\r\n"))
+
+;; The door's scripts (THE DOOR), each its request to a take-over of
+;; door-taker's: `(aborts)` marks one whose stream the server closes at
+;; once, so the client's end is never read, and `(heard)` waits until the
+;; client has read the 101.
+(define door-scripts
+  `(("an upgrade echoed, then the client's end"
+     (send ,(upgrade "/echo")) (read) (send "hello") (read) (send "world"))
+    ("an upgrade whose first bytes come with its request, handed over"
+     (send ,(string-append (upgrade "/echo") "early")) (read) (send "late"))
+    ("a taker that says goodbye and closes, its linger ended by the client's end"
+     (send ,(upgrade "/goodbye")))
+    ("a taker that says goodbye to a client that sends on: what it sends is read and dropped"
+     (send ,(upgrade "/goodbye")) (heard) (send "more"))
+    ("a taker that aborts with a write outstanding" (send ,(upgrade "/door-abort")) (aborts))
+    ("a taker that aborts with nothing outstanding" (send ,(upgrade "/door-abort-idle")) (aborts))
+    ("a taker whose deadline passes, then says goodbye" (send ,(upgrade "/door-deadline")))
+    ("a taker that waits, then says goodbye" (send ,(upgrade "/door-waits")))
+    ("a taker that raises" (send ,(upgrade "/door-raises")) (aborts))
+    ("a write after a taker's close" (send ,(upgrade "/write-after-close")))
+    ("a taker that starts reading 50 ms after its take-over, the client sending once it has the 101"
+     (send ,(upgrade "/door-reads-later")) (heard) (send "hello"))))
+
+;; A door script whose client never ends its stream, played to the shell
+;; with short limits, where the linger's deadline closes it.
+(define door-stalling-scripts
+  `(("a taker that says goodbye to a client that never ends: closed at the linger deadline"
+     (send ,(upgrade "/goodbye")) (stall))))
+
 ;; A script whose request the core refuses before any handler is asked,
 ;; played to the direct shell alone: through the coroutine shell, it would
 ;; play the direct shell again.
@@ -387,6 +522,10 @@
 ;; closes-bare? : Script -> Boolean — whether the server closes its
 ;; connection at once, before it reads the client's end.
 (define (closes-bare? script) (ends-with? script '(bare-close)))
+
+;; aborts? : Script -> Boolean — whether the server closes its taken stream
+;; at once, before it reads the client's end.
+(define (aborts? script) (ends-with? script '(aborts)))
 
 ;; THE CLIENT'S END.  Before decision 0020 the server did not read while a
 ;; handler ran, so a client's end came after the answers however soon it
@@ -514,7 +653,13 @@
              ((bytes-arrived) (collect-span! delivered (cadr datum) (caddr datum) (cadddr datum)))
              ((closed) (set! closed #t))))
          (when (and (eq? kind 'action) (eq? (car datum) 'write))
-           (set! written-at (cons (uv-now loop) written-at))))
+           (set! written-at (cons (uv-now loop) written-at)))
+         ;; A taken stream's events are given to the fake; its close's
+         ;; stages are the shell's own, held by the traces alone.
+         (when (and (eq? kind 'door) (not (memq (car datum) '(stream-shut stream-close))))
+           (set! received (cons (cons* (uv-now loop) turn datum) received))
+           (when (eq? (car datum) 'stream-read)
+             (collect-span! delivered (cadr datum) (caddr datum) (cadddr datum)))))
         ((and (eq? kind 'server-action) (eq? (car datum) 'accept))
          (set! adopted-at (uv-now loop)))))
 
@@ -595,6 +740,7 @@
   (set! delivered (make-byte-collector))
   (set! closed #f)
   (set! adopted-at #f)
+  (set! door-marks (lambda (what) (set! traced (cons (list 'taker (render what)) traced))))
   (let* ((cl (open-client loop port #f #t))
          (wait (if credit? wait-crediting wait-for))
          (sent (make-byte-collector))
@@ -614,7 +760,11 @@
                                                              (collector-count sent))))
                                          waits)))
                             ((stall) (step '() waits))
-                            ((bare-close end-early) (step (cdr steps) waits)))
+                            ((heard)
+                             (step (cdr steps)
+                                   (cons (wait (lambda () (positive? (bytevector-length (client-bytes cl)))))
+                                         waits)))
+                            ((bare-close end-early aborts) (step (cdr steps) waits)))
                           (let ((waits (if (or (stalls? script) (closes-bare? script) (ends-early? script))
                                            waits
                                            (cons (wait (lambda () (and (= (collector-count delivered)
@@ -665,6 +815,7 @@
                                        (set! seen (cons (list kind (render datum)) seen)))
                                      (or adopted-at 0)
                                      on-credit?)))
+    (set! door-marks (lambda (what) (set! seen (cons (list 'taker (render what)) seen))))
     (fake-shell-date-writes! fake writes)
     (fake-shell-hold! fake #t)
     (for-each (lambda (e)
@@ -690,6 +841,14 @@
                            (fake-shell-deliver! fake event))))
                       ((write-completed shutdown-completed closed) (fake-shell-deliver-later! fake))
                       ((tick) (fake-shell-fire! fake))
+                      ;; A taken stream's (THE DOOR): a read and an end
+                      ;; delivered, a write's completion with the libuv
+                      ;; shell's outcome, and a pass as the timer firing.
+                      ((stream-read) (fake-shell-deliver! fake (cons 'bytes-arrived (cdr event))))
+                      ((stream-end)
+                       (fake-shell-deliver! fake (if (eq? (cadr event) 'eof) '(eof) (list 'read-error (cadr event)))))
+                      ((stream-wrote) (fake-shell-deliver-later! fake (cadr event)))
+                      ((stream-passed) (fake-shell-fire! fake))
                       ;; Where the libuv shell's handler code ended a wait,
                       ;; the fake's ends it (THE WAITS' MARKS).
                       ((woke)
@@ -723,9 +882,10 @@
       ;; that stalls never ends its stream, and a bare close comes before
       ;; the client's end.
       (check name "the libuv shell read what the client sent, then its end alone, and closed"
-             (list 'identical (if (or (stalls? script) (closes-bare? script)) '() '(eof)) 'satisfied)
+             (list 'identical (if (or (stalls? script) (closes-bare? script) (aborts? script)) '() '(eof)) 'satisfied)
              (list (compare-bytes sent (collector-bytes delivered))
-                   (map car (filter (lambda (e) (memq (car e) '(eof read-error))) (map cddr evs)))
+                   (map (lambda (e) (if (eq? (car e) 'stream-end) (if (eq? (cadr e) 'eof) 'eof 'read-error) (car e)))
+                        (filter (lambda (e) (memq (car e) '(eof read-error stream-end))) (map cddr evs)))
                    finished))
       ;; compare-bytes names the first byte that differs, the fake's then
       ;; the client's: (differs-at index fake libuv).
@@ -895,6 +1055,10 @@
                   scripts)
         (for-each (lambda (script) (check-script! shell port default-limits #f #f script))
                   refused-scripts)
+        (for-each (lambda (script)
+                    (set! direct (cons (cons script (check-script! shell port default-limits #f #f script))
+                                       direct)))
+                  door-scripts)
         ;; The scripts whose handler code waits, and the order row.
         (let ((addresses (looked-up loop "localhost" cap)))
           (for-each (lambda (script)
@@ -903,16 +1067,18 @@
                     waiting-scripts)))
       (let ((port (shell-listen! quick "127.0.0.1" 0)))
         (for-each (lambda (script) (check-script! quick port quick-limits #f #f script))
-                  stalling-scripts))
+                  stalling-scripts)
+        (for-each (lambda (script) (check-script! quick port quick-limits #f #f script))
+                  door-stalling-scripts))
       (let ((port (shell-listen! on-credit "127.0.0.1" 0)))
         (for-each (lambda (script) (check-script! on-credit port default-limits #t #f script))
                   credit-scripts))
-      ;; The scripts again, through the coroutine shell.
+      ;; The scripts again, and the door's, through the coroutine shell.
       (let ((port (shell-listen! coroutine "127.0.0.1" 0)))
         (for-each (lambda (script)
                     (check-alike! script (cdr (assq script direct))
                                   (check-script! coroutine port default-limits #f #t script)))
-                  scripts))
+                  (append scripts door-scripts)))
 
       (for-each (lambda (name)
                   (let ((p (current-error-port)))
