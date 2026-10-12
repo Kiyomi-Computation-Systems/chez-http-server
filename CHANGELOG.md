@@ -6,6 +6,16 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **chez-libuv is pinned at v0.10.0.** Run `make build` after pulling: the shim's
+  source changed, so it relinks, though a release shim compiles to the same code and
+  exports nothing new. libuv 1.48 or later is still enough. Nothing the server calls
+  behaves differently. For code that calls chez-libuv itself: `uv-kill!` refuses a pid
+  outside a C int, `uv-write*!` refuses a list of 2^32 segments or more, and
+  `(libuv dns)` no longer exports `addrinfo-chain->list` (chez-libuv's CHANGELOG has
+  the rest).
+
 ## [0.6.0] - 2026-10-12
 
 The seventh release. A taker's `transport-close!` no longer waits forever on a client

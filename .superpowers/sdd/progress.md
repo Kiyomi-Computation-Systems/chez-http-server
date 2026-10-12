@@ -272,3 +272,21 @@ MERGED to main on 2026-10-12, on the owner's "Do closing ritual": **v0.5.0's ent
 `make test` green on main: fifty-one suites, 2,115 expected passes, every pin ok.
 
 NEXT: in chez-websocket, its own repository: the pin to v0.6.0 (47c787d) alone. Its `test-binding` and `test-driver` load this server's fake, whose door changed in #180 to #182; its fifteen suites passed on this tree. Here, v0.6.0's entries move to `v0.6.0-progress.md` at the next release. When main's runs start again, re-run main's latest run once. Plan §14's open list holds nine items.
+
+**THE CHEZ-LIBUV v0.10.0 PIN, on `chore/chez-libuv-v0.10.0` (2026-10-12),** after the chez-libuv session's handoff (yuzu-libuv-issues-a, on the owner's word there). Measured first, then by the owner's form: "Pin now, one PR (Recommended)" (weighed: staying on v0.9.0) and "Hold for the next release (Recommended)" (weighed: releasing 0.6.1 for the pin alone).
+- **The tag.** v0.10.0 is abe6690, a signed annotated tag (object 7030f07); `git tag -v` read a good signature, and origin agrees.
+- **The handoff's claims, checked** against chez-libuv's history from 3c4e7f0 to abe6690:
+  - among the ten public libraries that changed, `(libuv dns)` dropping `addrinfo-chain->list` is the only change to an export list, and the `(libuv)` facade is unchanged; nothing here uses it;
+  - `uv-kill!` now refuses a pid outside a C int, and `uv-write*!` a list of 2^32 segments or more. Our calls are tests/serve-child.sps's two (the process's own pid) and the shell's two (the serializer's segments, and one segment);
+  - tests/uv-testing.sls changed in comments only, and `(libuv private native)`'s `live-counts` is untouched;
+  - no submodule inside chez-libuv moved, and the libuv floor is still 1.48.0;
+  - every ask decision 0008 records of chez-libuv had landed before, so 0008 is unchanged.
+- **Measured** on this branch's tree:
+  - Darwin arm64, `make build`: the dev shim relinks. `make test`: fifty-one suites, 2,115 expected passes, each suite's count main's at v0.9.0, every pin ok. The log names the same chez-libuv conditions as v0.9.0's, and has no `Exception` or `HARNESS` line.
+  - `make prod`: exit 0, and both check-prod runs passed ("the shim is a prod build"). The suite on the prod shim passed 2,109: the clients suite's one counter check and the shell suite's five are not read on a prod shim, by design, each saying so.
+  - Linux aarch64 (`chez-libuv-noble-scratch:10.4.1`) and x86_64 under emulation (`chez-websocket-ci-amd64:10.4.1`), libuv 1.48.0, every suite once: 2,077 each, each suite's count v0.9.0's on the release tree; the clients suite at status 2 with no tools built, as before.
+  - chez-websocket's main (50017c4), exported, its fifteen suites on this tree: 395 expected passes, all green.
+- **Built.** The gitlink and the Makefile's `LIBUV_PIN`, global-constraints' pin line, the integration test's import comment, and CHANGELOG.md's Unreleased, under Changed. The measurements went to the chez-libuv session for its downstream notes.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 2,115 expected passes, every pin ok.
+
+NEXT: the PR, and its closing ritual when the owner asks. The pin waits in Unreleased for the server's next release, by the owner's form; chez-websocket reaches v0.10.0 through it. Plan §14's open list holds nine items.
