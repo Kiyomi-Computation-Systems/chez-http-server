@@ -1,14 +1,14 @@
 #!r6rs
 ;;; (http-server transport) — the stream a taker is handed (pure).
 ;;;
-;;; Decision 0016 item 2.  A handler that takes an upgrade is called, once
-;;; the 101 is written, with a TRANSPORT: a record of verbs over the stream.
-;;; The server's shell makes one over chez-libuv and keeps the stream (its
-;;; place in max-connections, its close, its deadline and the drain), and a
-;;; test makes one of its own procedures, so a taker imports no chez-libuv
-;;; and is tested against a fake.  Each verb checks what it is handed and
-;;; calls its procedure with the arguments in one shape, so a taker's
-;;; mistake is the same refusal on a fake as on the server:
+;;; A handler that takes an upgrade is called, once the 101 is written, with a
+;;; TRANSPORT: a record of verbs over the stream.  The server's shell makes
+;;; one over chez-libuv and keeps the stream (its place in max-connections,
+;;; its close, its deadline and the drain), and a test makes one of its own
+;;; procedures, so a taker imports no chez-libuv and is tested against a fake.
+;;; Each verb checks what it is handed and calls its procedure with the
+;;; arguments in one shape, so a taker's mistake is the same refusal on a fake
+;;; as on the server:
 ;;;
 ;;;   (transport-write! t bv [start end] [written])
 ;;;        write bv[start, end), a byte or more, the whole bytevector by
@@ -21,18 +21,17 @@
 ;;;   (transport-read-stop! t)
 ;;;   (transport-close! t)
 ;;;        close the stream once the bytes written so far have been, in
-;;;        stages, as the server closes its own connections (decision 0026):
-;;;        the taker is read nothing more, while what the client still
-;;;        sends is read and dropped; once the writes are out, the stream
-;;;        tells the client it has finished writing, and closes when the
-;;;        client closes too, or at the server's linger limit.  From the
-;;;        close on, a read-stop changes nothing, and once the writes are
-;;;        out neither does a deadline.
+;;;        stages, as the server closes its own connections: the taker is read
+;;;        nothing more, while what the client still sends is read and
+;;;        dropped; once the writes are out, the stream tells the client it
+;;;        has finished writing, and closes when the client closes too, or at
+;;;        the server's linger limit.  From the close on, a read-stop changes
+;;;        nothing, and once the writes are out neither does a deadline.
 ;;;   (transport-abort! t)
 ;;;        close the stream now: reading stops, and each write not yet
 ;;;        written is dropped, its `written` told ECANCELED.  What the
 ;;;        system already holds may still reach the client, so a client
-;;;        that reads on can get part of a write (decision 0024).
+;;;        that reads on can get part of a write.
 ;;;   (transport-deadline! t ms on-passed) / (transport-deadline! t #f)
 ;;;        one deadline: `on-passed` called once `ms` milliseconds have
 ;;;        passed, the one armed before replaced; #f disarms it.  The
@@ -44,13 +43,12 @@
 ;;;        `thunk` called once the stream has closed, whoever closed it; at
 ;;;        once if it already has.
 ;;;
-;;; Nothing bounds a taker's writes outstanding but the taker (decided on the
-;;; owner's word, by form, at M8.2's review): `written` tells it what each
-;;; write has become, so it can count what is still outstanding, and stop
-;;; past a bound of its own.  A client that stops reading never takes them:
-;;; a deadline whose call aborts closes it (decision 0024).  Once the taker
-;;; asks for `transport-close!`, the server bounds each write the close waits
-;;; for by its write timeout, and aborts the stream past it (decision 0027).
+;;; Nothing bounds a taker's writes outstanding but the taker: `written`
+;;; tells it what each write has become, so it can count what is still
+;;; outstanding, and stop past a bound of its own.  A client that stops
+;;; reading never takes them: a deadline whose call aborts closes it.  Once
+;;; the taker asks for `transport-close!`, the server bounds each write the
+;;; close waits for by its write timeout, and aborts the stream past it.
 ;;;
 ;;; A write of no bytes is refused: chez-libuv completes a write that ends in
 ;;; an empty span a turn late, and a close then cancels it.  PURE: imports
@@ -76,8 +74,7 @@
   ;;   -> Transport
   ;; The verbs' procedures, each called with what its verb has checked.
   ;; Anything but a procedure among them is an assertion violation.  A
-  ;; transport made of the first seven, as 0.3.0's were, refuses
-  ;; transport-abort!, naming it.
+  ;; transport made of the first seven refuses transport-abort!, naming it.
   ;; transport? : Any -> Boolean
   (define make-transport
     (case-lambda

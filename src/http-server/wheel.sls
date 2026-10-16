@@ -1,7 +1,6 @@
 #!r6rs
 ;;; (http-server wheel) — the deadlines a loop's connections arm, kept in
-;;; tick-ms buckets: a hashed timing wheel (decision 0005 and its amendment
-;;; of 2026-09-27; design §2).
+;;; tick-ms buckets: a hashed timing wheel.
 ;;;
 ;;; PURE functional core: imports only (rnrs), and reads no clock.  Every
 ;;; instant is a whole number of milliseconds the caller gives, from a clock
@@ -11,20 +10,19 @@
 ;;; connection core's state, a wheel is linear: its procedures update it in
 ;;; place.
 ;;;
-;;; ENTRIES ARE THE CALLER'S (decided 2026-09-27).  A key, such as a
-;;; connection, has one entry, made once and kept as long as the key can have
-;;; a deadline, and armed in one wheel at a time.  Arming, moving and
-;;; disarming only link and unlink it, so none allocates.  One entry per key
-;;; is the caller's to keep: two entries are two deadlines.  An armed entry
-;;; holds its key until it fires or is disarmed, so a key that is done with
-;;; has its entry disarmed; a disarmed entry holds nothing of the wheel.
+;;; ENTRIES ARE THE CALLER'S.  A key, such as a connection, has one entry,
+;;; made once and kept as long as the key can have a deadline, and armed in
+;;; one wheel at a time.  Arming, moving and disarming only link and unlink
+;;; it, so none allocates.  One entry per key is the caller's to keep: two
+;;; entries are two deadlines.  An armed entry holds its key until it fires or
+;;; is disarmed, so a key that is done with has its entry disarmed; a disarmed
+;;; entry holds nothing of the wheel.
 ;;;
 ;;; THE CONTRACT.  An advance to `now` fires, and disarms, exactly the entries
 ;;; whose deadlines are at or before `now`, and returns their keys.  So a
 ;;; caller that advances every tick-ms fires a deadline of D within [D, D +
-;;; tick-ms], never before D (0005).  The keys come back already disarmed: a
-;;; caller that stops partway through them arms again the ones it did not
-;;; act on.
+;;; tick-ms], never before D.  The keys come back already disarmed: a caller
+;;; that stops partway through them arms again the ones it did not act on.
 ;;;
 ;;; THE INDEX.  A deadline D lies in bucket (div D tick-ms), and bucket b in
 ;;; slot (mod b slots), so a slot holds one bucket of every revolution.  The
@@ -60,7 +58,7 @@
   ;; wheel? : Any -> Boolean
   ;; wheel-tick-ms : Wheel -> Positive-Integer — its buckets' width.
   ;; wheel-count : Wheel -> Nat — how many entries are armed.  At 0 the shell
-  ;; stops its tick timer (0005).
+  ;; stops its tick timer.
   ;; (All three are generated here; make-wheel, below, builds one.)
   (define-record-type (wheel %make-wheel wheel?)
     (fields (immutable tick-ms wheel-tick-ms)

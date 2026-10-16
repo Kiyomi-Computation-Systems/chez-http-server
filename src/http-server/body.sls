@@ -1,10 +1,10 @@
 #!r6rs
-;;; (http-server body) — the readers a handler answers with (pure).  M6.1.
+;;; (http-server body) — the readers a handler answers with (pure).
 ;;;
 ;;; A request whose framing announces a body, chunked or a Content-Length
-;;; above 0, is handed to the handler once its head has arrived, before any
-;;; of its body (decision 0013).  The handler answers a response, or a
-;;; READER, and the server hands the reader the body:
+;;; above 0, is handed to the handler once its head has arrived, before any of
+;;; its body.  The handler answers a response, or a READER, and the server
+;;; hands the reader the body:
 ;;;
 ;;;   (read-body on-piece on-end)     streams: `on-piece` is called with each
 ;;;                                   piece of the body as it arrives, as `bv
@@ -15,14 +15,14 @@
 ;;;                                   response.  Past `max` bytes, 1 MiB
 ;;;                                   unless given, the server answers 413.
 ;;;
-;;; A piece is a span of the read it arrived in, never copied (design §7.1):
-;;; a reader that keeps one keeps that read, up to read-buffer-size bytes, so
-;;; what it keeps it copies.  A whole reader is handed its body by the core,
-;;; which copies the pieces into one bytevector as they arrive, grown to the
-;;; Content-Length or joined when chunked, and hands it over as the reader's
-;;; only piece, once the body has ended; a reader of a request with no body
-;;; is handed no piece.  The reader carries its cap; the core enforces it, and
-;;; the server's own, CHEZ_HTTP_MAX_BODY_BYTES (decision 0013 item 5).
+;;; A piece is a span of the read it arrived in, never copied: a reader that
+;;; keeps one keeps that read, up to read-buffer-size bytes, so what it keeps
+;;; it copies.  A whole reader is handed its body by the core, which copies
+;;; the pieces into one bytevector as they arrive, grown to the Content-Length
+;;; or joined when chunked, and hands it over as the reader's only piece, once
+;;; the body has ended; a reader of a request with no body is handed no piece.
+;;; The reader carries its cap; the core enforces it, and the server's own,
+;;; CHEZ_HTTP_MAX_BODY_BYTES, each answered 413.
 ;;;
 ;;; PURE: imports only (rnrs).
 (library (http-server body)
@@ -40,7 +40,10 @@
   ;; Procedures that are not, or a cap that is neither #f nor a count, are an
   ;; assertion violation.
   ;; body-reader? : Any -> Boolean
-  ;; body-reader-on-piece / -on-end / -max-bytes / -whole? : BodyReader -> the field
+  ;; body-reader-on-piece : BodyReader -> (Bytevector Nat Nat -> Any)
+  ;; body-reader-on-end : BodyReader -> (-> Response)
+  ;; body-reader-max-bytes : BodyReader -> (U Nat #f)
+  ;; body-reader-whole? : BodyReader -> Boolean
   (define-record-type (body-reader make-body-reader body-reader?)
     (fields (immutable on-piece  body-reader-on-piece)
             (immutable on-end    body-reader-on-end)
@@ -60,7 +63,7 @@
   (define (read-body on-piece on-end)
     (make-body-reader on-piece on-end #f #f))
 
-  ;; The buffering helper's cap: decision 0005's 1 MiB.
+  ;; The buffering helper's default cap: 1 MiB.
   (define whole-body-cap 1048576)
 
   ;; read-whole-body : (Bytevector -> Response) [(U Nat #f)] -> BodyReader

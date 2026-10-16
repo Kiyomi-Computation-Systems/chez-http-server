@@ -1,54 +1,52 @@
 #!r6rs
-;;; (http-server serializer) — a response, as the bytes the server writes (M3;
-;;; design §3.1, §7.3; decision 0010).
+;;; (http-server serializer) — a response, as the bytes the server writes.
 ;;;
 ;;; `serialize-response` turns a response record and the connection's framing
 ;;; decision into the segments of one `uv-write*!`: the status line, the Date
 ;;; slot, the header block and the body, each a segment of its own, so nothing
-;;; is concatenated (one request, one completion; design §7.3).  It is a
-;;; function of its arguments alone, tabled apart from any connection state,
-;;; which is why it is a library of its own.
+;;; is concatenated (one write request, one completion).  It is a function of
+;;; its arguments alone, tabled apart from any connection state, which is why
+;;; it is a library of its own.
 ;;;
-;;; THE DATE SLOT (decision 0010 item 4).  The core reads no clock (decision
-;;; 0002 item 1), so a final response leaves the symbol `date` where its Date
-;;; line goes, directly after the status line, and the shell writes the line
-;;; there.  A line is always `date-line-length` bytes, so the byte count is
-;;; exact before the shell fills the slot.  `date-line` formats one from whole
-;;; seconds since the epoch; the shell keeps it and re-formats it when the
-;;; second changes.  A response whose handler wrote its own Date keeps that
-;;; one and leaves no slot.
+;;; THE DATE SLOT.  The core reads no clock, so a final response leaves the
+;;; symbol `date` where its Date line goes, directly after the status line,
+;;; and the shell writes the line there.  A line is always `date-line-length`
+;;; bytes, so the byte count is exact before the shell fills the slot.
+;;; `date-line` formats one from whole seconds since the epoch; the shell
+;;; keeps it and re-formats it when the second changes.  A response whose
+;;; handler wrote its own Date keeps that one and leaves no slot.
 ;;;
-;;; THE FRAMING IS THE SERVER'S (decision 0010 items 1 and 3).  The handler's
-;;; fields are written in its order, then Content-Length or Transfer-Encoding
-;;; as the mode says, then Connection as the connection says, then the blank
-;;; line.  A handler's own Connection field is never copied: it may only be
-;;; `close`, and the connection argument carries that.
+;;; THE FRAMING IS THE SERVER'S.  The handler's fields are written in its
+;;; order, then Content-Length or Transfer-Encoding as the mode says, then
+;;; Connection as the connection says, then the blank line.  A handler's own
+;;; Connection field is never copied: it may only be `close`, and the
+;;; connection argument carries that.
 ;;;
-;;; A BODY OF UNKNOWN LENGTH IS A PRODUCER (M6.3; decision 0013 item 8): a
-;;; procedure the server calls for each piece, which answers a bytevector,
-;;; or the eof object at the end.  Its head writes no body, and each piece
-;;; is a write of its own, `serialize-piece`, then the end, `serialize-end`:
-;;; chunked to HTTP/1.1, close-delimited to any other version (the framing
-;;; decision's).  A piece is never copied: chez-libuv copies every segment
-;;; as the write is issued (design §7.3), so a segment may also be a span of
-;;; a bytevector, `(bv start end)`, as uv-write*! takes one.
+;;; A BODY OF UNKNOWN LENGTH IS A PRODUCER: a procedure the server calls for
+;;; each piece, which answers a bytevector, or the eof object at the end.
+;;; Its head writes no body, and each piece is a write of its own,
+;;; `serialize-piece`, then the end, `serialize-end`: chunked to HTTP/1.1,
+;;; close-delimited to any other version (the framing decision's).  A piece
+;;; is never copied: chez-libuv copies every segment as the write is issued,
+;;; so a segment may also be a span of a bytevector, `(bv start end)`, as
+;;; uv-write*! takes one.
 ;;;
-;;; A SWITCH IS WRITTEN AS A 101 (M8.2; decision 0016 item 1): the status
-;;; line, the handler's fields and `Connection: upgrade` (RFC 9110 §7.8), with
-;;; no Date slot, since a 1xx may go without (§6.6.1) and the `100 Continue`
-;;; the server writes has none, and no framing, since a 1xx has no content
-;;; (§15.2).  `switch-fault` names what the server cannot write safely in a
-;;; switch, beside a response's faults: an Upgrade field missing, or naming a
-;;; protocol the request's did not offer (§7.8's MUST and MUST NOT), and a
-;;; handler's Connection field that says anything but `upgrade`.
+;;; A SWITCH IS WRITTEN AS A 101: the status line, the handler's fields and
+;;; `Connection: upgrade` (RFC 9110 §7.8), with no Date slot, since a 1xx may
+;;; go without (§6.6.1) and the `100 Continue` the server writes has none,
+;;; and no framing, since a 1xx has no content (§15.2).  `switch-fault` names
+;;; what the server cannot write safely in a switch, beside a response's
+;;; faults: an Upgrade field missing, or naming a protocol the request's did
+;;; not offer (§7.8's MUST and MUST NOT), and a handler's Connection field
+;;; that says anything but `upgrade`.
 ;;;
-;;; WHAT CANNOT BE WRITTEN SAFELY is a fault (decision 0010 item 2).
-;;; `response-fault` names it, and the core answers 500 instead; serializing
-;;; a response with a fault is a caller bug, an assertion violation.  A
-;;; caller that has asked already, as the core has, writes the response with
-;;; `serialize-checked-response`, which does not read it for faults again.  The
-;;; value bytes refused are the ones llhttp's strict parser refuses in a
-;;; field value: every control character but HTAB.
+;;; WHAT CANNOT BE WRITTEN SAFELY is a fault.  `response-fault` names it, and
+;;; the core answers 500 instead; serializing a response with a fault is a
+;;; caller bug, an assertion violation.  A caller that has asked already, as
+;;; the core has, writes the response with `serialize-checked-response`,
+;;; which does not read it for faults again.  The value bytes refused are the
+;;; ones llhttp's strict parser refuses in a field value: every control
+;;; character but HTAB.
 ;;;
 ;;; PURE: imports only (rnrs) and this project's pure libraries.
 (library (http-server serializer)
@@ -60,14 +58,14 @@
 
   ;; framing-modes : (Listof Symbol)
   ;; How a response's body goes on the wire, as the framing decision names it
-  ;; (M3.2; RFC 9112 §6):
+  ;; (RFC 9112 §6):
   ;;   content-length       Content-Length, then the body
   ;;   content-length-only  Content-Length and no body: a HEAD's answer
   ;;   no-body              neither, and no body: a 204, a 304, a 2xx to
   ;;                        CONNECT, a HEAD answered with no body
   ;;   chunked              Transfer-Encoding: chunked, and the body, if any,
   ;;                        as the first chunk; a producer's pieces follow,
-  ;;                        each a write of its own (M6.3)
+  ;;                        each a write of its own
   ;;   close-delimited      neither, then the body, which the close ends
   (define framing-modes
     '(content-length content-length-only no-body chunked close-delimited))
@@ -93,9 +91,9 @@
   ;; serialize-checked-response :
   ;;   Response Mode Connection -> (values (Listof Segment) Nat)
   ;; serialize-response for a response whose response-fault the caller has
-  ;; already found #f, as the core has before it frames a handler's response
-  ;; (M3.2): the fault check reads every byte of every field, so it is not
-  ;; made twice.  Everything else is checked as serialize-response checks it.
+  ;; already found #f, as the core has before it frames a handler's response:
+  ;; the fault check reads every byte of every field, so it is not made
+  ;; twice.  Everything else is checked as serialize-response checks it.
   (define (serialize-checked-response r mode connection)
     (cond ((not (memq mode framing-modes))
            (assertion-violation 'serialize-response "not a framing mode" mode))
@@ -264,19 +262,18 @@
           ((eq? mode 'chunked) (list (chunk-size-line length) body crlf))
           (else '())))
 
-  ;; --- a producer's pieces (M6.3) -------------------------------------------------
+  ;; --- a producer's pieces ------------------------------------------------------
 
   ;; serialize-piece : Mode Bytevector Nat Nat -> (values (Listof Segment) Nat)
   ;; One piece of a producer's body, bv[start, end), as the segments of one
-  ;; write, and the bytes they come to (decision 0013 item 8): chunked, its
-  ;; size line, the piece and CRLF (RFC 9112 §7.1); close-delimited, the piece
-  ;; alone.  The piece is never copied: a whole bytevector is its own
-  ;; segment, and a span of one is uv-write*!'s `(bv start end)`.  The size
-  ;; line of a piece whose length is a power of two, as the pieces a buffer
-  ;; hands out are, is made once and shared (size-line).  An empty piece is
-  ;; an assertion violation, since a chunk of no bytes is the last chunk, and
-  ;; so the caller writes none; so are a mode no piece is written in and a
-  ;; span outside its bytevector.
+  ;; write, and the bytes they come to: chunked, its size line, the piece and
+  ;; CRLF (RFC 9112 §7.1); close-delimited, the piece alone.  The piece is
+  ;; never copied: a whole bytevector is its own segment, and a span of one is
+  ;; uv-write*!'s `(bv start end)`.  The size line of a piece whose length is
+  ;; a power of two, as the pieces a buffer hands out are, is made once and
+  ;; shared (size-line).  An empty piece is an assertion violation, since a
+  ;; chunk of no bytes is the last chunk, and so the caller writes none; so
+  ;; are a mode no piece is written in and a span outside its bytevector.
   (define (serialize-piece mode bv start end)
     (unless (memq mode '(chunked close-delimited))
       (assertion-violation 'serialize-piece "not a mode a producer's pieces are written in" mode))
@@ -304,7 +301,7 @@
   (define last-chunk (list (string->utf8 "0\r\n\r\n")))
 
   ;; serialize-continue : -> (values (Listof Segment) Nat)
-  ;; The interim `100 Continue` (M6.4; RFC 9110 §15.2.1): its status line
+  ;; The interim `100 Continue` (RFC 9110 §15.2.1): its status line
   ;; and the blank line, one shared segment.  It carries no field: a 1xx may
   ;; leave out Date (RFC 9110 §6.6.1), and has no body to frame.
   (define (serialize-continue) (values continue-line (bytevector-length (car continue-line))))
@@ -312,12 +309,12 @@
   (define continue-line (list (string->utf8 "HTTP/1.1 100 Continue\r\n\r\n")))
 
   ;; serialize-switch : Switch -> (values (Listof Segment) Nat)
-  ;; The 101 a switch is written as (M8.2; decision 0016 item 1): the status
-  ;; line, then one segment of the handler's fields but Connection, the
-  ;; server's `Connection: upgrade` and the blank line.  No Date slot and no
-  ;; framing: a 1xx may leave out Date (RFC 9110 §6.6.1) and has no content
-  ;; (§15.2).  The caller has found no fault in the switch (switch-fault);
-  ;; anything but a switch is an assertion violation.
+  ;; The 101 a switch is written as: the status line, then one segment of the
+  ;; handler's fields but Connection, the server's `Connection: upgrade` and
+  ;; the blank line.  No Date slot and no framing: a 1xx may leave out Date
+  ;; (RFC 9110 §6.6.1) and has no content (§15.2).  The caller has found no
+  ;; fault in the switch (switch-fault); anything but a switch is an assertion
+  ;; violation.
   (define (serialize-switch sw)
     (unless (switch? sw)
       (assertion-violation 'serialize-switch "not a switch" sw))
@@ -342,7 +339,8 @@
 
   ;; size-line : Nat -> Bytevector
   ;; A chunk's size line: one of power-of-two-lines when `n` is a power of
-  ;; two, 1 to 2^24, and made for it otherwise (M6.3's review: 16 B a piece).
+  ;; two, 1 to 2^24, so a buffer's pieces allocate no line, and made for it
+  ;; otherwise.
   (define (size-line n)
     (if (and (fx=? (fxand n (fx- n 1)) 0) (fx<=? n max-shared-size))
         (vector-ref power-of-two-lines (fx- (fxlength n) 1))
@@ -376,7 +374,7 @@
 
   ;; response-fault : Any -> (U #f Symbol)
   ;; #f when `r` is a response the serializer can write safely; otherwise
-  ;; the first fault found (decision 0010 item 2):
+  ;; the first fault found:
   ;;   not-a-response        not a response record
   ;;   invalid-status        not an exact integer from 200 to 599: 1xx is
   ;;                         interim and never an answer, and outside 100..599
@@ -388,10 +386,11 @@
   ;;   invalid-header-value  a control character other than HTAB (RFC 9110
   ;;                         §5.5: CR, LF and NUL are "invalid and dangerous")
   ;;   framing-field         a Content-Length or Transfer-Encoding: the
-  ;;                         server's to write (item 1)
-  ;;   connection-field      a Connection that is not `close` (item 3)
-  ;;   invalid-body          neither a bytevector, a producer (a procedure;
-  ;;                         decision 0013 item 8) nor #f
+  ;;                         server writes the framing
+  ;;   connection-field      a Connection that is not `close`: the server
+  ;;                         writes Connection
+  ;;   invalid-body          neither a bytevector, a producer (a procedure)
+  ;;                         nor #f
   (define (response-fault r)
     (cond ((not (response? r)) 'not-a-response)
           ((not (let ((s (response-status r)))
@@ -407,8 +406,7 @@
 
   ;; switch-fault : Any (Listof (Pair Bytes Bytes)) -> (U #f Symbol)
   ;; #f when `sw` is a switch the server can write safely as the 101 to a
-  ;; request whose fields are `offered` (M8.2; decision 0016 item 1);
-  ;; otherwise the first fault found:
+  ;; request whose fields are `offered`; otherwise the first fault found:
   ;;   not-a-switch          not a switch record
   ;;   invalid-take-over     a take-over that is not a procedure
   ;;   invalid-headers, invalid-header-name, invalid-header-value,
@@ -465,7 +463,7 @@
 
   ;; response-closes? : Response -> Boolean
   ;; #t when the handler's response asks to close the connection after it:
-  ;; a Connection field whose value is `close` (decision 0010 item 3).
+  ;; a Connection field whose value is `close`.
   (define (response-closes? r)
     (exists (lambda (h) (and (header-name=? (car h) connection-name) (close-option? (cdr h))))
             (response-headers r)))
@@ -510,7 +508,7 @@
 
   ;; upgrade-option? : Bytes -> Boolean
   ;; The value is the connection option `upgrade`, in any case, with optional
-  ;; whitespace around it: the one a switch's Connection may say (M8.2).
+  ;; whitespace around it: the one a switch's Connection may say.
   (define (upgrade-option? x)
     (let ((bv (bytes-vector x)))
       (let-values (((start end) (trim-ows bv (bytes-start x) (bytes-end x))))

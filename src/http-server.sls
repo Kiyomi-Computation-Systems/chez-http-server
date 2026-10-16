@@ -1,5 +1,5 @@
 #!r6rs
-;;; (http-server) — the facade: what an embedder imports (decision 0001).
+;;; (http-server) — the facade: what an embedder imports.
 ;;;
 ;;; A server is a handler, a procedure from a request to a response, given
 ;;; to `serve`:
@@ -13,33 +13,81 @@
 ;;; logs a line for each thing that happens on standard output (see
 ;;; (http-server private serve)).  A handler reads the request through
 ;;; accessors that copy what it asks for, as strings, and the method as the
-;;; symbol llhttp names (decision 0012; see (http-server view)).  A request
-;;; whose head announces a body reaches the handler once its head is in, and
-;;; the handler reads the body by answering with a reader, `read-body` or
+;;; symbol llhttp names (see (http-server view)).  A request whose head
+;;; announces a body reaches the handler once its head is in, and the
+;;; handler reads the body by answering with a reader, `read-body` or
 ;;; `read-whole-body`; a response given instead is sent at once, and the
-;;; connection closes after it (decision 0013; see (http-server body)).  The
-;;; response is (http-server response)'s record, which the server frames
-;;; (decision 0010).  A handler that waits answers `(awaiting thunk)`: the
-;;; server runs `thunk` on a coroutine of its own, and what it returns is the
-;;; answer (decision 0014).  There it may wait with `await`, which hands a
-;;; one-shot `resume` to whatever ends the wait, another handler's code
-;;; among them; with `sleep-ms`; inside `with-deadline`, whose wait raises
-;;; &deadline-passed once its time has passed; and with `resolve`, which
-;;; looks a name up, or raises &resolve-error (decision 0015; see
-;;; (http-server private waits)).  Once its client has closed or reset the
-;;; connection, the wait it is in, or else its next, raises &client-closed,
-;;; once (decision 0020).  A handler takes a request that asks to
+;;; connection closes after it (see (http-server body)).  The response is
+;;; (http-server response)'s record, which the server frames.  A handler
+;;; that waits answers `(awaiting thunk)`: the server runs `thunk` on a
+;;; coroutine of its own, and what it returns is the answer.  There it may
+;;; wait with `await`, which hands a one-shot `resume` to whatever ends the
+;;; wait, another handler's code among them; with `sleep-ms`; inside
+;;; `with-deadline`, whose wait raises &deadline-passed once its time has
+;;; passed; and with `resolve`, which looks a name up, or raises
+;;; &resolve-error (see (http-server private waits)).  Once its client has
+;;; closed or reset the connection, the wait it is in, or else its next,
+;;; raises &client-closed, once.  A handler takes a request that asks to
 ;;; switch protocols, an HTTP/1.1 upgrade with no body, by answering
 ;;; `(switch-protocols headers take-over)`: the server writes the 101 and
 ;;; then calls `take-over` with the stream, as a transport whose verbs
 ;;; write, read, close, arm a deadline and hear of the drain and the close,
-;;; and the bytes it read past the request (decision 0016; see (http-server
-;;; switch) and (http-server transport)).  A taker's tests make a fake with
+;;; and the bytes it read past the request (see (http-server switch) and
+;;; (http-server transport)).  A taker's tests make a fake with
 ;;; `make-transport`.  A malformed setting raises &http-server-config-error
-;;; at startup (design §6.4).
+;;; at startup.
+;;;
+;;; Each export's type, by the library that defines and documents it:
+;;;
+;;;   (http-server private serve)
+;;;     serve : (Request -> (U Answer Switch)) [(String -> (U String #f))]
+;;;             -> Void, Answer as (http-server awaiting) defines it
+;;;     &http-server-error, an &error; &http-server-config-error, an
+;;;       &http-server-error
+;;;     http-server-error?, http-server-config-error? : Any -> Boolean
+;;;   (http-server request) and (http-server view)
+;;;     request? : Any -> Boolean
+;;;     request-method : Request -> Symbol
+;;;     request-path, request-host : Request -> String
+;;;     request-query : Request -> (U String #f)
+;;;     request-header : Request String -> (U String #f)
+;;;     request-header-values : Request String -> (Listof String)
+;;;   (http-server body)
+;;;     read-body : (Bytevector Nat Nat -> Any) (-> Response) -> BodyReader
+;;;     read-whole-body : (Bytevector -> Response) [(U Nat #f)] -> BodyReader
+;;;   (http-server response)
+;;;     make-response : Nat (U Bytevector #f) Headers Body -> Response
+;;;       Headers = (Listof (Pair Bytevector Bytevector))
+;;;       Body    = (U Bytevector #f (-> (U Bytevector Eof)))
+;;;     response? : Any -> Boolean
+;;;   (http-server awaiting)
+;;;     awaiting : (-> Answer) -> Awaiting
+;;;       Answer = (U Response BodyReader Awaiting)
+;;;     &deadline-passed, &client-closed, &resolve-error, each an &error
+;;;     deadline-passed?, client-closed?, resolve-error? : Any -> Boolean
+;;;     resolve-error-reason : ResolveError -> Symbol
+;;;   (http-server private waits)
+;;;     await : ((Any -> Void) -> Any) -> Any
+;;;     sleep-ms : Nat -> Void
+;;;     with-deadline : Nat (-> (Values Any ...)) -> (Values Any ...)
+;;;     resolve : String -> (Listof String)
+;;;   (http-server switch)
+;;;     switch-protocols : Headers (Transport Bytevector -> Any) -> Switch
+;;;   (http-server transport)
+;;;     make-transport : write read-start read-stop close deadline on-drain
+;;;                      on-close [abort] -> Transport, each a procedure
+;;;     transport? : Any -> Boolean
+;;;     transport-write! :
+;;;       Transport Bytevector [Nat Nat] [(U #f ((U #f Symbol) -> Any))] -> Any
+;;;     transport-read-start! :
+;;;       Transport (Bytevector Nat Nat -> Any) (Symbol -> Any) -> Any
+;;;     transport-read-stop!, transport-close!, transport-abort! :
+;;;       Transport -> Any
+;;;     transport-deadline! : Transport (U Nat #f) [(-> Any)] -> Any
+;;;     transport-on-drain!, transport-on-close! : Transport (-> Any) -> Any
 ;;;
 ;;; Nothing here names a libuv handle or verb: the shell owns every one
-;;; (decision 0003; tests/test-exports.sps).
+;;; (tests/test-exports.sps checks it).
 (library (http-server)
   (export
     ;; the server

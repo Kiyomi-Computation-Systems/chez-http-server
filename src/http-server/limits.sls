@@ -1,5 +1,5 @@
 #!r6rs
-;;; (http-server limits) — bounded, nginx-style connection limits (decision 0005).
+;;; (http-server limits) — bounded, nginx-style connection limits.
 ;;;
 ;;; PURE functional core: imports only (rnrs).  Reading the process
 ;;; environment is I/O and belongs to the shell, so this library never
@@ -8,47 +8,41 @@
 ;;; getenv and the tests pass a fake environment, so defaults and every
 ;;; override are exercised with no I/O.
 ;;;
-;;; Defaults (decision 0005): header-read 60 s, idle 75 s, body-inactivity
-;;; 60 s, linger 30 s (decision 0011: how long a connection that closes
-;;; after a response reads and drops what arrives, waiting for the client to
-;;; close), write 60 s for each write to complete, a tick of 250 ms (how
-;;; often deadlines are checked: the timing wheel's bucket width; M5.1,
-;;; milestone plan §3), header bytes 16 KiB (-> 431), header count 100,
-;;; header field and header value 8 KiB each (-> 431; M2, milestone plan §3),
-;;; target 8 KiB (-> 414), bodies stream unbounded (#f), read buffer
-;;; 16 KiB (standing risk 2), 10 000 connections at once (a connection over
-;;; them is refused as it arrives), a listen backlog of 511, the kernel's
-;;; queue of connections not yet accepted (M4.3, milestone plan §3), and the
-;;; write water marks, 256 KiB and 64 KiB outstanding: a streamed response's
-;;; producer is asked for a piece only while the bytes written and not yet
-;;; completed are at or below the high water, and once past it, is asked
-;;; again when they fall to the low water (M6.3; 0005's amendment of
-;;; 2026-09-25).  A low water above the high water is refused.  A drain
-;;; has 10 s (milestone plan §3, M8.1): once a shutdown is asked for, the
-;;; server waits that long for its connections to finish, then closes the
-;;; rest.  The
-;;; backlog reaches libuv's uv_listen as a C int, so it is at most 2147483647,
-;;; the largest a C int holds on every platform the project targets.  There
-;;; is no pipeline cap: the server answers one request at a time by design
-;;; (decision 0004), and CHEZ_HTTP_PIPELINE_CAP, removed (0005's amendment of
-;;; 2026-10-04), is not read.  Durations are stored in milliseconds;
-;;; sizes and buffers in bytes.  Timeout overrides are given in whole
-;;; seconds; size and count overrides in their stored unit.  The tick is the
-;;; one duration given in milliseconds, CHEZ_HTTP_TICK_MS: 250 ms has no
-;;; whole-second spelling.  It is 1 to 1,000 ms (decided 2026-09-27): a
-;;; bucket is a tick wide, and a tick over a second would make a timeout,
-;;; given in whole seconds, late by more than its own unit.  Every number is
-;;; written in ASCII digits alone, leading zeros allowed (decided
-;;; 2026-10-05): Chez's string->number also reads a sign, a radix or
-;;; exactness prefix, a fraction, and a complex number with no imaginary
-;;; part, so "#x1F90" would be port 8080.
+;;; Defaults: header-read 60 s, idle 75 s, body-inactivity 60 s, linger 30 s
+;;; (how long a connection that closes after a response reads and drops what
+;;; arrives, waiting for the client to close), write 60 s for each write to
+;;; complete, a tick of 250 ms (how often deadlines are checked: the timing
+;;; wheel's bucket width), header bytes 16 KiB (-> 431), header count 100,
+;;; header field and header value 8 KiB each (-> 431), target 8 KiB
+;;; (-> 414), bodies stream unbounded (#f), read buffer 16 KiB (the buffer
+;;; is most of an idle connection's memory), 10 000 connections at once (a
+;;; connection over them is refused as it arrives), a listen backlog of 511,
+;;; the kernel's queue of connections not yet accepted, and the write water
+;;; marks, 256 KiB and 64 KiB outstanding: a streamed response's producer is
+;;; asked for a piece only while the bytes written and not yet completed are
+;;; at or below the high water, and once past it, is asked again when they
+;;; fall to the low water.  A low water above the high water is refused.  A
+;;; drain has 10 s: once a shutdown is asked for, the server waits that long
+;;; for its connections to finish, then closes the rest.  The backlog
+;;; reaches libuv's uv_listen as a C int, so it is at most 2147483647, the
+;;; largest a C int holds on every platform the project targets.  There is
+;;; no pipeline cap: the server answers one request at a time by design.
+;;; Durations are stored in milliseconds; sizes and buffers in bytes.
+;;; Timeout overrides are given in whole seconds; size and count overrides
+;;; in their stored unit.  The tick is the one duration given in
+;;; milliseconds, CHEZ_HTTP_TICK_MS: 250 ms has no whole-second spelling.
+;;; It is 1 to 1,000 ms: a bucket is a tick wide, and a tick over a second
+;;; would make a timeout, given in whole seconds, late by more than its own
+;;; unit.  Every number is written in ASCII digits alone, leading zeros
+;;; allowed: Chez's string->number also reads a sign, a radix or exactness
+;;; prefix, a fraction, and a complex number with no imaginary part, so
+;;; "#x1F90" would be port 8080.
 ;;;
-;;; One switch rides with them (decision 0005's amendment of 2026-09-25):
-;;; an HTTP/1.1 request with no Host is refused with 400 (RFC 9112 §3.2)
-;;; unless CHEZ_HTTP_REQUIRE_HOST is exactly "false".  And where the server
-;;; listens is read the same way (decision 0012): CHEZ_HTTP_HOST and
-;;; CHEZ_HTTP_PORT, by default 127.0.0.1 and 8080, loopback, so a server is
-;;; exposed only when asked.
+;;; One switch rides with them: an HTTP/1.1 request with no Host is refused
+;;; with 400 (RFC 9112 §3.2) unless CHEZ_HTTP_REQUIRE_HOST is exactly
+;;; "false".  And where the server listens is read the same way:
+;;; CHEZ_HTTP_HOST and CHEZ_HTTP_PORT, by default 127.0.0.1 and 8080,
+;;; loopback, so a server is exposed only when asked.
 (library (http-server limits)
   (export
     make-limits limits?
@@ -132,8 +126,8 @@
                            (if o (cdr o) ((record-accessor rtd k) base)))
                          (fields (cdr names) (+ k 1))))))))
 
-  ;; default-limits : Limits — decision 0005's nginx-style defaults, and
-  ;; decision 0011's linger.
+  ;; default-limits : Limits — the nginx-style defaults above, and a 30 s
+  ;; linger.
   (define default-limits
     (make-limits 60000 75000 60000 30000 60000 250 16384 100 8192 8192 8192 #f 16384 10000 511 #t
                  262144 65536 10000))
@@ -266,7 +260,7 @@
   ;; limits-deadline-ms : Limits Symbol -> Nat
   ;; How long a deadline of `kind` lasts: each kind the connection core arms
   ;; (conn-deadline-kinds) to its own timeout.  A shell arms the wheel at its
-  ;; now plus this (M5.3).  Any other kind is an assertion violation.
+  ;; now plus this.  Any other kind is an assertion violation.
   (define (limits-deadline-ms limits kind)
     (case kind
       ((idle)   (limits-idle-timeout-ms limits))
@@ -277,12 +271,11 @@
       (else (assertion-violation 'limits-deadline-ms "not a deadline kind" kind))))
 
   ;; address-from-environment : (String -> (U String #f)) -> (values String Nat)
-  ;; Where the server listens (decision 0012): CHEZ_HTTP_HOST, and
-  ;; CHEZ_HTTP_PORT, a TCP port, 0 to 65535, where 0 asks the kernel for one;
-  ;; 127.0.0.1 and 8080 when they are absent or empty.  A malformed port
-  ;; faults with who/name, as a malformed limit does.  The host is not
-  ;; judged here: the listener's bind judges it, as the IPv4 or IPv6 literal
-  ;; it must be.
+  ;; Where the server listens: CHEZ_HTTP_HOST, and CHEZ_HTTP_PORT, a TCP port,
+  ;; 0 to 65535, where 0 asks the kernel for one; 127.0.0.1 and 8080 when they
+  ;; are absent or empty.  A malformed port faults with who/name, as a
+  ;; malformed limit does.  The host is not judged here: the listener's bind
+  ;; judges it, as the IPv4 or IPv6 literal it must be.
   (define (address-from-environment lookup)
     (let ((host (lookup "CHEZ_HTTP_HOST")))
       (values (if (blank? host) "127.0.0.1" host)

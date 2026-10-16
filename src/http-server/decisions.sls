@@ -1,7 +1,6 @@
 #!r6rs
-;;; (http-server decisions) — every status the server originates, in one place
-;;; (design §6.5), and the parser results the core must tell apart.  Pure
-;;; tables.
+;;; (http-server decisions) — every status the server originates, in one place,
+;;; and the parser results the core must tell apart.  Pure tables.
 ;;;
 ;;; Two maps, because a status has two kinds of origin:
 ;;;
@@ -10,23 +9,22 @@
 ;;;     HTTP/2 preface it has nothing to hand to.  The reason is the one the
 ;;;     connection closes with after the response (`close-after`).
 ;;;   - the parser's error codes.  chez-httparse returns an error as data, and
-;;;     lifting its codes into statuses is ours (design §6.2).
+;;;     lifting its codes into statuses is ours.
 ;;;
 ;;; A limit tripped or a target refused inside a parser callback makes the
 ;;; parser fail with the core's own code, and its status comes from the first
-;;; map, never from the second (design §6.3): the parser was told to stop, not
-;;; asked what went wrong.  Every originated status closes the connection
-;;; (design §6.5).
+;;; map, never from the second: the parser was told to stop, not asked what
+;;; went wrong.  Every originated status closes the connection.
 ;;;
-;;; One decision tells a parser result apart before either map is asked
-;;; (M2.5): whether it hands the stream off, which the parser reports on two
+;;; One decision tells a parser result apart before either map is asked:
+;;; whether it hands the stream off, which the parser reports on two
 ;;; channels.  Whether a request upgrades is not here: it is the parser's own
-;;; answer, its `upgrade` field (chez-httparse v0.4.1, #47), which the core
-;;; reads at on-headers-complete.
+;;; answer, its `upgrade` field (chez-httparse v0.4.1 or later), which the
+;;; core reads at on-headers-complete.
 ;;;
-;;; The framing decision is here too (M3.2; design §3.1): how a response's
-;;; body goes on the wire, for the request it answers, and the Connection
-;;; field it carries.  (http-server serializer) writes what they decide.
+;;; The framing decision is here too: how a response's body goes on the
+;;; wire, for the request it answers, and the Connection field it carries.
+;;; (http-server serializer) writes what they decide.
 ;;;
 ;;; Keep-alive and needs-eof are not here either: `should-keep-alive?` and
 ;;; `message-needs-eof?` come from (httparse decisions), which mirrors llhttp.
@@ -38,7 +36,7 @@
 
   ;; The core's own reasons and their statuses, by status.
   (define reason-statuses
-    '((target-redirect . 301)                ; bracket params and pipes (0009)
+    '((target-redirect . 301)                ; a browser's unencoded bracket params and pipes
       (invalid-target . 400)                 ; not a form RFC 9112 §3.2 allows
       (invalid-host . 400)                   ; RFC 9112 §3.2's Host rules
       (faulty-framing . 400)                 ; Transfer-Encoding below HTTP/1.1 (RFC 9112 §6.1)
@@ -46,17 +44,17 @@
       (request-line-spaces . 400)            ; past a space between request-line parts (§3)
       (chunk-size-too-long . 400)            ; a chunk size past 16 hex digits (§7.1)
       (header-timeout . 408)
-      (body-timeout . 408)                   ; a body stalled past its deadline (M5.2)
-      (body-too-large . 413)                 ; a body past a cap (0013 item 5)
-      (chunk-extensions-too-large . 413)     ; a body's chunk extensions past 16 KiB (M6.4)
+      (body-timeout . 408)                   ; a body stalled past its deadline
+      (body-too-large . 413)                 ; a body past a cap, the server's or read-whole-body's
+      (chunk-extensions-too-large . 413)     ; a body's chunk extensions past 16 KiB
       (target-too-large . 414)
       (headers-too-large . 431) (too-many-headers . 431)
       (header-field-too-large . 431) (header-value-too-large . 431)
       (handler-failed . 500)
-      (invalid-response . 500)               ; one the serializer cannot write (0010 item 2)
+      (invalid-response . 500)               ; one the serializer cannot write (response-fault)
       (unsupported-transfer-coding . 501)    ; a coding before a final chunked (RFC 9112 §6.1)
-      (version-not-supported . 505)          ; not 1.x: HTTP/0.9, 2.0, 3.0 (RFC 9110 §15.6.6; M8.3)
-      (http2-preface . 505)))                ; nothing to hand HTTP/2 to (0006 item 2)
+      (version-not-supported . 505)          ; not 1.x: HTTP/0.9, 2.0, 3.0 (RFC 9110 §15.6.6)
+      (http2-preface . 505)))                ; nothing to hand HTTP/2 to: h2c is not served
 
   ;; reason-status : Symbol -> Nat
   ;; The status of a response the core originates, by the reason the
@@ -70,11 +68,11 @@
 
   ;; originated-reasons : (Listof Symbol)
   ;; Every reason reason-status answers, by status: each one a response the
-  ;; core originates, then closes after (M3.4 drives each end to end).
+  ;; core originates, then closes after.
   (define originated-reasons (map car reason-statuses))
 
   ;; The codes chez-httparse's error channel carries: one per llhttp error
-  ;; number (its decision 0013), less paused-upgrade, which arrives as a pause
+  ;; number, less paused-upgrade, which arrives as a pause
   ;; reason instead, plus unexpected-message-type, which has no llhttp number.
   ;; paused-h2-upgrade is one of them, but it is a hand-off, not an error.
   (define parser-error-codes
@@ -86,16 +84,16 @@
 
   ;; parser-error-status : Symbol -> Nat
   ;;   code — parser-error-code
-  ;; The status for a parser error (design §6.3): 400, whatever the code.
-  ;; `invalid-transfer-encoding` is one, at each of its four nodes (decided on
-  ;; the owner's word, 2026-09-26).  No chunked, a coding after chunked and an
-  ;; empty value leave the body's length undetermined, which RFC 9112 §6.3
-  ;; answers 400; a Content-Length before the Transfer-Encoding is a request
-  ;; §6.1 lets a server refuse, then close.  The 501 for a coding the server does
-  ;; not implement is the core's own reason, unsupported-transfer-coding.  The
-  ;; HTTP/2 preface's `paused-h2-upgrade` is a hand-off, answered by the core's
-  ;; own reason (see result-hands-off-stream?), so it is an assertion violation
-  ;; here, like a code outside the parser's vocabulary.
+  ;; The status for a parser error: 400, whatever the code.
+  ;; `invalid-transfer-encoding` is one, at each of its four nodes.  No
+  ;; chunked, a coding after chunked and an empty value leave the body's
+  ;; length undetermined, which RFC 9112 §6.3 answers 400; a Content-Length
+  ;; before the Transfer-Encoding is a request §6.1 lets a server refuse,
+  ;; then close.  The 501 for a coding the server does not implement is the
+  ;; core's own reason, unsupported-transfer-coding.  The HTTP/2 preface's
+  ;; `paused-h2-upgrade` is a hand-off, answered by the core's own reason
+  ;; (see result-hands-off-stream?), so it is an assertion violation here,
+  ;; like a code outside the parser's vocabulary.
   (define (parser-error-status code)
     (unless (memq code parser-error-codes)
       (assertion-violation 'parser-error-status "not a chez-httparse error code" code))
@@ -126,7 +124,7 @@
   ;;     refusal before the head was complete), and its version
   ;;   status — the response's
   ;;   length — its body's: a count, #f for no body, or 'unknown for a body
-  ;;     whose length is not known before it is written (M6's stream)
+  ;;     whose length is not known before it is written (a producer)
   ;; How the response's body goes on the wire: one of (http-server
   ;; serializer)'s framing modes.  The rules, first match wins:
   ;;   - a 1xx, a 204, a 304 and a 2xx to CONNECT: no-body.  A client ends
@@ -134,12 +132,12 @@
   ;;     1 and 2).  A 1xx, a 204 and a 2xx to CONNECT must carry neither
   ;;     Content-Length nor Transfer-Encoding (RFC 9110 §8.6, §9.3.6; RFC 9112
   ;;     §6.1).  A 304 may carry the 200's Content-Length, but only a HEAD's
-  ;;     answer announces one (decision 0010).  A body the handler gave one
-  ;;     of these is not written.
+  ;;     answer announces one.  A body the handler gave one of these is not
+  ;;     written.
   ;;   - a HEAD's answer: content-length-only when the handler gave the body
   ;;     a GET would get, no-body when it gave none or its length is unknown.
   ;;     A HEAD's Content-Length must be the GET's (RFC 9110 §8.6), so it is
-  ;;     written only when known (decision 0010 item 6).
+  ;;     written only when known.
   ;;   - a known length, a body or none: content-length (RFC 9110 §8.6).
   ;;   - an unknown length: chunked to HTTP/1.1, close-delimited to any other
   ;;     version, which must not be sent Transfer-Encoding (RFC 9112 §6.1).
@@ -162,12 +160,12 @@
   ;; response-connection : Boolean Nat Nat -> (U 'close 'keep-alive #f)
   ;;   closes? — the connection closes after this response
   ;;   http-major http-minor — the request's version
-  ;; The Connection field the server writes (decision 0010 items 3 and 6):
-  ;; `close` on the last response (RFC 9112 §9.6); `keep-alive` on one to any
-  ;; version but HTTP/1.1 that keeps the connection, which only a request
-  ;; that asked to keep it does (should-keep-alive?), and an HTTP/1.0 client
-  ;; persists only when told so (RFC 9112 Appendix C.2.2); and none to
-  ;; HTTP/1.1, which persists by default (RFC 9112 §9.3).
+  ;; The Connection field the server writes: `close` on the last response
+  ;; (RFC 9112 §9.6); `keep-alive` on one to any version but HTTP/1.1 that
+  ;; keeps the connection, which only a request that asked to keep it does
+  ;; (should-keep-alive?), and an HTTP/1.0 client persists only when told so
+  ;; (RFC 9112 Appendix C.2.2); and none to HTTP/1.1, which persists by
+  ;; default (RFC 9112 §9.3).
   (define (response-connection closes? http-major http-minor)
     (cond (closes? 'close)
           ((http/1.1? http-major http-minor) #f)
@@ -176,8 +174,7 @@
   ;; http/1.1? : Nat Nat -> Boolean
   ;; llhttp's version gate, `major > 0 && minor > 0`, which
   ;; should-keep-alive? applies too.  Of the versions the core lets on, 1.0
-  ;; to 1.9 (the parser reads any digit pair; decision 0006's amendment of
-  ;; 2026-10-04, later), 1.1 to 1.9 pass, which is RFC 9112 §6.1's
-  ;; "HTTP/1.1 (or later minor revisions)".
+  ;; to 1.9 (the parser reads any digit pair), 1.1 to 1.9 pass, which is RFC
+  ;; 9112 §6.1's "HTTP/1.1 (or later minor revisions)".
   (define (http/1.1? http-major http-minor)
     (and (> http-major 0) (> http-minor 0))))

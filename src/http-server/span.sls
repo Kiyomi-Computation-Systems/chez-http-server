@@ -5,9 +5,9 @@
 ;;; The parser hands the core bounds into the delivery the shell read, and
 ;;; copies nothing (chez-httparse, docs/api.org).  A delivery is a fresh Scheme
 ;;; bytevector that chez-libuv copied out of its read buffer, so holding a span
-;;; of it is safe for as long as the span is held (design §7.1).  The request's
-;;; target and header names and values are spans, which is how the head costs
-;;; the same whatever the length of what it keeps (0002's second amendment).
+;;; of it is safe for as long as the span is held.  The request's target and
+;;; header names and values are spans, which is how the head costs the same
+;;; whatever the length of what it keeps.
 ;;; A span pins its whole delivery; copy it with `span->bytevector` to keep
 ;;; the bytes without the delivery.  PURE: imports only (rnrs).
 (library (http-server span)

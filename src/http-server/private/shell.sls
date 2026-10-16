@@ -1,26 +1,25 @@
 #!r6rs
-;;; (http-server private shell) — the direct libuv shell (design §5.2; M4.2).
+;;; (http-server private shell) — the direct libuv shell.
 ;;;
-;;; The core is pure (decision 0002); this is where its actions happen.  A
-;;; SHELL holds what every connection on one loop shares: the handler, the
-;;; limits, the clock and the Date line made from it, the log, and the
-;;; connection table.  A CONNECTION is one accepted TCP handle, the core's
-;;; state in the adapter's context, a parser on the adapter's one binding
-;;; list, and the closures chez-libuv calls, each of which turns what
-;;; happened into one of the core's events and dispatches it (decision 0003
-;;; item 1).  None runs application code but the handler's call, its
-;;; reader's and its producer's, and none captures a continuation.
+;;; The core is pure; this is where its actions happen.  A SHELL holds what
+;;; every connection on one loop shares: the handler, the limits, the clock
+;;; and the Date line made from it, the log, and the connection table.  A
+;;; CONNECTION is one accepted TCP handle, the core's state in the adapter's
+;;; context, a parser on the adapter's one binding list, and the closures
+;;; chez-libuv calls, each of which turns what happened into one of the core's
+;;; events and dispatches it.  None runs application code but the handler's
+;;; call, its reader's and its producer's, and none captures a continuation.
 ;;;
-;;; THE MESSAGE LOOP is the fake shell's (design §4.5).  Actions run after the
-;;; outermost dispatch, in order, from one queue; a dispatch made while the
-;;; queue drains, or while the parser feeds, only queues.  Once the queue is
-;;; empty, the drain sends the writes held (WRITE BATCHING, below), and runs
-;;; on while that queues more.  `depth` counts the drain and a feed inside
-;;; it.  An action run anywhere but the outermost drain is a VIOLATION,
-;;; recorded (design §6.4, the second hazard):
-;;; byte-machine poisons a parser whose callback escapes, and chez-libuv
-;;; defers the raise, so the one action answered inside a parser callback is
-;;; `reply-parser`, which the adapter answers without reaching the queue.
+;;; THE MESSAGE LOOP is the fake shell's (tests/fake-shell.sls).  Actions run
+;;; after the outermost dispatch, in order, from one queue; a dispatch made
+;;; while the queue drains, or while the parser feeds, only queues.  Once the
+;;; queue is empty, the drain sends the writes held (WRITE BATCHING, below),
+;;; and runs on while that queues more.  `depth` counts the drain and a feed
+;;; inside it.  An action run anywhere but the outermost drain is a VIOLATION,
+;;; recorded: byte-machine poisons a parser whose callback escapes, and
+;;; chez-libuv defers the raise, so the one action answered inside a parser
+;;; callback is `reply-parser`, which the adapter answers without reaching the
+;;; queue.
 ;;;
 ;;; THE ACTIONS, performed:
 ;;;   feed-parser     parser-feed!, counted in the depth and in the phase
@@ -28,38 +27,37 @@
 ;;;                   as `parser-result`
 ;;;   resume-parser   parser-resume!
 ;;;   call-handler    the handler called after libuv's turn, from the
-;;;                   scheduler's drain (decision 0014): its answer, a
-;;;                   response or a reader, as `handler-responded`, or, if
-;;;                   the handler raises, `handler-failed`, logged; or, if
-;;;                   it answers `awaiting`, its thunk run on a coroutine
-;;;                   and the thunk's answer as `handler-responded`, on
-;;;                   credit (A HANDLER THAT WAITS, below)
+;;;                   scheduler's drain: its answer, a response or a reader,
+;;;                   as `handler-responded`, or, if the handler raises,
+;;;                   `handler-failed`, logged; or, if it answers `awaiting`,
+;;;                   its thunk run on a coroutine and the thunk's answer as
+;;;                   `handler-responded`, on credit (A HANDLER THAT WAITS,
+;;;                   below)
 ;;;   deliver-body    the piece to the reader the core is handing the body to
-;;;                   (conn-body-reader; decision 0013), or, if it raises,
-;;;                   `handler-failed`, logged; with no reader, nothing
+;;;                   (conn-body-reader), or, if it raises, `handler-failed`,
+;;;                   logged; with no reader, nothing
 ;;;   deliver-body-end  the reader's end: its response as `handler-responded`,
 ;;;                   or, if it raises, `handler-failed`, logged
 ;;;   notify-producer the producer a streamed response is written from
-;;;                   (conn-producer; decision 0013 item 8), called for its
-;;;                   next piece, the drain's first call once the writes held
-;;;                   have gone out (WRITE BATCHING): its answer as
+;;;                   (conn-producer), called for its next piece, the
+;;;                   drain's first call once the writes held have gone out
+;;;                   (WRITE BATCHING): its answer as
 ;;;                   `handler-body-chunk` or `handler-body-end`
 ;;;                   (producer-event), or, if it raises or answers neither,
 ;;;                   `handler-failed`, logged; with no producer, nothing
-;;;   write           the segments, the Date slot filled from the clock
-;;;                   (decision 0010): held for the turn's one write if under
-;;;                   4,096 bytes (WRITE BATCHING, below), or else one
-;;;                   uv-write*! of their own; the completion reports
-;;;                   `write-completed` with the action's byte count, which
-;;;                   is all it keeps: a held write's bytes were copied as it
-;;;                   was held, and chez-libuv copies the segments at the call
-;;;                   (design §7.3), a span of a bytevector, `(bv start end)`,
-;;;                   among them
+;;;   write           the segments, the Date slot filled from the clock:
+;;;                   held for the turn's one write if under 4,096 bytes
+;;;                   (WRITE BATCHING, below), or else one uv-write*! of
+;;;                   their own; the completion reports `write-completed`
+;;;                   with the action's byte count, which is all it keeps: a
+;;;                   held write's bytes were copied as it was held, and
+;;;                   chez-libuv copies the segments at the call, a span of
+;;;                   a bytevector, `(bv start end)`, among them
 ;;;   read-stop/-start  uv-read-stop! and uv-read-start!, when reading
 ;;;                   changes; the first start, at adoption, fixes the read
-;;;                   buffer at the limits' read-buffer-size (design §7.2)
-;;;   shutdown        uv-shutdown!, the write side (decision 0011), after the
-;;;                   writes held; its completion reports `shutdown-completed`
+;;;                   buffer at the limits' read-buffer-size
+;;;   shutdown        uv-shutdown!, the write side, after the writes held;
+;;;                   its completion reports `shutdown-completed`
 ;;;   close           connection-close!, through handle-close! (below), after
 ;;;                   the writes held; the close's callback takes the
 ;;;                   connection out of the table and reports `closed`
@@ -70,102 +68,97 @@
 ;;;   hand-off        the switch's take-over called with the stream, as a
 ;;;                   transport, and a copy of the bytes handed over (THE
 ;;;                   DOOR, below)
-;;; A shell made on credit (M6.2) answers with each handler's answer and `credit`, and a
-;;; streaming reader's credit reaches the core through
-;;; connection-body-credit!, which no action asks for.  v1's server never
-;;; makes one: the checks do, standing in for M7's coroutine shell, which
-;;; hands a reader its pieces on credit.
+;;; A shell made on credit answers with each handler's answer and `credit`,
+;;; and a streaming reader's credit reaches the core through
+;;; connection-body-credit!, which no action asks for.  The server never makes
+;;; one: the checks do.  A handler that waits is answered on credit on any
+;;; shell, its streaming reader credited as it takes each piece (A HANDLER
+;;; THAT WAITS, below).
 ;;;
-;;; DEADLINES (decision 0005 and its amendments of 2026-09-27; M5.3).  The
-;;; shell keeps the deadlines of its connections in one wheel, (http-server
-;;; wheel), in which each connection keeps one entry, made as it is adopted.
-;;; A deadline is armed at the loop's now, `uv_now`, which never steps, plus
-;;; the kind's limit (limits-deadline-ms), never by the wall clock the Date
-;;; is made from.  The first is armed as the connection is adopted, its idle
-;;; one: the core starts it in idle with that deadline recorded, and asks
-;;; for the next ones.  libuv reads the loop's clock once a turn, and what
-;;; runs in the turn holds the loop, a handler above all, so the shell
-;;; brings the clock up to date (uv-update-time!, chez-libuv #28) as it
-;;; adopts a connection, and before each arm and each write, whose Date the
-;;; loop's time dates: in run!, ahead of the action's trace.  Like every
-;;; chez-libuv verb the shell calls, uv-update-time! is refused off the
-;;; loop's thread (`&uv-wrong-thread`), and the shell runs only on it
-;;; (decision 0003).  ONE TIMER TICKS THEM ALL, every tick-ms: made when a
-;;; deadline is first armed, stopped by the first firing that finds the
-;;; wheel empty while the server does not drain (THE DRAIN, below), so an
-;;; idle server sleeps (0005), started again by the next arm or drain, and
-;;; closed once the shell has stopped listening and no connection is left.
-;;; Each time it fires, the wheel is advanced to the loop's now, each
-;;; connection whose deadline has passed is ticked, `(tick now)`, and the
-;;; server is told the time, as its events say (design §4.6).  A
-;;; connection is ticked the first time the timer fires at or after its
-;;; deadline: never before it, and within tick-ms of it when the loop runs
-;;; on time.  A connection that leaves with no step of the core, closed by
-;;; handle-close! or dropped by the reconciliation, is taken out of the
-;;; wheel there, and one closing is armed no more.
+;;; DEADLINES.  The shell keeps the deadlines of its connections in one wheel,
+;;; (http-server wheel), in which each connection keeps one entry, made as it
+;;; is adopted.  A deadline is armed at the loop's now, `uv_now`, which never
+;;; steps, plus the kind's limit (limits-deadline-ms), never by the wall clock
+;;; the Date is made from.  The first is armed as the connection is adopted,
+;;; its idle one: the core starts it in idle with that deadline recorded, and
+;;; asks for the next ones.  libuv reads the loop's clock once a turn, and
+;;; what runs in the turn holds the loop, a handler above all, so the shell
+;;; brings the clock up to date (uv-update-time!) as it adopts a connection,
+;;; and before each arm and each write, whose Date the loop's time dates: in
+;;; run!, ahead of the action's trace.  Like every chez-libuv verb the shell
+;;; calls, uv-update-time! is refused off the loop's thread
+;;; (`&uv-wrong-thread`), and the shell runs only on it.  ONE TIMER TICKS THEM
+;;; ALL, every tick-ms: made when a deadline is first armed, stopped by the
+;;; first firing that finds the wheel empty while the server does not drain
+;;; (THE DRAIN, below), so an idle server sleeps, started again by the next
+;;; arm or drain, and closed once the shell has stopped listening and no
+;;; connection is left.  Each time it fires, the wheel is advanced to the
+;;; loop's now, each connection whose deadline has passed is ticked, `(tick
+;;; now)`, and the server is told the time, as its events say.  A connection
+;;; is ticked the first time the timer fires at or after its deadline: never
+;;; before it, and within tick-ms of it when the loop runs on time.  A
+;;; connection that leaves with no step of the core, closed by handle-close!
+;;; or dropped by the reconciliation, is taken out of the wheel there, and one
+;;; closing is armed no more.
 ;;;
-;;; THE LISTENER is the server's (design §4.6; M4.3): `server-step` decides,
-;;; and the shell performs.  Each connection the listener takes is offered to
-;;; the server with the count of connections open, the table's size, and is
-;;; served, or refused and closed at once: none is left waiting on the
-;;; listener, and none left open with no one to close it.  A shutdown, or a
-;;; listener that fails, closes the listener, and a shell whose server has
-;;; stopped listening never listens again.
+;;; THE LISTENER is the server's: `server-step` decides, and the shell
+;;; performs.  Each connection the listener takes is offered to the server
+;;; with the count of connections open, the table's size, and is served, or
+;;; refused and closed at once: none is left waiting on the listener, and none
+;;; left open with no one to close it.  A shutdown, or a listener that fails,
+;;; closes the listener, and a shell whose server has stopped listening never
+;;; listens again.
 ;;;
-;;; THE DRAIN (M8.1; design §4.6).  A shutdown, or a listener that fails, is
-;;; told to the server with the loop's time, brought up to date, and the
-;;; connections open; so is each connection's close, with those left, and
-;;; each one the reconciliation drops (THE RUN LOOP, below).  The server
-;;; asks for the connections to be told to finish, `finish-all`, each
-;;; dispatched `shutdown-requested`; and at its deadline for each still open
-;;; to be closed at once, `force-close-all`, each through handle-close!.
-;;; While the server drains, the timer runs whatever the wheel holds, so the
-;;; server is told the time even when no connection has a deadline armed: one
-;;; whose handler waits arms none (design §4.3).  A shell asked to watch the
-;;; process's signals (shell-watch-signals!) asks the server to shut down at
-;;; SIGTERM or SIGINT (decided 2026-10-03), through a signal handle each.
+;;; THE DRAIN.  A shutdown, or a listener that fails, is told to the server
+;;; with the loop's time, brought up to date, and the connections open; so is
+;;; each connection's close, with those left, and each one the reconciliation
+;;; drops (THE RUN LOOP, below).  The server asks for the connections to be
+;;; told to finish, `finish-all`, each dispatched `shutdown-requested`; and at
+;;; its deadline for each still open to be closed at once, `force-close-all`,
+;;; each through handle-close!.  While the server drains, the timer runs
+;;; whatever the wheel holds, so the server is told the time even when no
+;;; connection has a deadline armed: one whose handler waits arms none.  A
+;;; shell asked to watch the process's signals (shell-watch-signals!) asks the
+;;; server to shut down at SIGTERM or SIGINT, through a signal handle each.
 ;;;
-;;; THE DOOR (M8.2; decision 0016).  Once a switch's 101 is written the core
-;;; hands the stream over, and the shell calls the switch's take-over with a
-;;; transport, (http-server transport)'s record of verbs, over the
-;;; connection, which stays in the table: it counts against max-connections,
-;;; and its close is handle-close!'s.  The verbs:
-;;; a write is one uv-write*! of its own, copied at the call, never held for
-;;; the turn's write, its callback told #f or the errno once it completes;
-;;; one asked for once the close has been, or the handle's, is not written,
-;;; and its callback is told ECANCELED after the turn, or, the server
-;;; stopping first, as `serve` returns (shell-call-deferred!).  Reading starts
-;;; libuv's reads again with the taker's callbacks, its end reported once: a
-;;; stream that has ended starts none, and the end the core read as the 101
-;;; was written, handed over with the stream, is told to the taker's
-;;; read-start after the turn (decision 0016's amendment of 2026-10-12).  The
-;;; close is staged, as a connection's after its response is (decision 0026,
-;;; after 0011): the taker is read nothing more, but the stream reads on,
-;;; dropping each read; once no write is outstanding the write side is shut,
-;;; and the stream lingers, the linger deadline armed in the taker's
-;;; deadline's place, until the client ends, a read fails or that deadline
-;;; passes.  A client that has ended is closed once the writes are out, with
-;;; no half-close.  From the close on, the taker's read-stop is ignored, and
-;;; once the stream lingers its deadline too.  Until then each write the
-;;; close waits for has write-timeout-ms, as the server's own writes have,
-;;; from the close and again from each write's end, and the stream is
-;;; aborted past it (decision 0027).  The abort closes the handle at
-;;; once, at any stage, as a taker's raise does, libuv cancelling each write
-;;; (decision 0024).  The
-;;; deadline is the connection's one entry in the wheel, armed at the loop's
-;;; time brought up to date, as a connection's are, and the timer, as it
-;;; fires, calls it for a connection taken where it ticks any other; while
-;;; the close's write bound is armed too, the entry is armed at the earlier
-;;; of the two, and the later is armed again once the earlier has passed.  The
+;;; THE DOOR.  Once a switch's 101 is written the core hands the stream over,
+;;; and the shell calls the switch's take-over with a transport, (http-server
+;;; transport)'s record of verbs, over the connection, which stays in the
+;;; table: it counts against max-connections, and its close is
+;;; handle-close!'s.  The verbs: a write is one uv-write*! of its own, copied
+;;; at the call, never held for the turn's write, its callback told #f or the
+;;; errno once it completes; one asked for once the close has been, or the
+;;; handle's, is not written, and its callback is told ECANCELED after the
+;;; turn, or, the server stopping first, as `serve` returns
+;;; (shell-call-deferred!).  Reading starts libuv's reads again with the
+;;; taker's callbacks, its end reported once: a stream that has ended starts
+;;; none, and the end the core read as the 101 was written, handed over with
+;;; the stream, is told to the taker's read-start after the turn.  The close
+;;; is staged, as a connection's after its response is: the taker is read
+;;; nothing more, but the stream reads on, dropping each read; once no write
+;;; is outstanding the write side is shut, and the stream lingers, the linger
+;;; deadline armed in the taker's deadline's place, until the client ends, a
+;;; read fails or that deadline passes.  A client that has ended is closed
+;;; once the writes are out, with no half-close.  From the close on, the
+;;; taker's read-stop is ignored, and once the stream lingers its deadline
+;;; too.  Until then each write the close waits for has write-timeout-ms, as
+;;; the server's own writes have, from the close and again from each write's
+;;; end, and the stream is aborted past it.  The abort closes the handle at
+;;; once, at any stage, as a taker's raise does, libuv cancelling each write.
+;;; The deadline is the connection's one entry in the wheel, armed at the
+;;; loop's time brought up to date, as a connection's are, and the timer, as
+;;; it fires, calls it for a connection taken where it ticks any other; while
+;;; the close's write bound is armed too, the entry is armed at the earlier of
+;;; the two, and the later is armed again once the earlier has passed.  The
 ;;; drain, `finish-all`, runs a taker's drain call, once, where it tells any
 ;;; other connection to finish, and runs at once one registered while the
 ;;; server drains; the drain waits for the stream's close, and its deadline
 ;;; closes it, as any connection.  Its close's callback, whoever closed it,
 ;;; tells the core, `closed`, then calls the taker's close call, and one
-;;; registered after it is run at once.  The
-;;; taker's code runs in place, in these callbacks, as a reader's does, and
-;;; each call into it is guarded, what it returns dropped: one that raises is
-;;; logged `taker-failed`, and its stream closed.
+;;; registered after it is run at once.  The taker's code runs in place, in
+;;; these callbacks, as a reader's does, and each call into it is guarded,
+;;; what it returns dropped: one that raises is logged `taker-failed`, and its
+;;; stream closed.
 ;;;
 ;;; ONE PROCEDURE CLOSES EVERY HANDLE: handle-close!, the one uv-close! call
 ;;; (tests/test-close-ownership.sps reads the source to hold it), for a
@@ -175,31 +168,29 @@
 ;;; one, so a connection's close takes it out of the table and reports
 ;;; `closed` whoever asked for it.
 ;;;
-;;; WRITE BATCHING (decided on the owner's word, by form, 2026-09-29; design
-;;; §7.3).  A write under 4,096 bytes is held: its bytes are copied at once,
-;;; behind those held before it, into the connection's chunks, each new one
-;;; twice the last's length or the write's, so none is copied again.  What
-;;; is held goes out as one write once the drain has emptied the queue, and
-;;; first when the core asks for a shutdown or a close, or writes 4,096
+;;; WRITE BATCHING.  A write under 4,096 bytes is held: its bytes are copied
+;;; at once, behind those held before it, into the connection's chunks, each
+;;; new one twice the last's length or the write's, so none is copied again.
+;;; What is held goes out as one write once the drain has emptied the queue,
+;;; and first when the core asks for a shutdown or a close, or writes 4,096
 ;;; bytes or more, so the bytes keep the order the core wrote them in.  So a
-;;; turn's small pieces of a streamed response, up to 64 (M6.3's second
-;;; review), are one write request of libuv's, where each was one, with its
-;;; `uv_write_t` and its completion.  What is held goes out too before the
-;;; drain first calls a producer, so a stream's head never waits for its
-;;; pieces: a producer slow to make them delays them, a turn at a time, but
-;;; not the head.  The copy is made as a write is held, not as the turn's
-;;; write is issued: a producer may hand out one bytevector again, refilled
-;;; (handlers.org).  A larger write is copied by chez-libuv at the call, as
-;;; every write was before.  The completion reports `write-completed` for
-;;; each write it carried, with its byte count, in the order written.
+;;; turn's small pieces of a streamed response, up to the 64 writes the core
+;;; lets a stream have outstanding, are one write request of libuv's, where
+;;; each would be one, with its `uv_write_t` and its completion.  What is held
+;;; goes out too before the drain first calls a producer, so a stream's head
+;;; never waits for its pieces: a producer slow to make them delays them, a
+;;; turn at a time, but not the head.  The copy is made as a write is held,
+;;; not as the turn's write is issued: a producer may hand out one bytevector
+;;; again, refilled (docs/handlers.org).  A larger write is copied by
+;;; chez-libuv at the call.  The completion reports `write-completed` for each
+;;; write it carried, with its byte count, in the order written.
 ;;;
-;;; A TRANSPORT FAILURE IS A `read-error` (design §6.3): a read's error, and a
-;;; write's or a shutdown's, whether chez-libuv raises it at the call or
-;;; reports it at the completion.  A failed write is settled too, as
-;;; `write-completed` with each byte count it carried, once the one
-;;; `read-error` has closed the connection; the core settles a write a close
-;;; cut short in `closing` (M3.3).  A write the close itself cancels is
-;;; reported the same way.
+;;; A TRANSPORT FAILURE IS A `read-error`: a read's error, and a write's or a
+;;; shutdown's, whether chez-libuv raises it at the call or reports it at the
+;;; completion.  A failed write is settled too, as `write-completed` with each
+;;; byte count it carried, once the one `read-error` has closed the
+;;; connection; the core settles a write a close cut short in `closing`.  A
+;;; write the close itself cancels is reported the same way.
 ;;;
 ;;; A BUG CLOSES ITS CONNECTION.  Whatever raises out of a connection's
 ;;; outermost dispatch drops the actions still queued, and the writes held,
@@ -208,62 +199,59 @@
 ;;; chez-libuv and the run loop.  An adoption that fails is closed the same
 ;;; way.
 ;;;
-;;; THE DATE is made once a second (decision 0010).  The shell's clock is read
-;;; when a second of the loop's own time has passed, libuv's milliseconds,
-;;; brought up to date before the write (DEADLINES, above); between readings
-;;; the second is the last reading plus the loop's time since.  So a
-;;; response reads the shell's clock once a second at most.
+;;; THE DATE is made once a second.  The shell's clock is read when a second
+;;; of the loop's own time has passed, libuv's milliseconds, brought up to
+;;; date before the write (DEADLINES, above); between readings the second is
+;;; the last reading plus the loop's time since.  So a response reads the
+;;; shell's clock once a second at most.
 ;;;
-;;; THE SCHEDULER (decisions 0003 and 0014; design §5.2; M7.1).  Each loop
-;;; has one, (http-server private scheduler)'s, made by the first shell on
-;;; it and shared by every shell on it: its turn is its drain and then one
-;;; uv-run of the loop, the poll.  A connection's handler is called from
-;;; that drain, after libuv's turn: a turn's requests are all read before
-;;; any is answered, and no handler runs inside a libuv callback.  A run
-;;; loop turns it, `shell-turn!`, which guards the turn as the run loop
+;;; THE SCHEDULER.  Each loop has one, (http-server private scheduler)'s, made
+;;; by the first shell on it and shared by every shell on it: its turn is its
+;;; drain and then one uv-run of the loop, the poll.  A connection's handler
+;;; is called from that drain, after libuv's turn: a turn's requests are all
+;;; read before any is answered, and no handler runs inside a libuv callback.
+;;; A run loop turns it, `shell-turn!`, which guards the turn as the run loop
 ;;; guards a run (below), taking whatever the drain raises, where no
 ;;; chez-libuv catches it, as a callback's raise; `loop-turn!` turns it with
-;;; no guard.  A handler whose connection has closed before the drain
-;;; reaches its call is not called.
+;;; no guard.  A handler whose connection has closed before the drain reaches
+;;; its call is not called.
 ;;;
-;;; A HANDLER THAT WAITS (decision 0014; M7.1) answers `(awaiting thunk)`,
-;;; (http-server awaiting)'s.  The thunk runs on a coroutine of its own, so
-;;; it may wait, and what it returns is the answer, dispatched on credit,
-;;; once it has ended, from the drain: a response or a reader, or awaiting
-;;; again, which waits again; a raise is `handler-failed`, logged.  Until
-;;; the next request's handler is called, the connection's calls into the
-;;; handler's code, its reader's pieces and end and its producer, are each
-;;; made on a coroutine too, one at a time, in order (call-waiting!), each
-;;; event its call brings dispatched from the drain once it has ended: a
-;;; streaming reader's piece is credited once the reader has taken it, so
-;;; reading waits while it does (M6.2).  Every other reader and producer is
-;;; called in place, as in v1.  Code on those coroutines waits with
-;;; (http-server private waits)'s verbs (decision 0015; M7.2): the loop's
-;;; scheduler keeps the loop's waits, made with the log of the first shell
-;;; on the loop, which records a late resume as `late-resume` (R4), and
-;;; given the loop's clock and a timer of their own for the sleeps and
-;;; deadlines, one a loop, closed with the tick timer by a shell that serves
-;;; no more (loop-clock!), and the loop's resolver (loop-resolver!).  A wait
-;;; goes on when its connection closes (0015 item 4): what it then answers
-;;; is dropped, and the connection makes no more calls.  But a close the
-;;; client makes, its end or a reset, the core tells as `client-closed`
-;;; (decision 0020): the request's notice, given to each coroutine its code
+;;; A HANDLER THAT WAITS answers `(awaiting thunk)`, (http-server awaiting)'s.
+;;; The thunk runs on a coroutine of its own, so it may wait, and what it
+;;; returns is the answer, dispatched on credit, once it has ended, from the
+;;; drain: a response or a reader, or awaiting again, which waits again; a
+;;; raise is `handler-failed`, logged.  Until the next request's handler is
+;;; called, the connection's calls into the handler's code, its reader's
+;;; pieces and end and its producer, are each made on a coroutine too, one at
+;;; a time, in order (call-waiting!), each event its call brings dispatched
+;;; from the drain once it has ended: a streaming reader's piece is credited
+;;; once the reader has taken it, so reading waits while it does.  Every other
+;;; reader and producer is called in place.  Code on those coroutines waits
+;;; with (http-server private waits)'s verbs: the loop's scheduler keeps the
+;;; loop's waits, made with the log of the first shell on the loop, which
+;;; records a late resume as `late-resume` (R4), and given the loop's clock
+;;; and a timer of their own for the sleeps and deadlines, one a loop, closed
+;;; with the tick timer by a shell that serves no more (loop-clock!), and the
+;;; loop's resolver (loop-resolver!).  A wait goes on when its connection
+;;; closes: what it then answers is dropped, and the connection makes no more
+;;; calls.  But a close the client makes, its end or a reset, the core tells
+;;; as `client-closed`: the request's notice, given to each coroutine its code
 ;;; runs on, is closed, so the wait its code is in, or else its next, raises
 ;;; `&client-closed`, once.  A raise of it that the code lets out is no
 ;;; failure: `handler-failed` is dispatched for the core, which answers
 ;;; nothing, and is not logged.
 ;;;
-;;; THE RUN LOOP (design §6.4, the first hazard; decision 0003 item 4).
-;;; chez-libuv catches whatever a callback raises, and raises it again from
-;;; uv-run composed with `&uv-callback-error`; a raise out of the drain, a
-;;; handler call's dispatch, is taken as one.  A `&byte-machine-contract` in
-;;; it is a bug that has poisoned a parser: logged, the table reconciled, and
-;;; raised again.  Any other callback error is logged, the table reconciled,
-;;; and the loop runs on.  `&byte-machine-contract` derives from `&condition`,
-;;; not `&error`, but the composition makes every callback's raise an
-;;; `&error`, so what keeps a poisoned parser fatal is that its arm comes
-;;; before the callback-error arm.  The run loop's own logging cannot take the
-;;; failure's place: a log that raises there is ignored.
+;;; THE RUN LOOP.  chez-libuv catches whatever a callback raises, and raises
+;;; it again from uv-run composed with `&uv-callback-error`; a raise out of
+;;; the drain, a handler call's dispatch, is taken as one.  A
+;;; `&byte-machine-contract` in it is a bug that has poisoned a parser:
+;;; logged, the table reconciled, and raised again.  Any other callback error
+;;; is logged, the table reconciled, and the loop runs on.
+;;; `&byte-machine-contract` derives from `&condition`, not `&error`, but the
+;;; composition makes every callback's raise an `&error`, so what keeps a
+;;; poisoned parser fatal is that its arm comes before the callback-error arm.
+;;; The run loop's own logging cannot take the failure's place: a log that
+;;; raises there is ignored.
 (library (http-server private shell)
   (export make-shell shell? shell-listen! shell-adopt! shell-shutdown! shell-run! shell-turn!
           shell-run-turns!
@@ -322,12 +310,12 @@
   ;; close: the half-close as the close lingers, `(stream-shut)`, and the
   ;; handle's close begun, `(stream-close)`.  The cross-shell contract test
   ;; replays the events into the fake's door, and holds the stages to the
-  ;; fake's.  Made `on-credit?`, the shell answers with
-  ;; each handler's answer and `credit`, `(handler-responded answer credit)`
-  ;; (M6.2): a streaming reader it answers then owes credit for the pieces
-  ;; it is handed, and reading waits for connection-body-credit!.
+  ;; fake's.  Made `on-credit?`, the shell answers with each handler's
+  ;; answer and `credit`, `(handler-responded answer credit)`: a streaming
+  ;; reader it answers then owes credit for the pieces it is handed, and
+  ;; reading waits for connection-body-credit!.
   ;; shell? : Any -> Boolean
-  ;; shell-server : Shell -> ServerState — the server's state (design §4.6)
+  ;; shell-server : Shell -> ServerState — the server's state
   ;; shell-listener : Shell -> (U #f UvTcp)
   ;;   the listener the shell last made, open or closed, or #f if none
   ;; shell-timer : Shell -> (U #f UvTimer)
@@ -414,8 +402,7 @@
   ;; answered `invalid-name` at once, so a lookup raises nothing of
   ;; chez-libuv's on the coroutine that asks it.  The refusal is caught by a
   ;; handler that jumps out on a one-shot continuation: on a coroutine, a
-  ;; `guard` would cost a stack of its own (design §5.2's note), 3,663 B a
-  ;; lookup where this costs 208.  The callback is the library's own, and
+  ;; `guard` would cost far more.  The callback is the library's own, and
   ;; only answers, which only wakes (R1).  A cancel is uv-cancel!'s, best
   ;; effort: a lookup libuv has begun answers anyway.
   (define (loop-resolver! loop w)
@@ -559,13 +546,13 @@
       (server-dispatch! sh (append head (list (uv-now loop) (hashtable-size (shell-table sh)))))))
 
   ;; shell-watch-signals! : Shell -> Void
-  ;; Ask the server to shut down when the process is sent SIGTERM or SIGINT
-  ;; (decided 2026-10-03), through a signal handle each, closed once the
-  ;; shell serves no more (release-timer!).  Once the last watch of SIGINT
-  ;; has closed, the process ends at the next one: chez-libuv leaves its
-  ;; default disposition, not Chez's keyboard interrupt.  A shell watches
-  ;; once, while it listens; anything else is an assertion violation.  A
-  ;; handle whose start raises is closed, and the raise goes on.
+  ;; Ask the server to shut down when the process is sent SIGTERM or SIGINT,
+  ;; through a signal handle each, closed once the shell serves no more
+  ;; (release-timer!).  Once the last watch of SIGINT has closed, the process
+  ;; ends at the next one: chez-libuv leaves its default disposition, not
+  ;; Chez's keyboard interrupt.  A shell watches once, while it listens;
+  ;; anything else is an assertion violation.  A handle whose start raises is
+  ;; closed, and the raise goes on.
   (define (shell-watch-signals! sh)
     (unless (eq? (server-phase (shell-server sh)) 'listening)
       (assertion-violation 'shell-watch-signals! "the server has stopped listening" sh))
@@ -669,7 +656,7 @@
   ;; Of the raise kept from calls made in turn and a new one, the one to
   ;; raise once all are made: the first, unless the new one is a
   ;; byte-machine contract condition and the first is not, since the run
-  ;; loop keeps those fatal (design §6.4).
+  ;; loop keeps those fatal (THE RUN LOOP, the header).
   (define (kept-raise kept e)
     (if (or (not kept)
             (and (byte-machine-contract-condition? e) (not (byte-machine-contract-condition? kept))))
@@ -826,11 +813,10 @@
       (else (values))))
 
   ;; request-notice : Connection -> Notice
-  ;; The notice of the request in flight, which tells its code the client
-  ;; has closed (decision 0020): the one its code's coroutines were given,
-  ;; or else a new one, given to those its code starts later.  It goes as
-  ;; the parser resumes for the next request, so an idle connection holds
-  ;; none.
+  ;; The notice of the request in flight, which tells its code the client has
+  ;; closed: the one its code's coroutines were given, or else a new one,
+  ;; given to those its code starts later.  It goes as the parser resumes for
+  ;; the next request, so an idle connection holds none.
   (define (request-notice c)
     (or (connection-notice c)
         (let ((n (make-notice)))
@@ -870,16 +856,15 @@
       (dispatch! c (parser-result-event r))))
 
   ;; call-handler! : Connection Request -> Void
-  ;; The handler called from the scheduler's drain, after libuv's turn
-  ;; (decision 0014): its answer, and `credit` after it on a shell made on
-  ;; credit, dispatched there, the turn's guard taking a raise out of the
-  ;; dispatch as a callback's (shell-turn!).  While the handler and its
-  ;; answer run, the shell's `calling` names the connection, so the run
-  ;; loop's guard takes a raise out of them as the handler's failure
-  ;; (handler-failed!): a guard of the call's own cost a request 288 B and
-  ;; more.  A connection that has closed before the drain reaches the call
-  ;; has its handler called no more, as a waiting connection's calls are not
-  ;; made (next-call!).
+  ;; The handler called from the scheduler's drain, after libuv's turn: its
+  ;; answer, and `credit` after it on a shell made on credit, dispatched
+  ;; there, the turn's guard taking a raise out of the dispatch as a
+  ;; callback's (shell-turn!).  While the handler and its answer run, the
+  ;; shell's `calling` names the connection, so the run loop's guard takes a
+  ;; raise out of them as the handler's failure (handler-failed!): a guard of
+  ;; the call's own would cost every request 288 B and more.  A connection
+  ;; that has closed before the drain reaches the call has its handler called
+  ;; no more, as a waiting connection's calls are not made (next-call!).
   (define (call-handler! c request)
     (let ((sh (connection-shell c)))
       (connection-waits?-set! c #f)
@@ -894,10 +879,9 @@
   ;; handler-failed! : Shell Any (Any -> Boolean) -> Void
   ;; The handler call-handler! called, or its answer, raised `e`: logged
   ;; `handler-failed` and dispatched to its connection as `(handler-failed
-  ;; e)`, as call-handler!'s own guard once did, under the run loop's guard
-  ;; again (run-guarded), so a raise from the log or the dispatch is a
-  ;; callback's, as it was then.  What the drain had still to run runs at
-  ;; the next turn.
+  ;; e)`, under the run loop's guard again (run-guarded), so a raise from
+  ;; the log or the dispatch is taken as a callback's.  What the drain had
+  ;; still to run runs at the next turn.
   (define (handler-failed! sh e callback?)
     (let ((c (shell-calling sh)))
       (shell-calling-set! sh #f)
@@ -912,9 +896,8 @@
   ;; The event an answer brings, the handler's or, not `handler?`, a
   ;; reader's at its end: `(handler-responded answer)`, and `credit` after
   ;; the handler's on a shell made on credit or once the handler waits, for
-  ;; the reader it may be (M6.2); or, for `awaiting`, none yet: its thunk is
-  ;; called on a coroutine (call-waiting!), and its answer answered so in
-  ;; turn.
+  ;; the reader it may be; or, for `awaiting`, none yet: its thunk is called
+  ;; on a coroutine (call-waiting!), and its answer answered so in turn.
   (define (answered c a handler?)
     (cond
      ((awaiting? a)
@@ -926,14 +909,13 @@
      (else (list 'handler-responded a))))
 
   ;; call-waiting! : Connection (-> Any) (Any -> (U Event #f)) -> Void
-  ;; Call `thunk` on a coroutine, after the connection's calls before it,
-  ;; the request's notice given to it (decision 0020): once it has ended,
-  ;; the event `->event` makes of its value is dispatched, from the drain,
-  ;; or `handler-failed`, logged, if either raised, unless what it raised is
-  ;; the close the notice told; then the next call starts.  A connection
-  ;; closing makes no more.
-  ;; A raise out of the dispatch goes to the turn's guard (shell-turn!),
-  ;; having closed the connection, whose calls then matter no more.
+  ;; Call `thunk` on a coroutine, after the connection's calls before it, the
+  ;; request's notice given to it: once it has ended, the event `->event`
+  ;; makes of its value is dispatched, from the drain, or `handler-failed`,
+  ;; logged, if either raised, unless what it raised is the close the notice
+  ;; told; then the next call starts.  A connection closing makes no more.  A
+  ;; raise out of the dispatch goes to the turn's guard (shell-turn!), having
+  ;; closed the connection, whose calls then matter no more.
   (define (call-waiting! c thunk ->event)
     (connection-calls-set! c (append (connection-calls c) (list (cons thunk ->event))))
     (unless (connection-calling? c) (next-call! c)))
@@ -963,7 +945,7 @@
            (request-notice c)))))))
 
   ;; told-close? : Connection Any -> Boolean
-  ;; `e` is the raise of the close the request's notice told (decision 0020).
+  ;; `e` is the raise of the close the request's notice told.
   (define (told-close? c e)
     (and (client-closed? e)
          (let ((n (connection-notice c))) (and n (notice-closed? n)))))
@@ -1031,8 +1013,8 @@
                     (list nbytes))))))
 
   ;; A write under this many bytes is held (WRITE BATCHING, the header):
-  ;; gathered, pieces below it streamed faster on Linux and on Darwin, and
-  ;; pieces of 16 KiB slower on Linux (design §7.3's note).
+  ;; gathered, pieces below it stream faster on Linux and on Darwin, and
+  ;; pieces of 16 KiB slower on Linux.
   (define held-below 4096)
 
   ;; hold! : Connection (Listof Segment) Bytevector Nat -> Void
@@ -1133,19 +1115,18 @@
                     (lambda (err)
                       (dispatch! c (if err (list 'read-error (errno err)) '(shutdown-completed)))))))
 
-  ;; --- the door (M8.2; decision 0016) --------------------------------------------
+  ;; --- the door -----------------------------------------------------------------
 
   ;; What a taker has registered for its stream, and how far the stream has
   ;; gone: its deadline's call, its drain call, its close call, its writes
   ;; outstanding, whether its close has been asked for, whether its drain
   ;; call has run, whether the stream has closed, the notice its waits are
   ;; told the close by, once a take-over has answered `awaiting` (#f until
-  ;; then; decision 0023), whether the client's end, or a read error, has
-  ;; come, and whether the stream lingers (decision 0026); the instants,
-  ;; by the loop's clock, its own deadline passes at and its close's write
-  ;; bound does, each #f when none is armed (decision 0027); and the end
-  ;; the core handed over, 'eof, until the taker is told it at its
-  ;; read-start, else #f (0016's amendment of 2026-10-12).
+  ;; then), whether the client's end, or a read error, has come, and
+  ;; whether the stream lingers; the instants, by the loop's clock, its own
+  ;; deadline passes at and its close's write bound does, each #f when none
+  ;; is armed; and the end the core handed over, 'eof, until the taker is
+  ;; told it at its read-start, else #f.
   (define-record-type taker
     (fields (mutable on-passed) (mutable on-drain) (mutable on-close)
             (mutable writes) (mutable closing?) (mutable drained?) (mutable closed?)
@@ -1158,10 +1139,9 @@
   ;; the connection and a copy of the bytes handed over, empty when none
   ;; were.  A client's end the core read as the 101 was written, `ended?`,
   ;; is the taker's: the stream has ended, and its read-start is told it
-  ;; (taker-read-start!), libuv's reads not asked again (0016's amendment
-  ;; of 2026-10-12).  A take-over that answers `(awaiting thunk)` has the
-  ;; thunk run on a coroutine (taker-wait!, decision 0023); anything else
-  ;; it answers is dropped, as before.
+  ;; (taker-read-start!), libuv's reads not asked again.  A take-over that
+  ;; answers `(awaiting thunk)` has the thunk run on a coroutine
+  ;; (taker-wait!); anything else it answers is dropped.
   (define (hand-off! c take-over retained ended?)
     (let ((tk (make-taker)) (answer #f))
       (when ended?
@@ -1177,15 +1157,14 @@
   ;; taker-wait! : Connection Taker (-> Any) -> Void
   ;; Run a waiting taker's thunk on a coroutine, from the scheduler's drain,
   ;; the taker's notice given to it, so the wait it is in, or else its next,
-  ;; raises `&client-closed` once the stream has closed (decision 0020's
-  ;; notice; 0023).  If the thunk raises, `taker-failed` is logged and the
-  ;; stream closed, as for a take-over that raises, unless what it raised is
-  ;; the close the notice told.  What it returns is dropped, so it may
-  ;; return no values, or several, as one whose last call is a sleep does:
-  ;; the coroutine answers #t after it, since the scheduler keeps the one
-  ;; value a coroutine returns.
-  ;; The notice is made here, before the stream can have closed: its close
-  ;; completes in a later callback (handle-closed!), which closes it.
+  ;; raises `&client-closed` once the stream has closed.  If the thunk raises,
+  ;; `taker-failed` is logged and the stream closed, as for a take-over that
+  ;; raises, unless what it raised is the close the notice told.  What it
+  ;; returns is dropped, so it may return no values, or several, as one whose
+  ;; last call is a sleep does: the coroutine answers #t after it, since the
+  ;; scheduler keeps the one value a coroutine returns.  The notice is made
+  ;; here, before the stream can have closed: its close completes in a later
+  ;; callback (handle-closed!), which closes it.
   (define (taker-wait! c tk thunk)
     (let ((sh (connection-shell c)) (n (make-notice)))
       (taker-notice-set! tk n)
@@ -1227,7 +1206,7 @@
   ;; drain, guarded as taker-call! guards it.  The call waits in the shell's
   ;; own queue, and each call the drain makes takes the oldest there, so one
   ;; that no drain reaches, the server having stopped first, is still there
-  ;; for shell-call-deferred! (M8.2's review, its sixth).
+  ;; for shell-call-deferred!.
   (define (taker-later! c thunk)
     (let ((sh (connection-shell c)))
       (shell-deferred-back-set! sh (cons (lambda () (taker-call! c thunk))
@@ -1283,7 +1262,7 @@
   ;; counted outstanding once libuv has taken it, which never completes it
   ;; inside the call, so a refusal for any other reason, such as a call off
   ;; the loop's thread (`&uv-wrong-thread`), raises to the taker and leaves
-  ;; nothing for the close to wait for (M8.2's review).
+  ;; nothing for the close to wait for.
   (define (taker-write! c tk bv start end written)
     (if (or (taker-closing? tk) (connection-closing? c))
         (when written (taker-later! c (lambda () (written 'ECANCELED))))
@@ -1342,10 +1321,9 @@
                           (lambda (e) (ended (errno e)))))))))
 
   ;; taker-close! : Connection Taker -> Void
-  ;; The staged close (decision 0026): the taker is read nothing more, the
-  ;; stream reading on, dropping each read, and once no write is
-  ;; outstanding it lingers (taker-linger!); until then its writes are
-  ;; bounded (taker-bound!).
+  ;; The staged close: the taker is read nothing more, the stream reading on,
+  ;; dropping each read, and once no write is outstanding it lingers
+  ;; (taker-linger!); until then its writes are bounded (taker-bound!).
   (define (taker-close! c tk)
     (unless (taker-closing? tk)
       (taker-closing?-set! tk #t)
@@ -1357,8 +1335,8 @@
   ;; taker-bound! : Connection Taker -> Void
   ;; The close waits for a write: it has write-timeout-ms from the loop's
   ;; time brought up to date, as the server's own writes have, and the
-  ;; stream is aborted past it (decision 0027).  Armed beside the taker's
-  ;; own deadline (taker-arm!).
+  ;; stream is aborted past it.  Armed beside the taker's own deadline
+  ;; (taker-arm!).
   (define (taker-bound! c tk)
     (unless (connection-closing? c)
       (let ((sh (connection-shell c)))
@@ -1430,7 +1408,7 @@
   ;; replacing the one it armed, and the timer running; #f disarms it.  The
   ;; close's write bound stays armed beside it (taker-arm!).  A stream
   ;; closing is armed no more, as a connection's is not (arm!), and one that
-  ;; lingers keeps the linger's (decision 0026).
+  ;; lingers keeps the linger's.
   (define (taker-deadline! c tk ms passed)
     (unless (taker-lingering? tk)
       (taker-on-passed-set! tk passed)
@@ -1442,10 +1420,9 @@
                (taker-arm! c tk))))))
 
   ;; taker-passed! : Connection -> Void
-  ;; Its entry has passed: the stream lingering, its close; its close's
-  ;; write bound passed, its abort (decision 0027); else its own deadline,
-  ;; whose call is made, once a deadline armed, and then whichever is still
-  ;; armed is armed again.
+  ;; Its entry has passed: the stream lingering, its close; its close's write
+  ;; bound passed, its abort; else its own deadline, whose call is made, once
+  ;; a deadline armed, and then whichever is still armed is armed again.
   (define (taker-passed! c)
     (let ((tk (connection-taker c))
           (now (uv-now (shell-loop (connection-shell c)))))
@@ -1560,8 +1537,8 @@
   ;; library's own but what the shell holds: the code each request runs
   ;; reaches it through calls Chez knows, by the deadlines' timer (arm!,
   ;; start-ticking!, tick!, server-dispatch!), and a table of the library's
-  ;; read here made Chez's closures for each request carry it, 130 B a
-  ;; request more (M7.2).
+  ;; read here would make Chez's closures for each request carry it, 130 B
+  ;; a request more.
   (define (release-waits-timer! sh)
     (let ((kept (shell-waits-kept sh)))
       (when (and (vector-ref kept 0) (fxzero? (shell-waits-timed sh)))
@@ -1574,26 +1551,26 @@
     (handle-close! (connection-shell c) (connection-tcp c)))
 
   ;; connection-body-credit! : Connection Nat -> Void
-  ;; The reader the core hands the body to, answered on credit, has taken
-  ;; `n` more bytes of what it was handed: `(body-credit n)`, dispatched
-  ;; (M6.2).  Reading waits for it once a read's pieces are handed over.
-  ;; M7's scheduler will give it as an awaiting reader takes its pieces; in
-  ;; v1 only the checks do.  A credit the core refuses, for more than the
-  ;; reader was handed and has not credited, is a bug, and a bug closes its
-  ;; connection (the header): the connection is closed, and the core's
-  ;; assertion violation raised to the caller.
+  ;; The reader the core hands the body to, answered on credit, has taken `n`
+  ;; more bytes of what it was handed: `(body-credit n)`, dispatched.  Reading
+  ;; waits for it once a read's pieces are handed over.  Only the checks call
+  ;; it: the streaming reader of a handler that waits is credited by the shell
+  ;; as it takes each piece (deliver-body!).  A credit the core refuses, for
+  ;; more than the reader was handed and has not credited, is a bug, and a bug
+  ;; closes its connection (the header): the connection is closed, and the
+  ;; core's assertion violation raised to the caller.
   (define (connection-body-credit! c n)
     (dispatch! c (list 'body-credit n)))
 
   ;; handle-close! : Shell UvHandle -> Void
   ;; Close a handle: a connection's, the listener, the timer, or one the
-  ;; server refused.  This is the one uv-close! call (design §5.3 and §7.6;
-  ;; tests/test-close-ownership.sps).  chez-libuv runs the callback of a
-  ;; handle's first close alone, and a later close does nothing, so every
+  ;; server refused.  This is the one uv-close! call
+  ;; (tests/test-close-ownership.sps holds it).  chez-libuv runs the callback
+  ;; of a handle's first close alone, and a later close does nothing, so every
   ;; close passes the same callback, and what it does follows the handle: a
   ;; connection's handle stops reading at once and leaves the wheel, and its
-  ;; close takes the connection out of the table and reports `closed`,
-  ;; whoever asked for it.
+  ;; close takes the connection out of the table and reports `closed`, whoever
+  ;; asked for it.
   (define (handle-close! sh h)
     (let ((c (hashtable-ref (shell-table sh) h #f)))
       (when c

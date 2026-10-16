@@ -1,23 +1,21 @@
 #!r6rs
-;;; (http-server awaiting) — the answer of a handler that waits (decision
-;;; 0014; M7.1).
+;;; (http-server awaiting) — the answer of a handler that waits.
 ;;;
-;;; A handler answers a response or a reader (decision 0013), or, to wait,
-;;; `(awaiting thunk)`: the server runs `thunk` on a coroutine of its own,
-;;; from its scheduler's drain, and what `thunk` returns is the handler's
-;;; answer, a response or a reader, or another `awaiting`, which waits
-;;; again.  The reader or the producer it answers with is called on
-;;; coroutines too, so it may wait as well.  Only code a coroutine runs may
-;;; wait: anywhere else a wait is refused (design §5.3, R1 and R2), and the
-;;; handler has failed.
+;;; A handler answers a response or a reader, or, to wait, `(awaiting thunk)`:
+;;; the server runs `thunk` on a coroutine of its own, from its scheduler's
+;;; drain, and what `thunk` returns is the handler's answer, a response or a
+;;; reader, or another `awaiting`, which waits again.  The reader or the
+;;; producer it answers with is called on coroutines too, so it may wait as
+;;; well.  Only code a coroutine runs may wait: anywhere else, inside a libuv
+;;; callback or where no coroutine runs, a wait is refused, and the handler
+;;; has failed.
 ;;;
 ;;; What a wait raises is here too, so that a handler can catch it: once a
 ;;; deadline has passed, a wait inside it raises `&deadline-passed`; and a
-;;; name that does not resolve raises `&resolve-error` (decision 0015;
-;;; `with-deadline` and `resolve`, the private waits library's).  Once the
-;;; request's client has closed or reset its connection, the wait its code
-;;; is in, or else the next one, raises `&client-closed`, once (decision
-;;; 0020).
+;;; name that does not resolve raises `&resolve-error` (`with-deadline` and
+;;; `resolve` are the private waits library's).  Once the request's client
+;;; has closed or reset its connection, the wait its code is in, or else the
+;;; next one, raises `&client-closed`, once.
 ;;;
 ;;; PURE: imports only (rnrs).
 (library (http-server awaiting)
@@ -35,7 +33,7 @@
     make-deadline-passed deadline-passed?)
 
   ;; &client-closed : what a wait raises, once, after the request's client
-  ;; has closed or reset its connection (decision 0020), an `&error`.
+  ;; has closed or reset its connection, an `&error`.
   ;; make-client-closed : -> ClientClosed
   ;; client-closed? : Any -> Boolean
   (define-condition-type &client-closed &error
