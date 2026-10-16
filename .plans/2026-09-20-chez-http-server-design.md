@@ -274,6 +274,12 @@ or a test rather than a paragraph:
   `(chezscheme)` import reaches a pure library under `src/http-server/` outside
   `private/`. It is the M0 realisation of the import-audit lane, and it is a
   prerequisite of `make test`.
+  *Amended 2026-10-16:* the check is a suite, `tests/test-imports.sps`, which `make
+  test` runs with the others and `make check-imports` runs alone. It reads each
+  library's import forms with Chez's own reader. The grep it replaces, by then four
+  rules (no test library and no `(libuv private ...)` in `src/`, and nothing a parser
+  feed runs reaching the scheduler), read text, so a comment naming a library tripped
+  it.
 - `make check-help` fails if any `.PHONY` target is undocumented in `make help`.
 - From M4: an `rg` gate asserting that `connection-close!` is the only `uv-close!`
   caller, and that handler-facing libraries export no `uv-*` name (0003; brief M4).
