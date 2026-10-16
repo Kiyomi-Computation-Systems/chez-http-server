@@ -1,60 +1,59 @@
 #!r6rs
-;;; (http-server connection): the request head.  M2.2.
+;;; (http-server connection): the request head.
 ;;;
 ;;; on-message-begin through on-headers-complete, with chez-httparse driving
-;;; the core through the adapter's bindings, the way a shell will.  Every row
-;;; runs in the fake shell's message loop (M2.4): each chunk arrives as
+;;; the core through the adapter's bindings, the way a shell does.  Every row
+;;; runs in the fake shell's message loop: each chunk arrives as
 ;;; `bytes-arrived` while the connection reads, the parser is fed only when
 ;;; the core asks, the handler answers every request, each write completes,
 ;;; and the connection runs until it closes or the input ends.  So a refused
 ;;; message's response is written, and the connection lingers: it closes in
-;;; stages, when the client closes (decision 0011), and no client closes
-;;; here.  A row that ends in `lingering` closes after its response.
+;;; stages, when the client closes, and no client closes here.  A row that
+;;; ends in `lingering` closes after its response.
 ;;;
 ;;; The rows:
 ;;;   - the request (method, target, version, headers in wire order) is what
 ;;;     the request's bytes say, at every chunk size;
 ;;;   - keep-alive is `should-keep-alive?` over the flags the adapter reads
-;;;     inside on-headers-complete: decision 0006 item 1's four rows, alone
-;;;     and pipelined;
+;;;     inside on-headers-complete: HTTP/1.1 keeps the connection unless it
+;;;     says close, HTTP/1.0 closes unless it says keep-alive (RFC 9112
+;;;     §9.3), alone and pipelined;
 ;;;   - each of the four header limits passes a request at the limit and
 ;;;     refuses one past it with 431, through the parser's own failure; a
 ;;;     value's limit and the section's count the whitespace before each
-;;;     value too (the padding PR);
-;;;   - so does the target's limit, with 414 (M2.3);
+;;;     value too;
+;;;   - so does the target's limit, with 414;
 ;;;   - a target that is not the form its method calls for, or whose bytes
 ;;;     uriparse refuses, or that names no host where RFC 9110 needs one, is
-;;;     refused with 400 (M2.3, and the host 2026-09-25; the forms are
-;;;     test-target.sps's to table);
-;;;   - except the narrow case decision 0009 redirects: a GET or HEAD whose
-;;;     target's only faults are bracket params and pipes is answered 301,
-;;;     `Location` the target encoded, when that target is within the limit;
-;;;   - RFC 9112 §3.2's Host rules (2026-09-25): two Host lines, an invalid
-;;;     Host value, and no Host on HTTP/1.1 are refused with 400, the last
-;;;     unless decision 0005's switch is off.  A value is judged without the
-;;;     OWS after it (RFC 9112 §5; 2026-09-27).  The Host is judged before the
-;;;     target, so a request the RFC says MUST get 400 is never redirected.
-;;;     The rows about other rules send minimal requests with no Host, under
-;;;     `minimal`, the defaults with the switch off; the Host rows run under
-;;;     the defaults;
+;;;     refused with 400 (the forms are test-target.sps's to table);
+;;;   - except the narrow case the server redirects: a GET or HEAD whose
+;;;     target's only faults are bracket params and pipes, the bytes browsers
+;;;     send unencoded, is answered 301, `Location` the target encoded, when
+;;;     that target is within the limit;
+;;;   - RFC 9112 §3.2's Host rules: two Host lines, an invalid Host value,
+;;;     and no Host on HTTP/1.1 are refused with 400, the last unless the
+;;;     limits' `require-host?` is off.  A value is judged without the OWS
+;;;     after it (RFC 9112 §5).  The Host is judged before the target, so a
+;;;     request the RFC says MUST get 400 is never redirected.  The rows about
+;;;     other rules send minimal requests with no Host, under `minimal`, the
+;;;     defaults with the switch off; the Host rows run under the defaults;
 ;;;   - a parser error with no refusal is a 400, a Transfer-Encoding with no
-;;;     chunked coding in it among them (RFC 9112 §6.3; amended on the
-;;;     owner's word, 2026-09-26);
+;;;     chunked coding in it among them (RFC 9112 §6.3);
 ;;;   - a Transfer-Encoding that lists a coding before a final chunked, which
 ;;;     the parser lets through, is the core's own refusal: 501 (RFC 9112
 ;;;     §6.1), judged after the Host and the target;
-;;;   - the version (M8.3; decision 0006's amendments of 2026-10-04): the
-;;;     connection's parser runs llhttp's version leniency and no other, so
-;;;     it reads any HTTP/D.D, and the core judges it first.  One that is not
-;;;     1.x is refused with 505; a 1.x past 1.1 is served as HTTP/1.1, to the
-;;;     Host rule and the framing too; one the parser cannot read at all is
-;;;     its error, a 400.
+;;;   - the version: the connection's parser runs llhttp's version leniency
+;;;     and no other, so it reads any HTTP/D.D, and the core judges it first.
+;;;     One that is not 1.x is refused with 505; a 1.x past 1.1 is served as
+;;;     HTTP/1.1, to the Host rule and the framing too; one the parser cannot
+;;;     read at all is its error, a 400.
 ;;;
-;;; Oracles: the bytes of each request; decision 0006 item 1's keep-alive
-;;; rows; design §6.5's 431, 414, 400 and 501; RFC 9112 §3.2's target forms
-;;; and §6.1's 501; RFC 9110 §6.2's minor versions and §15.6.6's 505;
-;;; llhttp's LENIENT_FLAGS.VERSION, 1 << 4 (its src/llhttp/constants.ts);
-;;; the limits each row sets.
+;;; Oracles: the bytes of each request; RFC 9112 §9.3's keep-alive cases;
+;;; the statuses 431 (RFC 6585 §5), 414 (RFC 9110 §15.5.15), 400 (RFC 9110
+;;; §15.5.1) and 501 (RFC 9110 §15.6.2); RFC 9112 §3.2's target forms and
+;;; §6.1's 501; RFC 9110 §6.2's minor versions and §15.6.6's 505; llhttp's
+;;; LENIENT_FLAGS.VERSION, 1 << 4 (its src/llhttp/constants.ts); the limits
+;;; each row sets.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection)
         (http-server request) (http-server response) (http-server span)
@@ -94,7 +93,7 @@
 
 ;; render-action : Action -> Datum
 ;; A write as its status and its header block, the segment after the Date
-;; slot, as text (M3.2).
+;; slot, as text.
 (define (render-action a)
   (if (eq? (car a) 'write)
       (list 'write (written-status a) (utf8->string (caddr (cadr a))))
@@ -112,7 +111,7 @@
 ;; drive : Bytevector Nat Limits -> Outcome
 ;; One connection reading `input` in `size`-byte deliveries, its handler
 ;; reading every body and answering `resp`: a response given instead of a
-;; reader would close the connection (decision 0013).
+;; reader would close the connection.
 (define (drive input size limits)
   (let ((sh (make-fake-connection limits (drops-body (lambda (request) resp)))))
     (fake-shell-feed-input! sh input size)
@@ -146,8 +145,8 @@
         (cdr o)))
 
 ;; An originated status as render-action shows it: no body, so
-;; `Content-Length: 0`, and `Connection: close` (decision 0010 item 6;
-;; design §6.5: every one closes).
+;; `Content-Length: 0`, and `Connection: close`, since every originated
+;; status closes the connection.
 (define originated-block "Content-Length: 0\r\nConnection: close\r\n\r\n")
 (define (status-write n) (list 'write n originated-block))
 
@@ -196,7 +195,7 @@
                      '("DELETE /x HTTP/1.1\r\n\r\n" "M-SEARCH /x HTTP/1.1\r\n\r\n"
                        "OPTIONS * HTTP/1.1\r\n\r\n")))
 
-    ;; --- keep-alive: decision 0006 item 1 -----------------------------------
+    ;; --- keep-alive (RFC 9112 §9.3) -------------------------------------------
     (test-equal "keep-alive, one request each: 1.1, 1.1 close, 1.0, 1.0 keep-alive"
                 '((idle #f) (lingering not-keep-alive) (lingering not-keep-alive) (idle #f))
                 (map (lambda (text)
@@ -228,8 +227,8 @@
     (test-equal "a header name one byte past it is refused"
                 (list (refusal 'header-field-too-large))
                 (every-size (b "GET / HTTP/1.1\r\nX-Abc: 1\r\n\r\n") (with-limits '((field . 4)))))
-    ;; A value counts the whitespace before it (the padding PR): here the one
-    ;; space after the colon.
+    ;; A value counts the whitespace before it: here the one space after the
+    ;; colon.
     (test-equal "a header value at max-header-value-bytes, the space before it counted, passes"
                 (list (ok (list (req 'GET "/" 1 1 '("X" . "ab"))) 'idle #f))
                 (every-size (b "GET / HTTP/1.1\r\nX: ab\r\n\r\n") (with-limits '((value . 3)))))
@@ -249,7 +248,7 @@
                 (list (refusal 'headers-too-large))
                 (every-size (b "GET / HTTP/1.1\r\nAb: 12\r\nC: 4567\r\n\r\n") (with-limits '((bytes . 10)))))
 
-    ;; --- the target's limit: at the limit, and one past it (M2.3) ---------------
+    ;; --- the target's limit: at the limit, and one past it ----------------------
     ;; Counted over the target's bytes as they arrive, so a target split across
     ;; deliveries (every size below its length) is counted whole.
     (test-equal "a target at max-target-bytes passes"
@@ -259,7 +258,7 @@
                 (list (refused 'target-too-large 414))
                 (every-size (b "GET /abcd HTTP/1.1\r\n\r\n") (with-limits '((target . 4)))))
 
-    ;; --- the target's form and bytes (M2.3) -----------------------------------
+    ;; --- the target's form and bytes ------------------------------------------
     ;; Judged at on-headers-complete, where the method is known; a refusal is
     ;; the parser's own failure, answered 400 and closing after.
     (test-equal "a target of each form passes: OPTIONS *, a path that begins //, absolute-form"
@@ -291,7 +290,7 @@
                 (list (refused 'invalid-target 400))
                 (every-size (b "CONNECT :443 HTTP/1.1\r\n\r\n") minimal))
 
-    ;; --- the Host header (RFC 9112 §3.2; 2026-09-25) --------------------------------
+    ;; --- the Host header (RFC 9112 §3.2) ----------------------------------------
     ;; Judged at on-headers-complete, before the target; a refusal is the
     ;; parser's own failure, answered 400 and closing after.
     (test-equal "a request with one valid Host is served"
@@ -299,7 +298,7 @@
                 (every-size (b "GET / HTTP/1.1\r\nHost: example.com:8080\r\n\r\n") default-limits))
     ;; RFC 9112 §5: the OWS after a value is not part of it, though llhttp
     ;; keeps it in the value it delivers.  The row asks only that the request
-    ;; is served: what a handler reads of the value is M4.5's.
+    ;; is served, not what a handler reads of the value.
     (test-equal "a Host value with a space or a tab after it is served"
                 (list (list (ok (list (req 'GET "/" 1 1)) 'idle #f))
                       (list (ok (list (req 'GET "/" 1 1)) 'idle #f)))
@@ -324,16 +323,16 @@
                 (list (refused 'invalid-host 400))
                 (every-size (b "GET / HTTP/1.1\r\nHost: u@h\r\n\r\n") default-limits))
     ;; The 400 is RFC 9112 §3.2's MUST; the 301 is only §3.2's alternative to a
-    ;; 400 for a bad target.  So a target decision 0009 would redirect still
-    ;; gets 400 when its Host is wrong.
+    ;; 400 for a bad target.  So a target the server would redirect still gets
+    ;; 400 when its Host is wrong.
     (test-equal "a redirectable target with no Host is refused with 400, not redirected"
                 (list (refused 'invalid-host 400))
                 (every-size (b "GET /s?ids[]=1 HTTP/1.1\r\n\r\n") default-limits))
 
-    ;; --- the narrow redirect (decision 0009) ------------------------------------
+    ;; --- the narrow redirect ----------------------------------------------------
     ;; Bracket params and pipes, the bytes browsers send unencoded, get a 301 to
     ;; the target encoded; the connection closes after it, as after every
-    ;; status the core originates (design §6.5).
+    ;; status the core originates.
     (test-equal "a GET with bracket params and a pipe is redirected: 301, Location encoded"
                 (list (redirected "/s?ids%5B%5D=1%7C2"))
                 (every-size (b "GET /s?ids[]=1|2 HTTP/1.1\r\n\r\n") minimal))
@@ -353,7 +352,7 @@
                 (list (refused 'invalid-target 400))
                 (every-size (b "GET /a?b=| HTTP/1.1\r\n\r\n") (with-limits '((target . 7)))))
 
-    ;; --- a parser error the core did not ask for (design §6.3) ------------------
+    ;; --- a parser error the core did not ask for --------------------------------
     (test-equal "an invalid header token: 400, then close"
                 (list (list '() (list 'invalid-header-token (list (status-write 400)))
                             'lingering 'parser-error))
@@ -385,8 +384,8 @@
                 (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n") minimal))
     ;; --- HTTP/1.0 with Transfer-Encoding: faulty framing, a 400 --------------
     ;; HTTP/1.0 has no Transfer-Encoding, so where such a request's body ends
-    ;; cannot be trusted (RFC 9112 §6.1; decided on the owner's word,
-    ;; 2026-09-26), whether or not it asks to keep the connection.
+    ;; cannot be trusted (RFC 9112 §6.1), whether or not it asks to keep the
+    ;; connection.
     (test-equal "HTTP/1.0 with Transfer-Encoding: chunked: 400, then close"
                 (list (refused 'faulty-framing 400))
                 (every-size (b "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n") minimal))
@@ -409,18 +408,16 @@
                 (every-size (b "POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n")
                             default-limits))
 
-    ;; --- a version that is not 1.x: a 505 (M8.3) -------------------------------
+    ;; --- a version that is not 1.x: a 505 --------------------------------------
     ;; A request line with no version is HTTP/0.9's, as is one that says
     ;; HTTP/0.9.  The parser reads either, and the lines after it as its
     ;; fields, and it reads a request line that says HTTP/2.0 too (its
     ;; preface is answered apart).  The connection's parser runs llhttp's
     ;; version leniency, so it reads any other HTTP/D.D as well and leaves
     ;; the version to the core.  The server speaks HTTP/1.1 and 1.0 only, so
-    ;; it refuses every version that is not 1.x (RFC 9110 §15.6.6; decided on
-    ;; the owner's word, by form, 2026-10-03, HTTP/2.0 after the review,
-    ;; 2026-10-04, and every other version later that day), before any other
-    ;; rule: a version it does not speak frames nothing.  A 1.x past 1.1 is
-    ;; served as HTTP/1.1 (RFC 9110 §6.2; the owner's word, 2026-10-04).
+    ;; it refuses every version that is not 1.x (RFC 9110 §15.6.6) before any
+    ;; other rule: a version it does not speak frames nothing.  A 1.x past 1.1
+    ;; is served as HTTP/1.1 (RFC 9110 §6.2).
     (test-eqv "a connection's parser runs llhttp's version leniency and no other: LENIENT_FLAGS.VERSION, 1 << 4"
               16
               (parser-field-ref (make-conn-parser
@@ -483,7 +480,7 @@
                             minimal))
 
     ;; --- bytes-arrived feeds the parser in every reading state -----------------
-    ;; Past a request's end it is held, and reading stops (decision 0020).
+    ;; Past a request's end it is held, and reading stops.
     (let ((bv (b "abcd")))
       (test-equal "bytes-arrived asks for feed-parser in idle, head and body; in handling it is held, reading stopped"
                   (list (list (list 'feed-parser bv 0 4)) (list (list 'feed-parser bv 0 4))

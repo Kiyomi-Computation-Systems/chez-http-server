@@ -1,30 +1,27 @@
 #!r6rs
 ;;; (http-server connection): `Expect: 100-continue`, and what a chunked body
-;;; carries beside its data, through the fake shell's message loop.  M6.4.
+;;; carries beside its data, through the fake shell's message loop.
 ;;;
-;;; With chez-httparse driving the core through the adapter.  A client that
-;;; sends `Expect: 100-continue` with a head that announces a body is sent
+;;; chez-httparse drives the core through the adapter.  A client that sends
+;;; `Expect: 100-continue` with a head that announces a body is sent
 ;;; `100 Continue` when the handler answers with a reader, which is pulling
-;;; the body (decision 0013's consequences), and not when it answers with a
-;;; response, on HTTP/1.0, or for a request with no body (RFC 9110
-;;; §10.1.1).  The 100 arms the body deadline.  A reader whose cap the
-;;; declared length passes is answered 413 with no 100, as the head says;
-;;; one whose cap the body met so far passes, after the 100, as it would be
-;;; had the body come later.  A chunked body's trailer fields are held to
-;;; the four header limits, counted afresh, and its chunk extensions to
-;;; 16 KiB, all of a body's together (decided on the owner's word,
-;;; 2026-09-29).
+;;; the body, and not when it answers with a response, on HTTP/1.0, or for a
+;;; request with no body (RFC 9110 §10.1.1).  The 100 arms the body
+;;; deadline.  A reader whose cap the declared length passes is answered 413
+;;; with no 100, as the head says; one whose cap the body met so far passes,
+;;; after the 100, as it would be had the body come later.  A chunked body's
+;;; trailer fields are held to the four header limits, counted afresh, and
+;;; its chunk extensions to 16 KiB, all of a body's together.
 ;;;
 ;;; Each row runs at every delivery size, from a byte at a time to the whole
 ;;; input in one delivery, so one expected answer is also the outcome's
-;;; independence from how the bytes were split (design §8.1's second
-;;; property).  The extensions' inputs, over 16 KiB, run at a sample of
-;;; sizes.  The pieces a reader is handed are joined in the outcome.
+;;; independence from how the bytes were split.  The extensions' inputs, over
+;;; 16 KiB, run at a sample of sizes.  The pieces a reader is handed are
+;;; joined in the outcome.
 ;;;
-;;; Oracles: RFC 9110 §10.1.1 and §15.2.1; decision 0013; the inputs' own
-;;; bytes; the limits each row sets; design §6.5's 413 and 431 (RFC 6585
-;;; §5's phrase); decision 0005's 60 s body deadline; decision 0011's staged
-;;; close.
+;;; Oracles: RFC 9110 §10.1.1 and §15.2.1; the inputs' own bytes; the limits
+;;; each row sets; the statuses 413 (RFC 9110 §15.5.14) and 431 (RFC 6585
+;;; §5); the body deadline's 60 s default; the staged close (RFC 9112 §9.6).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits) (http-server body)
         (fake-shell) (decisive) (response-reader) (only (read-back) send!))
@@ -95,9 +92,9 @@
 
 ;; --- trailers: header limits small enough to fill ------------------------------
 ;; A field's name up to 17 bytes, Transfer-Encoding's, its value up to 8, 32
-;; bytes in all and 3 fields, a value counting the whitespace before it (the
-;; padding PR).  The head holds 31 bytes in 2 fields: Host, x,
-;; Transfer-Encoding, chunked, and a space before each value.
+;; bytes in all and 3 fields, a value counting the whitespace before it.  The
+;; head holds 31 bytes in 2 fields: Host, x, Transfer-Encoding, chunked, and
+;; a space before each value.
 (define small
   (limits-with default-limits
                '((max-header-field-bytes . 17) (max-header-value-bytes . 8)
@@ -153,13 +150,13 @@
                                       (cons (read-response (car ws) #f #f)
                                             (map (lambda (w) (car (read-response w #f #f))) (cdr ws))))))))
     ;; A response instead of a reader is sent at once, with no 100, and the
-    ;; connection closes after it (decision 0013 item 4).
+    ;; connection closes after it: the body it announced is unread.
     (test-equal "answered with a response instead, every delivery size: no 100, the response at once, then the staged close"
                 '((((call-handler (POST "/a")) (write 200)) lingering unread-body))
                 (every-size (post "1" (string-append expect ten) "0123456789") default-limits
                             answers outcome))
     ;; RFC 9110 §10.1.1: HTTP/1.0's expectation is ignored, and so is one
-    ;; with no body to wait for; any but 100-continue, on the owner's word.
+    ;; with no body to wait for; so is any expectation but 100-continue.
     (test-equal "on HTTP/1.0, every delivery size: no 100; the body, the response, then the staged close"
                 '((((call-handler (POST "/a")) (body "0123456789") (end) (write 200)) lingering not-keep-alive))
                 (every-size (post "0" (string-append expect ten) "0123456789") default-limits
@@ -188,8 +185,8 @@
                 (every-size (post "1" (string-append expect chunked) "a\r\nabcdefghij\r\n0\r\n\r\n")
                             default-limits whole-within-4 outcome))
     ;; The 100 arms the body deadline: a client that waits for it, then never
-    ;; sends its body, is answered 408 once the deadline passes, a minute on
-    ;; (decision 0005), and the connection closes, in stages.
+    ;; sends its body, is answered 408 once the deadline passes, a minute on,
+    ;; and the connection closes, in stages.
     (let ((sh (make-fake-connection default-limits streaming)))
       (send! sh "POST /a HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 10\r\n\r\n")
       (fake-shell-settle! sh)

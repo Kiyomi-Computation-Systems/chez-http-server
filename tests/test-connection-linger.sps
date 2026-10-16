@@ -1,28 +1,27 @@
 #!r6rs
-;;; (http-server connection): the staged close, end to end.  M3.5.
+;;; (http-server connection): the staged close, end to end.
 ;;;
 ;;; After every response that closes the connection, the core closes it in
-;;; stages (RFC 9112 §9.6; decided on the owner's word, 2026-09-26, decision
-;;; 0011).  It shuts its write side, so the client reads the response and
-;;; then the stream's end; it reads on and drops what arrives; and it closes
-;;; when the client closes, when a read fails, or when the linger deadline
-;;; passes.  Closing at once while the client still sends makes the server's
-;;; TCP stack reset the connection, which fails a client's send before it
-;;; reads the response, and throws away what of the response the kernel has
-;;; not yet sent (measured, decision 0011).
+;;; stages (RFC 9112 §9.6).  It shuts its write side, so the client reads the
+;;; response and then the stream's end; it reads on and drops what arrives;
+;;; and it closes when the client closes, when a read fails, or when the
+;;; linger deadline passes.  Closing at once while the client still sends
+;;; makes the server's TCP stack reset the connection, which fails a client's
+;;; send before it reads the response, and throws away what of the response
+;;; the kernel has not yet sent.
 ;;;
 ;;; The core's own statuses are the originated suite's rows.  These rows drive
 ;;; the closes a request or a handler asks for, one per reason, each with a
 ;;; request pipelined behind it, and then the ways a linger ends.  A close
-;;; after a close-delimited body is M6's: no response has one before then.
-;;; A close with nothing to protect, at the client's end, a read error or the
-;;; idle deadline, is at once: the table's T1, T2 and T5.
+;;; with nothing to protect, at the client's end, a read error or the idle
+;;; deadline, is at once: the transition table's T1, T2 and T5
+;;; (test-connection-table.sps).
 ;;;
 ;;; Oracles: RFC 9112 §9.6 (the staged close) and §9.3 (HTTP/1.0 closes
-;;; unless it says keep-alive); decision 0011 (every close after a response
-;;; lingers, its deadline armed once); decision 0010 item 3 (a handler's
-;;; `Connection: close`); decision 0006's amendment (an upgrade is served,
-;;; then the connection closes).
+;;; unless it says keep-alive); every close after a response lingers, its
+;;; deadline armed once, for at most the limits' linger timeout; a handler's
+;;; `Connection: close` closes the connection after its response; an upgrade
+;;; the server does not hand off is served, then the connection closes.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
         (fake-shell) (only (read-back) send! client-close! from-response))
@@ -58,7 +57,7 @@
 
 ;; staged : Symbol -> Outcome — one request handled and answered 200, then
 ;; the staged close, ended by the client's close, for `why`.  Like every
-;; close, it disarms the deadline first (M5.2).
+;; close, it disarms the deadline first.
 (define (staged why)
   (list 1 (list '(write 200) '(arm-deadline write)
                 '(shutdown) '(read-start) '(arm-deadline linger)
@@ -85,8 +84,8 @@
 
 ;; linger-passes! : FakeShell -> Any
 ;; The linger deadline passes: the clock moves by the limit, and the fake's
-;; timer fires, which ticks the connection once its deadline has passed
-;; (M5.3).  The core reads no clock; the tick is what tells it.
+;; timer fires, which ticks the connection once its deadline has passed.
+;; The core reads no clock; the tick is what tells it.
 (define (linger-passes! sh)
   (fake-shell-advance! sh (limits-linger-timeout-ms default-limits))
   (fake-shell-fire! sh))
@@ -115,7 +114,7 @@
                 (served answers (string-append websocket get)))
     ;; The contrast: a connection kept alive never half-closes.  Its client
     ;; sends a third request, reads the answer, and closes; that close has
-    ;; no response to protect, so it is at once (the table's T1).
+    ;; no response to protect, so it is at once (the transition table's T1).
     (test-equal "a request that keeps the connection: every one answered, no half-close, the client's close at once"
                 '(3 ((close eof)) closed #f)
                 (let ((o (served answers (string-append get get))))

@@ -1,25 +1,25 @@
 #!r6rs
 ;;; (http-server connection): reading a request's body, through the fake
-;;; shell's message loop.  M6.1.
+;;; shell's message loop.
 ;;;
-;;; Decision 0013, with chez-httparse driving the core through the adapter:
-;;; a request whose framing announces a body is handed to the handler once
-;;; the feed that completed its head has returned, and the handler answers
-;;; with a response or a reader.  A streaming reader (`read-body`) is handed
-;;; each piece as the parser meets it, then its end; a whole one
-;;; (`read-whole-body`) is handed the body as one piece at the end.  A
-;;; response given instead is sent at once, and the connection closes after
-;;; it.  A body past a cap is answered 413.
+;;; With chez-httparse driving the core through the adapter, a request whose
+;;; framing announces a body is handed to the handler once the feed that
+;;; completed its head has returned, and the handler answers with a response
+;;; or a reader.  A streaming reader (`read-body`) is handed each piece as
+;;; the parser meets it, then its end; a whole one (`read-whole-body`) is
+;;; handed the body as one piece at the end.  A response given instead is
+;;; sent at once, and the connection closes after it.  A body past a cap is
+;;; answered 413.
 ;;;
 ;;; Each row runs at every delivery size, from a byte at a time to the
 ;;; whole input in one delivery, so one expected answer is also the
-;;; outcome's independence from how the bytes were split (design §8.1's
-;;; second property).  The pieces a reader is handed are joined in the
-;;; outcome: how the body divides into pieces is the reads', not the core's.
+;;; outcome's independence from how the bytes were split.  The pieces a
+;;; reader is handed are joined in the outcome: how the body divides into
+;;; pieces is the reads', not the core's.
 ;;;
-;;; Oracles: decision 0013 items 1 to 7; the inputs' own bytes (a 10-byte
-;;; body; a chunked one of 3 and 2 bytes); design §6.5's 413 and 500; the
-;;; staged close of decision 0011.
+;;; Oracles: the inputs' own bytes (a 10-byte body; a chunked one of 3 and 2
+;;; bytes); the statuses 413 (RFC 9110 §15.5.14) and 500 (RFC 9110
+;;; §15.6.1); the staged close (RFC 9112 §9.6).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits) (http-server body)
         (fake-shell) (decisive))
@@ -97,7 +97,7 @@
                      cap))
             (lambda () (reverse got)))))
 
-;; --- a reader on credit (M6.2) --------------------------------------------------
+;; --- a reader on credit --------------------------------------------------------
 
 ;; granting : -> (values (Request -> Any) (-> Datum) (-> Nat))
 ;; A handler that streams every body, for a connection that hands its
@@ -119,7 +119,7 @@
             (lambda () (let ((n held)) (set! held 0) n)))))
 
 ;; The most credits one run gives: a count, so a core that never stops
-;; waiting fails rather than hangs (global-constraints: cap by count).
+;; waiting fails rather than hangs.
 (define credit-cap 1000)
 
 ;; feed-crediting : FakeShell Bytevector Nat (-> Nat) -> (Listof (U Nat 'refused))
@@ -193,12 +193,12 @@
 
 (run-suite "connection-body"
   (lambda ()
-    ;; --- a streaming reader (decision 0013 items 1 to 3) -------------------------
+    ;; --- a streaming reader ------------------------------------------------------
     ;; Asked once the head is in, before any piece; handed each piece as the
     ;; parser meets it, the ones met before it answered first; then its end.
     ;; Its response is written, and the connection serves the GET behind.
     ;; The handler answers the GET behind with a reader too, which is handed
-    ;; its end at once (item 6).
+    ;; its end at once.
     (test-equal "a streaming reader, every delivery size: asked at the head, handed the body, then its end; the GET behind served"
                 '((((call-handler (POST "/a")) (body "0123456789") (end) (write 200)
                     (call-handler (GET "/b")) (end) (write 200))
@@ -217,7 +217,7 @@
                                 (list (apply string-append (filter string? read))
                                       (filter symbol? read))))))
 
-    ;; --- a whole reader (items 2 and 5) --------------------------------------------
+    ;; --- a whole reader ------------------------------------------------------------
     ;; Handed the body once, as one piece at the end, in a bytevector of the
     ;; declared length; chunked, the chunks joined into one.
     (test-equal "a whole reader, every delivery size: the body as one piece, then its end; the GET behind served"
@@ -237,12 +237,12 @@
                             (seen-by (lambda (sh) (length (filter (lambda (a) (eq? (car a) 'deliver-body))
                                                                   (fake-shell-actions sh)))))))
 
-    ;; --- a request with no body (item 6) ----------------------------------------------
+    ;; --- a request with no body --------------------------------------------------------
     (test-equal "a reader answered for a request with no body: its end at once, and the connection kept"
                 '((((call-handler (GET "/b")) (end) (write 200)) idle #f))
                 (every-size (b get-b) default-limits whole (seen-by outcome)))
 
-    ;; --- a response given instead of a reader (item 4) --------------------------------
+    ;; --- a response given instead of a reader ------------------------------------------
     ;; Sent at once, and the connection closes after it, in stages: no piece
     ;; is handed over, and the GET behind is never served, however much of
     ;; the body arrived with the head.
@@ -260,7 +260,7 @@
                                                                 (cadr w)))
                                                     "Connection: close\r\n"))))))
 
-    ;; --- caps (item 5) --------------------------------------------------------------
+    ;; --- caps ----------------------------------------------------------------------
     ;; The limits' max-body-bytes caps every body: a declared length past it
     ;; is answered 413 before the handler is asked, and a chunked body at
     ;; the piece that passes it.  A whole reader's own cap likewise, its
@@ -301,7 +301,7 @@
     ;; the head may meet it before the handler is asked, or a later one after:
     ;; either way the handler is asked first, and a reader is handed the
     ;; pieces before the error, then 400; a response is sent, and the body is
-    ;; not read, so the error is not met (design §8.1's second property).
+    ;; not read, so the error is not met.
     (let ((malformed (b (string-append "POST /a HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
                                        "3\r\nabc\r\nzz\r\n"))))
       (test-equal "a malformed chunked body, read by a reader, every delivery size: the pieces before the error, then 400"
@@ -317,7 +317,7 @@
                   '((((call-handler (POST "/a")) (write 200)) lingering unread-body))
                   (every-size malformed default-limits (plain (lambda (request) ok)) (seen-by outcome))))
 
-    ;; --- a handler or a reader that raises (item 7) ---------------------------------
+    ;; --- a handler or a reader that raises -----------------------------------------
     (test-equal "a handler that raises at the head: 500, then the staged close, every delivery size"
                 '((((call-handler (POST "/a")) (write 500)) lingering handler-failed))
                 (every-size post-then-get default-limits
@@ -345,7 +345,7 @@
                                                                 (lambda () (raise 'boom)))))
                             (seen-by outcome)))
 
-    ;; --- what a whole reader's buffer holds (M6.1's review) -------------------------
+    ;; --- what a whole reader's buffer holds ----------------------------------------
     ;; A declared length is the client's word: the core buffers nothing before
     ;; the body's bytes arrive, then never more than twice what has arrived,
     ;; and hands the body over in the buffer it grew in, exactly its length.
@@ -397,18 +397,18 @@
                 (every-size (b post-a) default-limits streaming
                             (seen-by (lambda (sh) (conn-body-reader (fake-shell-conn-state sh))))))
 
-    ;; --- run to completion (design §4.5) --------------------------------------------
+    ;; --- run to completion -----------------------------------------------------------
     (test-equal "every action ran from the outermost drain, at every delivery size"
                 '(())
                 (every-size chunked-then-get default-limits streaming (seen-by fake-shell-violations)))
 
-    ;; --- backpressure: a reader on credit (M6.2) ------------------------------------
-    ;; On a connection that hands its readers their pieces on credit, as M7's
-    ;; coroutine shell will: once a read's pieces are handed to the reader,
-    ;; reading waits for its credit, so it holds at most one read; given the
-    ;; credit, reading goes on.  The pieces the read that ends the message
-    ;; brings are handed over with its end, and need no credit: reading waits
-    ;; for the response then.
+    ;; --- backpressure: a reader on credit --------------------------------------------
+    ;; On a connection that hands its readers their pieces on credit, as the
+    ;; shell does for a handler that waits: once a read's pieces are handed to
+    ;; the reader, reading waits for its credit, so it holds at most one read;
+    ;; given the credit, reading goes on.  The pieces the read that ends the
+    ;; message brings are handed over with its end, and need no credit:
+    ;; reading waits for the response then.
     (test-equal "a reader on credit, every delivery size: the body in order, then its end, never more than one read held uncredited; the GET behind served"
                 '(((((call-handler (POST "/a")) (body "0123456789") (end) (write 200)
                      (call-handler (GET "/b")) (end) (write 200))
@@ -436,13 +436,13 @@
                   '(((((call-handler (POST "/a")) (body "abcd") (write 413)) lingering body-too-large) "abcd" ()))
                   (every-size/crediting chunked-then-get (capped 4) granting refused)))
 
-    ;; A reader answered with no word of credit, as v1's shells answer every
-    ;; one, takes each piece as it is handed over and never makes reading
-    ;; wait: reading stops only where the POST's head arrives before the end
-    ;; of its body, as the request waits on its handler, which answers after
-    ;; the drain that asks it (decision 0014; M7.1), and never for credit.
-    ;; Past each message's end reading goes on (decision 0020), and nothing
-    ;; is held: each response is written before the next delivery.  So 1,
+    ;; A reader answered with no word of credit, as the shell answers a handler
+    ;; that does not wait, takes each piece as it is handed over and never
+    ;; makes reading wait: reading stops only where the POST's head arrives
+    ;; before the end of its body, as the request waits on its handler, which
+    ;; answers after the drain that asks it, and never for credit.  Past each
+    ;; message's end reading goes on, and nothing is held: each response is
+    ;; written before the next delivery.  So 1,
     ;; unless the delivery that ends the head, at byte 49, ends the 10-byte
     ;; body too, at 59: at sizes 20, 30 and 59 to 87, among others, 0.
     (test-equal "a reader answered with no word of credit never makes reading wait: one read-stop as the POST waits on its handler with its body still to come, every delivery size"
@@ -453,8 +453,7 @@
                                                        (fake-shell-actions sh)))))))
 
     ;; While the reader withholds its credit the server is the one waiting,
-    ;; so the body deadline does not run (plan §14's note of 2026-09-27): a
-    ;; timer firing past it ticks nothing.  Given the credit, reading starts
+    ;; so the body deadline does not run: a timer firing past it ticks nothing.  Given the credit, reading starts
     ;; and the deadline is armed again, and a client that then sends nothing
     ;; is answered 408 once it passes.
     (let-values (((handler probe take!) (granting)))

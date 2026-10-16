@@ -1,13 +1,12 @@
 #!r6rs
-;;; (http-server connection): the core writes through the serializer.  M3.2.
+;;; (http-server connection): the core writes through the serializer.
 ;;;
 ;;; A handler's response goes on the wire framed for the request it answers,
 ;;; by (http-server decisions)' framing decision, with the Connection field
-;;; the connection's fate calls for, and a Date slot the shell fills
-;;; (decision 0010).  A response the serializer cannot write safely is
-;;; answered 500 instead, then close, with a log naming the fault (0010 item
-;;; 2), and a handler's `Connection: close` closes the connection after its
-;;; response (item 3).
+;;; the connection's fate calls for, and a Date slot the shell fills.  A
+;;; response the serializer cannot write safely is answered 500 instead,
+;;; then close, with a log naming the fault, and a handler's `Connection:
+;;; close` closes the connection after its response.
 ;;;
 ;;; Each row runs one fake connection over its requests, the handler giving
 ;;; the row's answer to each, and reads every write back with chez-httparse's
@@ -16,12 +15,12 @@
 ;;; message ended at the write's last byte, which test-serializer.sps
 ;;; calibrates.  Then the logs and writes the core asked for, in order, the
 ;;; state the connection ended in, and why it closes: one that closes after
-;;; its response lingers, closing when the client does (decision 0011), and
-;;; no client closes here.
+;;; its response lingers, closing when the client does, and no client closes
+;;; here.
 ;;;
 ;;; Oracles: the framing rules (RFC 9112 §6, RFC 9110 §8.6, tabled in
-;;; test-decisions.sps) and decision 0010; each request's own bytes; RFC 9110
-;;; §15's reason phrases; and the Date: the fake clock starts at the epoch,
+;;; test-decisions.sps); each request's own bytes; RFC 9110 §15's reason
+;;; phrases; and the Date: the fake clock starts at the epoch,
 ;;; `Thu, 01 Jan 1970 00:00:00 GMT`, and at RFC 9110 §5.6.7's example,
 ;;; 784,111,777 s, reads `Sun, 06 Nov 1994 08:49:37 GMT`; a second and two
 ;;; seconds on, `08:49:38` and `08:49:39`.
@@ -32,7 +31,7 @@
 (define (b s) (string->utf8 s))
 
 ;; The 500 a refused response is answered with: an originated response, with
-;; no body (decision 0010 item 6).
+;; no body.
 (define internal-error
   (message 500 "Internal Server Error" (list epoch (content-length "0") close) ""))
 
@@ -88,7 +87,7 @@
               (message 200 "OK" (list epoch (content-length "5")) "hello"))
         '((write 200) (write 200)) 'idle #f)
    ;; HTTP/1.0 closes unless it asked to keep alive, and then persists only
-   ;; when told so (RFC 9112 Appendix C.2.2; decision 0010 item 6).
+   ;; when told so (RFC 9112 Appendix C.2.2).
    (row "HTTP/1.0: Content-Length and Connection: close, then the close"
         "GET / HTTP/1.0\r\n\r\n" (answer 200) #f
         (list (message 200 "OK" (list epoch (content-length "5") close) "hello"))
@@ -110,8 +109,9 @@
    (row "a 304 with a body: no Content-Length, and no body"
         get (answer 304) #f
         (list (message 304 "Not Modified" (list epoch) "")) '((write 304)) 'idle #f)
-   ;; An upgrade is served, then the connection closes (decision 0006's
-   ;; amendment): v1 has no tunnel and nothing to hand a WebSocket to.
+   ;; A request that asks to switch protocols, answered with a response and
+   ;; not taken over with a switch, is served, then the connection closes: the
+   ;; bytes after it, another protocol's, are never read.
    (row "a 2xx to CONNECT: neither field and no body, and Connection: close"
         "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n" (answer 200) #t
         (list (message 200 "OK" (list epoch close) "")) wrote-200 'lingering 'upgrade)
@@ -120,8 +120,7 @@
         (answer 200) #f
         (list (message 200 "OK" (list epoch (content-length "5") close) "hello"))
         wrote-200 'lingering 'upgrade)
-   ;; A handler's Connection: close is honoured, and the field written once
-   ;; (decision 0010 item 3).
+   ;; A handler's Connection: close is honoured, and the field written once.
    (row "the handler's Connection: close: written once, and the request after it never answered"
         (string-append get get) (answer 200 '("Connection" . "close")) #f
         (list (message 200 "OK" (list epoch (content-length "5") close) "hello"))
@@ -136,7 +135,7 @@
                     "hello"))
         wrote-200 'idle #f)
    ;; What cannot be written safely is answered 500, then close, and the log
-   ;; names why (decision 0010 item 2).
+   ;; names why.
    (row "a handler's own Content-Length is refused: 500, then the close"
         get (answer 200 '("Content-Length" . "5")) #f
         (list internal-error) (refused 'framing-field) 'lingering 'invalid-response)
@@ -153,7 +152,7 @@
         (string-append get get) (answer 200 '("Content-Length" . "5")) #f
         (list internal-error) (refused 'framing-field) 'lingering 'invalid-response)
    ;; A HEAD's Content-Length must be the GET's (RFC 9110 §8.6), which the
-   ;; core's own 500 cannot know: the HEAD rule of decision 0010 item 6.
+   ;; core's own 500 cannot know, so that 500 carries none.
    (row "a HEAD's refused answer: 500 with no Content-Length"
         head (answer 200 '("Content-Length" . "5")) #t
         (list (message 500 "Internal Server Error" (list epoch close) ""))

@@ -1,26 +1,25 @@
 #!r6rs
 ;;; (http-server connection): every status the server originates, end to
-;;; end, and each one closes the connection, in stages.  M3.4, and M3.5's
-;;; staged close.
+;;; end, and each one closes the connection, in stages.
 ;;;
-;;; Design §6.5's statuses, and decision 0009's 301, each provoked on a fake
-;;; connection the way a client provokes it: a request the core refuses, a
-;;; head or a body left unfinished past its deadline, a body past a cap, a
-;;; handler that raises or answers what cannot be written safely, the HTTP/2
-;;; preface.  Each response is
-;;; written through the serializer and read back with chez-httparse's strict
-;;; response parser, a client that is not our code ((response-reader)).
+;;; The originated statuses (301, 400, 408, 413, 414, 431, 500, 501, 505),
+;;; each provoked on a fake connection the way a client provokes it: a
+;;; request the core refuses, a head or a body left unfinished past its
+;;; deadline, a body past a cap, a handler that raises or answers what cannot
+;;; be written safely, the HTTP/2 preface.  Each response is written through
+;;; the serializer and read back with chez-httparse's strict response parser,
+;;; a client that is not our code ((response-reader)).
 ;;;
-;;; Every originated status closes the connection (design §6.5): what comes
-;;; after it cannot be read safely.  So each row checks that
+;;; Every originated status closes the connection: what comes after it cannot
+;;; be read safely.  So each row checks that
 ;;;   - the response says `Connection: close`, with no body and
-;;;     `Content-Length: 0` (decision 0010 item 6);
+;;;     `Content-Length: 0`;
 ;;;   - the connection stops reading when it refuses a request, as
-;;;     `responding` does not read (design §4.3); a handler's 500 comes after
-;;;     reading stopped at the pause;
+;;;     `responding` does not read; a handler's 500 comes after reading
+;;;     stopped at the pause;
 ;;;   - once the write completes, the connection closes in stages (RFC 9112
-;;;     §9.6; decision 0011): it shuts its write side, reads again, drops
-;;;     what arrives, and closes when the client closes;
+;;;     §9.6): it shuts its write side, reads again, drops what arrives, and
+;;;     closes when the client closes;
 ;;;   - nothing the client sent after the offending request is fed to the
 ;;;     parser or answered.  Every row but the two 408s, whose requests
 ;;;     never end, sends a request behind it in the same delivery, and every
@@ -29,27 +28,27 @@
 ;;; A row states all of it: each write as the client reads it, the actions
 ;;; from the core's own response on, and the state and reason it ends with.
 ;;; The client's close ends the linger, and like every close it disarms the
-;;; deadline first (M5.2).
+;;; deadline first.
 ;;;
-;;; 413 has its way in since M6.1 (decision 0013 item 5): a body past a
-;;; cap, here the limits' max-body-bytes.  A request whose head announces a
-;;; body is handed to its handler at the head, and a response given instead
-;;; of a reader closes the connection (decision 0013), so the 408's body is
-;;; read by its handler.  M6.4 adds a second way in, a body's chunk
+;;; 413 comes by a body past a cap, here the limits' max-body-bytes.  A
+;;; request whose head announces a body is handed to its handler at the head,
+;;; and a response given instead of a reader closes the connection, so the
+;;; 408's body is read by its handler.  A second way to 413 is a body's chunk
 ;;; extensions past 16 KiB together, and a trailer field past the header
-;;; limits, answered 431 as a head's is.  Both rows' requests arrive in the
+;;; limits is answered 431 as a head's is.  Both rows' requests arrive in the
 ;;; head's delivery, so what they meet waits for the handler's answer, and
-;;; reading stops where it is met.  The padding PR adds three 400s, for what
-;;; the parser reads and hands no span of: more than two empty lines before
-;;; a request line, more than one space between its parts, and a chunk size
-;;; of more than 16 digits, the last met in the head's delivery too.
+;;; reading stops where it is met.  Three 400s are for what the parser reads
+;;; and hands no span of: more than two empty lines before a request line,
+;;; more than one space between its parts, and a chunk size of more than 16
+;;; digits, the last met in the head's delivery too.
 ;;;
-;;; Oracles: design §6.5's table, and decision 0009 for the 301; RFC 9110
-;;; §15's reason phrases, and RFC 6585 §5's for 431; decision 0010 item 6;
-;;; decision 0005's defaults, which set the limit each row passes; and the
-;;; Date: the fake clock starts at the epoch, `Thu, 01 Jan 1970 00:00:00
-;;; GMT`, and a minute on, when the 408s' rows are ticked, reads `Thu, 01 Jan
-;;; 1970 00:01:00 GMT`.
+;;; Oracles: the originated response's shape (no body, `Content-Length: 0`,
+;;; `Connection: close`); RFC 9110 §15's reason phrases, and RFC 6585 §5's
+;;; for 431; RFC 9112 §3.2, which lets a server answer an invalid target with
+;;; a 301 to it encoded; the default limits, which set the limit each row
+;;; passes; and the Date: the fake clock starts at the epoch, `Thu, 01 Jan
+;;; 1970 00:00:00 GMT`, and a minute on, when the 408s' rows are ticked,
+;;; reads `Thu, 01 Jan 1970 00:01:00 GMT`.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
         (only (http-server decisions) originated-reasons)
@@ -94,14 +93,14 @@
 
 ;; kept : Nat String Symbol (Listof Field) -> Outcome
 ;; A status for what the feed that completed the head met in the body, which
-;; waited for the handler's answer (decision 0013): reading stopped where it
-;; was met, before the handler was asked.
+;; waited for the handler's answer: reading stopped where it was met, before
+;; the handler was asked.
 (define (kept status reason why fields) (closes status reason why fields '() '()))
 
 (define get "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
 
 ;; The handlers: one that answers, one that raises, and one whose answer
-;; carries its own framing, which the server writes (decision 0010 item 2).
+;; carries its own framing, which the server writes.
 (define (answers request) (make-response 200 #f '() (b "ok")))
 (define (raises request) (raise 'boom))
 (define (frames-itself request)
@@ -116,8 +115,8 @@
 ;; stalled : String -> (FakeShell -> Any)
 ;; The client sends `text`, a request it never finishes; a minute passes,
 ;; the header and body deadlines' 60 s, and the fake's timer fires, which
-;; ticks the connection once its deadline has passed (M5.3).  The core reads
-;; no clock: the tick is what tells it, and only the Date shows the minute.
+;; ticks the connection once its deadline has passed.  The core reads no
+;; clock: the tick is what tells it, and only the Date shows the minute.
 (define (stalled text)
   (lambda (sh)
     (send! sh text)
@@ -146,7 +145,7 @@
               (conn-phase s) (conn-close-after s))))))
 
 ;; A row: what it shows; the handler; the client's moves; the outcome; and
-;; the limits, decision 0005's defaults unless given.
+;; the limits, the default limits unless given.
 (define (row text handler provoke outcome . limits)
   (list text handler provoke outcome (if (null? limits) default-limits (car limits))))
 (define (row-status r) (car (car (car (list-ref r 3)))))
@@ -160,7 +159,7 @@
 (define rows
   (list
    ;; A GET or HEAD whose target's only faults are bracket params and pipes
-   ;; is redirected to the target encoded (decision 0009).
+   ;; is redirected to the target encoded.
    (row "301: bracket params in a GET, redirected to the target encoded"
         answers (sent (string-append "GET /s?ids[]=1 HTTP/1.1\r\nHost: x\r\n\r\n" get))
         (refused 301 "Moved Permanently" 'target-redirect (at epoch '("Location" . "/s?ids%5B%5D=1"))))
@@ -175,8 +174,7 @@
         answers (sent (string-append "GET / HTTP/1.1\r\nHo st: x\r\n\r\n" get))
         (refused 400 "Bad Request" 'parser-error (at epoch)))
    ;; HTTP/1.0 has no Transfer-Encoding, so a request below 1.1 that carries
-   ;; it has faulty framing (RFC 9112 §6.1; decided on the owner's word,
-   ;; 2026-09-26).
+   ;; it has faulty framing (RFC 9112 §6.1).
    (row "400: an HTTP/1.0 request with Transfer-Encoding"
         answers (sent (string-append "POST / HTTP/1.0\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n" get))
         (refused 400 "Bad Request" 'faulty-framing (at epoch)))
@@ -185,9 +183,9 @@
    (row "400: a parser error, a Transfer-Encoding with no chunked"
         answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: pigeons\r\n\r\n" get))
         (refused 400 "Bad Request" 'parser-error (at epoch)))
-   ;; What the parser reads and hands no span of (the padding PR): three
-   ;; empty lines before a request line, two spaces after its method, and a
-   ;; chunk size of 17 digits, zeros included.
+   ;; What the parser reads and hands no span of: three empty lines before a
+   ;; request line, two spaces after its method, and a chunk size of 17
+   ;; digits, zeros included.
    (row "400: three empty lines before a request line"
         answers (sent (string-append "\r\n\r\n\r\n" get get))
         (refused 400 "Bad Request" 'empty-lines (at epoch)))
@@ -199,7 +197,7 @@
                                    (make-string 16 #\0) "5\r\nhello\r\n0\r\n\r\n" get))
         (kept 400 "Bad Request" 'chunk-size-too-long (at epoch)))
    ;; 408: the header deadline passes with the head unfinished, or the body
-   ;; deadline with the body unfinished (M5.2): two of its five bytes.
+   ;; deadline with the body unfinished: two of its five bytes.
    (row "408: a head still unfinished when the header deadline passes"
         answers (stalled "GET / HTTP/1.1\r\nHo")
         (refused 408 "Request Timeout" 'header-timeout (at a-minute-on)))
@@ -207,14 +205,14 @@
         reads (stalled "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab")
         (refused 408 "Request Timeout" 'body-timeout (at a-minute-on)))
    ;; 413: a declared length one byte past max-body-bytes, refused before
-   ;; any of the body is read or the handler asked (decision 0013 item 5).
+   ;; any of the body is read or the handler asked.
    (row "413: a declared length one byte past max-body-bytes"
         reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello" get))
         (refused 413 "Content Too Large" 'body-too-large (at epoch))
         (limits-with default-limits '((max-body-bytes . 4))))
    ;; A chunked body's extensions, all of them together, one byte past
-   ;; 16 KiB (M6.4): answered as a body past a cap is.  The reader is handed
-   ;; no piece: the extension comes before the chunk's data.
+   ;; 16 KiB: answered as a body past a cap is.  The reader is handed no
+   ;; piece: the extension comes before the chunk's data.
    (row "413: a body's chunk extensions one byte past 16 KiB"
         reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5;e="
                                    (make-string 16382 #\v) "\r\nhello\r\n0\r\n\r\n" get))
@@ -242,8 +240,8 @@
                                      (lines 3 (string-append "X: " (make-string 6000 #\v) "\r\n"))
                                      "\r\n" get))
         (refused 431 "Request Header Fields Too Large" 'headers-too-large (at epoch)))
-   ;; A chunked body's trailer fields are held to the same four limits
-   ;; (M6.4), and one past them is answered as a head's is.
+   ;; A chunked body's trailer fields are held to the same four limits, and
+   ;; one past them is answered as a head's is.
    (row "431: a trailer field value one byte past max-header-value-bytes"
         reads (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
                                    "5\r\nhello\r\n0\r\nT: " (make-string (+ max-value 1) #\v) "\r\n\r\n" get))
@@ -264,18 +262,16 @@
         answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
                                      "0\r\n\r\n" get))
         (refused 501 "Not Implemented" 'unsupported-transfer-coding (at epoch)))
-   ;; 505: HTTP/0.9, which the server does not speak (RFC 9110 §15.6.6;
-   ;; decided on the owner's word, by form, 2026-10-03, M8.3).
+   ;; 505: HTTP/0.9, which the server does not speak (RFC 9110 §15.6.6).
    (row "505: an HTTP/0.9 request"
         answers (sent (string-append "GET / HTTP/0.9\r\n\r\n" get))
         (refused 505 "HTTP Version Not Supported" 'version-not-supported (at epoch)))
-   ;; 505: HTTP/2's preface; there is nothing to hand it to (decision 0006
-   ;; item 2).
+   ;; 505: HTTP/2's preface; the server has no HTTP/2 to hand it to.
    (row "505: the HTTP/2 preface"
         answers (sent (string-append "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" get))
         (refused 505 "HTTP Version Not Supported" 'http2-preface (at epoch)))))
 
-;; The statuses driven end to end: design §6.5's, and 0009's 301.
+;; The statuses driven end to end.
 (define end-to-end '(301 400 408 413 414 431 500 501 505))
 
 (run-suite "connection-originated"
@@ -285,7 +281,7 @@
               rows)
 
     ;; The table is every status the core originates, not a sample of them.
-    ;; A parser error's status is the error's, not a reason's (design §6.3).
+    ;; A parser error's status is the error's, not a reason's.
     (test-equal "every reason the core originates a response for has a row" '()
                 (filter (lambda (reason) (not (memq reason (map row-reason rows))))
                         originated-reasons))
@@ -293,6 +289,6 @@
                 (filter (lambda (reason)
                           (not (or (eq? reason 'parser-error) (memq reason originated-reasons))))
                         (map row-reason rows)))
-    (test-equal "design §6.5's statuses, and decision 0009's 301, each have a row"
+    (test-equal "every status the core originates, 301 included, has a row"
                 end-to-end
                 (filter (lambda (status) (memv status (map row-status rows))) end-to-end))))

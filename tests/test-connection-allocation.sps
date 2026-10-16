@@ -1,65 +1,64 @@
 #!r6rs
-;;; (http-server connection): what a request costs in allocation.  M2.2, M2.3,
-;;; and the M3 exit.
+;;; (http-server connection): what a request costs in allocation.
 ;;;
-;;; Decision 0002's second amendment: the 3 KiB gate is a regression ratchet
-;;; counted as a total (parser, adapter and core), and shapes are the real
-;;; guard.  One keep-alive connection runs whole requests the way a shell
-;;; will: `bytes-arrived`, the feed through the adapter's bindings (the core
-;;; pauses the parser at the message's end), the queued actions taken, then
-;;; `parser-result`, `handler-responded`, `write-completed`, and the resume.
-;;; The workload is the CPS spike's (research/spike/cps-core.sps §4): a
-;;; keep-alive GET with three headers, fed whole.
+;;; The 3 KiB gate is a regression ratchet counted as a total (parser,
+;;; adapter and core), and shapes are the real guard.  One keep-alive
+;;; connection runs whole requests the way a shell does: `bytes-arrived`, the
+;;; feed through the adapter's bindings (the core pauses the parser at the
+;;; message's end), the queued actions taken, then `parser-result`,
+;;; `handler-responded`, `write-completed`, and the resume.  The base
+;;; workload, `cps` below, is a keep-alive GET with three headers, fed whole.
 ;;;
 ;;; The checks:
 ;;;   - the total per request is within the 3,072 B ratchet;
 ;;;   - it does not grow with the length of a header value: the head is kept
-;;;     as spans, never copied (the amendment's second shape);
+;;;     as spans, never copied;
 ;;;   - nor with the length of the target: an origin-form target's path and
 ;;;     query are judged in place, by uriparse's ranged `validate-component`
-;;;     (v0.5.0, uriparse #21), never copied, so a long path and a long query
-;;;     each cost what a short target does (every request here arrives in one
+;;;     (v0.5.0 or later), never copied, so a long path and a long query each
+;;;     cost what a short target does (every request here arrives in one
 ;;;     delivery: a target split across deliveries is joined once by the core,
 ;;;     as a header is);
 ;;;   - nor with the length of the Host value: it is judged in place, by
-;;;     uriparse's ranged `validate-authority` (v0.6.0, uriparse #24);
+;;;     uriparse's ranged `validate-authority` (v0.6.0 or later);
 ;;;   - an absolute-form target costs one parse by a reused uriparse collector
 ;;;     more: the collector is the connection's, made once, never one per
-;;;     request (M2.3, design §7.5);
+;;;     request;
 ;;;   - the cost stays constant from request to request: later requests on
-;;;     the connection cost what earlier ones did (the third shape);
+;;;     the connection cost what earlier ones did;
 ;;;   - nor does it grow with the length of the response's body: the body is
-;;;     a segment of the write, never copied (design §7.3; the M3 exit);
+;;;     a segment of the write, never copied;
 ;;;   - a field name costs the same however much of a parser keyword it
-;;;     matches (byte-machine #139, fixed in v0.6.1);
-;;;;   - and two requests a server meets are within the ratchet too: a JSON
-;;;     POST, and ab -k's HTTP/1.0 keep-alive GET (the M3 exit).  The POST's
-;;;     handler reads its body, whole and streamed: a response given instead
-;;;     of a reader to a request whose head announces a body closes the
-;;;     connection (decision 0013, M6.1).  curl's GET
-;;;     is printed, not gated: its three fields are the CPS workload's shape,
-;;;     which the ratchet already holds.  So is a browser's GET, with eleven
-;;;     fields: each past the CPS workload's three costs 176 B, and reading
-;;;     its Connection value 64 B more, so its total counts its fields.
-;;; The first shape, per callback, is test-connection-entry.sps's.
+;;;     matches (byte-machine v0.6.1 or later: its matcher does not copy the
+;;;     prefix it has matched on every byte);
+;;;   - and two requests a server meets are within the ratchet too: a JSON
+;;;     POST, and ab -k's HTTP/1.0 keep-alive GET.  The POST's handler reads
+;;;     its body, whole and streamed: a response given instead of a reader to
+;;;     a request whose head announces a body closes the connection.  curl's
+;;;     GET is printed, not gated: its three fields are the base workload's
+;;;     shape, which the ratchet already holds.  So is a browser's GET, with
+;;;     eleven fields: each field past the base workload's three adds to the
+;;;     total, and so does reading its Connection value, so its total counts
+;;;     its fields.
+;;; Per callback, the allocation checks are test-connection-entry.sps's.
 ;;;
-;;; And a streamed response (M6.3; decision 0013 item 8): a GET answered with
-;;; a producer whose pieces are written as they come.  Each piece costs the
-;;; same however many came before it, and a 16 KiB piece costs what a
-;;; 128-byte one does: a piece is a segment of its write, never copied, and a
-;;; power of two's size line is made once.  A 100-byte piece costs more: its
-;;; size line.  The cost of a piece is printed, not gated.
+;;; And a streamed response: a GET answered with a producer whose pieces are
+;;; written as they come.  Each piece costs the same however many came before
+;;; it, and a 16 KiB piece costs what a 128-byte one does: a piece is a
+;;; segment of its write, never copied, and a power of two's size line is made
+;;; once.  A 100-byte piece costs more: its size line.  The cost of a piece is
+;;; printed, not gated.
 ;;;
-;;; And what a connection costs to open (M4.1): its parser shares the one
-;;; binding list the adapter makes (design §7.5), so it costs what
-;;; byte-machine's make-parser does with a list of twenty-five bindings made
-;;; once, beforehand, and the adapter's field initials.
+;;; And what a connection costs to open: its parser shares the one binding
+;;; list the adapter makes, so it costs what byte-machine's make-parser does
+;;; with a list of twenty-five bindings made once, beforehand, and the
+;;; adapter's field initials.
 ;;;
-;;; Oracles: the 3,072 B ratchet and the shapes, from 0002's second amendment;
-;;; Chez's cumulative allocation counter `sstats-bytes`, calibrated below and
-;;; never the live heap; and what uriparse's own reused collector costs on
-;;; the same target, and byte-machine's own make-parser on a list made once,
-;;; each read by that counter.
+;;; Oracles: the 3,072 B ratchet and the shapes above; Chez's cumulative
+;;; allocation counter `sstats-bytes`, calibrated below and never the live
+;;; heap; and what uriparse's own reused collector costs on the same target,
+;;; and byte-machine's own make-parser on a list made once, each read by that
+;;; counter.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) statistics sstats-bytes)
         (http-server connection) (http-server private adapter)
@@ -107,8 +106,7 @@
 
 ;; reading-connection : Bytevector (-> BodyReader) -> (-> Void)
 ;; A keep-alive connection that serves `request`, whose head announces a
-;; body, once per call, as a shell does (decision 0013): the request fed
-;; whole, the core pauses the parser at the message's end, and asks the
+;; body, once per call, as a shell does: the request fed whole, the core pauses the parser at the message's end, and asks the
 ;; handler with the feed's result; the handler answers with a reader made by
 ;; `make-reader`; the pieces the core hands it are handed over; and its
 ;; response is written.  What the callbacks queue is kept as the gate's own
@@ -182,12 +180,12 @@
 ;; streaming-connection : Bytevector Nat Nat -> (-> Void)
 ;; A keep-alive connection that serves `request` once per call, answered
 ;; with a 200 streamed from a producer of `pieces` pieces, each the same
-;; `size`-byte bytevector handed out again, as a shell performs it (M6.3):
-;; each `notify-producer` answered at once with the producer's next answer,
+;; `size`-byte bytevector handed out again, as a shell performs it: each
+;; `notify-producer` answered at once with the producer's next answer,
 ;; as producer-event makes it, and the writes completed after, oldest first,
 ;; a turn at a time, a completion that asks for a piece performed too.  The
-;; pieces stay under decision 0005's high water, so the producer waits only
-;; at 64 writes outstanding, and goes on at 16 (M6.3's second review).
+;; pieces stay under the write high water, so the producer waits only at 64
+;; writes outstanding, and goes on at 16.
 (define (streaming-connection request pieces size)
   (let* ((ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f default-limits)
                                  (lambda (actions) #f)))
@@ -284,8 +282,8 @@
 (define cps-absolute
   (b "GET http://x/a HTTP/1.1\r\nHost: x\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n"))
 ;; The same request with one more 17-byte field name, which matches the first
-;; byte of the parser's keyword Transfer-Encoding, or its first 16 (the matcher
-;; that once copied its prefix per byte: byte-machine #139).
+;; byte of the parser's keyword Transfer-Encoding, or its first 16 (a matcher
+;; that copied its prefix per byte would cost more for the longer match).
 (define (cps-with-name name)
   (b (string-append "GET /a HTTP/1.1\r\nHost: x\r\n" name ": a\r\nUser-Agent: spike\r\nAccept: */*\r\n\r\n")))
 (define cps-keyword-1 (cps-with-name "Txxxxxxxxxxxxxxxx"))
@@ -379,16 +377,15 @@
                                 (uri-parse-result-validate (uri-collect-finish! c))))))
           (test-eqv "an absolute-form target costs one reused collector's parse more"
                     (+ short parse) absolute))
-        ;; A response's body is a segment of the write, never copied (design
-        ;; §7.3; the M3 exit).  Both lengths take three digits, so the header
-        ;; block is the same size and only the body differs.
+        ;; A response's body is a segment of the write, never copied.  Both
+        ;; lengths take three digits, so the header block is the same size and
+        ;; only the body differs.
         (test-eqv "a 999-byte body costs what a 100-byte one does" body-100 body-999)))
 
     ;; A field name costs the same however much of a parser keyword it
-    ;; matches.  byte-machine's matcher once copied the prefix it had matched
-    ;; on every byte, so a name matching 16 bytes of Transfer-Encoding cost
-    ;; 2,880 B more than one matching 1 (byte-machine #139, filed at the M3
-    ;; exit, fixed in v0.6.1 and pinned through chez-httparse v0.4.3).
+    ;; matches.  A matcher that copied the prefix it had matched on every byte
+    ;; would make a name matching 16 bytes of Transfer-Encoding cost more than
+    ;; one matching 1; byte-machine v0.6.1 and later does not.
     (let ((one (measure (lambda () (per-request cps-keyword-1))))
           (sixteen (measure (lambda () (per-request cps-keyword-16)))))
       (test-eq "both near-miss requests are served" 'served
@@ -397,8 +394,8 @@
         (test-eqv "a 17-byte name costs the same however much of a keyword it matches" one sixteen)))
 
     ;; Requests a server meets: a JSON POST and ab -k's GET, each within the
-    ;; ratchet; curl's GET, the CPS workload's shape, and a browser's are
-    ;; printed.  On the owner's word, at the M3 exit (2026-09-26).
+    ;; ratchet; curl's GET, the base workload's shape, and a browser's are
+    ;; printed.
     (let ((curl (measure (lambda () (per-request curl-get))))
           (json (measure (lambda () (warmed (reading-connection json-post whole)))))
           (json-streamed (measure (lambda () (warmed (reading-connection json-post streamed)))))
@@ -422,8 +419,8 @@
     ;; A body read whole is buffered as it arrives, the buffer growing to the
     ;; declared length once that is at most twice what has arrived and
     ;; doubling before: the buffers it grows through come to less than twice
-    ;; the body (M6.1's review).  Grown by each piece alone, a 64 KiB body in
-    ;; 1,000-byte pieces would be copied at each of its 66.
+    ;; the body.  Grown by each piece alone, a 64 KiB body in 1,000-byte
+    ;; pieces would be copied at each of its 66.
     (let ((grown (measure (lambda () (whole-buffers 65536 1000)))))
       (when (number? grown)
         (diag (string-append "connection-allocation: a 64 KiB body read whole, in 1,000-byte pieces, "
@@ -434,14 +431,14 @@
                      ((< grown (* 2 65536)) 'within)
                      (else (list 'over grown)))))
 
-    ;; A streamed response (M6.3): curl's GET answered with a producer of 16,
+    ;; A streamed response: curl's GET answered with a producer of 16,
     ;; 32 and 48 pieces of 100 bytes, and of 8 pieces of 128 bytes, of
     ;; 16 KiB and of 100 bytes.  The sixteen pieces from the 17th to the 32nd
     ;; cost what the first sixteen did, and the sixteen from the 33rd what
     ;; those did: the core keeps nothing that grows with the pieces written.
     ;; Forty-eight pieces and the head stay under the 64 writes a stream may
-    ;; have outstanding, so none of these streams waits for a completion
-    ;; (M6.3's second review), whose own cost would be read as the pieces'.
+    ;; have outstanding, so none of these streams waits for a completion,
+    ;; whose own cost would be read as the pieces'.
     ;; And a piece's bytes are a segment of its write, never
     ;; copied, so its length changes nothing but its size line, made once for
     ;; a power of two, `80` or `4000`, and for its piece otherwise, `64`.
@@ -461,8 +458,7 @@
                              (number->string large) ", of 128 bytes " (number->string small)
                              ", of 100 bytes " (number->string other)))
         ;; Per piece, so the byte a collection adds to an average now and
-        ;; then (9,729 B for the second 32 pieces, where the first 16 took
-        ;; 4,864) is not read as a piece's.
+        ;; then is not read as a piece's.
         (test-eqv "a piece costs the same however many came before it"
                   (div (- c32 c16) 16) (div (- c48 c32) 16))
         (test-eq "and a streamed piece costs something" 'allocates
@@ -482,10 +478,9 @@
         (test-eqv "request 20,000 costs what request 1,000 did" first later)))
 
     ;; A connection's parser shares the adapter's binding list, one for the
-    ;; server (design §7.5; M4.1): it costs what make-parser does with a list
-    ;; of the twenty-five bindings made once, here, before either is measured,
-    ;; and the adapter's two field initials, the message type and llhttp's
-    ;; version leniency (decision 0006's amendment of 2026-10-04, later).
+    ;; server: it costs what make-parser does with a list of the twenty-five
+    ;; bindings made once, here, before either is measured, and the adapter's
+    ;; two field initials, the message type and llhttp's version leniency.
     (let* ((ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f default-limits)
                                    (lambda (actions) #f)))
            (made-once (map (lambda (name)

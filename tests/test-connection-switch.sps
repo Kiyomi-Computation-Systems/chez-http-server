@@ -1,47 +1,45 @@
 #!r6rs
 ;;; (http-server connection): the door, through the fake shell's message
-;;; loop.  M8.2.
+;;; loop.
 ;;;
-;;; Decision 0016.  A handler takes an HTTP/1.1 upgrade with no body by
-;;; answering a switch.  The core writes the 101, and once it is written
-;;; hands the stream over: the fake shell calls the switch's take-over with
-;;; a transport over the fake connection and the bytes read past the
-;;; request.  The hook's contract (decision 0006 item 3): those bytes are
-;;; exactly `parser-result-next` onward, so what the taker is handed,
-;;; followed by what it reads on, is exactly what the client sent after the
-;;; request, at every delivery size.  Through the fake transport, the
-;;; taker's writes follow the 101, its close ends the connection once they
-;;; are written, its deadline passes on the fake clock, and its drain call
-;;; runs when the shell drains.  A request the door does not open for, and
-;;; a switch with a fault, are answered 500, then the staged close.
+;;; A handler takes an HTTP/1.1 upgrade with no body by answering a switch.
+;;; The core writes the 101, and once it is written hands the stream over:
+;;; the fake shell calls the switch's take-over with a transport over the
+;;; fake connection and the bytes read past the request.  The hook's
+;;; contract: those bytes are exactly `parser-result-next` onward, so what
+;;; the taker is handed, followed by what it reads on, is exactly what the
+;;; client sent after the request, at every delivery size.  Through the fake
+;;; transport, the taker's writes follow the 101, its close ends the
+;;; connection once they are written, its deadline passes on the fake clock,
+;;; and its drain call runs when the shell drains.  A request the door does
+;;; not open for, and a switch with a fault, are answered 500, then the
+;;; staged close.
 ;;;
-;;; Decision 0024: for a client that reads nothing, the fake completes no
-;;; write the taker asks for, as the libuv shell's never complete.  A close
-;;; then waits for them, a deadline asked for meanwhile is armed, and an
-;;; abort closes the stream at once, each write outstanding told ECANCELED.
-;;; A raise in any of the taker's calls is its failure and closes the stream
-;;; at once, as the libuv shell's taker-call! has it.
+;;; For a client that reads nothing, the fake completes no write the taker
+;;; asks for, as the libuv shell's never complete.  A close then waits for
+;;; them, a deadline asked for meanwhile is armed, and an abort closes the
+;;; stream at once, each write outstanding told ECANCELED.  A raise in any of
+;;; the taker's calls is its failure and closes the stream at once, as the
+;;; libuv shell's taker-call! has it.
 ;;;
-;;; Decision 0026: a taker's close is staged.  Once its writes are written
-;;; the write side is shut and the stream lingers, the linger deadline armed
-;;; in the taker's deadline's place, reading and dropping what comes, until
-;;; the client's end, a read error or that deadline closes it.  A client
-;;; whose end came during the close's writes is closed once they are
-;;; written.  Once lingering, the stream is the server's: a deadline, its
-;;; cancel and a read-stop change nothing; an abort closes it at once.
+;;; A taker's close is staged.  Once its writes are written the write side is
+;;; shut and the stream lingers, the linger deadline armed in the taker's
+;;; deadline's place, reading and dropping what comes, until the client's
+;;; end, a read error or that deadline closes it.  A client whose end came
+;;; during the close's writes is closed once they are written.  Once
+;;; lingering, the stream is the server's: a deadline, its cancel and a
+;;; read-stop change nothing; an abort closes it at once.  Until then, each
+;;; write the close waits for has the write timeout, from the close and again
+;;; from each write's end, and past it the stream is aborted; the taker's own
+;;; deadline runs beside it, the earlier first.
 ;;;
-;;; Decision 0027: until then, each write the close waits for has the write
-;;; timeout, from the close and again from each write's end, and past it
-;;; the stream is aborted; the taker's own deadline runs beside it, the
-;;; earlier first.
+;;; What the client sends while the taker reads nothing, before its
+;;; read-start or after its read-stop, is kept, as the kernel keeps it, and
+;;; read once reading starts again.
 ;;;
-;;; Plan §14's review note (2026-10-12): what the client sends while the
-;;; taker reads nothing, before its read-start or after its read-stop, is
-;;; kept, as the kernel keeps it, and read once reading starts again.
-;;;
-;;; Oracles: decision 0016; RFC 9110 §7.8 and §15.2.2; RFC 6455 §5.7's
-;;; masked "Hello" frame, two of its bytes after the header; the inputs'
-;;; own bytes; design §6.5's 500; decision 0011's staged close.
+;;; Oracles: RFC 9110 §7.8 and §15.2.2; RFC 6455 §5.7's masked "Hello"
+;;; frame, two of its bytes after the header; the inputs' own bytes; the
+;;; status 500 (RFC 9110 §15.6.1); the staged close (RFC 9112 §9.6).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
         (http-server switch) (http-server transport)
@@ -106,7 +104,7 @@
 ;; waiting-taking : (Transport -> Any) (Transport -> Any) -> (Request -> Switch)
 ;; A handler that switches to websocket, its take-over doing `now` with the
 ;; transport in place, then answering `(awaiting thunk)`, the thunk doing
-;; `later` with it on a coroutine (decision 0023).
+;; `later` with it on a coroutine.
 (define (waiting-taking now later)
   (lambda (request)
     (switch-protocols
@@ -141,8 +139,8 @@
 ;; unread : Bytevector (Request -> Any) [Trace] -> FakeShell
 ;; One connection handed `input` whole, then let write the 101 and nothing
 ;; after: a write the taker asks for completes only on a later turn, so
-;; none does, as for a client that reads nothing (decision 0024).  Traced
-;; with `trace`, if given, as make-fake-connection traces.
+;; none does, as for a client that reads nothing.  Traced with `trace`, if
+;; given, as make-fake-connection traces.
 (define (unread input handler . trace)
   (let ((sh (make-fake-connection default-limits handler (and (pair? trace) (car trace)))))
     (fake-shell-deliver! sh (list 'bytes-arrived input 0 (bytevector-length input)))
@@ -160,8 +158,8 @@
 ;; A taker that writes to a client that reads nothing, then raises in one of
 ;; its calls, named by `where`: the take-over itself, its read, its end, its
 ;; deadline's call, its drain call, its write's callback, the client then
-;; reading, or its close call, once it has aborted.  What was recorded, what the write was told, how often the close
-;; call ran, and the core's phase.
+;; reading, or its close call, once it has aborted.  What was recorded, what
+;; the write was told, how often the close call ran, and the core's phase.
 (define (raised-in where)
   (let* ((t (make-taker))
          (fail (lambda () (raise (make-message-condition (symbol->string where)))))
@@ -258,7 +256,7 @@
 
 (run-suite "connection-switch"
   (lambda ()
-    ;; --- the hook's contract (decision 0006 item 3) -----------------------
+    ;; --- the hook's contract ----------------------------------------------
     ;; At every delivery size the bytes handed over, then what the taker
     ;; reads on, are the two frames, and the 101 is all the client reads.
     (test-equal "at every delivery size: the bytes handed over, then those read on, are exactly the bytes after the request; the client reads the 101"
@@ -295,12 +293,11 @@
                                ((eq? (caar as) 'call-handler) as)
                                (else (from (cdr as))))))))
 
-    ;; Decision 0016's amendment (2026-10-11): nothing is read between the
-    ;; hand-off and the taker's read-start, so what the client sends after
-    ;; the 101 waits for the taker, as Go's hijack and Node's upgrade keep
-    ;; it.  A taker that starts reading only once its deadline passes: the
-    ;; frames sent after the handshake are read by no one until then, and
-    ;; are then all the taker's.
+    ;; Nothing is read between the hand-off and the taker's read-start, so
+    ;; what the client sends after the 101 waits for the taker, as Go's hijack
+    ;; and Node's upgrade keep it.  A taker that starts reading only once its
+    ;; deadline passes: the frames sent after the handshake are read by no one
+    ;; until then, and are then all the taker's.
     (test-equal "a taker that starts reading once its deadline passes reads what the client sent after the 101, none of it read before"
                 (list 0 frames 0 'handed-off)
                 (let* ((t (make-taker))
@@ -323,11 +320,11 @@
                   (list before (concat (reverse (taker-read t))) (length (fake-shell-taker-failures sh))
                         (conn-phase (fake-shell-conn-state sh)))))
 
-    ;; Plan §14's review note (2026-10-12): what the client sends while a
-    ;; taker reads nothing is the kernel's to keep, as the libuv shell's
-    ;; kernel keeps it, never handed to a taker that has not asked for it.
-    ;; Read once the taker starts reading, on the turn after, as libuv reads
-    ;; it then, ahead of what came after it, each read traced as it is read.
+    ;; What the client sends while a taker reads nothing is the kernel's to
+    ;; keep, as the libuv shell's kernel keeps it, never handed to a taker
+    ;; that has not asked for it.  Read once the taker starts reading, on the
+    ;; turn after, as libuv reads it then, ahead of what came after it, each
+    ;; read traced as it is read.
     (let* ((t (make-taker))
            (door '())
            (sh (unread handshake (keeping t)
@@ -366,10 +363,10 @@
                       (list '(1 ()) '(2 ()) (list hello-frame hi-frame) '(eof) 0)
                       (list stopped again (reverse (taker-read t)) (taker-ends t)
                             (length (fake-shell-taker-failures sh)))))))
-    ;; A close reads on for the client's end, as the libuv shell's does
-    ;; (decision 0026), so what was kept while the taker read nothing is
-    ;; read then, and dropped: the client's end among it closes the stream,
-    ;; which lingered from the close, the taker told nothing.
+    ;; A close reads on for the client's end, as the libuv shell's does, so
+    ;; what was kept while the taker read nothing is read then, and dropped:
+    ;; the client's end among it closes the stream, which lingered from the
+    ;; close, the taker told nothing.
     (let* ((t (make-taker))
            (sh (unread handshake (keeping t))))
       (fake-shell-deliver! sh (arriving hello-frame))
@@ -382,7 +379,7 @@
                     (list closing (taker-read t) (taker-ends t) (taker-closes t)
                           (conn-phase (fake-shell-conn-state sh)) (length (fake-shell-taker-failures sh))))))
 
-    ;; --- the transport (decision 0016 item 2) ------------------------------
+    ;; --- the transport -----------------------------------------------------
     ;; The taker's writes follow the 101, in order, each callback told once
     ;; its bytes are written.
     (let* ((t (make-taker))
@@ -397,9 +394,9 @@
       (test-equal "each write's callback is told it is written, in order" '((one #f) (two #f))
                   (reverse (taker-written t))))
     ;; The taker's close: once its writes are written, the connection
-    ;; lingers until the client ends (decision 0026), then closes, its close
-    ;; call runs once, and the core ends closed.  A write asked for after the
-    ;; close is not written: its callback is told ECANCELED.
+    ;; lingers until the client ends, then closes, its close call runs once,
+    ;; and the core ends closed.  A write asked for after the close is not
+    ;; written: its callback is told ECANCELED.
     (let* ((t (make-taker))
            (sh (run eager (bytevector-length eager)
                     (taking t (lambda (tr)
@@ -440,10 +437,9 @@
                     '(() (ECANCELED))
                     (list in-call (taker-written t)))))
     ;; A client's end read while the 101 is written is handed over with the
-    ;; stream (decision 0016's amendment of 2026-10-12): the taker, reading
-    ;; in its take-over, is told 'eof on the next turn, as the libuv shell
-    ;; tells it, and its close closes the stream at once, the end having
-    ;; come, with no linger.
+    ;; stream: the taker, reading in its take-over, is told 'eof on the next
+    ;; turn, as the libuv shell tells it, and its close closes the stream at
+    ;; once, the end having come, with no linger.
     ;; Not in the read-start's call: on the next turn.  A taker that closes
     ;; in its take-over, after its read-start, is told nothing.
     (let* ((t (make-taker))
@@ -480,8 +476,7 @@
                   '((eof) #f)
                   (list (taker-ends t) (fake-shell-reading? sh))))
     ;; A close call registered once the stream has closed runs at once, so a
-    ;; taker that asks late still hears of the close (M8.2's review, the
-    ;; eighth).
+    ;; taker that asks late still hears of the close.
     (let* ((t (make-taker))
            (sh (run eager (bytevector-length eager) (taking t (lambda (tr) (transport-close! tr))))))
       (fake-shell-deliver! sh '(eof))
@@ -492,7 +487,7 @@
                     '(closed 1 11)
                     (list (conn-phase (fake-shell-conn-state sh)) before (taker-closes t)))))
     ;; On a stream that has closed, a deadline arms nothing and never passes,
-    ;; as the libuv shell's arms none (M8.2's review, the seventh).
+    ;; as the libuv shell's arms none.
     (let* ((t (make-taker))
            (sh (run eager (bytevector-length eager) (taking t (lambda (tr) (transport-close! tr))))))
       (fake-shell-deliver! sh '(eof))
@@ -504,7 +499,7 @@
         (test-equal "on a stream that has closed, a deadline arms nothing and never passes"
                     '(closed #f 0)
                     (list (conn-phase (fake-shell-conn-state sh)) armed (taker-passes t)))))
-    ;; --- the close lingers (decision 0026) ----------------------------------
+    ;; --- the close lingers --------------------------------------------------
     ;; Once the close's writes are written, the write side is shut and the
     ;; stream lingers, the linger deadline armed in place of the taker's: a
     ;; read then is dropped, the taker reading nothing, and the client's end
@@ -662,7 +657,7 @@
                   '(((shutdown-requested)) closing)
                   (list (fake-shell-events sh) (conn-phase (fake-shell-conn-state sh)))))
 
-    ;; --- a taker that waits (decision 0023) --------------------------------
+    ;; --- a taker that waits ------------------------------------------------
     ;; Its take-over answers (awaiting thunk): the thunk runs on a coroutine,
     ;; where it waits, here for a read its on-bytes call resumes it with,
     ;; then writes what it was resumed with after the 101.
@@ -756,7 +751,7 @@
                   (list (list (list hi-frame) 'handed-off 0) (list (list hi-frame) 'handed-off 0))
                   (list (ending (lambda () (values))) (ending (lambda () (values 1 2))))))
 
-    ;; --- a stream aborted, and a taker's raise (decision 0024) --------------
+    ;; --- a stream aborted, and a taker's raise -----------------------------
     ;; The client reads nothing, so the taker's write never completes and its
     ;; close waits.  A deadline asked for then is armed, as the libuv shell
     ;; arms it, and its call's abort closes the stream: the write is told
@@ -841,7 +836,7 @@
                   (list (map condition-message (fake-shell-taker-failures sh)) (taker-written t) (taker-closes t)
                         (conn-phase (fake-shell-conn-state sh)))))
 
-    ;; --- the close's write bound (decision 0027) ---------------------------
+    ;; --- the close's write bound -------------------------------------------
     ;; Once a taker has asked to close, each write the close waits for has
     ;; write-timeout-ms, from the close and again from each write's end, as
     ;; the libuv shell's does, and past it the stream is aborted.  The
@@ -934,7 +929,7 @@
                       (list w w 5)
                       (list later-own cancelled (fake-shell-armed sh))))))
 
-    ;; --- the door closed (decision 0016 items 1 and 4) ----------------------
+    ;; --- the door closed ---------------------------------------------------
     (test-equal "a request that does not upgrade, answered a switch: 500, logged not-an-upgrade, the staged close"
                 '((500) ((log invalid-response not-an-upgrade)) lingering invalid-response)
                 (refused (b "GET /chat HTTP/1.1\r\nHost: x\r\n\r\n") (switch-to)))
