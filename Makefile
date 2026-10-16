@@ -9,6 +9,8 @@
 # onto one library path.  A pin is a gitlink; `make check-pins` checks each
 # submodule sits at its pinned commit, holds uriparse to the byte-machine on
 # the library path, and refuses a vendored checkout with local edits.
+# chez-cmark-gfm, which renders the docs site, is pinned by Akku.lock instead
+# (the docs site section below).
 
 CHEZ ?= chez
 
@@ -61,11 +63,11 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh
+.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
-	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_.-]+:.*?## / { printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_.-]+:.*?## / { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 check-help: ## Fail if any .PHONY target is undocumented in `make help`
 	@missing=0; \
@@ -193,6 +195,47 @@ test: build check-pins ## Run every tests/test-*.sps (status 0/1/2/3, keep-going
 	done; \
 	if [ $$fail -eq 0 ]; then echo "ALL SUITES PASSED"; else echo "SUITE FAILED"; fi; \
 	exit $$fail
+
+# --- the docs site -----------------------------------------------------------
+# docs/*.md rendered to build/site/ through chez-cmark-gfm.  Akku.lock pins it
+# for the site alone: nothing under src/ and no tests/test-*.sps imports it, so
+# `make test` needs none of this.  The site needs the system cmark-gfm library
+# (`cmark-gfm` from Homebrew or apt), not libuv.
+#
+# chez-cmark-gfm comes from an `akku install` tree when there is one, and
+# otherwise from the archive Akku.lock pins, downloaded and checked against the
+# lock's sha256 by scripts/fetch-akku-lock.  Run `make site-deps` once where
+# there is a network; after that it needs none.  Akku.lock is `akku lock`'s
+# output for a manifest whose one dependency is chez-cmark-gfm 2.0.0.
+SITE_CMARK   := $(if $(wildcard .akku/lib/cmark/gfm.sls),.akku/lib,$(BUILD_DIR)/akku/chez-cmark-gfm/src)
+SITE_LIBDIRS := .:$(SITE_CMARK)
+SITE_REF     ?= main
+
+site-deps: ## Get chez-cmark-gfm as Akku.lock pins it: an `akku install` tree, else the locked archive
+	@if [ -f .akku/lib/cmark/gfm.sls ]; then \
+	  echo "site-deps: using .akku/lib (akku install)"; \
+	else \
+	  AKKU_DEST=$(BUILD_DIR)/akku sh scripts/fetch-akku-lock chez-cmark-gfm; \
+	fi
+
+site: site-deps ## Render docs/ into build/site/ (open build/site/index.html); SITE_REF=<tag> pins links to repository files
+	@mkdir -p $(BUILD_DIR)/site
+	@CHEZSCHEMELIBDIRS=$(SITE_LIBDIRS) SITE_REF="$(SITE_REF)" \
+	  SITE_OUT=$(BUILD_DIR)/site $(CHEZ) --program build-site.sps
+	@cp site/style.css $(BUILD_DIR)/site/style.css
+	@echo "site: $(BUILD_DIR)/site ready (open $(BUILD_DIR)/site/index.html)"
+
+# The generator's own suites (SRFI-64, so `deps` too), then the real site,
+# rendered in memory and checked.  site-unit runs with no chez-cmark-gfm on its
+# path, so a site library it tests that starts importing (cmark gfm) fails
+# there at import.
+check-site: site-deps deps ## Test the site generator, then render docs/ in memory: nav, links, anchors (GitHub's too), no .md leak, no <pre> reflow
+	@CHEZSCHEMELIBDIRS=.:tests:$(SRFI_LIBS) $(CHEZ) --program tests/site-unit.sps
+	@CHEZSCHEMELIBDIRS=$(SITE_LIBDIRS):tests:$(SRFI_LIBS) $(CHEZ) --program tests/site-render-unit.sps
+	@CHEZSCHEMELIBDIRS=$(SITE_LIBDIRS) SITE_REF="$(SITE_REF)" $(CHEZ) --program tests/site-check.sps
+
+check-site-deps: ## Test scripts/fetch-akku-lock offline: sha256 checked, a second run needs no network, a re-pin replaces the tree
+	@sh tests/fetch-akku-lock.sh
 
 # make hands FLAVOR=prod to the suite's chez-libuv build, which would
 # otherwise relink a dev shim.  check-prod depends on nothing, so the last

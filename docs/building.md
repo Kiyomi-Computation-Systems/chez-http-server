@@ -67,6 +67,23 @@ The vendored corpora live in `test/vendor/`, each with a `PROVENANCE` file
 giving its source and the sha256 of every file. They are never edited by
 hand; `make corpus-refresh` re-vendors one from an upstream checkout.
 
+## The docs site
+
+These pages render to a small static site:
+
+```sh
+make site          # writes build/site/; open build/site/index.html
+make check-site    # every page listed, every link and anchor resolving
+```
+
+The site is built by `build-site.sps` and the libraries in `site/`, through
+[chez-cmark-gfm](https://github.com/Kiyomi-Computation-Systems/chez-cmark-gfm),
+which needs the system **cmark-gfm** library (`brew install cmark-gfm`, or
+`apt install cmark-gfm`). `make site` fetches chez-cmark-gfm the first time,
+as `Akku.lock` pins it, or uses `.akku/` after `akku install`. A new page goes
+in `docs/` and in `site/pages.sls`, the nav's order; `make check-site` fails
+until both name it.
+
 ## House rules
 
 - **Functional core, imperative shell.** Rules go in the pure libraries
@@ -78,4 +95,4 @@ hand; `make corpus-refresh` re-vendors one from an upstream checkout.
   `;; reason-status : Symbol -> Nat`.
 - **Comments describe the code as it is**, not how it came to be.
 
-CI runs `make test` on Linux for every pull request.
+CI runs `make test` and `make check-site` on Linux for every pull request.
