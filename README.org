@@ -33,10 +33,12 @@ at once a client that stopped reading, and a handler can read every line of a
 field. Since v0.4.1 a handler that waits holds about 0.7 KB until its wait
 ends, about 3 KB less. Since v0.5.0 code that took an upgrade closes as the
 server closes its own connections, so a client still sending reads its last
-words, not a reset (see [[file:docs/handlers.org][docs/handlers.org]]). Since v0.6.0, the current release,
-that close gives up on a client that reads nothing once the write timeout
-passes, and what a client sends after the upgrade waits for code that starts
-reading late. [[file:CHANGELOG.md][CHANGELOG.md]] has what
+words, not a reset (see [[file:docs/handlers.org][docs/handlers.org]]). Since v0.6.0 that close gives up
+on a client that reads nothing once the write timeout passes, and what a client
+sends after the upgrade waits for code that starts reading late. Since v0.7.0,
+the current release, that code may wait on a thunk that returns nothing, and
+the test fake's door, which its own tests load, keeps unread bytes and bounds
+a close as the server does. [[file:CHANGELOG.md][CHANGELOG.md]] has what
 each release does, and the numbers measured for v0.1.0. See
 [[file:.plans/2026-09-19-chez-http-server-project-brief.md][the project brief]] for the milestone map.
 
