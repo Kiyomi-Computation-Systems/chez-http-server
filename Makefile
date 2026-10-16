@@ -106,37 +106,15 @@ check-pins: ## Verify each submodule sits at its pinned commit (fingerprint chec
 	done; \
 	exit $$fail
 
-# The pure connection libraries under src/http-server/ (outside private/) must
-# not reach the impure world: (libuv ...) and (chezscheme) live only in
-# private/, the tests and this Makefile.  The facade, src/http-server.sls,
-# reaches them only through private/.  A check, not a comment: add such an
-# import to either and this target reddens.
-# Nothing under src/ imports a (libuv private ...) library either: the shell
-# uses chez-libuv's public verbs only.
-# And no code a parser feed runs, the adapter's bindings and the pure
-# libraries they step, can reach the scheduler: a parser callback never
-# waits (R5), and here nothing it can reach could.  The pure libraries import
-# no private library at all, and the adapter neither the scheduler nor the
-# shell or serve, which turn it, nor the waits, which park on it.
-check-imports: ## Assert pure libraries import no (libuv)/(chezscheme)/private library, and src/ no test or chez-libuv private library
-	@hits=$$(grep -REn '\((chezscheme|libuv)( |\))' src/http-server src/http-server.sls --include='*.sls' 2>/dev/null | grep -v '/private/' || true); \
-	if [ -n "$$hits" ]; then \
-	  echo "IMPURE IMPORT outside src/http-server/private/:" >&2; echo "$$hits" >&2; exit 1; \
-	fi; \
-	tests=$$(grep -REn '\((uv-testing|httparse test)( |\))' src --include='*.sls' 2>/dev/null || true); \
-	if [ -n "$$tests" ]; then \
-	  echo "TEST-ONLY IMPORT in a shipped library:" >&2; echo "$$tests" >&2; exit 1; \
-	fi; \
-	private=$$(grep -REn '\(libuv private ' src --include='*.sls' 2>/dev/null || true); \
-	if [ -n "$$private" ]; then \
-	  echo "CHEZ-LIBUV PRIVATE IMPORT in a shipped library:" >&2; echo "$$private" >&2; exit 1; \
-	fi; \
-	feed=$$( (grep -En '\(http-server private ' src/http-server/*.sls; \
-	         grep -En '\(http-server private (scheduler|waits|shell|serve)\)' src/http-server/private/adapter.sls) 2>/dev/null || true); \
-	if [ -n "$$feed" ]; then \
-	  echo "PRIVATE IMPORT in code a parser feed runs, which could reach the scheduler (R5):" >&2; echo "$$feed" >&2; exit 1; \
-	fi; \
-	echo "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, the facade's included; no test library and no chez-libuv private library in src/; no private library in the pure ones, and no scheduler, waits, shell or serve in the adapter"
+# What each library under src/ may import: (libuv ...) and (chezscheme) only
+# under src/http-server/private/, the facade reaching them through it; no test
+# library and no (libuv private ...) library anywhere in src/; and nothing a
+# parser feed runs can reach the scheduler (R5).  The check is a suite,
+# tests/test-imports.sps, which `make test` runs with the others: it reads
+# each library's import forms with Chez's own reader, so a comment or a string
+# naming a library imports none.  This target runs it alone.
+check-imports: build ## Assert pure libraries import no (libuv)/(chezscheme)/private library, and src/ no test or chez-libuv private library
+	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ) --program tests/test-imports.sps
 
 # One procedure closes every handle: handle-close!, the one use of uv-close!
 # in src/.  chez-libuv keeps the
@@ -195,7 +173,7 @@ run: build ## Run a program on the library path: make run PROGRAM=hello.sps
 # A vtest that does not build stops no suite but the clients suite, which
 # names it (status 2): vtest2 builds on POSIX systems only.
 # An oha not fetched, offline or on a platform with no pin, does the same.
-test: build check-pins check-imports ## Run every tests/test-*.sps (status 0/1/2/3, keep-going)
+test: build check-pins ## Run every tests/test-*.sps (status 0/1/2/3, keep-going)
 	@test -n "$(TESTS)" || { echo "test: empty selection — no tests/test-*.sps (failure)" >&2; exit 2; }
 	@test -n "$(TIMEOUT_BIN)" || echo "note: no timeout(1) on PATH; a hung suite will not be capped"
 	@if [ -n "$${VTEST:-}" ]; then echo "test: VTEST names the vtest to run, $$VTEST"; \
