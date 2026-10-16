@@ -40,7 +40,7 @@
 
   ;; refilled-producer : Nat Nat -> (-> (U Bytevector Eof))
   ;; sized-producer's pieces, each handed out in the same bytevector,
-  ;; refilled with the next letter at each call, as handlers.org lets a
+  ;; refilled with the next letter at each call, as docs/bodies.md lets a
   ;; producer do.
   (define (refilled-producer count size)
     (let ((made 0) (piece (make-bytevector size)))

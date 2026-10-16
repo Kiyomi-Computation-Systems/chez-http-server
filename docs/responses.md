@@ -1,0 +1,72 @@
+# Responses
+
+Your handler returns a response: a status, a reason phrase, headers, and a
+body, which is a bytevector, `#f` for none, or a producer that streams it
+([Bodies and streaming](bodies.md)). The server adds the rest:
+
+- the reason phrase (`OK`, `Not Found`, ...) when you give `#f`;
+- `Content-Length`, counted from your body; for a producer's body,
+  `Transfer-Encoding: chunked` to HTTP/1.1, and no length to HTTP/1.0, whose
+  connection then closes after it;
+- `Connection: close` when the connection closes after this response, and
+  `Connection: keep-alive` to an HTTP/1.0 client that asked to keep it open;
+- `Date`, unless you set your own.
+
+To close the connection after your response, add `Connection: close`.
+
+## Bodies that are not sent
+
+A client reads no body in these answers, so the server sends none, even if
+you gave one:
+
+| Answer | On the wire |
+|:--|:--|
+| to a `HEAD` request | your body's `Content-Length`, no body |
+| `204 No Content` | no `Content-Length`, no body |
+| `304 Not Modified` | no `Content-Length`, no body |
+| a `2xx` to a `CONNECT` | no `Content-Length`, no body |
+
+Give a `HEAD` the body a `GET` would get, and the client learns its length.
+Give it `#f`, or a producer, and no length is sent; a producer is never
+called.
+
+## What gets 500
+
+The server will not write a response that could confuse the client. It
+answers `500 Internal Server Error` instead, logs why, and closes the
+connection:
+
+- a status outside 200–599 (a `1xx` is never a final answer);
+- a reason phrase that is not a bytevector, or has a control character;
+- a header name with a character names cannot have, such as a space or a
+  colon, or a value with a control character (a CR or LF could split your
+  response in two);
+- a `Content-Length` or `Transfer-Encoding` header: the server writes those;
+- a `Connection` header other than `close`;
+- a body that is not a bytevector, a producer or `#f`, or an answer that is
+  none of a response, a reader, `awaiting` or a switch
+  ([Handlers](handlers.md)).
+
+## What the server answers by itself
+
+Some requests never reach your handler. The server answers them itself, with
+no body, and then closes the connection: what the client sends after such a
+request cannot be read safely.
+
+| Answer | When |
+|:--|:--|
+| `301 Moved Permanently` | brackets or pipes in a GET or HEAD target ([Requests](requests.md)) |
+| `400 Bad Request` | a request, target or `Host` the server cannot accept; more than 4 bytes of empty lines (two CRLFs) before a request line, or more than one space between its parts; or a chunk size of more than 16 hex digits |
+| `408 Request Timeout` | the headers took longer than `CHEZ_HTTP_READ_HEADER_TIMEOUT`, or the body paused longer than `CHEZ_HTTP_BODY_INACTIVITY_TIMEOUT` |
+| `413 Content Too Large` | a body over `CHEZ_HTTP_MAX_BODY_BYTES`, or over a `read-whole-body` cap, or a chunked body's extensions over 16 KiB |
+| `414 URI Too Long` | a target over `CHEZ_HTTP_MAX_TARGET_BYTES` |
+| `431 Request Header Fields Too Large` | headers, or a chunked body's trailers, over one of the four header limits |
+| `500 Internal Server Error` | your handler raised, or gave an answer listed above |
+| `501 Not Implemented` | another coding before `chunked`, as in `Transfer-Encoding: gzip, chunked` |
+| `505 HTTP Version Not Supported` | HTTP/2's opening line, `PRI * HTTP/2.0`, or a version not 1.x: HTTP/0.9 (`GET /` with no version) or `HTTP/2.0` |
+
+When a request breaks more than one rule, the rule its bytes break first
+decides the answer, however the bytes arrived: a target over its limit and
+then a byte no target may hold is a `414`, not a `400`.
+
+The limits are in [Configuration](configuration.md).

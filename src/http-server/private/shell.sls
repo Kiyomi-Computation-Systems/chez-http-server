@@ -181,7 +181,7 @@
 ;;; never waits for its pieces: a producer slow to make them delays them, a
 ;;; turn at a time, but not the head.  The copy is made as a write is held,
 ;;; not as the turn's write is issued: a producer may hand out one bytevector
-;;; again, refilled (docs/handlers.org).  A larger write is copied by
+;;; again, refilled (docs/bodies.md).  A larger write is copied by
 ;;; chez-libuv at the call.  The completion reports `write-completed` for each
 ;;; write it carried, with its byte count, in the order written.
 ;;;

@@ -1801,7 +1801,7 @@
                           (rows-calls) (<= stream-most-writes 64))))
       (client-close! cl))
     ;; The rows handed out in one bytevector, refilled at each call, as
-    ;; handlers.org lets a producer do.  A write the shell holds for the
+    ;; docs/bodies.md lets a producer do.  A write the shell holds for the
     ;; turn's one libuv write is copied as it is handed over, so each row goes
     ;; out as it was then, not as the bytevector is once the turn's write is
     ;; issued.  The client reads as the rows come, so turns run whole.

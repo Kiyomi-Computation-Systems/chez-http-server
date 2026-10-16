@@ -17,6 +17,17 @@ All notable changes to chez-http-server are recorded here. The format follows
 - **`make run` passes `ARGS` to the program:**
   `make run PROGRAM=examples/file-server.sps ARGS="8000 --directory ."`.
 
+### Changed
+
+- **The guides in `docs/` are Markdown, rewritten as seventeen pages** for a
+  static site, home first (`docs/README.md`): installing, a quickstart, the
+  examples, handlers, bodies and streaming, waiting, upgrades, requests,
+  responses, connections, configuration, deploying, how it works,
+  performance, an API reference, and building and testing. The six `.org`
+  pages they replace are gone; their content is in the new pages.
+  `docs/performance.md` gives fresh measurements, among them requests a
+  second with oha and the file server beside `python3 -m http.server`.
+
 ## [0.7.0] - 2026-10-16
 
 The eighth release. The test fake's door, which a taker's own tests load, now acts as

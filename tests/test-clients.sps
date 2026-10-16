@@ -600,8 +600,8 @@
                   (run loop sh "curl" (list "-sS" "-g" "-L" "-w" "%{http_code} %{num_connects} %{num_redirects}\\n"
                                             (url "/a?ids[]=1|2"))))
       ;; A handler gets the target exactly as it arrived
-      ;; (docs/request-targets.org): `OPTIONS *` has the path "*"
-      ;; (docs/handlers.org), and dot segments stay.
+      ;; (docs/requests.md): `OPTIONS *` has the path "*"
+      ;; (docs/handlers.md), and dot segments stay.
       (test-equal "curl: OPTIONS *, its path \"*\""
                   (list 'satisfied '(0 #f) "* -\n200 1 4\n")
                   (run loop sh "curl" (list "-sS" "-X" "OPTIONS" "--request-target" "*" "-w" curl-out (url "/"))))
