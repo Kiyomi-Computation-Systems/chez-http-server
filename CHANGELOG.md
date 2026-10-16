@@ -6,6 +6,19 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-16
+
+The eighth release. The test fake's door, which a taker's own tests load, now acts as
+the server does in two more places: it keeps what a client sends while the taker reads
+nothing, and it bounds a taker's close by the write timeout. A taker's test that ends
+a connection while the taker has stopped reading no longer hears that end until the
+taker reads again. What a taker's tests see changes, so the release is 0.7.0, though
+no export of the server changes. One fix comes with it: a waiting taker's thunk may
+end with no values. chez-libuv is pinned at v0.11.0, which still needs libuv 1.48 or
+later; nothing the server calls behaves differently, but code that calls chez-libuv
+itself meets v0.10.0's changes. chez-httparse v0.4.5 with byte-machine v0.7.0, and
+uriparse v0.6.2, are 0.6.0's.
+
 ### Changed
 
 - **chez-libuv is pinned at v0.11.0.** Run `make build` after pulling: the shim's
@@ -395,7 +408,8 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.4.0...v0.4.1

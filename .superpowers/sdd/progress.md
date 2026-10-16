@@ -153,3 +153,25 @@ NEXT: the PR, and its closing ritual when the owner asks. The fix waits in Unrel
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,128 expected passes, every pin ok. Nothing tested changed: the ledger only.
 
 NEXT: 0.7.0's release, stacked on this, by the owner's form ("Merge #189 first (Recommended)", "0.7.0 (Recommended)", "Tag on local runs (Recommended)"). Then chez-websocket's pin to it alone, which rewrites its binding check.
+
+**0.7.0's release, on `chore/release-0.7.0` (2026-10-16),** on the owner's "cut the server's next release". Stacked on `docs/ledger-archive-v0.6.0`.
+- **#189 first, by form** ("Merge #189 first (Recommended)"; weighed: releasing without it). #189, the entry above, squashed as 04639fa (tree 8243926, the tested head a8ecde4's; parent f6a76f1) once its run, 38907192718, was proved the billing block (0 steps, the payments annotation). Its remote branch was deleted. Its local branch was held by another session's worktree, clean at a8ecde4; that worktree was detached in place and the branch deleted. The shared checkout, clean on `main`, was fast-forwarded to 04639fa; no pin moved, so nothing rebuilt.
+- **What it carries.** Every PR since v0.6.0, #185 to #189, was read against CHANGELOG.md's Unreleased, and nothing was missing:
+  - the chez-libuv pins, v0.10.0 (#185) and v0.11.0 (#186), one entry under Changed;
+  - the fake's kept reads (#187) and its write bound (#188), under Changed, since a taker's own tests load the fake;
+  - the no-values thunk (#189), under Fixed.
+- **Semantic versioning, by form** ("0.7.0 (Recommended)"; weighed: 0.6.1). No export line of the server changed since v0.6.0, and `src/` changed only in #189's two `taker-wait!`s. But the fake's door changes what a taker's tests see: chez-websocket's binding check "a send waiting when the connection ends is woken at once, before the client reads" is red on it, by #187's form. And the carried chez-libuv took `addrinfo-chain->list` out of `(libuv dns)` in v0.10.0. v0.6.0 was a minor for a change a taker sees, with no export changed.
+- **The pins:** chez-libuv afe79a5 (v0.11.0), chez-httparse 0b7058e (v0.4.5, byte-machine v0.7.0 at c338a57), uriparse 5ecd88f (v0.6.2), chez-srfi 7879b52, vtest2 803dcd0.
+- **Built.**
+  - CHANGELOG.md: Unreleased moved under `[0.7.0] - 2026-10-16`, with an intro naming the minor, what changes and the pins.
+  - A fresh, empty Unreleased above it, and `[0.7.0]` comparing v0.6.0 with v0.7.0.
+  - README.org's status names v0.7.0 the current release and what it changes.
+- **CI is billing-blocked.** Main's run on 04639fa, 38916351560, ended with `linux` not started (0 steps, the payments annotation). By the owner's form ("Tag on local runs (Recommended)"; weighed: waiting for CI), these runs stand in, one after another, on this branch's tree before this entry:
+  - Darwin arm64, `make test`: fifty-one suites, 2,128 expected passes, every pin ok;
+  - Linux aarch64 (`chez-libuv-noble-scratch:10.4.1`, libuv 1.48.0), every suite once: fifty green, 2,090 expected passes; the clients suite at status 2 with no tools built, as before;
+  - Linux x86_64 under emulation (`chez-websocket-ci-amd64:10.4.1`, libuv 1.48.0), every suite once: fifty green, 2,090, the same;
+  - chez-websocket's main (6caf10b), exported, its fifteen suites on this tree: 396 expected passes. The one red is the binding check above, as on #187; nothing else moved.
+- **The tag.** After the merges, the billing block proved again on main's run on the release's squash, `v0.7.0` goes on that squash, annotated and signed as v0.6.0 was: "chez-http-server v0.7.0 — the test fake's door acts as the server does", its body pointing at CHANGELOG.md's `[0.7.0]`. Main's run is read once when CI returns. The merges and the tag wait for "do closing ritual".
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 2,128 expected passes, every pin ok. Nothing tested changed: CHANGELOG.md, README.org and the ledger only.
+
+NEXT: the closing ritual for both PRs, bottom-up, and the tag, when the owner asks. Then, in chez-websocket: the pin to v0.7.0 alone, which rewrites its binding check (#187's entry).
