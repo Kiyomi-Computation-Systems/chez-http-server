@@ -1,10 +1,10 @@
 #!/bin/sh
 # vendor-corpus.sh NAME ROOT -- vendor a corpus from ROOT, a git checkout at
-# the commit wanted, into test/vendor/NAME (decision 0007): upstream's bytes,
-# verbatim, with a PROVENANCE that records where they came from and a sha256
-# per file. `make corpus-refresh` runs it, and the first vendor ran it too, so
-# a refresh cannot drift from how the first copy was made. Nothing of ROOT is
-# committed. libhtp keeps the Makefile's own recipe (M1.3).
+# the commit wanted, into test/vendor/NAME: upstream's bytes, verbatim, with a
+# PROVENANCE that records where they came from and a sha256 per file.
+# `make corpus-refresh` runs it, and so does a first vendor, so a refresh
+# cannot drift from how the first copy was made. Nothing of ROOT is committed.
+# libhtp keeps the Makefile's own recipe.
 set -eu
 LC_ALL=C
 export LC_ALL
@@ -64,15 +64,15 @@ for f in $listed; do
   cp "$root/$f" "$dst/$f"
 done
 printf '%s\n' \
-  '# Vendored corpus: exact upstream bytes, verified by sha256 (decision 0007).' \
+  '# Vendored corpus: exact upstream bytes, verified by sha256.' \
   '# Never normalize line endings, or the checksums break on a fresh checkout.' \
   '* -text' > "$dst/.gitattributes"
 count=$(printf '%s\n' $listed | wc -l | tr -d ' ')
 {
-  echo "# PROVENANCE -- the vendored $what (decision 0007)."
+  echo "# PROVENANCE -- the vendored $what."
   echo "#"
   echo "# Upstream's bytes, verbatim and never hand-edited: a case we believe is"
-  echo "# wrong becomes an expectation and a decision record, never a change to these"
+  echo "# wrong becomes an expectation in the tests, never a change to these"
   echo "# bytes. Every file is checksummed below and verified by $suite"
   echo "# on every run, so drift or corruption is a status-3 failure, not a discovery."
   echo "# Rewritten only by 'make corpus-refresh $var=<checkout>'."

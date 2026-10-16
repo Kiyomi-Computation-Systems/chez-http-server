@@ -46,8 +46,6 @@ connection:
 - a body that is not a bytevector, a producer or ~#f~, or an answer that is
   neither a response nor a reader ([[file:handlers.org][handlers.org]]).
 
-Decision 0010 in ~.plans/decisions/~ records why.
-
 * What the server answers by itself
 
 Some requests never reach your handler. The server answers them itself, with

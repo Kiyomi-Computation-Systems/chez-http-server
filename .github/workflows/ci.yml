@@ -25,16 +25,16 @@ env:
 jobs:
   linux:
     name: linux
-    # An explicit image, not ubuntu-latest: that label moves to Ubuntu 26.04
-    # from 2026-10-19 (actions/runner-images#14748), and an image change should
-    # be a reviewed commit. Changing it re-keys the Chez cache (step `os`).
+    # An explicit image, not ubuntu-latest: that label moves from one Ubuntu
+    # release to the next, and an image change should be a reviewed commit.
+    # Changing it re-keys the Chez cache (step `os`).
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       # chez-libuv, chez-httparse, uriparse and chez-httparse's nested
       # byte-machine are private, and the job's own token reads only this
-      # repository. `make submodules` reads them with this secret, which the
-      # owner adds; without it, every run stops here, by name.
+      # repository. `make submodules` reads them with this repository secret;
+      # without it, every run stops here, by name.
       - name: Require the submodule read token
         env:
           SUBMODULES_READ_TOKEN: ${{ secrets.SUBMODULES_READ_TOKEN }}
@@ -147,7 +147,7 @@ jobs:
       - name: Check dependency pins
         run: make check-pins
 
-      # vtest2, the black-box lane's client (decision 0017), is built from its
+      # vtest2, the black-box lane's client, is built from its
       # pin and cached as Chez is, keyed on the gitlink read off the tree, the
       # OS release and the arch, so a pin or an image change misses. Its
       # stamp, build/vtest.pin, names the commit it was built from, so `make
@@ -182,7 +182,7 @@ jobs:
             build/vtest.pin
           key: ${{ steps.vtest-cache.outputs.cache-primary-key }}
 
-      # oha, the load smoke's client (decision 0018): the release binary of
+      # oha, the load smoke's client: the release binary of
       # the version tests/fetch-oha.sh pins, kept only if its sha256 is the
       # one pinned beside it. It takes about a second, so it is not cached.
       - name: Fetch oha

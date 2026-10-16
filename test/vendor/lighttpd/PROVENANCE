@@ -1,7 +1,7 @@
-# PROVENANCE -- the vendored lighttpd request.t request blocks (decision 0007).
+# PROVENANCE -- the vendored lighttpd request.t request blocks.
 #
 # Upstream's bytes, verbatim and never hand-edited: a case we believe is
-# wrong becomes an expectation and a decision record, never a change to these
+# wrong becomes an expectation in the tests, never a change to these
 # bytes. Every file is checksummed below and verified by tests/test-strictness-lane.sps
 # on every run, so drift or corruption is a status-3 failure, not a discovery.
 # Rewritten only by 'make corpus-refresh LIGHTTPD_ROOT=<checkout>'.

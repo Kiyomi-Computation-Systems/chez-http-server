@@ -1,7 +1,7 @@
-# PROVENANCE -- the vendored libhtp connection-stream corpus (decision 0007).
+# PROVENANCE -- the vendored libhtp connection-stream corpus.
 #
 # Upstream's bytes, verbatim and never hand-edited: a stream we believe is
-# wrong becomes an expectation and a decision record, never a change to these
+# wrong becomes an expectation in the tests, never a change to these
 # bytes. Every file is checksummed below and verified by tests/test-libhtp.sps
 # on every run, so drift or corruption is a status-3 failure, not a discovery.
 # Rewritten only by 'make corpus-refresh LIBHTP_ROOT=<checkout>'.
