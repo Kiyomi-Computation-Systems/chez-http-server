@@ -21,6 +21,11 @@
 ### Layout, process & libraries
 
 * Plans live in `/.plans`, decision records in `/.plans/decisions`
+* Code comments, `README.org` and `/docs` describe the code as it is: never
+  cite a plan, milestone, decision record, design or plan section, review,
+  date, or PR or issue number. State the fact or the reason itself, in the
+  present tense. History belongs in `/.plans`, the ledger, `CHANGELOG.md`
+  and git. RFC sections and dependency versions are fine.
 * The subagent-driven development ledger lives in `/.superpowers/sdd/` —
   `progress.md` is the spine and `global-constraints.md` binds every task
   brief. Read both before starting slice work; close-outs are recorded there.
