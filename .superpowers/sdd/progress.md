@@ -215,3 +215,13 @@ MERGED to main on 2026-10-16, on the owner's "do closing ritual": **#197, the im
 `make test` green on main: fifty-two suites, 2,156 expected passes, every pin ok.
 
 NEXT: #198's closing ritual when the owner asks. chez-websocket's pin to v0.7.0 merged there as #81 (04a68ba). For the public release, chez-http-server itself is still private. Here, v0.7.0's entries move to `v0.7.0-progress.md` at the next release. When main's runs start again, re-run main's latest run once. Plan §14's open list holds seven items.
+
+MERGED to main on 2026-10-16, on the owner's "do closing ritual on 198": **#198, AGENTS.md: comments and docs cite no plans or dates** (another session's PR, one commit, AGENTS.md alone).
+- **The squash:** fdff776, based on ec33bec, squashed onto 43935ce as 65e938e (parent 43935ce) with `--match-head-commit` and without `--delete-branch`, not rebased. Main's commits since its base touch no file it touches. Proved: the squash's patch-id is the PR's (f2eddea), its diff is AGENTS.md alone, and that blob is the head's (3424e11). `main` was held by no checkout (the primary checkout is on another session's `feat/examples`), so `git fetch origin main:main` fast-forwarded it.
+- **CI.** Billing-blocked. Each run's `linux` job did not start (0 steps, with the payments annotation): the head's 38960563855 and main's on the squash, 38962660344.
+- **Branches.** `docs/agents-comment-rule` deleted, remote and local (no worktree held it). This session's worktree is detached at 65e938e for this reflect. No PR is open.
+- **`make test` on main went red once, under load.** The clients suite's keep-alive load smoke failed at 1,475 requests a second while another session's `make test` and its example server ran. The suite alone straight after was green (38 passes, 19,781 a second). Under AGENTS.md's rule it is noted in plan §14's open list and not chased.
+
+`make test` on main: fifty-two suites, 2,155 expected passes and the one load red above; every other suite and every pin ok. The clients suite alone: 38 expected passes.
+
+NEXT: no PR is open. chez-websocket's pin to v0.7.0 merged there as #81 (04a68ba). For the public release, chez-http-server itself is still private. Here, v0.7.0's entries move to `v0.7.0-progress.md` at the next release. When main's runs start again, re-run main's latest run once. Plan §14's open list holds eight items.

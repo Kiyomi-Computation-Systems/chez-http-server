@@ -1787,6 +1787,18 @@ failure.*
   thread from the loop during the write, past a tick (10 ms). Its fix, the least of
   three writes, was stopped before its counts were recorded.
 
+*Noted 2026-10-16, under AGENTS.md's rule for timing flakes: seen once, with another
+session's suites and its example server running on the machine; not chased.*
+
+- **The keep-alive load smoke's one red.** The clients suite's "oha: 20,000 GETs, 50
+  connections kept alive, every one answered 200 with its 4 bytes, none failed" went red
+  once, in the `make test` for #198's reflect, on 65e938e (Darwin arm64), at 1,475
+  requests a second. Its values were not captured: the full run prints none.
+  - The suite alone straight after was green at 19,781 a second, and so was the full
+    `make test` on 43935ce, whose code is 65e938e's (#198 changed AGENTS.md alone).
+  - Another session's `make test` and its `examples/hello.sps` server were running
+    during the red run.
+
 *Noted 2026-10-12, from the `/code-review` of #179 and #180 (xhigh), on the owner's word
 ("put the rest in 14s open list"). Each was found by reading the code, not by a run, and no
 script or check reaches it today. The review's other eight were fixed (#180, #181, and the
