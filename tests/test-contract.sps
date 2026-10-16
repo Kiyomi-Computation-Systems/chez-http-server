@@ -89,10 +89,16 @@
 ;;; came after the hand-off and before the taker's read-start: the stream
 ;;; was handed over with no bytes and the taker had not started reading as
 ;;; it was sent, so the late reader's window is the one played, not one a
-;;; slow turn skipped.  The door scripts play to the
-;;; direct shell and to the coroutine shell, whose handler answers the
-;;; switch from a coroutine; one whose client never ends its stream plays to
-;;; a shell with short limits, where its linger's deadline closes it.
+;;; slow turn skipped; `(stop-reading)` stops the client reading, so
+;;; what the server writes after it waits, and the client, reading no
+;;; more, is not waited for to read the stream's end; and `(bounded)`
+;;; holds that the stream was aborted at the close's write bound, its
+;;; taker's write told ECANCELED, so the script plays what it is named for.  The door scripts
+;;; play to the direct shell and to the coroutine shell, whose handler
+;;; answers the switch from a coroutine; one whose client never ends its
+;;; stream plays to a shell with short limits, where its linger's deadline
+;;; closes it, and so does one whose client stops reading, where the close's
+;;; write bound aborts it (decision 0027).
 ;;;
 ;;; HANDLER CODE THAT WAITS (M7.3), with the server's verbs (decision
 ;;; 0015), plays to the direct shell, whose handler waits where a target
@@ -263,8 +269,10 @@
 ;; writing "late" and closing; `/door-waits` answers `awaiting`, its thunk
 ;; sleeping 5 ms, then writing "woke" and closing; `/door-reads-later`
 ;; starts reading, writing back each read, only once a 50 ms deadline
-;; passes; `/door-raises` raises as it takes the stream; and
-;; `/write-after-close` closes, then writes.
+;; passes; `/door-raises` raises as it takes the stream;
+;; `/write-after-close` closes, then writes; and `/door-bounded`, at its
+;; first read, writes door-huge and closes behind it, the write marked by
+;; its length.
 (define (door-taker target)
   (define (is? s) (bytevector=? target (b s)))
   (define (taken t retained)
@@ -309,7 +317,23 @@
     (lambda (t retained) (taken t retained) (raise (make-message-condition "the taker failed"))))
    ((is? "/write-after-close")
     (lambda (t retained) (taken t retained) (close! t) (door-write! t (b "too late"))))
+   ((is? "/door-bounded")
+    (lambda (t retained)
+      (taken t retained)
+      (transport-read-start! t
+                             (lambda (bv start end)
+                               (door-mark! (list 'read (bytes-between bv start end)))
+                               (door-mark! (list 'write-of (bytevector-length door-huge)))
+                               (transport-write! t door-huge 0 (bytevector-length door-huge)
+                                                 (lambda (why) (door-mark! (list 'written why))))
+                               (close! t))
+                             (lambda (why) (door-mark! (list 'end why))))))
    (else #f)))
+
+;; door-huge : Bytevector — 16 MiB, more than a client's receive buffer and
+;; the server's send buffer hold once the client stops reading, so a write
+;; of it waits (decision 0027), as the shell suite's huge-door does.
+(define door-huge (make-bytevector (* 16 1024 1024) 7))
 
 ;; THE WAITS' MARKS (M7.3).  The libuv shell's waits end inside libuv's run,
 ;; where the suite cannot see them: a timer of the loop's fires, or a
@@ -379,7 +403,8 @@
 ;; A script: its name, then its steps, each `(send "text")`, or `(read)`,
 ;; which waits until the libuv shell has read everything sent so far.  The
 ;; client's end follows the last step, unless the last is `(stall)`: the
-;; client sends nothing more, and never ends its stream.
+;; client sends nothing more, and never ends its stream.  (The door's steps
+;; are THE DOOR's, in the header.)
 (define scripts
   '(("a GET, kept alive" (send "GET /one HTTP/1.1\r\nHost: x\r\n\r\n"))
     ("three requests in one write"
@@ -458,6 +483,14 @@
   `(("a taker that says goodbye to a client that never ends: closed at the linger deadline"
      (send ,(upgrade "/goodbye")) (stall))))
 
+;; A door script whose client stops reading once it has the 101, played to
+;; the shell with short limits, where the close's write bound aborts the
+;; stream (decision 0027): its taker writes door-huge only once the client
+;; has stopped, so the client reads none of it.
+(define door-bound-scripts
+  `(("a taker that closes behind 16 MiB its client reads nothing of: aborted at the write timeout"
+     (send ,(upgrade "/door-bounded")) (heard) (stop-reading) (send "go") (bounded))))
+
 ;; A script whose request the core refuses before any handler is asked,
 ;; played to the direct shell alone: through the coroutine shell, it would
 ;; play the direct shell again.
@@ -465,12 +498,12 @@
   '(("a request the core refuses, with no Host" (send "GET /x HTTP/1.1\r\n\r\n"))))
 
 ;; The scripts whose deadlines pass, played to a shell with short limits: a
-;; fifth of a second or a little more for a head, an idle connection and a
-;; linger, each its own, and a tick of 10 ms.
+;; fifth of a second or a little more for a head, an idle connection, a
+;; linger and a write, each its own, and a tick of 10 ms.
 (define quick-limits
   (limits-with default-limits
                '((read-header-timeout-ms . 200) (idle-timeout-ms . 250) (linger-timeout-ms . 300)
-                 (tick-ms . 10))))
+                 (write-timeout-ms . 300) (tick-ms . 10))))
 
 ;; The scripts played to a shell made on credit (M6.2), which answers with
 ;; each answer and `credit`, as the coroutine shell answers a handler that
@@ -756,6 +789,7 @@
   (set! adopted-at #f)
   (set! door-marks (lambda (what) (set! traced (cons (list 'taker (render what)) traced))))
   (let* ((cl (open-client loop port #f #t))
+         (stopped? #f)
          (wait (if credit? wait-crediting wait-for))
          (sent (make-byte-collector))
          (connecting (wait-for (lambda () (not (eq? (client-connected cl) 'never)))))
@@ -785,7 +819,11 @@
                                                'satisfied
                                                (list 'window (and empty? #t) (and reading? #t))))
                                          waits)))
-                            ((bare-close end-early aborts) (step (cdr steps) waits)))
+                            ((stop-reading)
+                             (uv-read-stop! (client-tcp cl))
+                             (set! stopped? #t)
+                             (step (cdr steps) waits))
+                            ((bare-close end-early aborts bounded) (step (cdr steps) waits)))
                           (let ((waits (if (or (stalls? script) (closes-bare? script) (ends-early? script))
                                            waits
                                            (cons (wait (lambda () (and (= (collector-count delivered)
@@ -793,8 +831,16 @@
                                                                        (answered?))))
                                                  waits))))
                             (unless (stalls? script) (client-shut! cl))
-                            (reverse (cons (wait (lambda () (and closed (not (eq? (client-end cl) 'open)))))
-                                           waits)))))
+                            (let ((waits (cons (wait (lambda () (and closed (or stopped? (not (eq? (client-end cl) 'open))))))
+                                               waits)))
+                              ;; `(bounded)`: the stream was aborted at the
+                              ;; close's write bound, its write told ECANCELED.
+                              (reverse (if (ends-with? script '(bounded))
+                                           (cons (if (member '(taker (written ECANCELED)) traced)
+                                                     'satisfied
+                                                     (list 'not-bounded (filter (lambda (e) (eq? (car e) 'door)) traced)))
+                                                 waits)
+                                           waits))))))
                     (list (list 'not-connected connecting (client-connected cl))))))
     (client-close! cl)
     (wait-for (lambda () (eq? (uv-handle-state (client-tcp cl)) 'closed)))
@@ -1088,7 +1134,9 @@
         (for-each (lambda (script) (check-script! quick port quick-limits #f #f script))
                   stalling-scripts)
         (for-each (lambda (script) (check-script! quick port quick-limits #f #f script))
-                  door-stalling-scripts))
+                  door-stalling-scripts)
+        (for-each (lambda (script) (check-script! quick port quick-limits #f #f script))
+                  door-bound-scripts))
       (let ((port (shell-listen! on-credit "127.0.0.1" 0)))
         (for-each (lambda (script) (check-script! on-credit port default-limits #t #f script))
                   credit-scripts))

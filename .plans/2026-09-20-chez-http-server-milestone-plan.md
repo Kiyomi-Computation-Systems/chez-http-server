@@ -1792,10 +1792,6 @@ failure.*
 script or check reaches it today. The review's other eight were fixed (#180, #181, and the
 PR after them).*
 
-- **The fake shell's door has no write bound (decision 0027).** A taker's entry passing
-  makes its deadline call there, where the libuv shell aborts the stream once the close's
-  write bound has passed. No door script leaves a write unread past write-timeout-ms, so
-  the replay never gives the fake that pass.
 - **An outcome given to an empty queue is dropped.** `fake-shell-deliver-later!` with an
   outcome asserts that the oldest waiting is a taker's write only when something waits;
   with nothing waiting it answers `#f`. A trace check then names the difference a step
@@ -1813,7 +1809,21 @@ PR after them).*
 *Settled: the smuggler corpus on 2026-10-04 (decision 0021); the signal gap after
 `listening`, a taken stream's close bounded from the server's side (decision 0027), what
 the full drain keeps after a big read, and a door script in the cross-shell contract
-test, on 2026-10-11; the fake shell reading past a hand-off, on 2026-10-16.*
+test, on 2026-10-11; the fake shell reading past a hand-off, and its door's write bound,
+on 2026-10-16.*
+
+- ~~The fake shell's door has no write bound (decision 0027)~~, **settled 2026-10-16** on
+  `fix/fake-door-write-bound`, stacked on the item below, on the same word of the owner's.
+  The note: a taker's entry passing made its deadline call in the fake, where the libuv
+  shell aborts the stream once the close's write bound has passed, and no door script
+  left a write unread past write-timeout-ms.
+  - **Now** the fake keeps the taker's own deadline and the bound as two instants, its one
+    entry armed at the earlier, as the libuv shell does (0027's amendment of this date,
+    which corrects the record's "the fake shell is unchanged").
+  - **A thirteenth door script** plays it: the client stops reading once it has the `101`
+    (a new step, `(stop-reading)`), and the taker closes behind 16 MiB, played to the
+    quick shell, whose limits gain a 300 ms write timeout. The two traces part at the
+    libuv shell's pass on main's fake, and agree now.
 
 - ~~The fake shell reads past a hand-off whatever it is handed~~, **settled 2026-10-16**
   on `fix/fake-door-kept-reads`, on the owner's "fix items 4 and 5 from the open list".

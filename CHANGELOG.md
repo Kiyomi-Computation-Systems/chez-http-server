@@ -25,6 +25,12 @@ All notable changes to chez-http-server are recorded here. The format follows
   reading. A taker's own test that ends a connection while the taker has stopped
   reading no longer hears that end until the taker reads again, since the server never
   tells it then: chez-websocket's binding suite has one such check.
+- **The test fake bounds a taker's close as the server does.** `tests/fake-shell.sls`:
+  once a taker has asked to close, each write the close waits for gets the write
+  timeout, from the close and again from each write's end, and past it the stream is
+  aborted, its writes told `ECANCELED` (decision 0027). Before, the fake held such a
+  close open until the taker's own deadline, or a test's later turn, ended it. The
+  taker's own deadline still runs beside the bound, the earlier first.
 
 ## [0.6.0] - 2026-10-12
 
