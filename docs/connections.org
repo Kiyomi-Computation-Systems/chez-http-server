@@ -68,13 +68,11 @@ When the server closes a connection after a response, it closes it gently:
 
 Closing at once while the client is still sending makes the operating system reset
 the connection. A client that is still uploading would then see an error instead of
-the answer, and the end of a long response could be lost. Decision 0011 in
-~.plans/decisions/~ records why.
+the answer, and the end of a long response could be lost.
 
 A connection handed to a taker (a WebSocket, say) closes the same way when the
-taker calls ~transport-close!~ (decision 0026), so the client reads the taker's
-goodbye. From that call on, a write it waits for has ~CHEZ_HTTP_WRITE_TIMEOUT~
-too (decision 0027).
+taker calls ~transport-close!~, so the client reads the taker's goodbye. From
+that call on, a write it waits for has ~CHEZ_HTTP_WRITE_TIMEOUT~ too.
 
 * When the server shuts down
 

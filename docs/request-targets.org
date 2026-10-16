@@ -58,5 +58,6 @@ The redirect is narrow on purpose:
 
 Anything else on the list above still gets 400.
 
-After a 301, 400 or 414 the server closes the connection. Decision 0009 in
-~.plans/decisions/~ records why.
+After a 301, 400 or 414 the server closes the connection, as after every
+answer it makes by itself: it has not read the rest of the request, so it
+cannot tell where the next one would begin.

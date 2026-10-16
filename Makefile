@@ -1,16 +1,14 @@
 # chez-http-server — canonical entry points.
 #
-# Dependencies are pinned git submodules under vendor/ (global-constraints):
-# chez-libuv, chez-httparse, uriparse, and chez-srfi for the SRFI-64 test
-# framework; byte-machine arrives transitively under chez-httparse; vtest2,
-# the black-box lane's client, is built from its pin (decision 0017), and
-# oha, the load smoke's, is fetched at the version and sha256s that
-# tests/fetch-oha.sh pins (decision 0018).  The *_PIN lines below name each
-# submodule's commit and its tag.  `make build` assembles them
-# onto one library path.  A pin is
-# a gitlink; `make check-pins` is the fingerprint check the brief's M0 asks for.
-# It also holds uriparse to the byte-machine on the library path, and refuses a
-# vendored checkout with local edits.
+# Dependencies are pinned git submodules under vendor/: chez-libuv,
+# chez-httparse, uriparse, and chez-srfi for the SRFI-64 test framework;
+# byte-machine arrives transitively under chez-httparse; vtest2, the black-box
+# lane's client, is built from its pin, and oha, the load smoke's, is fetched
+# at the version and sha256s that tests/fetch-oha.sh pins.  The *_PIN lines
+# below name each submodule's commit and its tag.  `make build` assembles them
+# onto one library path.  A pin is a gitlink; `make check-pins` checks each
+# submodule sits at its pinned commit, holds uriparse to the byte-machine on
+# the library path, and refuses a vendored checkout with local edits.
 
 CHEZ ?= chez
 
@@ -38,9 +36,9 @@ VTEST_PIN        := 803dcd000b1328f6e766774e23aedbd7f53e7d97  # last
 # and build/scheme-libs carries (srfi :64).
 #
 # The chez-httparse corpus harness ((httparse test ...)) lives under its
-# test/support/harness, NOT its src/, so it is a separate, test-only path (M1.1,
-# design §3.2).  So is chez-libuv's tests/, for (uv-testing): the socket lane's
-# iteration-capped waits and loopback plumbing (design §8.5, M4.2).
+# test/support/harness, NOT its src/, so it is a separate, test-only path.  So
+# is chez-libuv's tests/, for (uv-testing): the socket lane's iteration-capped
+# waits and loopback plumbing.
 # check-imports keeps both out of src/, so nothing shipped can reach them.
 BUILD_DIR := build
 SRFI_LIBS := $(BUILD_DIR)/scheme-libs
@@ -110,18 +108,16 @@ check-pins: ## Verify each submodule sits at its pinned commit (fingerprint chec
 
 # The pure connection libraries under src/http-server/ (outside private/) must
 # not reach the impure world: (libuv ...) and (chezscheme) live only in
-# private/, the tests and this Makefile (global-constraints).  The facade,
-# src/http-server.sls, reaches them only through private/ (design §3.1).  A
-# check, not a comment: add such an import to either and this target reddens.
+# private/, the tests and this Makefile.  The facade, src/http-server.sls,
+# reaches them only through private/.  A check, not a comment: add such an
+# import to either and this target reddens.
 # Nothing under src/ imports a (libuv private ...) library either: the shell
-# uses chez-libuv's public verbs, and a private reach is a workaround, carried
-# only until its upstream ask lands (decision 0008), as chez-libuv #28's was.
+# uses chez-libuv's public verbs only.
 # And no code a parser feed runs, the adapter's bindings and the pure
 # libraries they step, can reach the scheduler: a parser callback never
-# waits (design §5.3, R5; M7.1), and here nothing it can reach could.  The
-# pure libraries import no private library at all, and the adapter neither
-# the scheduler nor the shell or serve, which turn it (M7.1's review), nor
-# the waits, which park on it (M7.2).
+# waits (R5), and here nothing it can reach could.  The pure libraries import
+# no private library at all, and the adapter neither the scheduler nor the
+# shell or serve, which turn it, nor the waits, which park on it.
 check-imports: ## Assert pure libraries import no (libuv)/(chezscheme)/private library, and src/ no test or chez-libuv private library
 	@hits=$$(grep -REn '\((chezscheme|libuv)( |\))' src/http-server src/http-server.sls --include='*.sls' 2>/dev/null | grep -v '/private/' || true); \
 	if [ -n "$$hits" ]; then \
@@ -143,7 +139,7 @@ check-imports: ## Assert pure libraries import no (libuv)/(chezscheme)/private l
 	echo "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, the facade's included; no test library and no chez-libuv private library in src/; no private library in the pure ones, and no scheduler, waits, shell or serve in the adapter"
 
 # One procedure closes every handle: handle-close!, the one use of uv-close!
-# in src/ (design §5.3 and §7.6, decision 0003).  chez-libuv keeps the
+# in src/.  chez-libuv keeps the
 # callback of a handle's first close alone, so a close from anywhere else
 # could run first and leave the shell's own callback never run.  The check is
 # a suite, tests/test-close-ownership.sps, which `make test` runs with the
@@ -166,7 +162,7 @@ deps: submodules ## Build the chez-libuv shim and link SRFI-64 onto the path
 build: deps ## Build dependencies and assemble the one library path
 	@echo "build: chez-libuv shim built; library path = $(LIBDIRS)"
 
-# vtest2 (decision 0017) is built out of its tree by tests/build-vtest.sh, from
+# vtest2 is built out of its tree by tests/build-vtest.sh, from
 # the pinned commit's own files, into build/vtest; build/vtest.pin names the
 # commit it was built from, and a binary built from any other is rebuilt.  The
 # script, not $(MAKE), runs its build, so `make -n` prints it and runs nothing.
@@ -179,7 +175,7 @@ VTEST_COMMIT := $(strip $(VTEST_PIN))
 vtest: submodules ## Build vtest2, the black-box lane's .vtc client, at its pin into build/vtest
 	@sh tests/build-vtest.sh $(VTEST_DIR) $(VTEST_COMMIT) $(VTEST_BUILD) $(VTEST_BIN)
 
-# oha (decision 0018) is the release binary of the version tests/fetch-oha.sh
+# oha is the release binary of the version tests/fetch-oha.sh
 # pins, for this machine, fetched into build/oha and kept only if its sha256
 # is the one pinned beside it.  OHA, in the environment or on the command
 # line, names another oha for tests/test-clients.sps; `make test` then
@@ -197,18 +193,17 @@ run: build ## Run a program on the library path: make run PROGRAM=hello.sps
 	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ) --program $(PROGRAM)
 
 # A vtest that does not build stops no suite but the clients suite, which
-# names it (status 2): vtest2 builds on POSIX systems only (decision 0017).
-# An oha not fetched, offline or on a platform with no pin, does the same
-# (decision 0018).
+# names it (status 2): vtest2 builds on POSIX systems only.
+# An oha not fetched, offline or on a platform with no pin, does the same.
 test: build check-pins check-imports ## Run every tests/test-*.sps (status 0/1/2/3, keep-going)
 	@test -n "$(TESTS)" || { echo "test: empty selection — no tests/test-*.sps (failure)" >&2; exit 2; }
 	@test -n "$(TIMEOUT_BIN)" || echo "note: no timeout(1) on PATH; a hung suite will not be capped"
 	@if [ -n "$${VTEST:-}" ]; then echo "test: VTEST names the vtest to run, $$VTEST"; \
 	else sh tests/build-vtest.sh $(VTEST_DIR) $(VTEST_COMMIT) $(VTEST_BUILD) $(VTEST_BIN) || \
-	  echo "test: vtest did not build; the clients suite will name it (decision 0017)" >&2; fi
+	  echo "test: vtest did not build; the clients suite will name it" >&2; fi
 	@if [ -n "$${OHA:-}" ]; then echo "test: OHA names the oha to run, $$OHA"; \
 	else sh tests/fetch-oha.sh $(OHA_BIN) || \
-	  echo "test: oha was not fetched; the clients suite will name it (decision 0018)" >&2; fi
+	  echo "test: oha was not fetched; the clients suite will name it" >&2; fi
 	@fail=0; \
 	for t in $(TESTS); do \
 	  echo "=== $$t ==="; \
@@ -234,14 +229,14 @@ clean: ## Remove our build artifacts and the vendored shim
 	rm -rf $(BUILD_DIR)
 	-$(MAKE) -C $(LIBUV_DIR) clean
 
-# The vendored corpora are upstream's bytes and are never hand-edited
-# (decision 0007). The initial vendor and every refresh run this one recipe, so
+# The vendored corpora are upstream's bytes and are never hand-edited.
+# The initial vendor and every refresh run this one recipe, so
 # a refresh cannot drift from however the first copy was made; each source
 # checkout is named here, never committed, and only the corpora named are
 # refreshed. tests/test-libhtp.sps, tests/test-robustness-lane.sps and
 # tests/test-strictness-lane.sps re-checksum every file on each run, so a stale or corrupt vendor is a
-# status-3 failure. M8.3's corpora are vendored by tests/vendor-corpus.sh;
-# libhtp's recipe is M1.3's, below.
+# status-3 failure. The other corpora are vendored by tests/vendor-corpus.sh;
+# libhtp's recipe is below.
 corpus-refresh: ## Re-vendor a test corpus from a checkout: LIBHTP_ROOT, GUARDIAN_ROOT, KESTREL_ROOT, HTTPD_TESTS_ROOT or LIGHTTPD_ROOT=/path
 	@test -n "$(LIBHTP_ROOT)$(GUARDIAN_ROOT)$(KESTREL_ROOT)$(HTTPD_TESTS_ROOT)$(LIGHTTPD_ROOT)" || { echo "corpus-refresh: set LIBHTP_ROOT, GUARDIAN_ROOT, KESTREL_ROOT, HTTPD_TESTS_ROOT or LIGHTTPD_ROOT to a checkout" >&2; exit 2; }
 	@if [ -n "$(GUARDIAN_ROOT)" ]; then sh tests/vendor-corpus.sh http-desync-guardian "$(GUARDIAN_ROOT)"; fi
@@ -256,13 +251,13 @@ corpus-refresh: ## Re-vendor a test corpus from a checkout: LIBHTP_ROOT, GUARDIA
 	rm -rf "$$dst/files"; mkdir -p "$$dst/files"; \
 	cp "$(LIBHTP_ROOT)/LICENSE" "$$dst/LICENSE"; \
 	cp "$(LIBHTP_ROOT)"/test/files/*.t "$$dst/files/"; \
-	printf '%s\n' '# Vendored corpus: exact upstream bytes, verified by sha256 (decision 0007).' '# Never normalize line endings, or the checksums break on a fresh checkout.' '* -text' > "$$dst/.gitattributes"; \
+	printf '%s\n' '# Vendored corpus: exact upstream bytes, verified by sha256.' '# Never normalize line endings, or the checksums break on a fresh checkout.' '* -text' > "$$dst/.gitattributes"; \
 	commit=$$(git -C "$(LIBHTP_ROOT)" rev-parse HEAD); \
 	count=$$(ls -1 "$$dst/LICENSE" "$$dst"/files/*.t | wc -l | tr -d ' '); \
-	{ echo "# PROVENANCE -- the vendored libhtp connection-stream corpus (decision 0007)."; \
+	{ echo "# PROVENANCE -- the vendored libhtp connection-stream corpus."; \
 	  echo "#"; \
 	  echo "# Upstream's bytes, verbatim and never hand-edited: a stream we believe is"; \
-	  echo "# wrong becomes an expectation and a decision record, never a change to these"; \
+	  echo "# wrong becomes an expectation in the tests, never a change to these"; \
 	  echo "# bytes. Every file is checksummed below and verified by tests/test-libhtp.sps"; \
 	  echo "# on every run, so drift or corruption is a status-3 failure, not a discovery."; \
 	  echo "# Rewritten only by 'make corpus-refresh LIBHTP_ROOT=<checkout>'."; \

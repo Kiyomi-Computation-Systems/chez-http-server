@@ -112,7 +112,7 @@ server to accept them, at most 2147483647; the kernel may cap it lower
 HTTP/1.1 request with no ~Host~ is served instead of getting ~400~. The other
 ~Host~ rules always apply: see [[file:host-header.org][host-header.org]].
 
-These are nginx-style bounded defaults (decision 0005). They live in the pure
+These are nginx-style bounded defaults. They live in the pure
 library ~(http-server limits)~: the shell reads the environment and hands the
 values to the core, so the limits are exercised in tests with no environment at
 all.
