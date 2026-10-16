@@ -1792,12 +1792,6 @@ failure.*
 script or check reaches it today. The review's other eight were fixed (#180, #181, and the
 PR after them).*
 
-- **The fake shell reads past a hand-off whatever it is handed.** `fake-shell-deliver!`'s
-  taker branch does not ask `fake-shell-reading?`. A test that delivers bytes before the
-  taker's read-start reaches an `on-bytes` not yet given, which records a taker failure
-  and aborts the stream; the libuv shell's kernel would keep the bytes. Only
-  `fake-shell-feed-input!` asks, and the suites deliver through it, or through the
-  contract test's replay, which gives the fake only what libuv read.
 - **The fake shell's door has no write bound (decision 0027).** A taker's entry passing
   makes its deadline call there, where the libuv shell aborts the stream once the close's
   write bound has passed. No door script leaves a write unread past write-timeout-ms, so
@@ -1819,7 +1813,29 @@ PR after them).*
 *Settled: the smuggler corpus on 2026-10-04 (decision 0021); the signal gap after
 `listening`, a taken stream's close bounded from the server's side (decision 0027), what
 the full drain keeps after a big read, and a door script in the cross-shell contract
-test, on 2026-10-11.*
+test, on 2026-10-11; the fake shell reading past a hand-off, on 2026-10-16.*
+
+- ~~The fake shell reads past a hand-off whatever it is handed~~, **settled 2026-10-16**
+  on `fix/fake-door-kept-reads`, on the owner's "fix items 4 and 5 from the open list".
+  The note, from #179 and #180's review: `fake-shell-deliver!`'s taker branch did not ask
+  `fake-shell-reading?`, so bytes delivered before the taker's read-start reached an
+  `on-bytes` not yet given (a taker failure, the stream aborted), and a delivery after its
+  read-stop reached it all the same.
+  - **Probed first** on the libuv shell (Darwin, libuv 1.52.1, three runs alike): a
+    taker that stopped at its first read heard nothing through fifty turns while its
+    client sent more and shut its write side; reading again, it read the rest, then
+    `eof`.
+  - **Now** the fake keeps what comes while the stream is not read, reads and the end
+    alike, in order, and reads it on the turn after reading starts again, at a
+    read-start or at the close (decision 0026), ahead of what comes after, each read
+    traced as it is read.
+  - **chez-websocket's binding suite has one check that leaned on the old fake,** "a
+    send waiting when the connection ends is woken at once, before the client reads":
+    its connection ends while the binding has stopped reading, its client behind,
+    which the server never tells. Decided by the owner's form ("Land it; fix ws's check
+    at its next pin"; weighed: the fake still handing an end to a stopped taker, and
+    changing the check first). chez-websocket loads the fake from its pinned server
+    release, so the check meets it at its pin of the server's next release.
 
 - ~~A door script in the cross-shell contract test~~, **settled 2026-10-11** on
   `fix/hand-off-read-stop` and `test/door-replay`, on the owner's forms ("Keep them",

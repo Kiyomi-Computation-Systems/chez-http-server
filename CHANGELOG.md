@@ -16,6 +16,15 @@ All notable changes to chez-http-server are recorded here. The format follows
   of 2^32 segments or more, and `(libuv dns)` no longer exports `addrinfo-chain->list`.
   v0.11.0 changes no library; it adds an install hook for projects that get chez-libuv
   through Akku (chez-libuv's CHANGELOG has the rest).
+- **The test fake keeps what a taker's client sends while the taker reads nothing,**
+  as the server does. `tests/fake-shell.sls`: a read or the client's end given to
+  `fake-shell-deliver!` before a taker's `transport-read-start!`, or after its
+  `transport-read-stop!`, is kept and read on the turn after reading starts again, at
+  a read-start or at the close. Before, it went to the taker at once: to an `on-bytes`
+  not yet given, a failure that aborted the stream, or to a taker that had stopped
+  reading. A taker's own test that ends a connection while the taker has stopped
+  reading no longer hears that end until the taker reads again, since the server never
+  tells it then: chez-websocket's binding suite has one such check.
 
 ## [0.6.0] - 2026-10-12
 

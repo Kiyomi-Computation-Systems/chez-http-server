@@ -2882,3 +2882,38 @@ so the client read it a turn later, after the take-over, and the window never op
 the door scripts' checks 1, DH-1, and checks 3, DH-2. `echo-reads!` is the take-overs'
 own code, the same in both shells, so no contract check tells it from its two copies; the
 suite's 291, with no mismatch, holds the refactor.
+
+## The fake keeps what a taker is not reading (plan §14's review note), on `fix/fake-door-kept-reads` (2026-10-16)
+
+Three new checks in the switch suite, each through `fake-shell-deliver!` straight to a taken
+stream: K-1, what the client sends before a taker's read-start, read on the turn after it,
+ahead of what came after, each read traced as it is read; K-2, a taker that stops at each
+read and starts again between turns, a read a turn, its end last; K-3, what was kept while
+the taker read nothing, read and dropped at its close, the end closing the lingering stream.
+
+- **Red on main's fake** (prediction 1, 2ddae035…, exact): K-1 `((() (stream-read
+  stream-close)) … 1 closed)`, the first read reaching an `on-bytes` not yet given, a
+  failure that aborted the stream; K-2 `((2 (eof)) (2 (eof)) …)`, both reaching the
+  stopped taker at once; K-3 `((#f handed-off) () () 1 closed 1)`, aborted before the
+  close.
+- **Eight rows on the fixed fake, every suite** (prediction 2, 631075fb…, exact):
+
+| Row | Mutant | Red, by value |
+|---|---|---|
+| KR-0 | unmutated (a comment) | none |
+| KR-1 | `fake-shell-deliver!` reads whatever it is handed | K-1, K-2, K-3, each main's value |
+| KR-2 | it reads while reading, though reads are kept | K-1: `((() ()) ((hi) (eof) (stream-read stream-end)) (hi) …)` |
+| KR-3 | the kept reads read inside the read-start's call | K-1: in the call `((hi hello) (eof) …)`; K-3: `((#f handed-off) … 0)`, closed before lingering |
+| KR-4 | the close reads nothing kept | K-3: `((#t handed-off) () () 0 handed-off 0)` |
+| KR-5 | `read-kept!` reads on once reading stops | K-2: `((1 ()) (2 (eof)) …)` |
+| KR-6 | traced as kept, not as read | K-1: `((() (stream-read)) (() () (stream-read stream-read stream-end)) …)` |
+| KR-7 | `read-kept!` traces nothing | K-1: door `()` |
+
+**KR-7's other reds were load:** the clients suite's oha checks ("20,000 GETs …" and "the
+server logged nothing but where it listens") went red with four mutants running at once.
+That suite loads no fake; run alone with KR-7's root, it passed twice, 38 each.
+
+**Every mutant loaded:** 408 logs, none with `Exception` or `HARNESS`.
+
+**Each new check has a killer by value:** K-1, KR-1, KR-2, KR-3, KR-6 and KR-7; K-2, KR-1
+and KR-5; K-3, KR-1, KR-3 and KR-4.
