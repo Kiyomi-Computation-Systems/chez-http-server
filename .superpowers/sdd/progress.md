@@ -299,3 +299,21 @@ MERGED to main on 2026-10-12, on the owner's "Do closing ritual": **the chez-lib
 `make test` green on main: fifty-one suites, 2,115 expected passes, every pin ok (chez-libuv at abe6690).
 
 NEXT: the pin waits in Unreleased for the server's next release, by the owner's form; chez-websocket reaches chez-libuv v0.10.0 through it, and its pin to v0.6.0 is still to do. When main's runs start again, re-run main's latest run once. Plan §14's open list holds nine items.
+
+**THE CHEZ-LIBUV v0.11.0 PIN, on `chore/chez-libuv-v0.11.0` (2026-10-15),** after the chez-libuv session's handoff (yuzu-libuv-issues-a). Measured first, then by the owner's form: "Pin now, one PR (Recommended)" (weighed: staying on v0.10.0). The release is still held for the server's next one (#185's form), so this pin replaces v0.10.0 in Unreleased.
+- **The tag.** v0.11.0 is afe79a5, a signed annotated tag (object 40a0172); `git verify-tag` read a good signature (the Kiyomi release key).
+- **The handoff's claims, checked** against chez-libuv's history from abe6690 to afe79a5:
+  - `git diff v0.10.0 v0.11.0 -- src/ 'tests/*.sls'` is empty: no library, export or condition changed, and neither did `(uv-testing)`;
+  - no submodule inside chez-libuv moved, and the libuv floor is still 1.48.0;
+  - chez-libuv's Makefile gains the variables `WERROR`, `SHIM_LDFLAGS`, `CONFIG_EXPORTS` and `CONFIG_GENERATOR` and the target `akku-facts`, each defaulting to the old build. Our Makefile sets none of those names, and calls only chez-libuv's `build`, `prod`, `check-prod` and `clean`;
+  - the rest is Akku's install hook (`scripts/akku-install`, `scripts/find-cc`), `.akkuignore`, Akku.manifest, CI and the docs site. None of it touches a submodule build;
+  - decision 0008 records no ask of chez-libuv still open, so it is unchanged.
+- **Measured** on this branch's tree (the gitlink and `LIBUV_PIN` only):
+  - Darwin arm64, `make build`, exit 0. `make test`: fifty-one suites, 2,115 expected passes, each suite's count v0.10.0's (#185's run on main), every pin ok, and no `Exception` or `HARNESS` line.
+  - `make prod`: exit 0, and both check-prod runs passed ("the shim is a prod build"). The suite on the prod shim passed 2,109, each suite's count v0.10.0's prod run; the clients suite's one counter check and the shell suite's five are not read on a prod shim, by design, each saying so. `make build` afterwards restored the dev shim.
+  - Linux aarch64 (`chez-libuv-noble-scratch:10.4.1`) and x86_64 under emulation (`chez-websocket-ci-amd64:10.4.1`), libuv 1.48.0, every suite once: 2,077 each, each suite's count #185's runs at v0.10.0; the clients suite at status 2 with no tools built, as before.
+  - chez-websocket's main (50017c4), exported, its fifteen suites on this tree: 395 expected passes, all green.
+- **Built.** The gitlink and the Makefile's `LIBUV_PIN`, global-constraints' pin line, the integration test's import comment, and CHANGELOG.md's Unreleased entry, which now names v0.11.0 and keeps v0.10.0's three changes. The measurements went to the chez-libuv session.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 2,115 expected passes, every pin ok.
+
+NEXT: the PR, and its closing ritual when the owner asks. The pin waits in Unreleased for the server's next release, by #185's form; chez-websocket reaches chez-libuv v0.11.0 through it, and its pin to v0.6.0 is still to do. Plan §14's open list holds nine items.
