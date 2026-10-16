@@ -348,3 +348,14 @@ NEXT: the fake's write bound (decision 0027), stacked on this branch; then both 
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,126 expected passes, every pin ok.
 
 NEXT: both PRs (this one stacked on the kept reads'), and their closing ritual when the owner asks. chez-websocket's pin of the server's next release rewrites its binding check. The no-values thunk is a task of its own. Plan §14's open list holds seven items.
+
+MERGED to main on 2026-10-16, on the owner's "Do closing ritual": **the fake keeps what a taker is not reading, and the fake's write bound, as two stacked PRs** (the two entries above), bottom-up.
+- **#187** a176c82 was squashed as c1d1be2 (tree 69ab334, the tested tip's; parent 988d67d), with `--match-head-commit` on the full SHA, and without `--delete-branch`, since #188 was based on it.
+- **#188** was retargeted to main and rebased from a176c82 onto c1d1be2: 4fa96c3 became 8e45e65, its tree 4a7e287 unchanged, pushed with a lease read from `ls-remote`. It was squashed as 47e5ab8 (tree 4a7e287; parent c1d1be2).
+- **CI.** Billing-blocked. Each run's `linux` job was not started (0 steps, the payments annotation): the PRs' 38904661224 and 38904668200, the rebased #188's 38905146677, and main's 38905103653 and 38905199827 on the squashes. The runs in the entries above stood in, as the PR bodies said. It merged past the red checks on the owner's word.
+- **The shared checkout** fast-forwarded to 47e5ab8, clean. Neither PR moved a pin or the Makefile, so nothing was rebuilt.
+- **Branches.** `fix/fake-door-kept-reads` and `fix/fake-door-write-bound` deleted, remote and local, once this session's worktree was detached at 47e5ab8 for this reflect. No PR is open.
+
+`make test` green on main: fifty-one suites, 2,126 expected passes, every pin ok.
+
+NEXT: chez-websocket's pin of the server's next release rewrites its binding check (the kept reads' entry). The no-values taker thunk is a task of its own (another session). The chez-libuv v0.11.0 pin waits in Unreleased for the server's next release. When main's runs start again, re-run main's latest run once. Plan §14's open list holds seven items.
