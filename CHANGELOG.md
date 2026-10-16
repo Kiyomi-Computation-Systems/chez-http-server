@@ -23,7 +23,9 @@ All notable changes to chez-http-server are recorded here. The format follows
   resolves to nothing, or an anchor GitHub spells differently; CI runs it.
   The site renders through chez-cmark-gfm 2.0.0, which `Akku.lock` pins and
   `make site-deps` fetches, checked by its sha256; it needs the system
-  cmark-gfm library. `make test` needs none of it.
+  cmark-gfm library. `make test` needs none of it. A development-only
+  `Akku.manifest` names it, and `make check-akku-lock` checks `akku lock`
+  still makes `Akku.lock` from it.
 
 ### Changed
 

@@ -80,7 +80,9 @@ The site is built by `build-site.sps` and the libraries in `site/`, through
 [chez-cmark-gfm](https://github.com/Kiyomi-Computation-Systems/chez-cmark-gfm),
 which needs the system **cmark-gfm** library (`brew install cmark-gfm`, or
 `apt install cmark-gfm`). `make site` fetches chez-cmark-gfm the first time,
-as `Akku.lock` pins it, or uses `.akku/` after `akku install`. A new page goes
+as `Akku.lock` pins it, or uses `.akku/` after `akku install`;
+`make check-akku-lock` checks `Akku.lock` is what `akku lock` makes of
+`Akku.manifest`. A new page goes
 in `docs/` and in `site/pages.sls`, the nav's order; `make check-site` fails
 until both name it.
 

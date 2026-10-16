@@ -63,7 +63,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps
+.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -206,7 +206,9 @@ test: build check-pins ## Run every tests/test-*.sps (status 0/1/2/3, keep-going
 # otherwise from the archive Akku.lock pins, downloaded and checked against the
 # lock's sha256 by scripts/fetch-akku-lock.  Run `make site-deps` once where
 # there is a network; after that it needs none.  Akku.lock is `akku lock`'s
-# output for a manifest whose one dependency is chez-cmark-gfm 2.0.0.
+# output for Akku.manifest, whose one dependency, for development only, is
+# chez-cmark-gfm; `make check-akku-lock` checks it still is.  .akkuignore keeps
+# `akku install` from installing this checkout's own libraries beside it.
 SITE_CMARK   := $(if $(wildcard .akku/lib/cmark/gfm.sls),.akku/lib,$(BUILD_DIR)/akku/chez-cmark-gfm/src)
 SITE_LIBDIRS := .:$(SITE_CMARK)
 SITE_REF     ?= main
@@ -234,8 +236,15 @@ check-site: site-deps deps ## Test the site generator, then render docs/ in memo
 	@CHEZSCHEMELIBDIRS=$(SITE_LIBDIRS):tests:$(SRFI_LIBS) $(CHEZ) --program tests/site-render-unit.sps
 	@CHEZSCHEMELIBDIRS=$(SITE_LIBDIRS) SITE_REF="$(SITE_REF)" $(CHEZ) --program tests/site-check.sps
 
-check-site-deps: ## Test scripts/fetch-akku-lock offline: sha256 checked, a second run needs no network, a re-pin replaces the tree
+check-site-deps: ## Test scripts/fetch-akku-lock and scripts/check-akku-lock offline, with a local archive and a fake akku
 	@sh tests/fetch-akku-lock.sh
+	@sh tests/check-akku-lock.sh
+
+# Needs a working akku and its index (`akku update` refreshes it); where akku
+# is missing or cannot lock at all, the check says so and passes.
+AKKU ?= akku
+check-akku-lock: ## Check Akku.lock is what `akku lock` makes of Akku.manifest (skipped where akku is missing or broken)
+	@AKKU="$(AKKU)" sh scripts/check-akku-lock
 
 # make hands FLAVOR=prod to the suite's chez-libuv build, which would
 # otherwise relink a dev shim.  check-prod depends on nothing, so the last
