@@ -149,7 +149,8 @@
 ;;;     it reads, however the kernel split the reads, and closes once its
 ;;;     client ends; a taker that raises has its stream closed, logged; a
 ;;;     taker that waits, woken with a read's bytes, keeps none of them once
-;;;     it waits for the next read; a write after the close is asked for is
+;;;     it waits for the next read, and one whose thunk ends with no values,
+;;;     or two, is no failure; a write after the close is asked for is
 ;;;     cancelled; a taken stream
 ;;;     counts against max-connections; a taker's deadline is met on time,
 ;;;     and armed at the loop's time brought up to date, so a taker that
@@ -848,6 +849,13 @@
                         (transport-read-start! t (lambda (bv from to) (transport-write! t bv from to))
                                                (lambda (why) (transport-close! t)))
                         (awaiting (lambda () (took! 'thunk-ended) 'done)))))
+          ((or (bytevector=? target (b "/door-wait-no-values")) (bytevector=? target (b "/door-wait-two-values")))
+           (switching (lambda (t retained)
+                        (transport-read-start! t (lambda (bv from to) (transport-write! t bv from to))
+                                               (lambda (why) (transport-close! t)))
+                        (awaiting (lambda ()
+                                    (took! 'thunk-ended)
+                                    (if (bytevector=? target (b "/door-wait-no-values")) (values) (values 1 2)))))))
           ((eq? (request-method req) 'POST)
            (read-body (lambda (bv start end) #t) (lambda () (make-response 200 #f '() target))))
           (else (make-response 200 #f '() target)))))
@@ -2939,6 +2947,27 @@
                     (list ended echoed (client-bytes (car p)) (if (connection? (cdr p)) (phase (cdr p)) 'none)
                           (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))))
       (client-close! (car p)))
+    ;; And one whose thunk ends with no values, as one whose last call is a
+    ;; sleep may, or with two: what it returns is dropped, so the same.
+    (let ((ending
+           (lambda (target)
+             (set! took '())
+             (set! logged '())
+             (let* ((p (open-adopted! (door-handshake target)))
+                    (ended (wait-for (lambda () (pair? (took-of 'thunk-ended))))))
+               (client-send! (car p) hi-frame)
+               (let* ((echoed (wait-for (lambda () (or (not (eq? (client-end (car p)) 'open))
+                                                       (= (bytevector-length (client-bytes (car p)))
+                                                          (+ (bytevector-length door-101) (bytevector-length hi-frame)))))))
+                      (seen (list ended echoed (client-end (car p)) (client-bytes (car p))
+                                  (if (connection? (cdr p)) (phase (cdr p)) 'none)
+                                  (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))))
+                 (client-close! (car p))
+                 seen)))))
+      (test-equal "a waiting taker whose thunk ends with no values, or with two: no failure, the stream stays open, its taker writing back what it reads, nothing logged"
+                  (let ((open (list 'satisfied 'satisfied 'open (joined (list door-101 hi-frame)) 'handed-off '())))
+                    (list open open))
+                  (list (ending "/door-wait-no-values") (ending "/door-wait-two-values"))))
 
     ;; A write asked for once the close has been is not written: its
     ;; callback is told ECANCELED, and the close waits for the write before

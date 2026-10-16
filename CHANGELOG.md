@@ -32,6 +32,14 @@ All notable changes to chez-http-server are recorded here. The format follows
   close open until the taker's own deadline, or a test's later turn, ended it. The
   taker's own deadline still runs beside the bound, the earlier first.
 
+### Fixed
+
+- **A waiting taker's thunk may end with no values.** What the thunk of a take-over's
+  `(awaiting thunk)` returns is dropped, as decision 0023 says, however many values.
+  Before, a thunk that ended with none, as one whose last call is `sleep-ms` does, or
+  with several, was taken as a raise: `taker-failed` was logged and the stream closed.
+  The test fake drops them too.
+
 ## [0.6.0] - 2026-10-12
 
 The seventh release. A taker's `transport-close!` no longer waits forever on a client

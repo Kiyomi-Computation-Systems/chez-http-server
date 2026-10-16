@@ -735,6 +735,26 @@
                   (list #t (list hi-frame) 'handed-off '())
                   (list ended (reverse (taker-read t)) (conn-phase (fake-shell-conn-state sh))
                         (fake-shell-taker-failures sh))))
+    ;; What a thunk returns is dropped, however many values: one that ends
+    ;; with none, as one whose last call is a sleep may, or with two, is no
+    ;; failure, and leaves its stream open, its taker reading on.
+    (let ((ending
+           (lambda (end)
+             (let* ((t (make-taker))
+                    (sh (run handshake (bytevector-length handshake)
+                             (waiting-taking
+                              (lambda (tr)
+                                (transport-read-start! tr
+                                                       (lambda (bv from to) (taker-read-set! t (cons (slice bv from to) (taker-read t))))
+                                                       (lambda (why) #t)))
+                              (lambda (tr) (end))))))
+               (fake-shell-deliver! sh (list 'bytes-arrived hi-frame 0 (bytevector-length hi-frame)))
+               (fake-shell-settle! sh)
+               (list (reverse (taker-read t)) (conn-phase (fake-shell-conn-state sh))
+                     (length (fake-shell-taker-failures sh)))))))
+      (test-equal "a thunk that ends with no values, or with two, is no failure: the stream open, its taker reading on"
+                  (list (list (list hi-frame) 'handed-off 0) (list (list hi-frame) 'handed-off 0))
+                  (list (ending (lambda () (values))) (ending (lambda () (values 1 2))))))
 
     ;; --- a stream aborted, and a taker's raise (decision 0024) --------------
     ;; The client reads nothing, so the taker's write never completes and its

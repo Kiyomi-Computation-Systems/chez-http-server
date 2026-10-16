@@ -680,12 +680,13 @@
   ;; taker-wait! : FakeShell FakeTaker (-> Any) -> Void
   ;; The thunk on a coroutine, the taker's notice given to it; a raise but
   ;; the close the notice told is the taker's failure, recorded, and closes
-  ;; the stream at once (taker-abort!); what it returns is dropped.
+  ;; the stream at once (taker-abort!); what it returns is dropped, however
+  ;; many values, as the libuv shell's taker-wait! drops it.
   (define (taker-wait! s tk thunk)
     (let ((n (make-notice)))
       (fake-taker-notice-set! tk n)
       (notice-attach!
-       (scheduler-spawn! (fake-shell-scheduler s) thunk
+       (scheduler-spawn! (fake-shell-scheduler s) (lambda () (thunk) #t)
          (lambda (kind v)
            (when (and (eq? kind 'raised) (not (and (client-closed? v) (notice-closed? n))))
              (fake-shell-taker-failures-rev-set! s (cons v (fake-shell-taker-failures-rev s)))
