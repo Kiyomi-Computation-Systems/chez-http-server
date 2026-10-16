@@ -326,3 +326,14 @@ MERGED to main on 2026-10-16, on the owner's "Do closing ritual": **the chez-lib
 `make test` green on main: fifty-one suites, 2,115 expected passes, every pin ok (chez-libuv at afe79a5).
 
 NEXT: the pin waits in Unreleased for the server's next release, by #185's form; chez-websocket reaches chez-libuv v0.11.0 through it, and its pin to v0.6.0 is still to do. When main's runs start again, re-run main's latest run once. Plan §14's open list holds nine items.
+
+**THE FAKE KEEPS WHAT A TAKER IS NOT READING, on `fix/fake-door-kept-reads` (2026-10-16),** plan §14's first review note, on the owner's "fix items 4 and 5 from the open list" (item 5, the fake's write bound, is the PR stacked on this one).
+- **The note.** `fake-shell-deliver!`'s taker branch did not ask `fake-shell-reading?`: bytes delivered before a taker's read-start reached an `on-bytes` not yet given, a taker failure that aborted the stream, and a delivery after its read-stop reached it all the same.
+- **Probed first** on the libuv shell (Darwin arm64, libuv 1.52.1, three runs alike): a taker that stopped at its first read heard nothing through fifty turns while its client sent "cd" and shut its write side; reading again, it read "cd", then `eof`.
+- **Landed.** The fake keeps what comes while the stream is not read, reads and the end alike, in order (`fake-taker-kept`), and reads it on the turn after reading starts again, at a read-start or at the close (decision 0026), ahead of what comes after, each read traced as it is read (`reading-begun!`, `read-kept!`).
+- **Three checks in the switch suite**, red on main's fake by value; eight mutation rows, every one red where predicted (m8-mutations.md, the last section).
+- **chez-websocket.** Its main (6caf10b, which pins this server's v0.6.0 since its #79) passed 397 on main's fake and 396 on this one: the binding suite's "a send waiting when the connection ends is woken at once, before the client reads" ends its connection while the binding has stopped reading, its client behind, which the server never tells (the probe). Decided by the owner's form: "Land it; fix ws's check at its next pin (Recommended)" (weighed: the fake still handing an end to a stopped taker; changing the check first). chez-websocket loads the fake from its pinned server release, so the check meets it at its pin of the server's next release.
+- **Records.** Plan §14 (the item settled; the open list holds eight), CHANGELOG.md's Unreleased under Changed, the fake's header.
+- `make test` green before the commit (Darwin arm64): fifty-one suites, 2,118 expected passes, every pin ok.
+
+NEXT: the fake's write bound (decision 0027), stacked on this branch; then both PRs, and their closing ritual when the owner asks. chez-websocket's pin of the server's next release rewrites its binding check (above). Plan §14's open list holds eight items.

@@ -30,6 +30,10 @@
 ;;; written.  Once lingering, the stream is the server's: a deadline, its
 ;;; cancel and a read-stop change nothing; an abort closes it at once.
 ;;;
+;;; Plan §14's review note (2026-10-12): what the client sends while the
+;;; taker reads nothing, before its read-start or after its read-stop, is
+;;; kept, as the kernel keeps it, and read once reading starts again.
+;;;
 ;;; Oracles: decision 0016; RFC 9110 §7.8 and §15.2.2; RFC 6455 §5.7's
 ;;; masked "Hello" frame, two of its bytes after the header; the inputs'
 ;;; own bytes; design §6.5's 500; decision 0011's staged close.
@@ -106,12 +110,36 @@
        (now transport)
        (awaiting (lambda () (later transport)))))))
 
-;; unread : Bytevector (Request -> Any) -> FakeShell
+;; keeping : Taker -> (Request -> Switch)
+;; A handler that switches to websocket, its take-over keeping the transport
+;; and the retained bytes in `t` and counting its closes, and reading nothing.
+(define (keeping t)
+  (lambda (request)
+    (switch-protocols
+     (list (cons (b "Upgrade") (b "websocket")) accept)
+     (lambda (transport retained)
+       (taker-transport-set! t transport)
+       (taker-retained-set! t retained)
+       (counting-closes t transport)))))
+
+;; reads-into : Taker -> (Bytevector Nat Nat -> Void) — a taker's on-bytes
+;; keeping each read on `t`'s `read`, newest first.
+(define (reads-into t) (lambda (bv from to) (taker-read-set! t (cons (slice bv from to) (taker-read t)))))
+
+;; ends-into : Taker -> (Symbol -> Void) — a taker's on-end keeping each end
+;; on `t`'s `ends`, newest first.
+(define (ends-into t) (lambda (why) (taker-ends-set! t (cons why (taker-ends t)))))
+
+;; arriving : Bytevector -> Event — `bv` whole, as one delivery.
+(define (arriving bv) (list 'bytes-arrived bv 0 (bytevector-length bv)))
+
+;; unread : Bytevector (Request -> Any) [Trace] -> FakeShell
 ;; One connection handed `input` whole, then let write the 101 and nothing
 ;; after: a write the taker asks for completes only on a later turn, so
-;; none does, as for a client that reads nothing (decision 0024).
-(define (unread input handler)
-  (let ((sh (make-fake-connection default-limits handler)))
+;; none does, as for a client that reads nothing (decision 0024).  Traced
+;; with `trace`, if given, as make-fake-connection traces.
+(define (unread input handler . trace)
+  (let ((sh (make-fake-connection default-limits handler (and (pair? trace) (car trace)))))
     (fake-shell-deliver! sh (list 'bytes-arrived input 0 (bytevector-length input)))
     (fake-shell-deliver-later! sh)
     (unless (eq? (conn-phase (fake-shell-conn-state sh)) 'handed-off)
@@ -289,6 +317,65 @@
                   (fake-shell-feed-input! sh frames 64)
                   (list before (concat (reverse (taker-read t))) (length (fake-shell-taker-failures sh))
                         (conn-phase (fake-shell-conn-state sh)))))
+
+    ;; Plan §14's review note (2026-10-12): what the client sends while a
+    ;; taker reads nothing is the kernel's to keep, as the libuv shell's
+    ;; kernel keeps it, never handed to a taker that has not asked for it.
+    ;; Read once the taker starts reading, on the turn after, as libuv reads
+    ;; it then, ahead of what came after it, each read traced as it is read.
+    (let* ((t (make-taker))
+           (door '())
+           (sh (unread handshake (keeping t)
+                       (lambda (kind datum) (when (eq? kind 'door) (set! door (cons (car datum) door)))))))
+      (fake-shell-deliver! sh (arriving hello-frame))
+      (let ((kept (list (taker-read t) (reverse door))))
+        (transport-read-start! (taker-transport t) (reads-into t) (ends-into t))
+        (fake-shell-deliver! sh (arriving hi-frame))
+        (fake-shell-deliver! sh '(eof))
+        (let ((in-call (list (taker-read t) (taker-ends t) (reverse door))))
+          (fake-shell-settle! sh)
+          (test-equal "what the client sends before a taker's read-start is kept, as the kernel keeps it: read on the turn after the read-start, ahead of what came after, each read traced as it is read, nothing failed"
+                      (list '(() ()) '(() () ()) (list hello-frame hi-frame) '(eof)
+                            '(stream-read stream-read stream-end) 0 'handed-off)
+                      (list kept in-call (reverse (taker-read t)) (taker-ends t) (reverse door)
+                            (length (fake-shell-taker-failures sh)) (conn-phase (fake-shell-conn-state sh)))))))
+    ;; A taker that stops reading is read nothing more until it starts
+    ;; again: what comes meanwhile is kept, and read on the turn after its
+    ;; next read-start, up to its next read-stop.  This one stops at each
+    ;; read and starts again between turns.
+    (let* ((t (make-taker))
+           (sh (unread handshake (keeping t)))
+           (one-at-a-time (lambda (bv from to) ((reads-into t) bv from to) (transport-read-stop! (taker-transport t))))
+           (start! (lambda () (transport-read-start! (taker-transport t) one-at-a-time (ends-into t)))))
+      (start!)
+      (fake-shell-deliver! sh (arriving hello-frame))
+      (fake-shell-deliver! sh (arriving hi-frame))
+      (fake-shell-deliver! sh '(eof))
+      (let ((stopped (list (length (taker-read t)) (taker-ends t))))
+        (start!)
+        (fake-shell-settle! sh)
+        (let ((again (list (length (taker-read t)) (taker-ends t))))
+          (start!)
+          (fake-shell-settle! sh)
+          (test-equal "a taker that stops at each read and starts again between turns: what came while it was stopped is kept, and read a read a turn after each read-start, its end last"
+                      (list '(1 ()) '(2 ()) (list hello-frame hi-frame) '(eof) 0)
+                      (list stopped again (reverse (taker-read t)) (taker-ends t)
+                            (length (fake-shell-taker-failures sh)))))))
+    ;; A close reads on for the client's end, as the libuv shell's does
+    ;; (decision 0026), so what was kept while the taker read nothing is
+    ;; read then, and dropped: the client's end among it closes the stream,
+    ;; which lingered from the close, the taker told nothing.
+    (let* ((t (make-taker))
+           (sh (unread handshake (keeping t))))
+      (fake-shell-deliver! sh (arriving hello-frame))
+      (fake-shell-deliver! sh '(eof))
+      (transport-close! (taker-transport t))
+      (let ((closing (list (fake-shell-shut? sh) (conn-phase (fake-shell-conn-state sh)))))
+        (fake-shell-settle! sh)
+        (test-equal "what was kept while a taker read nothing is read and dropped once it closes: the client's end among it closes the lingering stream, the taker told nothing, nothing failed"
+                    (list '(#t handed-off) '() '() 1 'closed 0)
+                    (list closing (taker-read t) (taker-ends t) (taker-closes t)
+                          (conn-phase (fake-shell-conn-state sh)) (length (fake-shell-taker-failures sh))))))
 
     ;; --- the transport (decision 0016 item 2) ------------------------------
     ;; The taker's writes follow the 101, in order, each callback told once

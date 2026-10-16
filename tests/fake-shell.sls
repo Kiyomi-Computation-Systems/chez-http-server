@@ -114,7 +114,11 @@
 ;;; connection's next drain, as the libuv shell tells it on its next turn.
 ;;; Reading delivers each delivery to the taker, `(on-bytes bv start end)`,
 ;;; and the client's end or a read error to its `on-end`, once, reading
-;;; then stopped; none reaches the core.  An end the core read as the 101
+;;; then stopped; none reaches the core.  What the client sends while the
+;;; stream is not read, before the taker's read-start or after its
+;;; read-stop, is kept, as the kernel keeps it, and read on a later turn
+;;; once reading starts again, at a read-start or at the close, ahead of
+;;; what comes after it (plan §14's review note).  An end the core read as the 101
 ;;; was written comes with the hand-off, and is told to the taker's
 ;;; read-start at the connection's next drain; a stream that has ended
 ;;; reads no more.  The close comes on a later turn, after the writes asked for
@@ -304,17 +308,22 @@
   ;; under way.  Once the outermost drain has ended, drain the connection's
   ;; scheduler (schedule!): the handler calls the drain queued and the
   ;; coroutines ready, in order, each answer a dispatch of its own.  Returns
-  ;; this event's actions.
+  ;; this event's actions.  Once the stream is taken, a read or an end goes
+  ;; to the taker (taker-read!) if the stream reads and nothing is kept, or
+  ;; else is kept behind what is (THE DOOR), and returns none.
   (define (fake-shell-deliver! s event)
     (fake-shell-dispatches-set! s (+ (fake-shell-dispatches s) 1))
     (when (> (fake-shell-dispatches s) dispatch-cap)
       (assertion-violation 'fake-shell-deliver! "no progress: the dispatch cap was reached"
                            dispatch-cap event))
     (if (and (fake-shell-taker s) (memq (car event) '(bytes-arrived eof read-error)))
-        (begin (trace! s 'door (event->door-read event))
-               (taker-read! s (fake-shell-taker s) event)
-               (unless (fake-shell-held? s) (schedule! s))
-               '())
+        (let ((tk (fake-shell-taker s)))
+          (if (and (fake-shell-reading? s) (null? (fake-taker-kept tk)))
+              (begin (trace! s 'door (event->door-read event))
+                     (taker-read! s tk event)
+                     (unless (fake-shell-held? s) (schedule! s)))
+              (fake-taker-kept-set! tk (append (fake-taker-kept tk) (list event))))
+          '())
         (step-event! s event)))
 
   ;; event->door-read : Event -> Datum
@@ -623,15 +632,17 @@
   ;; notice its waits are told the close by, once a take-over has answered
   ;; `awaiting` (decision 0023), how many of its writes are outstanding,
   ;; whether it aborted, whether the client's end has come (decision 0024),
-  ;; whether the stream lingers, and how long it may (decision 0026); and the
+  ;; whether the stream lingers, and how long it may (decision 0026); the
   ;; end the core handed over, 'eof, until the taker is told it at its
-  ;; read-start, else #f (0016's amendment of 2026-10-12).
+  ;; read-start, else #f (0016's amendment of 2026-10-12); and what the
+  ;; client sent while the stream was not read, its reads and its end, in
+  ;; order, kept as the kernel keeps them (read-kept!).
   (define-record-type fake-taker
     (fields (mutable on-bytes) (mutable on-end) (mutable on-passed) (mutable on-drain)
             (mutable on-close) (mutable closing?) (mutable drained?) (mutable closed?)
             (mutable notice) (mutable writes) (mutable aborted?) (mutable ended?)
-            (mutable lingering?) (mutable unheard) linger-ms)
-    (protocol (lambda (new) (lambda (linger-ms) (new #f #f #f #f #f #f #f #f #f 0 #f #f #f #f linger-ms)))))
+            (mutable lingering?) (mutable unheard) (mutable kept) linger-ms)
+    (protocol (lambda (new) (lambda (linger-ms) (new #f #f #f #f #f #f #f #f #f 0 #f #f #f #f '() linger-ms)))))
 
   ;; hand-off! : FakeShell (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) Boolean Nat -> Void
   ;; The switch's take-over, called with a transport over the connection and
@@ -687,8 +698,31 @@
   (define (taker-close! s tk)
     (unless (fake-taker-closing? tk)
       (fake-taker-closing?-set! tk #t)
-      (fake-shell-reading?-set! s (not (fake-taker-ended? tk)))
+      (if (fake-taker-ended? tk)
+          (fake-shell-reading?-set! s #f)
+          (reading-begun! s tk))
       (when (fxzero? (fake-taker-writes tk)) (linger-begun! s tk))))
+
+  ;; reading-begun! : FakeShell FakeTaker -> Void
+  ;; The stream reads: what was kept while it did not is read on a later
+  ;; turn (read-kept!), as libuv reads what the kernel kept once its reads
+  ;; start, never inside the call that starts them.
+  (define (reading-begun! s tk)
+    (fake-shell-reading?-set! s #t)
+    (when (pair? (fake-taker-kept tk))
+      (later! s (lambda () (read-kept! s tk)))))
+
+  ;; read-kept! : FakeShell FakeTaker -> Void
+  ;; What was kept read now, oldest first, each traced as it is read, while
+  ;; the stream reads: a taker that stops reading at one leaves the rest
+  ;; kept for its next read-start, as libuv reads no more once stopped.
+  (define (read-kept! s tk)
+    (let ((kept (fake-taker-kept tk)))
+      (when (and (pair? kept) (fake-shell-reading? s))
+        (fake-taker-kept-set! tk (cdr kept))
+        (trace! s 'door (event->door-read (car kept)))
+        (taker-read! s tk (car kept))
+        (read-kept! s tk))))
 
   ;; linger-begun! : FakeShell FakeTaker -> Void
   ;; The close's writes are written.  A client whose end has come is closed
@@ -765,7 +799,7 @@
                                    (lambda ()
                                      (unless (or (fake-taker-closing? tk) (fake-shell-closing? s))
                                        (taker-call! s tk (lambda () (on-end why)))))))))
-             (else (fake-shell-reading?-set! s #t))))
+             (else (reading-begun! s tk))))
      (lambda () (unless (fake-taker-closing? tk) (fake-shell-reading?-set! s #f)))
      (lambda () (taker-close! s tk))
      (lambda (ms passed)
