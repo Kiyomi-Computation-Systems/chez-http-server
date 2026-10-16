@@ -1,11 +1,10 @@
 #!r6rs
 ;;; (http-server connection): what the parser reads and hands the core no
-;;; span of, through the fake shell's message loop.  The padding PR.
+;;; span of, through the fake shell's message loop.
 ;;;
-;;; With chez-httparse driving the core through the adapter, each event
-;;; callback carrying the parser's position.  What the parser reads outside
-;;; the pieces it hands on is held to limits (decided on the owner's word,
-;;; 2026-09-30):
+;;; chez-httparse drives the core through the adapter, each event callback
+;;; carrying the parser's position.  What the parser reads outside the pieces
+;;; it hands on is held to limits:
 ;;;   - the empty lines before a request line: two are skipped (RFC 9112
 ;;;     §2.2 asks for one, and llhttp's own fixture has two after a POST's
 ;;;     body), and more are refused, 400;
@@ -19,23 +18,21 @@
 ;;;   - a chunk size's digits: 16 at most, zeros included (§7.1), and more
 ;;;     are refused, 400;
 ;;;   - a chunk's extensions, each name and value a byte more for the `;` or
-;;;     `=` before it, so an empty one counts too: a body's 16 KiB, 413
-;;;     (decided by the owner on the PR's review, 2026-09-30).
+;;;     `=` before it, so an empty one counts too: a body's 16 KiB, 413.
 ;;;
 ;;; Each row runs at every delivery size, from a byte at a time to the whole
 ;;; input in one delivery, so one expected answer is also the outcome's
-;;; independence from how the bytes were split (design §8.1's second
-;;; property).  Each delivery is a bytevector of its own, the bytes at an
-;;; offset in it, as a shell hands over a read: a run's bytes are counted
-;;; from where the parser is, not from where a delivery's bytes sit.  The
-;;; megabyte runs, the ones main answered 200, run at a
-;;; sample of sizes from 64 bytes, the shell's 16 KiB read among them: a
-;;; byte at a time, a connection that did not refuse would pass the fake
-;;; shell's cap of 100,000 dispatches.
+;;; independence from how the bytes were split.  Each delivery is a
+;;; bytevector of its own, the bytes at an offset in it, as a shell hands
+;;; over a read: a run's bytes are counted from where the parser is, not from
+;;; where a delivery's bytes sit.  The megabyte runs run at a sample of sizes
+;;; from 64 bytes, the shell's 16 KiB read among them: a byte at a time, a
+;;; connection that did not refuse would pass the fake shell's cap of 100,000
+;;; dispatches.
 ;;;
 ;;; Oracles: RFC 9112 §2.2, §3, §5 and §7.1; the inputs' own bytes; the
-;;; limits each row sets; design §6.5's 400, 413 and 431; decision 0011's
-;;; staged close.
+;;; limits each row sets; the statuses 400 (RFC 9110 §15.5.1), 413 (RFC 9110
+;;; §15.5.14) and 431 (RFC 6585 §5); the staged close (RFC 9112 §9.6).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
         (fake-shell) (decisive))
@@ -100,9 +97,8 @@
 
 (define megabyte 1000000)
 
-;; small : Limits — a value of 8 bytes and 32 in a section, as M6.4's
-;; trailers were held to, 3 fields.  The head's Host: x is 6 bytes with its
-;; space.
+;; small : Limits — a value of 8 bytes and 32 in a section, 3 fields.  The
+;; head's Host: x is 6 bytes with its space.
 (define small
   (limits-with default-limits
                '((max-header-value-bytes . 8) (max-header-bytes . 32) (max-header-count . 3))))
@@ -122,7 +118,7 @@
      idle #f)))
 (define (refused-first status reason) (list (list (list (list 'write status)) 'lingering reason)))
 (define a-served '((((call-handler (GET "/a")) (end) (write 200)) idle #f)))
-;; An HTTP/0.9 request is served, and its connection then closes.
+;; One request served, and its connection then closes.
 (define one-served '((((call-handler (GET "/a")) (end) (write 200)) lingering not-keep-alive)))
 (define post-served
   '((((call-handler (POST "/a")) (body "abc") (end) (write 200)
@@ -167,8 +163,8 @@
     ;; A request line with no version (HTTP/0.9) ends at the target, by CRLF
     ;; or by a bare LF, which the strict parser takes too: there are no
     ;; spaces to refuse, the parser completes the head, and the core refuses
-    ;; the version it does not speak, 505 (M8.3; the lines after the request
-    ;; line, read as its fields, do not change the refusal).
+    ;; the version it does not speak, 505 (the lines after the request line,
+    ;; read as its fields, do not change the refusal).
     (test-equal "a request line with no version, ended by CRLF or a bare LF, with a field or none, every delivery size: 505"
                 (let ((r (refused-first 505 'version-not-supported))) (list r r r r))
                 (list (every-size (b "GET /a\r\nHost: x\r\n\r\n") default-limits)
@@ -267,7 +263,7 @@
     ;; In the shells' 16 KiB reads each run passes its limit inside the
     ;; first, and is refused at that read's end, so the parser is fed no
     ;; more: a megabyte of padding costs it one read.  The rest is read and
-    ;; dropped as the connection lingers (decision 0011).  Empty extensions
+    ;; dropped as the connection lingers.  Empty extensions
     ;; begin after the head, and pass a body's 16 KiB inside the second
     ;; read, refused at the callback that passes it.
     (test-equal "a megabyte of each run, in 16 KiB reads: refused at the first read's end, the rest never parsed; empty extensions inside the second"

@@ -1,15 +1,15 @@
 #!r6rs
 ;;; One procedure closes every handle: handle-close!, the one use of
-;;; `uv-close!` in src/ (design §5.3; decided 2026-09-26).  chez-libuv runs
-;;; the callback of a handle's first close alone, so a close from anywhere
-;;; else could run first and leave the shell's own callback never run.
+;;; `uv-close!` in src/.  chez-libuv runs the callback of a handle's first
+;;; close alone, so a close from anywhere else could run first and leave the
+;;; shell's own callback never run.
 ;;;
-;;; M4.2 held this with an awk scan of the text, which a `;` in a string, a
-;;; `#\;`, or two uses one character apart got past (M4.3's review).  This
-;;; reads the source with Chez's own reader, so it walks the code the
-;;; compiler sees: every use of the name `uv-close!` (a call, an alias, an
-;;; argument to `apply`, a rename in an import) is named with the definition
-;;; it sits in, and a comment, a datum comment or a string is none.
+;;; The check reads the source with Chez's own reader, so it walks the code
+;;; the compiler sees (a text scan is fooled by a `;` in a string, a `#\;`,
+;;; or two uses one character apart): every use of the name `uv-close!` (a
+;;; call, an alias, an argument to `apply`, a rename in an import) is named
+;;; with the definition it sits in, and a comment, a datum comment or a
+;;; string is none.
 ;;;
 ;;; Oracles: the fixtures below, source texts whose uses are known; and the
 ;;; file tree under src/.

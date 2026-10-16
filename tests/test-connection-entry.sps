@@ -1,29 +1,28 @@
 #!r6rs
-;;; (http-server connection): the parser entry points.  M2.2, first step.
+;;; (http-server connection): the parser entry points.
 ;;;
-;;; Decision 0002's third amendment has parser callbacks enter the core
-;;; directly, with their own arguments, so no event is allocated to carry
-;;; them.  This suite holds the amendment's rules as checks:
+;;; Parser callbacks enter the core directly, with their own arguments, so no
+;;; event is allocated to carry them.  This suite holds these rules as
+;;; checks:
 ;;;
 ;;;   - the callback names are a closed set, chez-httparse's twenty-five, and
-;;;     a name outside it or given the wrong shape is an assertion violation
-;;;     (item 5); an event callback's shape carries the parser's position,
-;;;     the bytes it has read before the callback (the padding PR);
+;;;     a name outside it or given the wrong shape is an assertion violation;
+;;;     an event callback's shape carries the parser's position, the bytes it
+;;;     has read before the callback;
 ;;;   - every callback is answered: the first action is its reply-parser, in
-;;;     every state (item 2);
+;;;     every state;
 ;;;   - both ways in agree: a callback as a tagged list through conn-step and
 ;;;     the same callback through the entry point leave the same state and ask
-;;;     for the same actions (item 3);
+;;;     for the same actions;
 ;;;   - a callback whose data the core does not keep allocates nothing, and
-;;;     one whose data it keeps allocates the same whatever the span's length
-;;;     (item 4; the second amendment's shape checks).
+;;;     one whose data it keeps allocates the same whatever the span's length.
 ;;;
 ;;; Oracles: chez-httparse's own table of its callbacks and their kinds
 ;;; (`adapter-trace-names`, from its test harness), and its parser, which
 ;;; refuses a binding list with a hole or an extra name; the callbacks that
 ;;; parser fires on three inputs, each event with the position its runtime
-;;; commits before it (`parser-stream-offset`); the amendment's "allocates
-;;; nothing"; Chez's cumulative allocation counter, calibrated below.
+;;; commits before it (`parser-stream-offset`); "allocates nothing"; Chez's
+;;; cumulative allocation counter, calibrated below.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) statistics sstats-bytes)
         (http-server connection) (http-server response) (http-server request)
@@ -192,7 +191,7 @@
 ;; reply? : Action -> Boolean
 ;; A reply-parser with one of its three outcomes: continue, pause, or a
 ;; refusal naming its reason.  A fresh head has no target, which the core
-;; refuses at on-headers-complete (M2.3), so that reply is a `fail`.
+;; refuses at on-headers-complete, so that reply is a `fail`.
 (define (reply? a)
   (or (and (member a '((reply-parser continue) (reply-parser pause))) #t)
       (and (pair? a) (eq? (car a) 'reply-parser) (pair? (cdr a))
@@ -206,9 +205,9 @@
 ;; result; the handler, if it was asked, answering with a reader; and, once
 ;; the reader is handed its end, the reader's response and its write's
 ;; completion, so the next message starts from idle.  A request whose head
-;; announces a body is asked with the feed's result (decision 0013), and a
-;; response given in place of a reader would close the connection, so every
-;; request is answered with one.  The shell's own events go through
+;; announces a body is asked with the feed's result, and a response given in
+;; place of a reader would close the connection, so every request is
+;; answered with one.  The shell's own events go through
 ;; conn-step either way.
 (define (replay way callbacks)
   (let loop ((s (fresh 'idle)) (cs callbacks) (acc '()))
@@ -299,8 +298,8 @@
 ;; The callbacks whose data the core keeps, and so may allocate: the target
 ;; and each header name and value are kept as spans, a completed value joins
 ;; its name as a header, the head's completion builds the request, a body span
-;; goes on to the reader the handler answered with (decision 0013), and the
-;; message's completion carries the request.
+;; goes on to the reader the handler answered with, and the message's
+;; completion carries the request.
 (define kept
   '(on-url-data on-header-field-data on-header-value-data on-header-value-complete
     on-headers-complete on-body-data on-message-complete))
@@ -351,9 +350,8 @@
              (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-no-such-thing 0)))))
     (test-eq "on-headers-complete as a tagged list needs its seven fields" 'refused
              (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-headers-complete)))))
-    ;; The sixth is the parser's `upgrade` (chez-httparse v0.4.1, #47), and the
-    ;; seventh its position (the padding PR): a payload without either is a
-    ;; shape from before the core read it, and is refused.
+    ;; The sixth is the parser's `upgrade` (chez-httparse v0.4.1 or later), and
+    ;; the seventh its position: a payload without either is refused.
     (test-eq "on-headers-complete without the parser's upgrade field is refused" 'refused
              (verdict (lambda () (conn-step (fresh 'head) '(parser-event on-headers-complete 1 1 1 0 0)))))
     (test-eq "on-headers-complete without the parser's position is refused" 'refused

@@ -1,19 +1,14 @@
 #!r6rs
 ;;; (http-server connection): what the parser's error cuts off, through the
-;;; fake shell's message loop.  The cut-off-span PR.
+;;; fake shell's message loop.
 ;;;
 ;;; A malformed byte ends the parse, and the span the parser was reading is
 ;;; abandoned, never handed over (chez-httparse's docs/api.org: "an error
 ;;; abandons an open span rather than flushing it").  Only two spans can be
 ;;; open at an error, a target and a field name; a value, an extension and
-;;; the protocol are handed over first.  A target or a name past its limit,
-;;; then a malformed byte, was answered for the limit where a read ended
-;;; between the two, and 400 where one read held both; a run of what the
-;;; parser hands no span of, past its limit and then such a byte, was 400
-;;; either way, for the run's reason or the parser's.  Now at the parser's
-;;; error the core judges what it cut off as a read's end would have
-;;; (decided on the owner's word, 2026-10-01), so the first limit passed, in
-;;; the order of the bytes, names the response at every split:
+;;; the protocol are handed over first.  At the parser's error the core
+;;; judges what it cut off as a read's end would have, so the first limit
+;;; passed, in the order of the bytes, names the response at every split:
 ;;;   - a target past its limit, 414, but past one space after the method
 ;;;     first, 400 for the spaces;
 ;;;   - a field name past its limit, 431, or past the section's, 431 for
@@ -24,19 +19,20 @@
 ;;; A shell hands the core, with an error's result, the refused byte's
 ;;; position and the span the error abandoned, with where its withheld bytes
 ;;; begin: byte-machine's `parser-error-span` and `parser-error-span-offset`,
-;;; since v0.7.0 (its #145, which this PR's first half filed).
+;;; v0.7.0 or later.
 ;;;
 ;;; Each row runs at every delivery size, from a byte at a time to the whole
 ;;; input in one delivery, each delivery a bytevector of its own with the
 ;;; bytes at an offset in it, as a shell hands over a read.  A byte at a
 ;;; time, nothing is ever cut off: the expected answer is that one.
 ;;;
-;;; Oracles: the inputs' own bytes; the limits each row sets; design §6.5's
-;;; 400, 414 and 431; chez-httparse's parser, its errors' offsets and their
-;;; position kinds (byte-machine's .reference/transition-and-cursor-
-;;; semantics.md §4: `byte` at the refused byte, `boundary` past a byte the
-;;; parser took); byte-machine's record of the span an error abandons (its
-;;; decision 0056: from the span's offset to the error's, the bytes withheld).
+;;; Oracles: the inputs' own bytes; the limits each row sets; the statuses
+;;; 400 (RFC 9110 §15.5.1), 414 (RFC 9110 §15.5.15) and 431 (RFC 6585 §5);
+;;; chez-httparse's parser, its errors' offsets and their position kinds
+;;; (byte-machine's transition-and-cursor semantics: `byte` at the refused
+;;; byte, `boundary` past a byte the parser took); byte-machine's record of
+;;; the span an error abandons (the bytes withheld run from the span's offset
+;;; to the error's).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits)
         (http-server private adapter)
@@ -192,7 +188,7 @@
     ;; response, not what the error leaves open.  A request line with no
     ;; version and no fields leaves the run after its target open at its
     ;; head's end, where the core refuses the version it does not speak
-    ;; (HTTP/0.9, 505; M8.3), judged before the target it would otherwise
+    ;; (HTTP/0.9, 505), judged before the target it would otherwise
     ;; refuse.
     (test-equal "a request line with no version, refused at the head's end, every delivery size: 505 for the version, not the run left open"
                 (refused-first 505 'version-not-supported)

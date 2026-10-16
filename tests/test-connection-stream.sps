@@ -1,20 +1,19 @@
 #!r6rs
 ;;; (http-server connection): a streamed response, through the fake shell's
-;;; message loop.  M6.3.
+;;; message loop.
 ;;;
-;;; Decision 0013 item 8: a response's body of unknown length is a
-;;; producer, a procedure the server calls for each piece, which answers a
-;;; bytevector, or the eof object at the end.  The core writes the head, then
-;;; asks the shell for a piece at a time, `notify-producer`, and writes each
-;;; as it comes: chunked to HTTP/1.1, and close-delimited to 1.0, after which
-;;; the connection closes.  Decision 0005's write water marks bound what is
-;;; outstanding: the producer is asked only while the bytes written and not
-;;; yet completed are at or below the high water, so at most one piece passes
-;;; it, and once past it, it is asked again only when they fall to the low
-;;; water.  The writes outstanding are bounded too, at 64, and a waiting
-;;; producer is asked again at 16 or fewer (M6.3's second review).  A
-;;; producer that fails once the head is on the wire gets a bare close: a
-;;; status can no longer be written.
+;;; A response's body of unknown length is a producer, a procedure the
+;;; server calls for each piece, which answers a bytevector, or the eof
+;;; object at the end.  The core writes the head, then asks the shell for a
+;;; piece at a time, `notify-producer`, and writes each as it comes: chunked
+;;; to HTTP/1.1, and close-delimited to 1.0, after which the connection
+;;; closes.  The limits' write water marks bound what is outstanding: the
+;;; producer is asked only while the bytes written and not yet completed are
+;;; at or below the high water, so at most one piece passes it, and once past
+;;; it, it is asked again only when they fall to the low water.  The writes
+;;; outstanding are bounded too, at 64, and a waiting producer is asked again
+;;; at 16 or fewer.  A producer that fails once the head is on the wire gets
+;;; a bare close: a status can no longer be written.
 ;;;
 ;;; What a connection wrote is read back as a client reads it, by
 ;;; chez-httparse's strict response parser (response-reader), which is not
@@ -22,15 +21,15 @@
 ;;; does, so within a turn the bytes outstanding only grow, as they do for a
 ;;; client that reads slowly.
 ;;;
-;;; Oracles: decision 0013 item 8; decision 0005's water marks, 262,144 and
-;;; 65,536 bytes outstanding, and smaller ones for the flows that watch them
-;;; act, and its 64 and 16 writes outstanding (the amendment of 2026-09-29);
-;;; RFC 9112 §7.1 (chunked) and §6.3 rule 8 (close-delimited), through
-;;; the response parser; and the requests' and the pieces' own bytes.  A
-;;; chunked piece of 16 KiB is written in 16,392 bytes: its size line, `4000`
-;;; CRLF, the piece, and CRLF; one of 100 bytes in 106.  The head of a
-;;; chunked 200 is 84 bytes: the status line 17, the Date 37, and
-;;; `Transfer-Encoding: chunked` CRLF CRLF 30.
+;;; Oracles: the limits' write water marks, 262,144 and 65,536 bytes
+;;; outstanding, and smaller ones for the flows that watch them act, and
+;;; the bounds of 64 and 16 writes outstanding; RFC 9112 §7.1 (chunked) and
+;;; §6.3 rule 8 (close-delimited), through the response parser; and the
+;;; requests' and the pieces' own bytes.  A chunked piece of 16 KiB is
+;;; written in 16,392 bytes: its size line, `4000` CRLF, the piece, and CRLF;
+;;; one of 100 bytes in 106.  The head of a chunked 200 is 84 bytes: the
+;;; status line 17, the Date 37, and `Transfer-Encoding: chunked` CRLF CRLF
+;;; 30.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits) (http-server body)
         (fake-shell) (response-reader) (producers))
@@ -46,7 +45,7 @@
 (define post11 (b "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789"))
 (define two-gets (b "GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n"))
 
-;; waters : Nat Nat -> Limits — decision 0005's, with these water marks.
+;; waters : Nat Nat -> Limits — the default limits with these water marks.
 (define (waters high low)
   (limits-with default-limits (list (cons 'write-high-water high) (cons 'write-low-water low))))
 
@@ -163,10 +162,10 @@
                 (let-values (((p calls) (texts-producer '("hello" ", " "world"))))
                   (let ((sh (serve default-limits (answering p) get11)))
                     (list (read-back sh #f #f) (calls) (ended sh) (fake-shell-violations sh)))))
-    ;; M3.2's carried arm: a close-delimited body ends only with the
-    ;; connection (RFC 9112 §6.3 rule 8), so the connection closes after it,
-    ;; though this client asked to keep it (decision 0006 item 1), and the
-    ;; head says so.  It lingers, the half-close its body's end.
+    ;; A close-delimited body ends only with the connection (RFC 9112 §6.3
+    ;; rule 8), so the connection closes after it, though this client asked to
+    ;; keep it, and the head says so.  It lingers, the half-close its body's
+    ;; end.
     (test-equal "HTTP/1.0: the pieces close-delimited, read back whole at the close; the connection closes after, though the client asked to keep it"
                 `((200 "OK" (,epoch-date ("Connection" . "close")) "hello, world" complete) 4
                   (lingering close-delimited) shutdown)
@@ -175,7 +174,7 @@
                     (list (read-back sh #f #t) (calls) (ended sh) (ran? sh 'shutdown)))))
     ;; RFC 9110 §9.3.2 and §15.3.5: no body is written to a HEAD or in a 204,
     ;; so the producer is never called; a HEAD's length is unknown, and not
-    ;; announced (decision 0010 item 6).
+    ;; announced.
     (test-equal "a HEAD's answer, and a 204: the head alone; the producer never called; the connection kept"
                 `(((200 "OK" (,epoch-date) "" complete) 0 (idle #f))
                   ((204 "No Content" (,epoch-date) "" complete) 0 (idle #f)))
@@ -187,14 +186,14 @@
                                          (lambda (request) (make-response 204 #f '() p)) get11)))
                           (list (read-back sh #f #f) (calls) (ended sh))))))
 
-    ;; --- the write water marks (decision 0005; plan §14's mutation) ---
-    ;; 1 MiB in 64 pieces of 16 KiB, under 0005's marks: the first turn asks
+    ;; --- the write water marks ---
+    ;; 1 MiB in 64 pieces of 16 KiB, under the default marks: the first turn asks
     ;; for pieces while at most 262,144 bytes are outstanding, sixteen of
     ;; them, 262,356 bytes with the head, then waits for completions.  So the
     ;; bytes outstanding never pass the high water by more than one piece's
     ;; write, 16,392 bytes, where a producer asked regardless would have the
     ;; whole body outstanding at once: the slow reader's memory bound.
-    (test-equal "decision 0005's water marks: 1 MiB in 16 KiB pieces, read back whole; the bytes outstanding never past the high water by more than a piece's write"
+    (test-equal "the write water marks: 1 MiB in 16 KiB pieces, read back whole; the bytes outstanding never past the high water by more than a piece's write"
                 (list (list 200 (sized-body 64 16384) 'complete) #t 65 '(idle #f))
                 (let-values (((p calls) (counted (sized-producer 64 16384))))
                   (let* ((w (watching)) (sh (serve default-limits (answering p) get11 w)))
@@ -216,12 +215,12 @@
                           (status+body (read-back sh #f #f))
                           (calls)))))
     ;; Each piece is a write of its own, and a write holds the loop and
-    ;; memory the same whatever its size (M6.3's second review), so the
-    ;; producer is asked only while fewer than 64 writes are outstanding
-    ;; too, and once at 64, again only when 16 or fewer are.  1,000 pieces
-    ;; of 100 bytes, 106 each written, under decision 0005's marks: the bytes
-    ;; alone would let the first turn ask for all 1,000, 106,000 bytes; the
-    ;; writes let it ask for 63 after the head, and each later turn for 48.
+    ;; memory the same whatever its size, so the producer is asked only while
+    ;; fewer than 64 writes are outstanding too, and once at 64, again only
+    ;; when 16 or fewer are.  1,000 pieces of 100 bytes, 106 each written,
+    ;; under the default marks: the bytes alone would let the first turn ask
+    ;; for all 1,000, 106,000 bytes; the writes let it ask for 63 after the
+    ;; head, and each later turn for 48.
     (test-equal "small pieces: at most 64 writes outstanding, every ask after a completion at 16 writes or fewer, read back whole"
                 (list 64 '() (list 200 (sized-body 1000 100) 'complete) 1001)
                 (let-values (((p calls) (counted (sized-producer 1000 100))))
@@ -257,9 +256,8 @@
     ;; --- the pieces ---
     ;; A chunk of no bytes would be the last chunk (RFC 9112 §7.1), and a
     ;; producer asked again at once for as long as it answers one would hold
-    ;; the loop, every connection's, until it had something (M6.3's review):
-    ;; an empty piece is the producer failing, a bare close, and the producer
-    ;; is asked no more.
+    ;; the loop, every connection's, until it had something: an empty piece is
+    ;; the producer failing, a bare close, and the producer is asked no more.
     (test-equal "a producer that answers an empty bytevector fails: a bare close after the pieces before it, the producer asked no more"
                 `((200 "OK" (,epoch-date ("Transfer-Encoding" . "chunked")) "x" need-input)
                   closed ((disarm-deadline) (close handler-failed)) 2)
@@ -267,16 +265,16 @@
                   (let ((sh (serve default-limits (answering p) get11)))
                     (list (read-back sh #f #f) (conn-phase (fake-shell-conn-state sh))
                           (last-actions sh 2) (calls)))))
-    ;; A write copies its segments as it is performed, as chez-libuv's does
-    ;; (design §7.3), and each piece is written before the producer is asked
+    ;; A write copies its segments as it is performed, as chez-libuv's does,
+    ;; and each piece is written before the producer is asked
     ;; for the next, so a producer may hand out one bytevector again.
     (test-equal "a producer that hands out one bytevector again: each piece written as it was when handed over"
                 `(200 "OK" (,epoch-date ("Transfer-Encoding" . "chunked")) "aaaabbbbcccc" complete)
                 (read-back (serve default-limits (answering (refilled-producer 3 4)) get11) #f #f))
 
     ;; --- a stream among a connection's other answers ---
-    ;; Decision 0013 item 4: a response given instead of a reader is sent at
-    ;; once, the body unread, and the connection closes after it.
+    ;; A response given instead of a reader is sent at once, the body unread,
+    ;; and the connection closes after it.
     (test-equal "a producer answered instead of a reader: streamed with Connection: close, the body unread; the connection lingers after it"
                 `((200 "OK" (,epoch-date ("Transfer-Encoding" . "chunked") ("Connection" . "close")) "streamed" complete)
                   (lingering unread-body))
@@ -293,8 +291,8 @@
                                         (make-response 200 #f '() p)))))
                                  post11)))
                   (list (read-back sh #f #f) (ended sh))))
-    ;; Decision 0004 item 1: one response at a time, so the GET behind the
-    ;; stream in the same read waits for the stream's last chunk.
+    ;; One response at a time, so the GET behind the stream in the same read
+    ;; waits for the stream's last chunk.
     (test-equal "a GET behind a stream in the same read is answered after the stream's last chunk"
                 '((head piece piece end head) (idle #f))
                 (let* ((asked 0)
@@ -319,9 +317,9 @@
                     (fake-shell-settle! sh)
                     (list before (calls) (conn-phase (fake-shell-conn-state sh))
                           (conn-producer (fake-shell-conn-state sh))))))
-    ;; Decision 0005's write deadline, 60 s per completion: a client that
-    ;; reads nothing is closed at it, as for any response (M5.2), the close
-    ;; logged with the bytes still outstanding.
+    ;; The write deadline, 60 s per completion: a client that reads nothing is
+    ;; closed at it, as for any response, the close logged with the bytes
+    ;; still outstanding.
     (test-equal "a stream whose writes never complete closes at the write deadline, logged with the bytes outstanding; the producer is asked no more"
                 '(9 ((log write-timeout 1038) (disarm-deadline) (close write-timeout)) closed #f)
                 (let-values (((p calls) (counted (sized-producer 30 100))))

@@ -1,74 +1,34 @@
 #!r6rs
-;;; (http-server connection): the vocabulary, and design §4.4's transition
-;;; table as data.  M2.1.
+;;; (http-server connection): the vocabulary, and the transition table as data.
 ;;;
-;;; The table below is the specification and conn-step is what has to agree
-;;; with it (design §8.3).  Every row is driven from a SYNTHETIC state by one
-;;; synthetic event, with no parser, so the rows are independent: a mutation
-;;; that breaks one row turns that row red and no other.
+;;; The table below is the specification and conn-step must agree with it.
+;;; Every row is driven from a SYNTHETIC state by one synthetic event, with no
+;;; parser, so a mutation that breaks one row turns that row red and no other.
 ;;;
-;;; Oracles: the nine states of design §4.3, and decision 0011's tenth; the fifteen events and fifteen
-;;; actions of decision 0002 item 2, plus the `hand-off` action decision 0006
-;;; item 3 adds; the 10 + 9 rows of design §4.4's two tables; the three
-;;; rows of decision 0004's pause protocol that the design's tables fold into
-;;; H6 and H10 (M2.4); the two rows of the upgrade door, decided on the
-;;; owner's word on 2026-09-25 (M2.5); M3.2's two rows for what the handler
-;;; answers, from decision 0010 items 2 and 3; M3.3's five rows for the
-;;; writes and bytes outstanding, from design §7.3 and decision 0010 item 5;
-;;; and M3.5's staged close, from RFC 9112 §9.6 and decision 0011: every
-;;; close after a response lingers in a tenth state, `lingering`, and a state
-;;; that reads stops reading when it refuses a request, as design §4.3's
-;;; table says `responding` does.  And the five kinds of deadline the rows
-;;; arm, design §4.3's four and decision 0011's linger, each lasting one of
-;;; the limits (M5.1).  And M5.2's two tick rows, from decision 0005's table:
-;;; a body past its deadline is answered 408, and a write past its deadline
-;;; closes with no response.  And M6.1's nineteen rows for reading a body,
-;;; from decision 0013.  With them, every way the core lets a connection
-;;; go, a close or the hand-off, disarms its deadline first (plan §14's note of
-;;; 2026-09-27).  And M6.2's eleven credit rows, and M6.3's sixteen for a
-;;; streamed response, from decision 0013 item 8 and plan §14: a producer's
-;;; head, then each piece it is asked for, chunked to HTTP/1.1 and
-;;; close-delimited to 1.0 (M3.2's carried arm), asked for only at or below
-;;; decision 0005's high water, and past it, again once the bytes outstanding
-;;; fall to its low water; and a failure after the head is on the wire closes
-;;; with no response.  And M6.4's eight rows for `Expect: 100-continue`, from
-;;; RFC 9110 §10.1.1 and decision 0013's consequences: the 100 written when
-;;; the handler answers with a reader, and the body deadline armed then; and
-;;; its seven for what a chunked body carries beside its data, its trailer
-;;; fields held to the four header limits and its chunk extensions to 16 KiB
-;;; (both decided on the owner's word, 2026-09-29).  And the padding PR's
-;;; fourteen for what the parser reads and hands no span of, each event at the
-;;; parser's position: the empty lines before a request line, the spaces
-;;; between its parts, the whitespace before a field's value and a chunk
-;;; size's digits, judged where they end and at a read's end (decided on the
-;;; owner's word, 2026-09-30).  And the cut-off-span PR's four for what the
-;;; parser's error cuts off, a target or a field name it never hands on,
-;;; judged at the error as a read's end would have judged it (decided on the
-;;; owner's word, 2026-10-01).  And M7.1's, from decision 0014 and plan §14's
-;;; note of M6.2: a handler answers after the drain that asks it, so a
-;;; request whose body is still arriving waits on its handler in handling,
-;;; reading stopped and nothing armed, and its reader's answer reads again,
-;;; with the body deadline; the rows B2 to B19, C3, S4 and E3 to E7 that
-;;; answer in that wait say so.  And M8.1's, from plan §14 and design §4.4's
-;;; shutdown row: told to finish, an idle connection closes at once, with no
-;;; response, as at its idle deadline (decision 0011's amendment: a close
-;;; with no response is at once), and one with a request in flight answers
-;;; it, `Connection: close` while its head is unwritten, then lingers, as
-;;; every close after a response does.  So `draining`, which only idle
-;;; entered, is retired, and the states are ten.  And M8.2's seven for the
-;;; door, from decision 0016: a handler that takes an HTTP/1.1 upgrade with
-;;; no body answers a switch, the 101 is written, and once it is, the stream
-;;; is handed over with the bytes read past the request, the pending input
-;;; the message's pause kept; any other request answered a switch, and a
-;;; switch with a fault, is answered 500, as a response with a fault is.  So
-;;; the parser's own hand-off, which the core never resumes the parser
-;;; onto, is no row (T7, retired) but a refusal.
+;;; Closed sets: ten states, fifteen events, seventeen actions and five
+;;; deadline kinds, each lasting one of the limits (idle 75 s; header, body
+;;; and write 60 s; linger 30 s).  The rows emit every action and arm every
+;;; kind; each deadline a row leaves armed has a tick row, and the state
+;;; records what the row's actions leave armed.
+;;;
+;;; Row groups, by label:
+;;;   H T P R     a request's life: its happy path, every way out (eof, read
+;;;               errors, a parser error's 400, a drain, a handler that
+;;;               raises), the pause at a message's end, the handler's answer.
+;;;   L D W1-W5   the staged close after a response (RFC 9112 §9.6), the tick
+;;;               at each deadline, the writes and bytes outstanding.
+;;;   U W1-W7     upgrades (RFC 9110 §7.8): served then closed, or a switch's
+;;;               101 written and the stream handed over.
+;;;   B C E F S   a body read by a reader (credit, `Expect: 100-continue`,
+;;;               RFC 9110 §10.1.1, trailers and extensions held to limits);
+;;;               a streamed response (chunked, RFC 9112 §7.1; close-delimited,
+;;;               §6.3), paced by the write water marks.
+;;;   G K N       what the parser reads and hands no span of, or cuts off at
+;;;               an error, held to limits; a client's close, noticed.
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
-;;; chez-httparse's, whose status never depends on where the parser refused
-;;; (design §6.3, amended 2026-09-26).  It carries a pause's code in the same
-;;; place, since a result has one or neither, and then the span the parser
-;;; has open (the cut-off-span PR).
+;;; chez-httparse's, whose status never depends on where the parser refused.
+;;; A pause's code goes in the same place, and then the span the parser has open.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server limits) (http-server body) (http-server switch) (fake-shell)
@@ -79,7 +39,8 @@
 
 (define (b s) (string->utf8 s))
 
-;; Any delivery will do: in M2.1 the core never reads the bytes it is handed.
+;; Any delivery will do: the core feeds a delivery's bytes to the parser and
+;; never interprets them.
 (define bv (b "GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
 (define req (make-request 'GET (b "/") 1 1 '() #f))
 (define post (make-request 'POST (b "/") 1 1 '() #f))
@@ -90,12 +51,12 @@
 ;; A synthetic state: the phase, plus any of deadline / close-after /
 ;; outstanding / outstanding-bytes / pending / request / target / host /
 ;; fields / limits; every field not named takes its default, and the limits
-;; are decision 0005's defaults unless given.  The head
+;; are default-limits unless given.  The head
 ;; is the core's own, so a target (a string) is read into it the way the
 ;; parser delivers one, in a request line `GET target HTTP/1.1`, each event
 ;; at the parser's position in it and each span at its bounds, and a host (a
 ;; string) likewise, as a Host header line, then each of `fields`, a list of
-;; (name . value) strings (M6.4).  Each of those callbacks must be
+;; (name . value) strings.  Each of those callbacks must be
 ;; answered `continue` (`setup!`), so the head built is one a parse reaches.
 (define (state phase . plist)
   (define (get key default)
@@ -142,8 +103,8 @@
 
 ;; render-action : Action -> Datum
 ;; A write's segments are bytes, so it is rendered with each as text, a span
-;; of a bytevector, `(bv start end)`, as its bytes' (M6.3); the Date slot
-;; stays the symbol `date` (M3.2).
+;; of a bytevector, `(bv start end)`, as its bytes; the Date slot stays the
+;; symbol `date`.
 (define (render-action a)
   (if (eq? (car a) 'write)
       (list 'write
@@ -161,14 +122,14 @@
 ;; written : (U String 'date) ... -> Datum
 ;; A write as render-action shows it: its segments, and the bytes they come
 ;; to, the Date slot counted at its 37 (`Date: `, RFC 9110 §5.6.7's
-;; 29-character IMF-fixdate, CRLF; decision 0010 item 4).
+;; 29-character IMF-fixdate, CRLF).
 (define (written . segments)
   (list 'write segments
         (fold-left (lambda (n seg) (+ n (if (string? seg) (string-length seg) 37))) 0 segments)))
 
 ;; An originated status as render-action shows it: RFC 9110 §15's phrase, and
-;; no body, so `Content-Length: 0` and `Connection: close` (decision 0010
-;; item 6; design §6.5: every one closes).
+;; no body, so `Content-Length: 0` and `Connection: close`: a status the
+;; core originates always closes the connection.
 (define (status-write n phrase)
   (written (string-append "HTTP/1.1 " (number->string n) " " phrase "\r\n") 'date
            "Content-Length: 0\r\nConnection: close\r\n\r\n"))
@@ -203,8 +164,8 @@
 ;; wheel-before : ConnState Event -> (U #f Kind)
 ;; What the shell's wheel holds for the connection as the event arrives: the
 ;; kind the state records, but nothing at a tick, since the wheel ticks a
-;; connection only as it lets the deadline go (decision 0005's amendment of
-;; 2026-09-27: an advance returns its keys already disarmed).
+;; connection only as it lets the deadline go (an advance of the wheel
+;; returns its keys already disarmed).
 (define (wheel-before s ev)
   (if (eq? (car ev) 'tick) #f (conn-deadline s)))
 
@@ -233,7 +194,7 @@
   (let* ((o (outcome s ev)) (after (conn-deadline s)))
     (append o (list after))))
 
-;; A row is the design's wording and its instances; an instance is a synthetic
+;; A row is its label, its wording and its instances; an instance is a synthetic
 ;; state, one event, and the expected outcome.  "any" and "head/body" rows get
 ;; one instance per state they name.
 (define (row id text . instances) (list id text instances))
@@ -243,7 +204,7 @@
 (define (i st ev expected) (list st ev expected))
 
 ;; ---------------------------------------------------------------------------
-;; Design §4.4, the happy path: ten rows.  The tables are procedures so their
+;; The happy path: ten rows.  The tables are procedures so their
 ;; synthetic states are built inside the suite, where a raise fails the
 ;; group's count (status 1) rather than crashing before any test runs.
 (define (happy-path)
@@ -266,32 +227,32 @@
         (i (state 'head 'deadline 'header) '(parser-event on-header-value-complete 25)
            '(head #f ((reply-parser continue)))))
 
-   ;; on-headers-complete carries the six parser fields read inside it
-   ;; (0002 item 4): here llhttp's method 1 (GET), HTTP/1.1, no flags, no
-   ;; content-length, and an `upgrade` of 0; and the parser's position, the
-   ;; head's end, as every event callback carries it.  The head holds a target, as
-   ;; every parsed one does, since the target is judged here (M2.3), and a
-   ;; Host, as every HTTP/1.1 one must (RFC 9112 §3.2, 2026-09-25).
+   ;; on-headers-complete carries the six parser fields read inside it:
+   ;; here llhttp's method 1 (GET), HTTP/1.1, no flags, no content-length,
+   ;; and an `upgrade` of 0; and the parser's position, the head's end, as
+   ;; every event callback carries it.  The head holds a target, as every
+   ;; parsed one does, since the target is judged here, and a Host, as every
+   ;; HTTP/1.1 one must (RFC 9112 §3.2).
    (row 'H4 "head, on-headers-complete -> body: continue, disarm, arm body"
         (i (state 'head 'deadline 'header 'target "/" 'host "x")
            '(parser-event on-headers-complete 1 1 1 0 0 0 27)
            '(body #f ((reply-parser continue) (disarm-deadline) (arm-deadline body)))))
 
-   ;; The piece goes to the reader the handler answered with (M6.1,
-   ;; decision 0013): here a streaming one, reading a body of 10 bytes.
+   ;; The piece goes to the reader the handler answered with: here a
+   ;; streaming one, reading a body of 10 bytes.
    (row 'H5 "body, on-body-data -> body: continue, deliver-body, arm body"
         (i (reading 10 (read-body (lambda (bv from to) #t) (lambda () resp)))
            `(parser-event on-body-data ,bv 3 8)
            `(body #f ((reply-parser continue) (deliver-body ,bv 3 8) (arm-deadline body)))))
 
    ;; Reading goes on past the message's end, only to notice the client
-   ;; close (decision 0020): the close-notice rows below.
+   ;; close: the close-notice rows below.
    (row 'H6 "body, on-message-complete -> handling: pause, disarm, call-handler, reading on"
         (i (state 'body 'deadline 'body 'request req) '(parser-event on-message-complete 27)
            `(handling #f ((reply-parser pause) (disarm-deadline) (call-handler ,req)))))
 
-   ;; The write is the serializer's segments for the request being answered
-   ;; (M3.2): an HTTP/1.1 GET that keeps the connection.
+   ;; The write is the serializer's segments for the request being answered:
+   ;; an HTTP/1.1 GET that keeps the connection.
    (row 'H7 "handling, handler-responded -> responding: write, arm write"
         (i (state 'handling 'request req) `(handler-responded ,resp)
            `(responding #f (,(written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 6\r\n\r\n" "row H7")
@@ -309,10 +270,10 @@
            `(idle #f ((resume-parser) (feed-parser ,bv 10 20) (read-start) (arm-deadline idle)))))
 
    ;; The pending remainder is dropped, not fed: after a close-marked message
-   ;; the core stops feeding (decision 0004 item 4).  The connection closes in
-   ;; stages (RFC 9112 §9.6; decision 0011): the write side shut, reading on
-   ;; to drop what arrives, the linger deadline armed.  Every close after a
-   ;; response does, a request's own and the core's own status alike.
+   ;; the core stops feeding.  The connection closes in stages (RFC 9112
+   ;; §9.6): the write side shut, reading on to drop what arrives, the linger
+   ;; deadline armed.  Every close after a response does, a request's own and
+   ;; the core's own status alike.
    (row 'H10 "responding, last write-completed, close-after -> lingering: shutdown, read-start, arm linger"
         (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
                   'close-after 'not-keep-alive 'pending (list bv 10 20))
@@ -324,10 +285,10 @@
            '(lingering headers-too-large ((shutdown) (read-start) (arm-deadline linger)))))))
 
 ;; ---------------------------------------------------------------------------
-;; Design §4.4, termination and error: nine rows.
+;; Termination and error: eleven rows, T1 to T6 and T8 to T12.
 ;;
-;; Every row that closes, and the hand-off (T7), disarms the deadline first,
-;; armed or not (M5.2).  The shell's wheel holds a connection whose deadline
+;; Every row that closes, and the hand-off (W2), disarms the deadline first,
+;; armed or not.  The shell's wheel holds a connection whose deadline
 ;; is armed until the deadline passes, up to the idle deadline's 75 s, so
 ;; every way the core lets a connection go says to let it go.
 (define (termination)
@@ -337,7 +298,7 @@
         (i (state 'head 'deadline 'header) '(eof) '(closing #f ((disarm-deadline) (close eof))))
         (i (state 'body 'deadline 'body) '(eof) '(closing #f ((disarm-deadline) (close eof)))))
 
-   (row 'T2 "any live state, read-error -> closing: log, disarm, close, no response; from handling or responding the request's code told first (decision 0020)"
+   (row 'T2 "any live state, read-error -> closing: log, disarm, close, no response; from handling or responding the request's code told first"
         (i (state 'idle 'deadline 'idle) '(read-error ECONNRESET)
            '(closing #f ((log read-error ECONNRESET) (disarm-deadline) (close read-error))))
         (i (state 'head 'deadline 'header) '(read-error ECONNRESET)
@@ -354,10 +315,9 @@
         (i (state 'lingering 'deadline 'linger 'close-after 'headers-too-large) '(read-error ECONNRESET)
            '(closing headers-too-large ((log read-error ECONNRESET) (disarm-deadline) (close read-error)))))
 
-   ;; The status is design §6.5's for a parser error: 400, whatever the code,
-   ;; invalid-transfer-encoding among them (RFC 9112 §6.3; amended on the
-   ;; owner's word, 2026-09-26).  Refusing, the connection stops reading, as
-   ;; `responding` does not read (design §4.3; M3.5).
+   ;; The status for a parser error is 400, whatever the code,
+   ;; invalid-transfer-encoding among them (RFC 9112 §6.3).  Refusing, the
+   ;; connection stops reading, as `responding` does not read.
    (row 'T3 "head/body, parser-result status=error -> responding: write the status, read-stop, close-after"
         (i (state 'head 'deadline 'header) '(parser-result error 0 0 invalid-method #f)
            `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
@@ -367,8 +327,8 @@
            `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write)))))
 
    ;; Deadlines are kinds, not instants: the shell's wheel ticks a connection
-   ;; only once the deadline it armed has passed (decision 0005), so "past the
-   ;; header deadline" is a tick while the header deadline is armed.  The
+   ;; only once the deadline it armed has passed, so "past the header
+   ;; deadline" is a tick while the header deadline is armed.  The
    ;; second instance is the guard: a tick with nothing armed changes nothing.
    (row 'T4 "head, tick past the header deadline -> responding: write 408, read-stop, close-after"
         (i (state 'head 'deadline 'header) '(tick 60000)
@@ -386,13 +346,12 @@
         (i (state 'handling) '(handler-failed boom)
            `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)))))
 
-   ;; T7, the parser's own hand-off on its pause channel, is retired (M8.2):
-   ;; the core pauses the parser at every message's end and never resumes
-   ;; it onto an upgrade, so the hand-off cannot come, and the door is the
-   ;; switch rows' (decision 0016).  The suite's checks refuse it.  The
-   ;; error channel is U2's.
+   ;; There is no T7: the parser's own hand-off on its pause channel never
+   ;; comes.  The core pauses the parser at every message's end and never
+   ;; resumes it onto an upgrade, so the door is the switch rows', and the
+   ;; suite's checks refuse the hand-off.  The error channel is U2's.
 
-   ;; M8.1: told to finish, an idle connection has nothing in flight, so it
+   ;; Told to finish, an idle connection has nothing in flight, so it
    ;; closes at once, with no response, as at its idle deadline.  A state
    ;; with a request in flight keeps its rows and closes after its response,
    ;; for a reason of its own if it has one: T10 and T11 follow one through.
@@ -424,13 +383,13 @@
            '(closed #f ())))
 
    ;; The request in flight is answered as any is, saying it closes, since
-   ;; its head is not yet written (decision 0010 items 2 and 3).
+   ;; its head is not yet written.
    (row 'T10 "told to finish, handling, handler-responded -> responding: the response says Connection: close"
         (i (after (state 'handling 'request req) '(shutdown-requested)) `(handler-responded ,resp)
            `(responding shutdown (,answered-closing (arm-deadline write)))))
 
    ;; Its last write's completion is followed by the staged close, the
-   ;; pipelined rest dropped (decision 0004 item 4; decision 0011).
+   ;; pipelined rest dropped.
    (row 'T11 "told to finish, responding, last write-completed -> lingering: shutdown, read-start, arm linger"
         (i (after (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100
                          'pending (list bv 10 20))
@@ -441,8 +400,7 @@
    ;; A request only the shell's own close cancels: a close from outside the
    ;; core, at a drain's deadline or for a bug, cancels the write or the
    ;; half-close outstanding, which reports ECANCELED.  That is no transport
-   ;; failure, so the core closes as for one, and logs nothing (M8.1's
-   ;; review).
+   ;; failure, so the core closes as for one, and logs nothing.
    (row 'T12 "any live state, read-error ECANCELED -> closing: disarm, close, no log"
         (i (state 'responding 'deadline 'write 'outstanding 1 'outstanding-bytes 100)
            '(read-error ECANCELED)
@@ -451,12 +409,11 @@
            '(closing shutdown ((disarm-deadline) (close cancelled)))))))
 
 ;; ---------------------------------------------------------------------------
-;; Decision 0004's pause protocol: three rows (M2.4).  Design §4.4 folds the
-;; first into H6, "retain pending-input", but the core cannot keep the
-;; remainder at on-message-complete: the parser says where it stopped,
-;; `parser-result-next`, only when the feed has returned.  So the result that
-;; follows the pause keeps the rest of the delivery the core fed, and these
-;; rows' outcomes show what is kept.
+;; The pause: three rows.  H6 pauses the parser at on-message-complete, but
+;; the core cannot keep the remainder of the delivery there: the parser says
+;; where it stopped, `parser-result-next`, only when the feed has returned.
+;; So the result that follows the pause keeps the rest of the delivery the
+;; core fed, and these rows' outcomes show what is kept.
 
 ;; paused : Nat Nat CloseAfter -> ConnState
 ;; A connection that fed the parser the delivery bv[from, to) and was paused
@@ -475,21 +432,20 @@
     (append o (list pending))))
 
 ;; ---------------------------------------------------------------------------
-;; The upgrade door: two rows (M2.5, decided on the owner's word, 2026-09-25).
-;; An upgrade (the parser's `upgrade` field, llhttp's rule: CONNECT, or
-;; `Connection: upgrade` with `Upgrade`) is served like any request and
-;; closes the connection after the response, so the bytes after it are never
-;; read (decision 0006's amendment).  The HTTP/2 preface, a hand-off on the
-;; parser's error channel, is answered 505 (0006 item 2).
+;; Upgrades: two rows.  An upgrade (the parser's `upgrade` field, llhttp's
+;; rule: CONNECT, or `Connection: upgrade` with `Upgrade`) is served like any
+;; request and closes the connection after the response, so the bytes after
+;; it are never read.  The HTTP/2 preface, a hand-off on the parser's error
+;; channel, is answered 505.
 (define upgrade-flags (bitwise-ior F-UPGRADE F-CONNECTION-UPGRADE))
 
 (define (upgrade-door)
   (list
    ;; on-headers-complete's fields: llhttp's method (5 CONNECT, 1 GET), the
    ;; version, the flags, the content-length and the parser's `upgrade`
-   ;; (chez-httparse v0.4.1, #47).  The field decides, whatever the method and
-   ;; flags say, and a message that closes the connection anyway keeps its
-   ;; own reason.
+   ;; (chez-httparse v0.4.1 or later).  The field decides, whatever the
+   ;; method and flags say, and a message that closes the connection anyway
+   ;; keeps its own reason.
    (row 'U1 "head, on-headers-complete of an upgrade -> body: served, close-after upgrade"
         (i (state 'head 'deadline 'header 'target "example.com:443" 'host "example.com:443")
            '(parser-event on-headers-complete 5 1 1 0 0 1 49)
@@ -513,18 +469,15 @@
                                        (arm-deadline write)))))))
 
 ;; ---------------------------------------------------------------------------
-;; M8.2: the door, seven rows (decision 0016, decided on the owner's word by
-;; form, 2026-10-03).  A handler takes an upgrade by answering a switch.  The
-;; door opens for an HTTP/1.1 request the parser marks as an upgrade, kept
-;; alive, that is no CONNECT and has no body (item 4): its 101 is written,
-;; `Connection: upgrade` with the switch's fields (item 1), and once it is,
+;; The switch door: seven rows.  A handler takes an upgrade by answering a
+;; switch.  The door opens for an HTTP/1.1 request the parser marks as an
+;; upgrade, kept alive, that is no CONNECT and has no body: its 101 is
+;; written, `Connection: upgrade` with the switch's fields, and once it is,
 ;; the core hands the stream over with its take-over and the bytes read past
-;; the request, the pending input the message's pause kept (0006 item 3's
-;; contract; the spike `m8-door-pending.sps` measured it at every delivery
-;; size).  Any other request answered a switch, and a switch with a fault,
-;; is answered 500, logged, as a response with a fault is (decision 0010
-;; item 2).  Handed off, the core asks for nothing more but ends at the
-;; stream's close.
+;; the request, the pending input the message's pause kept.  Any other
+;; request answered a switch, and a switch with a fault, is answered 500,
+;; logged, as a response with a fault is.  Handed off, the core asks for
+;; nothing more but ends at the stream's close.
 
 ;; A WebSocket handshake read in one delivery, its request 72 bytes, then 5
 ;; bytes of another protocol's.
@@ -587,12 +540,11 @@
 
    ;; The 101 is the one write outstanding, its bytes what it wrote.
    ;; Reading stops before the hand-off, so what the client sends next
-   ;; waits for the taker's read-start (decision 0016's amendment of
-   ;; 2026-10-11): the core reads nothing once handed off.  A client's end
-   ;; read while the 101 is written is handed over too, so the shell tells
-   ;; the taker, which would otherwise never hear it (0016's amendment of
-   ;; 2026-10-12): with the bytes held before it, or with none, the
-   ;; request's client then closed.
+   ;; waits for the taker's read-start: the core reads nothing once handed
+   ;; off.  A client's end read while the 101 is written is handed over too,
+   ;; so the shell tells the taker, which would otherwise never hear it:
+   ;; with the bytes held before it, or with none, the request's client then
+   ;; closed.
    (row 'W2 "responding, the 101's last write-completed -> handed-off: disarm, stop reading, the hand-off, the bytes read past the request and whether the client's end came"
         (i (switching (ws) ws-switch) `(write-completed ,(string-length the-101))
            `(handed-off upgrade ((disarm-deadline) (read-stop) (hand-off ,take-over (,ws-wire ,ws-end ,(+ ws-end 5)) #f))))
@@ -603,10 +555,10 @@
         (i (end-read (switching (ws ws-end) ws-switch)) `(write-completed ,(string-length the-101))
            `(handed-off client-closed ((disarm-deadline) (read-stop) (hand-off ,take-over #f #t)))))
 
-   ;; Item 4: a request that does not upgrade; one below HTTP/1.1, which
-   ;; closes after its response, or is kept alive by its Connection; a
-   ;; CONNECT, which llhttp's rule upgrades whatever its fields; and one with
-   ;; a body, answered at its head (decision 0013).
+   ;; A request that does not upgrade; one below HTTP/1.1, which closes
+   ;; after its response, or is kept alive by its Connection; a CONNECT,
+   ;; which llhttp's rule upgrades whatever its fields; and one with a body,
+   ;; answered at its head.
    (row 'W3 "handling, handler-responded with a switch, the door closed -> responding 500, close-after: log not-an-upgrade"
         (i (upgrading (state 'head 'deadline 'header 'target "/chat" 'host "x") 1 1 1 0 0 0)
            `(handler-responded ,ws-switch)
@@ -627,8 +579,8 @@
            `(handler-responded ,ws-switch)
            (refused-switch 'not-an-upgrade)))
 
-   ;; Item 1: what the server cannot write safely, as (http-server
-   ;; serializer)'s switch-fault names it.
+   ;; What the server cannot write safely, as (http-server serializer)'s
+   ;; switch-fault names it.
    (row 'W4 "handling, handler-responded with a switch with a fault, the door open -> responding 500, close-after: log the fault"
         (i (ws) `(handler-responded ,(switch '("Sec-WebSocket-Accept" . "x")))
            (refused-switch 'invalid-upgrade))
@@ -641,8 +593,8 @@
 
    ;; RFC 9110 §7.8: a server that receives both Upgrade and an Expect of
    ;; 100-continue MUST send the 100 before the 101.  The door's request has
-   ;; no body, so no 100 was sent for one (M6.4): the switch writes it first,
-   ;; in the 101's one write.
+   ;; no body, so no 100 was sent for one: the switch writes it first, in
+   ;; the 101's one write.
    (row 'W7 "handling, handler-responded with a switch, the request expecting 100-continue -> responding: the 100, then the 101, one write"
         (i (upgrading (state 'head 'deadline 'header 'target "/chat" 'host "x"
                              'fields (append ws-fields '(("Expect" . "100-continue"))))
@@ -666,11 +618,11 @@
         (i (state 'handed-off) `(handler-responded ,resp) '(handed-off #f ())))))
 
 ;; ---------------------------------------------------------------------------
-;; M3.2: what handler-responded does with what the handler answers (decision
-;; 0010 items 2 and 3).  A response the serializer cannot write safely is
-;; answered 500, the log naming its fault; a handler's `Connection: close`
-;; closes the connection after its response.  Each enters `responding` with
-;; the write deadline armed, as every entry into it does (design §4.3).
+;; What handler-responded does with what the handler answers.  A response the
+;; serializer cannot write safely is answered 500, the log naming its fault;
+;; a handler's `Connection: close` closes the connection after its response.
+;; Each enters `responding` with the write deadline armed, as every entry
+;; into it does.
 (define (response-rows)
   (list
    (row 'R1 "handling, handler-responded with a fault -> responding 500, close-after: log, write, arm write"
@@ -688,12 +640,12 @@
                          (arm-deadline write)))))))
 
 ;; ---------------------------------------------------------------------------
-;; M3.3: the writes and bytes outstanding (design §7.3; decision 0010 item 5).
-;; Every write the core asks for is outstanding, with the bytes it comes to,
-;; until the shell reports it completed: in `responding`, or in `closing`
-;; for a write a close cut short.  W1's writes are the rows' own above: H7's,
-;; T4's 408 and R1's 500.  A completion the core did not ask for is the
-;; shell's bug, refused as an assertion violation.
+;; The writes and bytes outstanding.  Every write the core asks for is
+;; outstanding, with the bytes it comes to, until the shell reports it
+;; completed: in `responding`, or in `closing` for a write a close cut
+;; short.  W1's writes are the rows' own above: H7's, T4's 408 and R1's 500.
+;; A completion the core did not ask for is the shell's bug, refused as an
+;; assertion violation.
 
 ;; accounted : ConnState Event
 ;;   -> (U (List Phase CloseAfter (Listof Datum) Nat Nat) 'refused 'crashed)
@@ -754,14 +706,13 @@
         (i (state 'closing) '(write-completed 0) 'refused))
    ;; A read error while a write is outstanding closes the connection (T2),
    ;; and so does the write deadline (D2).  libuv still reports the write
-   ;; the close cut short, and its completion settles it; how the shell
-   ;; reports a cancelled write is M4's.
+   ;; the close cut short, and its completion settles it.
    (row 'W5 "closing, write-completed for a write the close cut short -> closing: nothing outstanding, nothing asked"
         (i (state 'closing 'outstanding 1 'outstanding-bytes 100) '(write-completed 100)
            '(closing #f () 0 0)))))
 
 ;; ---------------------------------------------------------------------------
-;; M3.5: the staged close (RFC 9112 §9.6; decision 0011).  A connection that
+;; The staged close (RFC 9112 §9.6).  A connection that
 ;; lingers has written its last response and shut its write side; it reads,
 ;; and drops what arrives, until the client closes, a read fails (T2), or the
 ;; linger deadline passes.  The deadline is armed once, when lingering
@@ -789,22 +740,20 @@
            '(lingering not-keep-alive ())))))
 
 ;; ---------------------------------------------------------------------------
-;; M5.2: every deadline the core arms has its tick row (design §4.4, amended
-;; 2026-09-27; decision 0005's table).  T5, T4 and L3 act on the idle, header
-;; and linger deadlines; D1 and D2 act on the other two.  (D3 acted on the
-;; idle deadline a draining connection carried, until M8.1 retired the
-;; state.)  A body that stalls past its inactivity deadline is answered 408, as a head that stalls is, framed for
-;; the request in flight.  A write still outstanding past its deadline means a
-;; client that is not reading, so nothing more can be written to it: the
-;; connection closes with no response, for the write deadline, whatever it
-;; would have closed for after the response, and the write the close cuts
-;; short is settled in `closing` (W5).  As in T4, an instance with nothing
-;; armed is the guard.  Each outcome ends with the deadline the state records
-;; after the tick.
+;; Every deadline the core arms has its tick row.  T5, T4 and L3 act on the
+;; idle, header and linger deadlines; D1 and D2 act on the other two.  A body
+;; that stalls past its inactivity deadline is answered 408, as a head that
+;; stalls is, framed for the request in flight.  A write still outstanding
+;; past its deadline means a client that is not reading, so nothing more can
+;; be written to it: the connection closes with no response, for the write
+;; deadline, whatever it would have closed for after the response, and the
+;; write the close cuts short is settled in `closing` (W5).  As in T4, an
+;; instance with nothing armed is the guard.  Each outcome ends with the
+;; deadline the state records after the tick.
 (define (deadline-rows)
   (list
-   ;; A HEAD's answer carries no Content-Length the core cannot know (decision
-   ;; 0010 item 6), so its 408 shows the request in flight framing it.
+   ;; A HEAD's answer carries no Content-Length the core cannot know, so its
+   ;; 408 shows the request in flight framing it.
    (row 'D1 "body, tick past the body deadline -> responding: write 408, read-stop, close-after"
         (i (state 'body 'deadline 'body 'request post) '(tick 60000)
            `(responding body-timeout (,(status-write 408 "Request Timeout") (read-stop) (arm-deadline write))
@@ -839,7 +788,7 @@
            '(awaiting-credit #f () #f)))))
 
 ;; ---------------------------------------------------------------------------
-;; M6.1: reading a body (decision 0013).  A request whose head announces a
+;; Reading a body.  A request whose head announces a
 ;; body, chunked or a Content-Length above 0, is handed to the handler once
 ;; the feed that completed its head has returned; the handler answers with a
 ;; response or a reader, and the core hands a reader the body.  What that feed
@@ -847,10 +796,10 @@
 ;; pieces, and an error or a cap passed.  The states are reached by steps,
 ;; from a head being read: a POST (llhttp's method 3) whose head announces its
 ;; body, as on-headers-complete's flags and content-length say.
-;; M7.1 (decision 0014): the answer comes after the drain that asks for it,
-;; so a request asked about with its body still to come waits on its handler
-;; in handling, reading stopped and nothing armed (plan §14's note of M6.2),
-;; and a reader's answer reads again, with the body deadline.
+;; The answer comes after the drain that asks for it, so a request asked
+;; about with its body still to come waits on its handler in handling,
+;; reading stopped and nothing armed (the server is the one waiting), and a
+;; reader's answer reads again, with the body deadline.
 
 ;; announced : (U Nat 'chunked) [Limits] -> ConnState
 ;; A POST whose head, just complete, announced a body of `n` bytes by
@@ -989,9 +938,10 @@
              `(responding #f (,(written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 6\r\n\r\n" "row H7")
                               (arm-deadline write))))))
 
-   ;; Item 4: sent at once, and the connection closes after it, whether the
-   ;; body is still arriving or came whole with the head.  Either way the
-   ;; request waited on its handler with reading stopped (M7.1).
+   ;; A response given instead of a reader is sent at once, and the
+   ;; connection closes after it, whether the body is still arriving or came
+   ;; whole with the head.  Either way the request waited on its handler
+   ;; with reading stopped.
    (row 'B11 "handling, handler-responded with a response to a request that announced a body -> responding, close-after unread-body"
         (i (asked 10) `(handler-responded ,resp)
            `(responding unread-body (,answered-closing (arm-deadline write))))
@@ -1000,15 +950,15 @@
           (i s `(handler-responded ,resp)
              `(responding unread-body (,answered-closing (arm-deadline write))))))
 
-   ;; Item 6: a whole reader of no body has an empty one, no piece.
+   ;; A whole reader of no body has an empty one, no piece.
    (row 'B12 "handling, handler-responded with a reader, for a request with no body -> handling: deliver-body-end"
         (i (state 'handling 'request req) `(handler-responded ,streamer)
            '(handling #f ((deliver-body-end))))
         (i (state 'handling 'request req) `(handler-responded ,(whole-reader))
            '(handling #f ((deliver-body-end)))))
 
-   ;; Item 5: the limits' max-body-bytes caps every body, and a reader's own
-   ;; cap its body.
+   ;; The limits' max-body-bytes caps every body, and a reader's own cap its
+   ;; body.
    (row 'B13 "head, on-headers-complete declaring a length past max-body-bytes -> head: fail body-too-large"
         (i (state 'head 'deadline 'header 'target "/" 'host "x" 'limits (capped 5))
            `(parser-event on-headers-complete 3 1 1 ,F-CONTENT-LENGTH 10 0 46)
@@ -1036,7 +986,8 @@
            `(responding body-too-large (,(status-write 413 "Content Too Large") (arm-deadline write)))))
 
    ;; What the feed that completed the head met in the body before the
-   ;; handler was asked waits for its answer (design §8.1's second property).
+   ;; handler was asked waits for its answer, so the outcome does not depend
+   ;; on how the bytes were split into reads.
    (row 'B16 "body, the head's feed met an error in the body -> handling: read-stop, disarm, call-handler, the error kept"
         (i (met (announced 'chunked) '((3 8))) '(parser-result error 60 60 invalid-chunk-size #f)
            '(handling #f ((read-stop) (disarm-deadline) (call-handler POST))))
@@ -1066,16 +1017,15 @@
            `(responding handler-failed (,(status-write 500 "Internal Server Error") (read-stop) (arm-deadline write)))))))
 
 ;; ---------------------------------------------------------------------------
-;; M6.2: backpressure on the read side (plan §14; decision 0013's
-;; consequences).  A shell that hands a streaming reader its pieces on credit
-;; says so with the reader, `(handler-responded reader credit)`: M7's
-;; coroutine shell, and in v1 only the checks' shells.  Handed a read's
-;; pieces, such a reader makes reading wait until its credit covers them: the
-;; connection reads nothing and arms no deadline, since the server is the one
-;; waiting (plan §14's note of 2026-09-27), so a slow reader holds at most one
-;; read.  A reader answered with no word of credit, as v1's shells answer
-;; every one, takes each piece as it is handed over, and reading goes on at
-;; once.  The credit counts bytes.
+;; Backpressure on the read side.  A shell that hands a streaming reader its
+;; pieces on credit says so with the reader, `(handler-responded reader
+;; credit)`: the libuv shell for a handler that waits, and the checks'
+;; shells.  Handed a read's pieces, such a reader makes reading wait until
+;; its credit covers them: the connection reads nothing and arms no
+;; deadline, since the server is the one waiting, so a slow reader holds at
+;; most one read.  A reader answered with no word of credit, as the shell
+;; answers an ordinary handler's, takes each piece as it is handed over, and
+;; reading goes on at once.  The credit counts bytes.
 
 ;; on-credit : (U Nat 'chunked) [Limits] -> ConnState
 ;; A POST with no piece met, whose handler's streaming reader the shell hands
@@ -1190,17 +1140,16 @@
         (i (asked 10) `(handler-responded ,streamer credit credit) 'refused))))
 
 ;; ---------------------------------------------------------------------------
-;; M6.3: a streamed response, nineteen rows (decision 0013 item 8; plan §14).
-;; A response whose body is a producer is written as its head, then a piece
-;; at a time: `notify-producer` asks the shell to call the producer, whose
-;; answer comes back as `handler-body-chunk` or `handler-body-end`, or as
-;; `handler-failed` if it raised.  Each piece is a write of its own, chunked
-;; to HTTP/1.1 and close-delimited to 1.0 (the serializer's).  The producer
-;; is asked only while the bytes outstanding are at or below the high water,
-;; so at most one piece passes it, and while fewer than 64 writes are, since
-;; a write costs the same whatever its size (M6.3's second review); past
-;; either, the producer waits until completions bring the bytes to the low
-;; water and the writes to 16.  The head alone may pass the high water.  A
+;; A streamed response, nineteen rows.  A response whose body is a producer
+;; is written as its head, then a piece at a time: `notify-producer` asks the
+;; shell to call the producer, whose answer comes back as `handler-body-chunk`
+;; or `handler-body-end`, or as `handler-failed` if it raised.  Each piece is
+;; a write of its own, chunked to HTTP/1.1 and close-delimited to 1.0 (the
+;; serializer's).  The producer is asked only while the bytes outstanding are
+;; at or below the high water, so at most one piece passes it, and while
+;; fewer than 64 writes are, since a write costs the same whatever its size;
+;; past either, the producer waits until completions bring the bytes to the
+;; low water and the writes to 16.  The head alone may pass the high water.  A
 ;; failure once the head is on the wire gets a bare close, since a status
 ;; can no longer be written.  The states are reached by steps, from a GET in
 ;; handling.  The heads are 84 bytes chunked and 75 close-delimited, as H7's
@@ -1212,7 +1161,7 @@
 (define req10 (make-request 'GET (b "/") 1 0 '() #f))
 (define hello (b "hello"))
 
-;; waters : Nat Nat -> Limits — decision 0005's, with these water marks.
+;; waters : Nat Nat -> Limits — default-limits, with these water marks.
 (define (waters high low)
   (limits-with default-limits (list (cons 'write-high-water high) (cons 'write-low-water low))))
 
@@ -1235,7 +1184,7 @@
     s))
 
 ;; asked-after : Nat -> ConnState
-;; The stream of `streaming`, chunked, under decision 0005's marks, after
+;; The stream of `streaming`, chunked, under the default water marks, after
 ;; `n` pieces of 5 bytes, each written in 10: 1 + n writes outstanding and
 ;; 84 + 10n bytes, far below the high water, the producer asked again.
 (define (asked-after n)
@@ -1275,8 +1224,8 @@
         (i (state 'handling 'request req) `(handler-responded ,streamed-resp)
            `(responding #f (,chunked-head (arm-deadline write) (notify-producer)) #t)))
 
-   ;; M3.2's carried arm: a close-delimited body ends only with the
-   ;; connection (RFC 9112 §6.3 rule 8), so the connection closes after it,
+   ;; A close-delimited body ends only with the connection (RFC 9112 §6.3
+   ;; rule 8), so the connection closes after it,
    ;; and its head says so, though the request would have kept it.
    (row 'S2 "handling, handler-responded with a producer, HTTP/1.0 -> responding, close-after close-delimited: the head with Connection: close, arm write, notify-producer"
         (i (state 'handling 'request req10) `(handler-responded ,streamed-resp)
@@ -1290,8 +1239,8 @@
         (i (state 'handling 'request req) `(handler-responded ,(make-response 204 #f '() producer))
            `(responding #f (,(written "HTTP/1.1 204 No Content\r\n" 'date "\r\n") (arm-deadline write)) #f)))
 
-   ;; Decision 0013 item 4: a response given instead of a reader closes the
-   ;; connection after it, the body unread, a streamed one too.
+   ;; A response given instead of a reader closes the connection after it,
+   ;; the body unread, a streamed one too.
    (row 'S4 "handling, handler-responded with a producer instead of a reader -> responding, close-after unread-body: the head, arm write, notify-producer"
         (i (asked 10) `(handler-responded ,streamed-resp)
            `(responding unread-body
@@ -1347,16 +1296,16 @@
            '(responding close-delimited () #f)))
 
    ;; The close ends a close-delimited body, so with every write completed
-   ;; the response is written at its end, and closes in stages (decision
-   ;; 0011): the half-close is the end the client reads.
+   ;; the response is written at its end, and closes in stages (RFC 9112
+   ;; §9.6): the half-close is the end the client reads.
    (row 'S11 "responding, handler-body-end, close-delimited, nothing outstanding -> lingering: shutdown, read-start, arm linger"
         (let ((s (streaming 'close-delimited)))
           (conn-step s '(write-completed 75))
           (i s '(handler-body-end)
              '(lingering close-delimited ((shutdown) (read-start) (arm-deadline linger)) #f))))
 
-   ;; Design §4.4's handler-failed row: a bare close once the head is on the
-   ;; wire.  The shell logs the failure as it logs a handler's.  A failure
+   ;; A producer that fails once the head is on the wire gets a bare close.
+   ;; The shell logs the failure as it logs a handler's.  A failure
    ;; while no piece is asked for, a reader's raised late (B19), changes
    ;; nothing.
    (row 'S12 "responding, handler-failed with a piece asked for -> closing: disarm, close, no response"
@@ -1367,13 +1316,13 @@
 
    ;; A producer's answer is a piece of a byte or more (producer-event): an
    ;; empty one is the producer failing, since asking again at once would
-   ;; hold the loop for as long as it had nothing (M6.3's review).  So a
-   ;; piece of no bytes is the shell's bug, as a piece not asked for is.
+   ;; hold the loop for as long as it had nothing.  So a piece of no bytes
+   ;; is the shell's bug, as a piece not asked for is.
    (row 'S13 "responding, handler-body-chunk of no bytes: refused"
         (i (streaming 'chunked) `(handler-body-chunk ,hello 2 2) 'refused))
 
    ;; A piece or an end the core did not ask for is the shell's bug, as a
-   ;; completion the core did not ask for is (M3.3).
+   ;; completion the core did not ask for is (W4).
    (row 'S14 "responding, handler-body-chunk or handler-body-end not asked for: refused"
         (i (waiting (waters 84 20)) `(handler-body-chunk ,hello 0 5) 'refused)
         (i (waiting (waters 84 20)) '(handler-body-end) 'refused)
@@ -1392,8 +1341,8 @@
 
    ;; A completion while the producer's answer is to come: the write
    ;; deadline stays armed while a write is outstanding, and with none, none
-   ;; is: the producer is the one waited on, and decision 0005 has no
-   ;; deadline for a handler.
+   ;; is: the producer is the one waited on, and no deadline kind is for a
+   ;; handler.
    (row 'S16 "responding, a completion while a piece is asked for -> responding: arm write, or disarm with none outstanding"
         (let ((s (streaming 'chunked)))
           (conn-step s `(handler-body-chunk ,hello 0 5))
@@ -1403,8 +1352,8 @@
            '(responding #f ((disarm-deadline)) #t)))
 
    ;; The producer is asked only at or below the high water, whatever the
-   ;; low water: limits-with, unlike the environment, accepts one above it
-   ;; (M6.3's review).  Under a high water of 90 and a low of 200, a piece
+   ;; low water: limits-with, unlike the environment, accepts one above it.
+   ;; Under a high water of 90 and a low of 200, a piece
    ;; takes the bytes outstanding to 94, past the high water; a completion
    ;; of 2 leaves 92, at or below the low water, still past the high.
    (row 'S17 "responding, waiting, a completion at or below the low water, still past the high -> responding: arm write; the producer still waits"
@@ -1413,8 +1362,8 @@
 
    ;; Each piece is a write of its own, and a write holds the loop and
    ;; memory the same whatever its size, so the producer is asked only while
-   ;; fewer than 64 writes are outstanding too (M6.3's second review): the
-   ;; head and 62 pieces leave 63, and it is asked; one more leaves 64, far
+   ;; fewer than 64 writes are outstanding too: the head and 62 pieces
+   ;; leave 63, and it is asked; one more leaves 64, far
    ;; below the high water, and it waits.
    (row 'S18 "responding, a piece that leaves 64 writes outstanding, below the high water -> responding: write, arm write; the producer waits"
         (i (asked-after 61) `(handler-body-chunk ,hello 0 5)
@@ -1431,21 +1380,19 @@
            '(responding #f ((arm-deadline write)) #t)))))
 
 ;; ---------------------------------------------------------------------------
-;; M6.4: Expect: 100-continue (plan §14; decision 0013's consequences).  A
-;; client that sends `Expect: 100-continue` with a head that announces a
-;; body may wait for `100 Continue` before it sends the body (RFC 9110
-;; §10.1.1).  Answering with a reader is pulling the body, so the 100 is
-;; written then, before anything else the answer brings, however much of the
-;; body has arrived, so what happens does not depend on the reads (design
-;; §8.1's second property).  Until then the server is the one waiting, so
-;; the head arms no body deadline, and the 100 arms it (plan §14's note of
-;; 2026-09-27); a piece the client sends without waiting arms it too, as any
-;; piece does.  A response instead of a reader, a reader whose cap the
-;; declared length passes, and a handler that raises write their final status
-;; and no 100.  The expectation is ignored on HTTP/1.0, as RFC 9110 §10.1.1
-;; says it must be, on a request with no body, and when it is not
-;; 100-continue (decided on the owner's word, 2026-09-29).  The value is
-;; matched without regard to case, as a member of its list.
+;; Expect: 100-continue.  A client that sends `Expect: 100-continue` with a
+;; head that announces a body may wait for `100 Continue` before it sends the
+;; body (RFC 9110 §10.1.1).  Answering with a reader is pulling the body, so
+;; the 100 is written then, before anything else the answer brings, however
+;; much of the body has arrived, so what happens does not depend on the
+;; reads.  Until then the server is the one waiting, so the head arms no body
+;; deadline, and the 100 arms it; a piece the client sends without waiting
+;; arms it too, as any piece does.  A response instead of a reader, a reader
+;; whose cap the declared length passes, and a handler that raises write
+;; their final status and no 100.  The expectation is ignored on HTTP/1.0, as
+;; RFC 9110 §10.1.1 says it must be, on a request with no body, and when it
+;; is not 100-continue.  The value is matched without regard to case, as a
+;; member of its list.
 
 ;; expecting : (U Nat 'chunked) String -> ConnState
 ;; A POST whose head carries `Expect: value` and, just complete, announced a
@@ -1503,7 +1450,7 @@
            '(body #f ((reply-parser continue) (disarm-deadline)))))
 
    ;; RFC 9110 §10.1.1: HTTP/1.0's is ignored, and so is one with no body to
-   ;; wait for; another expectation is ignored, on the owner's word.
+   ;; wait for; another expectation is ignored.
    (row 'E2 "head, on-headers-complete where 100-continue does not apply -> body: continue, disarm, arm body"
         (i (head-expecting "100-continue") `(parser-event on-headers-complete 3 1 0 ,F-CONTENT-LENGTH 10 0 46)
            '(body not-keep-alive ((reply-parser continue) (disarm-deadline) (arm-deadline body))))
@@ -1540,7 +1487,7 @@
    ;; What the head's feed met waits for the answer, and the 100 still goes
    ;; first, as it would have had the body come in a later read: an error
    ;; kept, or a body met past the reader's own cap, in body or, the body
-   ;; ended, in handling (M6.4's review).
+   ;; ended, in handling.
    (row 'E6 "handling, an error kept or a body met past the reader's cap, handler-responded with a reader -> responding: the 100, the pieces, then the status"
         (let ((s (met (expecting 'chunked "100-continue") '((3 8)))))
           (conn-step s '(parser-result error 60 60 invalid-chunk-size #f))
@@ -1565,8 +1512,8 @@
         (i (expected 10) '(handler-failed boom)
            `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)))))))
 
-;; The 100 is a write like any other, outstanding until it completes (M3.3's
-;; accounting, which these rows are run through): in a state that reads, or
+;; The 100 is a write like any other, outstanding until it completes (the
+;; accounting above, which these rows are run through): in a state that reads, or
 ;; waits for the reader, its completion settles it and changes nothing else,
 ;; and once the response follows it, the response's completion is the last.
 (define (continue-accounting-rows)
@@ -1588,18 +1535,16 @@
           (i s '(write-completed 25) `(responding #f ((arm-deadline write)) 1 ,(nbytes w)))))))
 
 ;; ---------------------------------------------------------------------------
-;; M6.4: what a chunked body carries beside its data is held to limits
-;; (decided on the owner's word, 2026-09-29).  Its trailer fields, which the
-;; parser delivers as header callbacks once the last chunk is read (the
-;; ledger, M2), are held to the four header limits, as a head is, counted
-;; afresh, so the head's fields leave the trailers theirs; none is kept.
-;; Its chunk extensions, their names' and values' bytes and a byte as each
-;; ends, for the `;` or `=` before it, all of a body's together, are held to
-;; 16 KiB, fixed, as hyper and Node hold theirs.  One
-;; past a limit is refused as a head's field is, `(reply-parser (fail
-;; reason))`, and the parser's error that follows is answered with the
-;; reason's status: a trailer's the head's 431, the extensions' 413, as a
-;; body past a cap.
+;; What a chunked body carries beside its data is held to limits.  Its
+;; trailer fields, which the parser delivers as header callbacks once the
+;; last chunk is read, are held to the four header limits, as a head is,
+;; counted afresh, so the head's fields leave the trailers theirs; none is
+;; kept.  Its chunk extensions, their names' and values' bytes and a byte as
+;; each ends, for the `;` or `=` before it, all of a body's together, are
+;; held to 16 KiB, fixed, as hyper and Node hold theirs.  One past a limit is
+;; refused as a head's field is, `(reply-parser (fail reason))`, and the
+;; parser's error that follows is answered with the reason's status: a
+;; trailer's the head's 431, the extensions' 413, as a body past a cap.
 
 ;; tight : Limits — header limits small enough to pass in a row: a name or a
 ;; value of 4 bytes, 10 bytes in all, and 2 fields.
@@ -1726,7 +1671,8 @@
                           (,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write))))))
 
    ;; What the feed that completed the head met of the body waits for the
-   ;; handler's answer, a refusal among it (design §8.1's second property).
+   ;; handler's answer, a refusal among it, so the outcome does not depend on
+   ;; how the bytes were split into reads.
    (row 'F7 "body, a trailer or the extensions refused in the head's feed, before the handler is asked -> handling: read-stop, disarm, call-handler, the refusal kept, then answered with its status"
         (let ((s (announced 'chunked tight)))
           (conn-step s `(parser-event on-header-field-data ,big 0 5))
@@ -1750,20 +1696,19 @@
                           (,(status-write 413 "Content Too Large") (arm-deadline write))))))))
 
 ;; ---------------------------------------------------------------------------
-;; The padding PR: what the parser reads and hands the core no span of is
-;; held to limits (decided on the owner's word, 2026-09-30).  Four runs of
-;; it: empty lines before a request line, two skipped (RFC 9112 §2.2 asks
-;; for one; llhttp's own fixture carries two after a POST's body); the
-;; spaces between the request line's parts, one each (§3); the spaces and
+;; What the parser reads and hands the core no span of is held to limits.
+;; Four runs of it: empty lines before a request line, two skipped (RFC 9112
+;; §2.2 asks for one; llhttp's own fixture carries two after a POST's body);
+;; the spaces between the request line's parts, one each (§3); the spaces and
 ;; tabs before a field's value, counted with the value against its limit
 ;; and the section's; and a chunk size's digits, 16 at most, zeros
 ;; included.  Every event carries the parser's position, and a run is
 ;; measured from where one piece ends to where the next begins: at the
 ;; callback that ends it, and at a read's end while it runs, the parser's
 ;; error among them, once what the error cut off is judged (the cut-off
-;; rows below).  The rows' spans are at their bounds in
-;; the bytevectors named, and their events at the positions a parse of the
-;; same bytes commits.
+;; rows below).  The rows' spans are at their bounds in the bytevectors
+;; named, and their events at the positions a parse of the same bytes
+;; commits.
 
 ;; after : ConnState Event ... -> ConnState — the state, having taken `events`.
 (define (after s . events)
@@ -1933,8 +1878,7 @@
 
    ;; The parser's error inside a run, with no span cut off: the run is
    ;; judged as at a read's end, to the byte the parser refused, so past its
-   ;; limit its status stands, and within it the parser's (the cut-off-span
-   ;; PR; before it, only the whitespace's was judged here).
+   ;; limit its status stands, and within it the parser's.
    (row 'G12 "head or body, the parser's error inside a run, no span cut off -> the run's status past its limit, as at a read's end, and the parser's within it"
         (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
            '(parser-result error 9 9 invalid-url #f)
@@ -2021,7 +1965,7 @@
 
    ;; The states a close-marked message passes through after its pause.
    ;; Past a request's end the first delivery is held and reading stops, as
-   ;; for any message (decision 0020): never fed, since the input goes
+   ;; for any message: never fed, since the input goes
    ;; once the response is written, and handed to a switch's taker.
    (row 'P3 "after a close-marked message, bytes-arrived -> no feed-parser: held, reading stopped, from handling or responding"
         (i (state 'handling 'close-after 'not-keep-alive) `(bytes-arrived ,bv 0 5)
@@ -2034,7 +1978,7 @@
            '(closing not-keep-alive () #f)))))
 
 ;; ---------------------------------------------------------------------------
-;; A client's close (decision 0020).  From a request's end until its
+;; A client's close.  From a request's end until its
 ;; response is written, the connection reads only to notice the client
 ;; close: bytes that arrive are the next request's, held after the pause's
 ;; rest, and reading stops; the client's end tells the request's code, the
@@ -2131,17 +2075,16 @@
      (if (null? (row-instances r)) 0 1))))
 
 ;; ---------------------------------------------------------------------------
-;; What the parser's error cuts off (the cut-off-span PR; decided on the
-;; owner's word, 2026-10-01).  A malformed byte ends the parse, and a
+;; What the parser's error cuts off.  A malformed byte ends the parse, and a
 ;; target or a field name the parser was reading is abandoned, never handed
-;; on.  The result names the span the error abandoned and where its
-;; withheld bytes begin (byte-machine v0.7.0's two accessors, for its #145),
-;; and its offset is the refused byte's; the core judges the span's bytes it
-;; was not handed, from there to that byte, as a read's end would have.  They
-;; begin where the span did when it began in the read that failed (a target
-;; past the method's spaces, a name at its line's start), and otherwise at
-;; that read's start.  The rows' events are at the positions a parse of the
-;; bytes named commits, each delivery fed from its index 0.
+;; on.  The result names the span the error abandoned and where its withheld
+;; bytes begin (byte-machine v0.7.0's two accessors), and its offset is the
+;; refused byte's; the core judges the span's bytes it was not handed, from
+;; there to that byte, as a read's end would have.  They begin where the span
+;; did when it began in the read that failed (a target past the method's
+;; spaces, a name at its line's start), and otherwise at that read's start.
+;; The rows' events are at the positions a parse of the bytes named commits,
+;; each delivery fed from its index 0.
 
 ;; cut : Limits — tight's header limits, and a target of 4 bytes.
 (define cut (limits-with tight '((max-target-bytes . 4))))
@@ -2269,21 +2212,21 @@
 (run-suite "connection-table"
   (lambda ()
     ;; --- the closed sets -------------------------------------------------
-    (test-equal "ten states: design §4.3's nine, less draining (M8.1), decision 0011's lingering and M6.2's awaiting-credit"
+    (test-equal "ten states"
                 '(idle head body awaiting-credit handling responding lingering handed-off
                   closing closed)
                 conn-states)
-    (test-equal "fifteen events (decision 0002 item 2)"
+    (test-equal "fifteen events"
                 '(bytes-arrived eof read-error write-completed shutdown-completed closed
                   tick parser-event parser-result handler-responded handler-body-chunk
                   handler-body-end handler-failed body-credit shutdown-requested)
                 conn-events)
-    (test-equal "0002's fifteen actions plus 0006 item 3's hand-off and 0020's client-closed"
+    (test-equal "seventeen actions"
                 '(reply-parser feed-parser resume-parser write read-stop read-start
                   call-handler deliver-body deliver-body-end notify-producer
                   arm-deadline disarm-deadline shutdown close log hand-off client-closed)
                 conn-actions)
-    (test-equal "five deadline kinds: design §4.3's idle, header, body and write, and decision 0011's linger"
+    (test-equal "five deadline kinds: idle, header, body, write and linger"
                 '(idle header body write linger)
                 conn-deadline-kinds)
 
@@ -2294,10 +2237,10 @@
                          'accepted
                          (verdict (lambda () (conn-step (state 'idle 'deadline 'idle) ev)))))
               samples)
-    ;; A producer's answer as the event the shells dispatch for it (M6.3;
-    ;; decision 0013 item 8): the core makes it, so both shells report a
-    ;; producer alike.  What is no piece, an empty bytevector among it, a
-    ;; shell reports as the producer failing (the stream suite's flows).
+    ;; A producer's answer as the event the shells dispatch for it: the core
+    ;; makes it, so both shells report a producer alike.  What is no piece, an
+    ;; empty bytevector among it, a shell reports as the producer failing (the
+    ;; stream suite's flows).
     (test-equal "a producer's answer as an event: a bytevector of a byte or more is a piece, the eof object the end, an empty bytevector or anything else refused"
                 (list (list 'handler-body-chunk (b "abc") 0 3) '(handler-body-end) 'refused 'refused 'refused)
                 (list (producer-event (b "abc")) (producer-event (eof-object))
@@ -2307,8 +2250,7 @@
     ;; The shells log the refusal as the producer failing, and an answer that
     ;; is no piece is the response's data, a whole page when a string was
     ;; answered for its bytes: so the refusal names the answer by its kind
-    ;; and its length, where it has one, and never holds the answer (M6.3's
-    ;; second review).
+    ;; and its length, where it has one, and never holds the answer.
     (test-equal "a producer's answer that is no piece is named by its kind and length, never held"
                 '(((bytevector 0)) ((string 100000)) ((vector 2)) ((list 2)) ((pair)) ((symbol))
                   ((char)) ((number)) ((boolean)) ((procedure)) ((other)))
@@ -2321,14 +2263,14 @@
                            (make-response 200 #f '() #f))))
     ;; The core pauses the parser at every message's end and never resumes it
     ;; onto an upgrade, so the parser's own hand-off on its pause channel
-    ;; cannot come (M8.2; T7 retired): one that did would be the shell's bug.
+    ;; cannot come: one that did would be the shell's bug.
     (test-equal "a hand-off on the parser's pause channel is refused, in head and in body"
                 '(refused refused)
                 (list (verdict (lambda () (conn-step (state 'head 'deadline 'header 'request req)
                                                      '(parser-result paused 55 55 paused-upgrade #f))))
                       (verdict (lambda () (conn-step (state 'body 'deadline 'body 'request req)
                                                      '(parser-result paused 63 63 paused-upgrade #f))))))
-    ;; The door lets go of what it no longer needs (M8.2): handed off, the
+    ;; The door lets go of what it no longer needs: handed off, the
     ;; core keeps no input, no request and no take-over; and a 101 a read
     ;; error cuts short closes, its take-over let go with it, so a closed
     ;; connection holds no handler's code.
@@ -2351,7 +2293,7 @@
              (verdict (lambda () (state 'no-such-state))))
     ;; The writes and bytes outstanding are counts, zero together: every
     ;; write has bytes, a status line at least, and bytes are outstanding
-    ;; only in a write (M3.3).
+    ;; only in a write.
     (test-equal "writes and bytes outstanding that are not counts, or not zero together, are refused"
                 '(accepted refused refused refused refused)
                 (map (lambda (plist) (verdict (lambda () (apply state 'responding plist))))
@@ -2362,8 +2304,8 @@
                        (outstanding 1 outstanding-bytes many))))
 
     ;; --- the table ------------------------------------------------------
-    ;; A row with no instance is absent from the count, and the count is the
-    ;; design's.  Each group's rows run before its count is checked: SRFI-64's
+    ;; A row with no instance is absent from the count, and the count is each
+    ;; group's fixed size.  Each group's rows run before its count is checked: SRFI-64's
     ;; simple runner names a failing check after the last check run inside
     ;; it, so a count taken inside its check fails under a row's name.
     (let* ((happy (count-rows "happy-path" happy-path outcome))
@@ -2384,27 +2326,27 @@
            (paddings (count-rows "padding" padding-rows asked-by))
            (cut-offs (count-rows "cut-off" cut-off-rows asked-by))
            (notices (count-rows "close-notice" notice-rows kept)))
-      (test-eqv "design §4.4: all 10 happy-path rows have a test" 10 happy)
-      (test-eqv "design §4.4: 8 of the 9 termination and error rows have a test, T7 retired (M8.2), and M8.1's three" 11 term)
-      (test-eqv "decision 0004: all 3 pause-protocol rows have a test" 3 pause)
-      (test-eqv "M2.5: both upgrade-door rows have a test" 2 upgrade)
-      (test-eqv "M8.2: all 7 switch rows have a test" 7 switches)
-      (test-eqv "M3.2: both response rows have a test" 2 answered)
-      (test-eqv "M3.3: all 5 accounting rows have a test" 5 accounting)
-      (test-eqv "M3.5: all 4 linger rows have a test" 4 linger)
-      (test-eqv "M5.2: all 3 tick rows left since M8.1 retired draining have a test" 3 ticks)
-      (test-eqv "M6.1: all 19 body rows have a test" 19 bodies)
-      (test-eqv "M6.2: all 11 credit rows have a test" 11 credits)
-      (test-eqv "M6.3: all 19 stream rows have a test" 19 streams)
-      (test-eqv "M6.4: all 7 Expect rows have a test" 7 expects)
-      (test-eqv "M6.4: the 100's accounting row has a test" 1 continues)
-      (test-eqv "M6.4: all 7 trailer and extension rows have a test" 7 framings)
-      (test-eqv "the padding PR: all 14 padding rows have a test" 14 paddings)
-      (test-eqv "the cut-off-span PR: all 4 cut-off rows have a test" 4 cut-offs)
-      (test-eqv "decision 0020: all 11 close-notice rows have a test" 11 notices))
+      (test-eqv "all 10 happy-path rows have a test" 10 happy)
+      (test-eqv "all 11 termination and error rows have a test" 11 term)
+      (test-eqv "all 3 pause-protocol rows have a test" 3 pause)
+      (test-eqv "both upgrade rows have a test" 2 upgrade)
+      (test-eqv "all 7 switch rows have a test" 7 switches)
+      (test-eqv "both response rows have a test" 2 answered)
+      (test-eqv "all 5 accounting rows have a test" 5 accounting)
+      (test-eqv "all 4 linger rows have a test" 4 linger)
+      (test-eqv "all 3 tick rows have a test" 3 ticks)
+      (test-eqv "all 19 body rows have a test" 19 bodies)
+      (test-eqv "all 11 credit rows have a test" 11 credits)
+      (test-eqv "all 19 stream rows have a test" 19 streams)
+      (test-eqv "all 7 Expect rows have a test" 7 expects)
+      (test-eqv "the 100's accounting row has a test" 1 continues)
+      (test-eqv "all 7 trailer and extension rows have a test" 7 framings)
+      (test-eqv "all 14 padding rows have a test" 14 paddings)
+      (test-eqv "all 4 cut-off rows have a test" 4 cut-offs)
+      (test-eqv "all 11 close-notice rows have a test" 11 notices))
 
     ;; Every action the table produced is in the vocabulary, and the table
-    ;; uses all of it: `notify-producer` since M6.3.
+    ;; uses all of it.
     (test-equal "no row emits an action outside the vocabulary" '()
                 (filter (lambda (k) (not (memq k conn-actions))) emitted))
     (test-equal "the rows use all seventeen actions" conn-actions
@@ -2422,14 +2364,14 @@
     ;; disarms only as the actions say.  The two must agree after every row:
     ;; the kind the state records is what the row's actions leave armed,
     ;; starting from what the wheel held, which at a tick is nothing (see
-    ;; wheel-before).  A close and the hand-off cleared the kind without a
-    ;; disarm until M5.2, which left a connection gone from the core in the
-    ;; shell's wheel; and a tick no row acted on left a kind the wheel had
+    ;; wheel-before).  A close or the hand-off that cleared the kind without
+    ;; a disarm would leave a connection gone from the core in the shell's
+    ;; wheel; and a tick no row acts on must not leave a kind the wheel has
     ;; already let go (D4).
     (test-equal "after every row, the state records the deadline its actions leave armed" '()
                 strays)
 
-    ;; Every deadline the core arms has its tick row (M5.2): ticked in each
+    ;; Every deadline the core arms has its tick row: ticked in each
     ;; state a row leaves it armed in, armed there or carried in from the
     ;; state before, the connection moves on, to a 408 or a close, never
     ;; staying where it was.  A write that never completes must not keep the

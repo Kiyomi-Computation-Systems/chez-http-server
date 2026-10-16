@@ -1,178 +1,98 @@
 #!r6rs
-;;; (http-server private shell): the direct libuv shell, over loopback.  M4.2.
+;;; (http-server private shell): the direct libuv shell, over loopback.
 ;;;
-;;; The shell performs the core's actions with chez-libuv (design §5.2).  This
-;;; suite is the socket lane (design §8.5): it serves clients on the same loop,
-;;; bound to 127.0.0.1:0, each wait capped by an iteration count, never
-;;; wall-clock, and asserts on bytes, states and the order of verbs, never on
-;;; how the kernel split the stream.  Its clients are tests/shell-testing.sls's,
-;;; which the contract test shares.  A response is read back by chez-httparse's
-;;; strict response parser (tests/response-reader.sls), not by our own code.
+;;; The shell performs the core's actions with chez-libuv.  This suite is its
+;;; socket lane: it serves clients on the same loop, bound to 127.0.0.1:0,
+;;; each wait capped by an iteration count, never wall-clock, and asserts on
+;;; bytes, states and the order of verbs, never on how the kernel split the
+;;; stream.  Its clients are tests/shell-testing.sls's, which the contract
+;;; test shares.  A response is read back by chez-httparse's strict response
+;;; parser (tests/response-reader.sls), not by our own code.
 ;;;
-;;; The checks:
-;;;   - a GET is answered, its Date from the shell's clock, and the connection
-;;;     stays open;
-;;;   - a handler is called after libuv's turn, from the scheduler's drain, on
-;;;     no coroutine, never inside a libuv callback (decision 0014; M7.1),
-;;;     and not at all once its connection has closed before the drain
-;;;     reaches the call; and a loop let go with its shell is collected,
-;;;     though its scheduler, kept for it, holds it;
-;;;   - a handler that waits answers `awaiting`: its thunk parks on a
-;;;     coroutine, nothing is answered while it waits, and once woken its
-;;;     answer is written; its reader takes each piece on a coroutine, in
-;;;     order, reading waiting while it takes one, and its producer is called
-;;;     on a coroutine for each piece; an ordinary handler that waits fails,
-;;;     500, the refusal logged as R2's (M7.1); and its reader's piece may
-;;;     answer no values, as an ordinary reader's may: one that ends with a
-;;;     sleep does (the M7 exit);
-;;;   - the verbs a handler waits with (decision 0015, M7.2): a handler that
-;;;     waits on `await` is woken by another request's handler, and a second
-;;;     resume is logged as `late-resume` (R4); a handler that holds the
-;;;     loop, then sleeps 20 ms, sleeps 20 ms or more by the loop's clock,
-;;;     its sleep armed on the loop's clock brought up to date, which a
-;;;     timer due 19 ms in finds still armed, and one whose deadline ends a
-;;;     sleep of a minute is answered at once, nothing left armed after
-;;;     either; once a shell on the loop serves no more, which closes the
-;;;     timer of the loop's waits, a sleep makes another; and a handler that
-;;;     resolves localhost is answered what uv-getaddrinfo! itself answers,
-;;;     one that resolves a name libuv refuses at the call, empty, with a NUL
-;;;     or too long, `invalid-name`, and one that resolves a name with an
-;;;     empty label `EAI_NONAME`;
-;;;   - an idle connection carries no coroutine (decision 0003; the M7
-;;;     exit): once a handler that sleeps, looks a name up and meets a
-;;;     deadline, its reader's pieces and end and its producer sleeping too,
-;;;     is answered, and its connection is idle, a full collection leaves none
-;;;     of the coroutines they ran on;
-;;;   - three requests in one write are answered in order, reading the clock
-;;;     fewer times than they are answered (decision 0010: once a second), and
-;;;     no action but the parser's reply runs at parser depth (design §6.4,
-;;;     the second hazard), against the real shell as M2.4 checked the fake;
-;;;   - a response that closes the connection is followed by the half-close:
-;;;     the client reads the response, then the stream's end, while the
-;;;     connection lingers, reading, until the client closes (decision 0011,
-;;;     the shell's half of M3.5);
-;;;   - a client that uploads four MiB past a refusal sends all of it, and
-;;;     then reads the status and the stream's end: the connection lingers,
-;;;     reading and dropping the upload (decision 0011's measurement, M4.4);
-;;;   - a handler that raises is answered 500, and what it raised is logged;
-;;;   - a streamed response (M6.3, decision 0013 item 8): a MiB, chunked, to
-;;;     a client that reads nothing yet, its writes left waiting, the bytes
-;;;     outstanding never past decision 0005's high water by more than a
-;;;     piece's write, each piece's write a write request of chez-libuv's,
-;;;     never held, then read whole and in order; rows of 100 bytes to a
-;;;     client that reads nothing yet, never more than 64 writes outstanding
-;;;     (M6.3's second review), and those a turn writes one write request of
-;;;     chez-libuv's, the shell holding a turn's small writes for one libuv
-;;;     write, then read whole; the rows handed out in one bytevector,
-;;;     refilled at each call, read whole and in order, each as it was
-;;;     handed over; pieces of 100 bytes and 5,000 in turn, in order, a larger
-;;;     write sent after the smaller ones held; rows whose client goes while
-;;;     they are outstanding, a read error, then each row's write settled,
-;;;     and so are the rows of a turn whose one write is refused at the call;
-;;;     a stream's head sent before its producer is first called, on a stream
-;;;     behind another on one connection; pieces close-delimited to HTTP/1.0,
-;;;     read at the close; and a producer that raises after a piece, a bare
-;;;     close, the body cut short, what it raised logged;
-;;;   - a write outstanding keeps nothing of its response: chez-libuv copied
-;;;     the segments at the call, and the completion keeps their byte count
-;;;     alone (design §7.3; M3.3's check, against the real write executor);
-;;;   - a write that fails, at its completion or when it is issued, closes the
-;;;     connection as a read error, and is settled after (design §6.3);
-;;;   - the run loop raises again a byte-machine contract condition that a
-;;;     callback raised, even when the log raises, and runs on after any other
-;;;     (design §6.4, the first hazard; decision 0003 item 4);
-;;;   - a connection whose callback raises is closed, and so is one whose
-;;;     adoption fails, leaving no deadline armed; one whose callback raises
-;;;     once a write is held sends nothing, and its close is its last event;
-;;;     and one whose handler's answer raises as it is dispatched, in the
-;;;     drain after libuv's turn, is closed, the raise logged as a callback's
-;;;     (M7.1);
-;;;   - the run loop drops a connection whose handle closed behind the shell,
-;;;     taking it out of the wheel, and runs on;
-;;;   - the server's own listener (design §4.6; M4.3) serves a client; refuses
-;;;     those over max-connections, closing each at once, the first refusal
-;;;     logged and the count once a place is free; serves the next then;
-;;;     listens on one listener at a time; closes the listener the clients
-;;;     used at a shutdown, stopping at once with none open, and never
-;;;     listens after it; listens with the
-;;;     limits' backlog; and closes a listener that cannot listen, after which
-;;;     the shell may listen again;
-;;;   - deadlines (M5.3; decision 0005), under short limits and the loop's own
-;;;     clock: a client that sends half a head is answered 408, then closed
-;;;     once its linger passes; an idle keep-alive connection is closed; a
-;;;     lingering client that never closes is closed; and so is one that
-;;;     connects and sends nothing, whose idle deadline the shell armed as it
-;;;     adopted it.  Then slowhttptest's three shapes (the M5 exit): a head
-;;;     sent a piece at a time is answered 408 at the deadline armed as it
-;;;     began, which its pieces never move; a body sent a piece at a time,
-;;;     then stopped, is answered 408 at the deadline armed again at its last
-;;;     piece; and a client that never reads a MiB answer is closed at its
-;;;     write's deadline, the write having held the loop less than a tick
-;;;     (chez-libuv #35: bytes copied in bulk since v0.7.1).  Each deadline
-;;;     is met at the first time the shell's timer fires at or after it, the
-;;;     timer firing every tick-ms: within a tick of the deadline, never
-;;;     before it.  The loop's clock is
+;;; The checks, by area:
+;;;   - requests: a GET is answered, its Date from the shell's clock, and the
+;;;     connection stays open; three requests in one write are answered in
+;;;     order, reading the clock fewer times than they are answered (once a
+;;;     second), with no action but the parser's reply run at parser depth;
+;;;     bodies, Expect: 100-continue, a handler that raises (500, logged);
+;;;   - dispatch: a handler is called after libuv's turn, from the scheduler's
+;;;     drain, on no coroutine, never inside a libuv callback, and not at all
+;;;     once its connection has closed before the drain reaches the call; a
+;;;     loop let go with its shell is collected;
+;;;   - handlers that wait: an `awaiting` thunk parks on a coroutine and
+;;;     nothing is answered until it is woken; its reader takes each piece,
+;;;     and its producer is called, on a coroutine, in order; an ordinary
+;;;     handler that waits fails, 500, the refusal logged; a client that
+;;;     closes while its handler waits is told (`&client-closed`); the verbs
+;;;     `await` (a second resume is logged as `late-resume`), `sleep-ms` and
+;;;     `with-deadline` (timed by the loop's clock brought up to date, nothing
+;;;     left armed after), and `resolve` (answers what uv-getaddrinfo! does);
+;;;     an idle connection carries none of the coroutines they ran on;
+;;;   - closing: a response that closes the connection is followed by the
+;;;     half-close, and the connection lingers, reading and dropping, until
+;;;     the client closes, so a client uploading four MiB past a refusal
+;;;     sends it all and reads the status and the stream's end;
+;;;   - streamed responses: a MiB, chunked, to a client that reads nothing
+;;;     yet keeps the bytes outstanding within the limits' high water by at
+;;;     most a piece's write, then is read whole and in order; rows of 100
+;;;     bytes keep at most 64 writes outstanding, the shell sending a turn's
+;;;     small writes as one write request of chez-libuv's; a stream's head is
+;;;     sent before its producer is first called; a producer that raises
+;;;     after a piece closes the connection with the body cut short, logged;
+;;;   - writes: one outstanding keeps nothing of its response (chez-libuv
+;;;     copies the segments at the call); one that fails, at its completion or
+;;;     when it is issued, closes the connection as a read error, and is
+;;;     settled after;
+;;;   - faults: the run loop raises again a byte-machine contract condition
+;;;     that a callback raised, even when the log raises, and runs on after
+;;;     any other; a connection whose callback raises, whose adoption fails,
+;;;     or whose handler's answer raises as it is dispatched is closed, with
+;;;     no deadline left armed; a connection whose handle closed behind the
+;;;     shell is dropped from the wheel;
+;;;   - the server's own listener: serves clients, refuses those over
+;;;     max-connections (the first refusal logged), listens on one listener
+;;;     at a time, listens with the limits' backlog, closes at a shutdown, and
+;;;     closes when it cannot listen;
+;;;   - deadlines, under short limits: 408 for half a head, a head or a body
+;;;     sent a piece at a time (slowhttptest's slow headers and slow body),
+;;;     and closes for an idle connection, a lingering client that never
+;;;     closes, a client that sends nothing, and a client that never reads
+;;;     a MiB answer (slow read; chez-libuv v0.7.1 or later copies a write's
+;;;     bytes in bulk, so the write holds the loop less than a tick).  Each
+;;;     deadline is met at the first time the shell's timer fires at or after
+;;;     it, every tick-ms: within a tick, never before.  The loop's clock is
 ;;;     brought up to date as each deadline is armed and each response
-;;;     written, so a hold of the loop, a handler's, the shell's own work's or
-;;;     one before an adoption, neither shortens the deadline armed after it
-;;;     nor dates the response written after it early (chez-libuv #28).  A
-;;;     connection closed from outside the core is armed no more;
-;;;   - backpressure on the read side (M6.2), on a shell made on credit: a
-;;;     reader handed a read of a 64 KiB body sent at once makes reading wait
-;;;     for its credit, so the connection has no deadline armed and the
-;;;     shell's timer stops while the connection stays, past the body
-;;;     deadline's length; credited each time it waits, it is handed the
-;;;     whole body in order, never holding more than one read, and the
-;;;     response is written; and a credit for more than it was handed closes
-;;;     the connection and raises to the caller;
-;;;   - the drain (M8.1; plan §14), on shells whose drain lasts 200 ms, the
-;;;     shutdown asked with shell-shutdown! in the signal's place: told to
-;;;     finish, an idle keep-alive connection is closed at once, with no
-;;;     response; a request in flight is answered, saying the connection
-;;;     closes, which closes once its client does; a client that holds its
-;;;     connection with half a head is closed at the drain's deadline; and so
-;;;     is one held in its handler, nothing armed, the timer stopped before
-;;;     the shutdown, which starts it again; each deadline met on time, read
-;;;     from the trace as the deadlines' are.  The drain ends with its last
-;;;     connection: the server has stopped, logged `draining`,
-;;;     `drain-timeout` and `stopped`, and the shell holds no timer.  A
-;;;     connection the run loop drops ends a drain as a close does; a
-;;;     shutdown is dated by the loop's time brought up to date; a shutdown
-;;;     with no connection open stops at once; and when telling each
-;;;     connection to finish raises, each is still told, and the first raise
-;;;     goes on.  A shell asked to watch signals holds a handle for SIGTERM
-;;;     and one for SIGINT, watches once, and closes them once it serves no
-;;;     more; one that has stopped is refused a watch (decided 2026-10-03);
-;;;   - the door (M8.2; decision 0016): a WebSocket handshake answered with
-;;;     a switch is answered 101, and the stream handed to the taker, which
-;;;     writes back the frame its client sent with the handshake, then what
-;;;     it reads, however the kernel split the reads, and closes once its
-;;;     client ends; a taker that raises has its stream closed, logged; a
-;;;     taker that waits, woken with a read's bytes, keeps none of them once
-;;;     it waits for the next read, and one whose thunk ends with no values,
-;;;     or two, is no failure; a write after the close is asked for is
-;;;     cancelled; a taken stream
-;;;     counts against max-connections; a taker's deadline is met on time,
-;;;     and armed at the loop's time brought up to date, so a taker that
-;;;     holds the loop arms it after the hold; a taker's close is staged
-;;;     (decision 0026): a client still sending reads the close and the
-;;;     stream's end, its sends read and dropped, and the stream lingers
-;;;     until the client closes, or until the linger deadline, on time, in
-;;;     place of the taker's, armed at the loop's time brought up to date;
-;;;     a client that ended during the close's writes is closed once they
-;;;     are out; once lingering, a deadline, its cancel and a read-stop
-;;;     change nothing, and an abort closes it at once; and the drain runs
-;;;     a taker's drain call, which says goodbye and closes, before the
-;;;     deadline, at once for one registered as the server drains, and
-;;;     closes at the deadline a stream whose taker ignores it, telling it
-;;;     so;
-;;;   - the shell's one timer: four connections add one timer to the loop;
-;;;     its wheel empty, it stops, and the shell keeps it for its next
-;;;     deadline, and closes it once shut down with no connection left; when
-;;;     one firing's ticks raise for two connections, each is still ticked,
-;;;     and a byte-machine contract condition among the raises is the one the
-;;;     run loop raises again;
-;;;   - and at the end every connection was accepted and has closed, and no
+;;;     written, so a hold of the loop (a handler's, the shell's own work's,
+;;;     or one before an adoption) neither shortens a deadline armed after it
+;;;     nor dates a response written after it early;
+;;;   - read-side backpressure, on a shell made on credit: a reader makes
+;;;     reading wait for its credit, with no deadline armed and the shell's
+;;;     timer stopped; credited, it is handed the body in order, one read at
+;;;     a time; a credit for more than it was handed closes the connection
+;;;     and raises to the caller;
+;;;   - the drain, on shells whose drain lasts 200 ms, with shell-shutdown!
+;;;     in the signal's place: an idle connection is closed at once, a
+;;;     request in flight is answered saying the connection closes, a client
+;;;     holding half a head or a connection held in its handler is closed at
+;;;     the drain's deadline, on time; the drain ends with its last
+;;;     connection (`draining`, `drain-timeout`, `stopped` logged); when
+;;;     telling a connection raises, the rest are still told; the shell
+;;;     watches SIGTERM and SIGINT once and closes the handles when it serves
+;;;     no more;
+;;;   - the door: a WebSocket handshake answered with a switch gets a 101 and
+;;;     hands the stream to the taker, which echoes however the kernel split
+;;;     the reads and closes once its client ends; a taker that raises or
+;;;     waits, a write after the close (cancelled), max-connections counting
+;;;     taken streams, a taker's deadline (on time, armed at the loop's time
+;;;     brought up to date), the staged close (the client reads the close and
+;;;     the stream's end, the stream lingers until the client closes or the
+;;;     linger deadline passes, an abort closes it at once), the write timeout
+;;;     each write a closing taker waits for gets, and the taker's drain call;
+;;;   - the shell's one timer: four connections add one timer to the loop; its
+;;;     wheel empty, it stops, and the shell keeps it for its next deadline,
+;;;     closing it once shut down with no connection left; when one firing's
+;;;     ticks raise for two connections, each is still ticked;
+;;;   - at the end every connection was accepted and has closed, and no
 ;;;     handle is left on the loop.
 ;;;
 ;;; Oracles: RFC 9110 §5.6.7's example instant, Sun, 06 Nov 1994 08:49:37
@@ -301,11 +221,11 @@
 ;; connection was given, as (tick connection now); each time a shell's
 ;; timer fired, as (fire shell now), which it tells its server; and each
 ;; shutdown a shell's server was asked for, as (shutdown shell now), and
-;; each time it asked for every connection to be closed, as (forced shell)
-;; (M8.1); and each connection's close, as (closed connection at), `at`
-;; the loop's time as the close completed (decision 0026).  The first
-;; idle deadline, which the shell arms as it adopts a connection, is
-;; recorded where the suite's listener adopts it.
+;; each time it asked for every connection to be closed, as (forced shell);
+;; and each connection's close, as (closed connection at), `at` the loop's
+;; time as the close completed.  The first idle deadline, which the shell
+;; arms as it adopts a connection, is recorded where the suite's listener
+;; adopts it.
 (define timed '())
 (define (time! entry) (set! timed (cons entry timed)))
 
@@ -335,8 +255,8 @@
 (define (clock) (set! clock-reads (+ clock-reads 1)) (* 1000 instant))
 
 ;; The handler answers 200 with the request's target as the body, reading a
-;; POST's body first (decision 0013: a response given instead of a reader
-;; would close the connection), except: `/echo` reads the body whole and
+;; POST's body first (a response given instead of a reader would close the
+;; connection), except: `/echo` reads the body whole and
 ;; answers with it; `/early` answers without reading it; `/small` reads it
 ;; whole, capped at 4 bytes;
 ;; `/raise` raises; `/big`, four MiB, held weakly here so the retention
@@ -349,8 +269,8 @@
 ;; `/credit`, read by a streaming reader that keeps what it is handed in
 ;; `credit-pieces`, newest first, counts in `credit-held` the bytes it has
 ;; not credited, and in `credit-most` the most it held at once: on a shell
-;; made on credit (M6.2), it owes credit for them.  And a producer (M6.3;
-;; tests/producers.sls): `/stream` streams a MiB in 64 pieces of 16 KiB, the
+;; made on credit, it owes credit for them.  And a producer
+;; (tests/producers.sls): `/stream` streams a MiB in 64 pieces of 16 KiB, the
 ;; k-th filled with the k-th letter from `a`, and `stream-calls` says how many
 ;; times the last one was called; `/rows` streams 4,000 rows of 100 bytes the
 ;; same way, `rows-calls` counting; `/refilled` the same rows, each handed
@@ -361,7 +281,7 @@
 ;; producer keeping in `head-first-seen`, at its first call, how many more
 ;; write requests chez-libuv holds than when the handler was called
 ;; (`head-first-requests`); and `/stream-raise` a piece, then raises.  And
-;; where a handler is called, and handlers that wait (decision 0014; M7.1):
+;; where a handler is called, and handlers that wait:
 ;; `/phase` answers the scheduler's phase it was called in and whether a
 ;; coroutine ran it; `/await` waits, its thunk parked in `parked` until the
 ;; suite wakes it, then answers what it was woken with, the phase and
@@ -372,9 +292,9 @@
 ;; `/await-stream` waits and streams three texts, yielding before each; and
 ;; `/read-phase` reads the body with an ordinary reader, and answers whether
 ;; a coroutine ran any of its pieces; and `/counted` counts its calls in
-;; `counted-calls`.  And handlers that wait with the verbs (decision 0015;
-;; M7.2): `/await-wake` waits on `await`, keeping its resume in `waker`,
-;; and answers what it was given; `/wake` calls `waker` twice, with
+;; `counted-calls`.  And handlers that wait with the verbs: `/await-wake`
+;; waits on `await`, keeping its resume in `waker`, and answers what it was
+;; given; `/wake` calls `waker` twice, with
 ;; "woken by another" and then "again", and answers "woke"; `/sleep` holds
 ;; the loop 30 ms, then sleeps 20 ms, and answers how many milliseconds it
 ;; slept, the hold and the sleep each timed by the loop's clock read on a
@@ -430,8 +350,8 @@
 (define leave-state #f)
 ;; The coroutines `/noted` ran on, newest first, each with what it ran:
 ;; `(kind . weak-pair)`, the pair's car the coroutine.  And what each one's
-;; waits kept of it, its context, which its request's notice points to
-;; (decision 0020), the same way.
+;; waits kept of it, its context, which its request's notice points to,
+;; the same way.
 (define noted '())
 (define noted-waits '())
 ;; note! : Symbol -> Void — the coroutine running, noted weakly as `kind`,
@@ -569,7 +489,7 @@
             (lambda ()
               (read-body (lambda (bv start end) (sleep-ms 0))
                          (lambda () (make-response 200 #f '() target))))))
-          ;; A client's close while the handler waits (decision 0020).
+          ;; A client's close while the handler waits.
           ((bytevector=? target (b "/leave"))
            (awaiting
             (lambda ()
@@ -902,8 +822,8 @@
 
 ;; adopt! : UvTcp -> Void
 ;; Serve `tcp` in `adopting`, recording when: the shell arms a connection's
-;; first deadline, its idle one, as it adopts it (M5.3).  While `holding-at`
-;; is `adoption`, the loop is held first.
+;; first deadline, its idle one, as it adopts it.  While `holding-at` is
+;; `adoption`, the loop is held first.
 (define (adopt! tcp)
   (when (eq? holding-at 'adoption)
     (set! holding-at #f)
@@ -961,7 +881,7 @@
 
 ;; wait-for : (-> Boolean) -> Symbol — 'satisfied, or 'iterations-exhausted.
 ;; Each step a turn of the loop's scheduler, which calls the handlers asked
-;; for since the last (decision 0014), and runs the loop once.
+;; for since the last, and runs the loop once.
 (define (wait-for pred) (run-loop-until loop pred cap))
 
 ;; the newest connection the listener adopted, or 'none.
@@ -983,7 +903,7 @@
 ;; `pred` holds (tests/shell-testing.sls): 'satisfied or 'iterations-exhausted.
 (define (run-shell sh pred) (run-shell-until loop sh pred cap))
 
-;; --- deadlines (M5.3) -------------------------------------------------------------
+;; --- deadlines ---------------------------------------------------------------------
 
 ;; Short limits, so the suite waits for its deadlines briefly: under a third
 ;; of a second for a body, a head, a write, an idle connection and a linger,
@@ -1062,10 +982,10 @@
   (let ((e (find (lambda (e) (and (eq? (car e) 'write) (eq? (cadr e) c))) timed)))
     (and e (caddr e))))
 
-;; --- the drain (M8.1) ---------------------------------------------------------------
+;; --- the drain ---------------------------------------------------------------------
 
-;; A drain of 200 ms and a tick of 10 ms, every other limit decision 0005's,
-;; so no deadline of a connection's passes while the suite looks.
+;; A drain of 200 ms and a tick of 10 ms, every other limit its default, so no
+;; deadline of a connection's passes while the suite looks.
 (define drain-limits
   (limits-with default-limits '((drain-timeout-ms . 200) (tick-ms . 10))))
 
@@ -1124,7 +1044,7 @@
 (define (drain-logged)
   (filter (lambda (e) (memq (car e) '(draining drain-timeout stopped))) (reverse logged)))
 
-;; --- the door (M8.2) ----------------------------------------------------------------
+;; --- the door ----------------------------------------------------------------------
 
 ;; What the suite's takers saw, newest first, as (what . details).
 (define took '())
@@ -1161,7 +1081,7 @@
 ;; door-unread : String -> (List Symbol Symbol Symbol Symbol Datum Datum Datum)
 ;; A client that reads nothing, the connection's send buffer small, sends a
 ;; handshake to `target`, whose taker writes more than the socket takes at
-;; once and arms a deadline (decision 0024).  Whether the stream was
+;; once and arms a deadline.  Whether the stream was
 ;; adopted, its deadline passed, the stream then closed and gone, and its
 ;; write told; what it was told, the close call's notes and the taker
 ;; failures logged.  Then both ends are closed and the stream gone, so
@@ -1199,9 +1119,9 @@
 
 ;; door-pad : Nat — the bytes of a field that keep a 101's write from
 ;; completing while its client reads nothing: more than loopback holds for
-;; one connection on Darwin and Linux, where 8 MiB kept the 101 outstanding
-;; past the client's end in the probe of 2026-10-12.  The check that uses
-;; it waits for the end to be read first, so a pad too small fails there.
+;; one connection on Darwin and Linux (8 MiB keeps the 101 outstanding past
+;; the client's end).  The check that uses it waits for the end to be read
+;; first, so a pad too small fails there.
 (define door-pad (* 8 1024 1024))
 
 ;; door-closes-early : Boolean — whether /door-ended-early's taker closes in
@@ -1209,7 +1129,7 @@
 (define door-closes-early #f)
 
 ;; A WebSocket close frame, 1009 (RFC 6455 §5.5.1, §7.4.1): what a taker
-;; that fails its client writes before its close (decision 0026).
+;; that fails its client writes before its close.
 (define close-frame (u8-list->bytevector '(#x88 #x02 #x03 #xf1)))
 
 ;; How much /door-fail's taker reads before it fails its client, and what
@@ -1235,9 +1155,9 @@
 
 ;; closed-by-client : Shell (Pair Client Connection) -> Symbol
 ;; A taken stream whose taker has closed lingers until its client closes
-;; (decision 0026).  Once the client has read the stream's end it closes, as
-;; a WebSocket client does once the server's close comes (RFC 6455 §7.1.1):
-;; whether the stream was then let go.
+;; Once the client has read the stream's end it closes, as a WebSocket client
+;; does once the server's close comes (RFC 6455 §7.1.1): whether the stream
+;; was then let go.
 (define (closed-by-client sh p)
   (wait-for (lambda () (not (eq? (client-end (car p)) 'open))))
   (client-close! (car p))
@@ -1267,7 +1187,7 @@
     (do ((i 0 (+ i 1))) ((= i (bytevector-length bv)) bv) (bytevector-u8-set! bv i (mod i 251)))))
 
 ;; 16 MiB, more than a client's receive buffer grows to while it reads, so
-;; a write of it waits once the client stops (decision 0027).
+;; a write of it waits once the client stops.
 (define huge-door (make-bytevector (* 16 1024 1024) 7))
 
 ;; The client /door-rearm's first write stops reading once it is out.
@@ -1410,7 +1330,7 @@
                         '(no-connection #f))))
       (client-close! cl))
 
-    ;; Where a handler is called (decision 0014): from the scheduler's drain,
+    ;; Where a handler is called: from the scheduler's drain,
     ;; after libuv's turn, on no coroutine, its phase 'scheduling, never a
     ;; callback's 'in-uv-run.
     (let ((cl (open-client! (b "GET /phase HTTP/1.1\r\nHost: x\r\n\r\n"))))
@@ -1448,7 +1368,7 @@
                (collect (collect-maximum-generation))
                (bwp-object? (car w))))
 
-    ;; A handler that waits (decision 0014): its thunk parks on a coroutine,
+    ;; A handler that waits: its thunk parks on a coroutine,
     ;; and nothing is answered until the suite wakes it.
     (set! parked #f)
     (let ((cl (open-client! (b "GET /await HTTP/1.1\r\nHost: x\r\n\r\n"))))
@@ -1471,9 +1391,9 @@
                         (let ((rs (responses (client-bytes cl))))
                           (if (= 2 (length rs)) (body (cadr rs)) 'no-response))))
       (client-close! cl))
-    ;; One request wakes another (decision 0015 item 1): `/await-wake` waits
-    ;; on `await`, and `/wake`, an ordinary handler on a connection of its
-    ;; own, calls its resume twice; the second is R4's, logged.
+    ;; One request wakes another: `/await-wake` waits on `await`, and
+    ;; `/wake`, an ordinary handler on a connection of its own, calls its
+    ;; resume twice; the second is a late resume, logged.
     (set! waker #f)
     (set! logged '())
     (let ((waiting (open-client! (b "GET /await-wake HTTP/1.1\r\nHost: x\r\n\r\n"))))
@@ -1492,17 +1412,16 @@
                           (filter (lambda (e) (eq? (car e) 'late-resume)) logged)))
         (client-close! waking))
       (client-close! waiting))
-    ;; The timed waits (decision 0015 item 3): the loop's waits have their
-    ;; own timer, and nothing is left armed once each wait is over.  A sleep
-    ;; of 20 ms is armed at the loop's time brought up to date, a reading of
-    ;; the one clock every loop reads taken after `before`, and ends once
-    ;; that clock, read again, is 20 ms on; the handler reads it last.  So
-    ;; the sleep lasts 20 of the loop's milliseconds at least: the bound is
-    ;; exact.  Timed by Chez's monotonic clock, as until 2026-10-11, a sleep
-    ;; ran as little as 8.3 ms on Linux, whose loop clock is
-    ;; CLOCK_MONOTONIC_COARSE, with four processes at once.  Armed on the
-    ;; loop's time as the hold left it, 30 ms behind, the sleep would be due
-    ;; already, and a pause in its wake could still make it last 20 ms.  So
+    ;; The timed waits: the loop's waits have their own timer, and nothing is
+    ;; left armed once each wait is over.  A sleep of 20 ms is armed at the
+    ;; loop's time brought up to date, a reading of the one clock every loop
+    ;; reads taken after `before`, and ends once that clock, read again, is
+    ;; 20 ms on; the handler reads it last.  So the sleep lasts 20 of the
+    ;; loop's milliseconds at least: the bound is exact.  Timed by Chez's
+    ;; monotonic clock, a sleep could end early on Linux, whose loop clock is
+    ;; CLOCK_MONOTONIC_COARSE and lags it.  Armed on the loop's time as the
+    ;; hold left it, 30 ms behind, the sleep would be due already, and a
+    ;; pause in its wake could still make it last 20 ms.  So
     ;; the witness, a timer started from that time, due at `before` plus 19,
     ;; reads how many timed waits are armed as it fires.  libuv runs due
     ;; timers in the order they are due (1.52.1 src/timer.c, the same since
@@ -1524,7 +1443,7 @@
                           (if (= 2 (length rs)) (list (status (cadr rs)) (body (cadr rs))) 'no-response))
                         (shell-waits-timed shell)))
       (client-close! cl))
-    ;; A client's close while its handler waits (decision 0020): past the
+    ;; A client's close while its handler waits: past the
     ;; request's end the connection reads only to notice it.  The handlers
     ;; sleep a minute, past the wait's cap, so a close noticed only at the
     ;; answer would leave the checks unsatisfied.
@@ -1582,7 +1501,7 @@
     (let ((cl (open-client! (b "GET /wait-plain HTTP/1.1\r\nHost: x\r\n\r\n"))))
       (test-eq "the client of an ordinary handler that waits reads the stream's end" 'satisfied
                (run-turns-until loop shell (lambda () (eq? (client-end cl) 'eof)) cap))
-      (test-equal "after a 500, the refusal logged as R2's, a wait on no coroutine"
+      (test-equal "after a 500, the refusal logged as a wait on no coroutine"
                   '((500) handler-failed r2)
                   (list (map status (responses (client-bytes cl)))
                         (first-logged)
@@ -1657,7 +1576,7 @@
                      'in-order
                      (list 'out-of-order (and (connection? c) (verbs c)))))))
 
-    ;; The upload past a refusal (decision 0011's measurement, as a test).  A
+    ;; The upload past a refusal.  A
     ;; client sends four MiB after a head the core refuses, with no Host, and
     ;; reads only once all of it is sent, as Python's http.client and Node's
     ;; fetch do.  Its send buffer is small, so the upload is sent only if the
@@ -1693,7 +1612,7 @@
                         (list 'not-connected connected))))
       (client-close! cl))
 
-    ;; Bodies (M6.1, decision 0013), over loopback: read whole, chunked or
+    ;; Bodies, over loopback: read whole, chunked or
     ;; not, and echoed, on a connection kept for the request behind; answered
     ;; before the body is read, and closed after; past a reader's cap, 413.
     (let ((cl (open-client! (b (string-append "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\n"
@@ -1720,7 +1639,7 @@
       (test-equal "after a 413" '(413) (map status (responses (client-bytes cl))))
       (client-close! cl))
 
-    ;; Expect: 100-continue (M6.4), over loopback.  The client sends the head
+    ;; Expect: 100-continue, over loopback.  The client sends the head
     ;; alone and waits for the 100 before it sends its body, as curl does
     ;; for a large upload: the 100 is a write of its own, and nothing else
     ;; comes before the body is sent.  The response then answers the body
@@ -1791,15 +1710,14 @@
                         (closed-and-gone? shell (adopted-since before))))
       (client-close! cl))
 
-    ;; A streamed response (M6.3, decision 0013 item 8): a MiB in 64 pieces
+    ;; A streamed response: a MiB in 64 pieces
     ;; of 16 KiB to a client that reads nothing yet, the connection's send
     ;; buffer small, as the slow reader's is, so the kernel holds far less
-    ;; than the MiB.  The producer is asked only at or below decision 0005's
-    ;; high water, 262,144 bytes outstanding, so the bytes outstanding never
-    ;; pass it by more than one piece's write, 16,392 bytes: the size line
-    ;; `4000` CRLF, the piece, CRLF.  That is the slow reader's memory bound
-    ;; (plan §14: with the high water ignored, the first turn asks for the
-    ;; whole MiB).  The first turn asks sixteen times, 262,356 bytes with the
+    ;; than the MiB.  The producer is asked only at or below the limits' high
+    ;; water, 262,144 bytes outstanding, so the bytes outstanding never pass
+    ;; it by more than one piece's write, 16,392 bytes: the size line `4000`
+    ;; CRLF, the piece, CRLF.  That is the slow reader's memory bound (with
+    ;; the high water ignored, the first turn asks for the whole MiB).  The first turn asks sixteen times, 262,356 bytes with the
     ;; head.  The request says Connection: close, so the client knows it has
     ;; the whole response at the stream's end.
     (set! small-send-buffer 4096)
@@ -1839,7 +1757,7 @@
                     (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4)
                           (stream-calls) (<= stream-most (+ 262144 16392)))))
       (client-close! cl))
-    ;; Rows of 100 bytes, each a write of the core's (M6.3's second review):
+    ;; Rows of 100 bytes, each a write of the core's:
     ;; the producer is also asked only while fewer than 64 writes are
     ;; outstanding, where the bytes alone would let the first turn ask for
     ;; some 2,500 rows, 262,144 bytes at 106 a row.  The first turn asks 63
@@ -1908,7 +1826,7 @@
       (client-close! cl))
     ;; Rows whose client goes while they are outstanding: the turn's one
     ;; libuv write fails, at its completion or as the close cancels it, and
-    ;; the connection closes as a read error (design §6.3).  Each row's write
+    ;; the connection closes as a read error.  Each row's write
     ;; is settled after, so the core counts none outstanding.
     (set! small-send-buffer 4096)
     (let* ((before (newest))
@@ -1947,8 +1865,8 @@
                           (and c (conn-outstanding-bytes (connection-state c))))))
       (client-close! cl))
     ;; To HTTP/1.0 the pieces are close-delimited, and the connection closes
-    ;; after them (RFC 9112 §6.3 rule 8), though this client asked to keep it
-    ;; (M3.2's carried arm): the client has the body at the stream's end.
+    ;; after them (RFC 9112 §6.3 rule 8), though this client asked to keep it:
+    ;; the client has the body at the stream's end.
     (let ((cl (open-client! (b "GET /pieces HTTP/1.0\r\nConnection: keep-alive\r\n\r\n"))))
       (test-eq "an HTTP/1.0 client of a streamed response reads the stream's end" 'satisfied
                (wait-for (lambda () (eq? (client-end cl) 'eof))))
@@ -2175,10 +2093,10 @@
                           (and c (pair? (events c)) (car (reverse (events c)))))))
       (client-close! cl))
 
-    ;; A bug once the handler has answered, in the drain after libuv's turn
-    ;; (decision 0014): the dispatch of its answer raises, and the connection
-    ;; is closed as a callback's raise closes it, the raise logged as a
-    ;; callback's, and the run loop runs on.
+    ;; A bug once the handler has answered, in the drain after libuv's turn:
+    ;; the dispatch of its answer raises, and the connection is closed as a
+    ;; callback's raise closes it, the raise logged as a callback's, and the
+    ;; run loop runs on.
     (set! logged '())
     (let* ((before (newest))
            (cl (open-client! (b "GET /trap HTTP/1.1\r\nHost: x\r\n\r\n"))))
@@ -2343,11 +2261,11 @@
              (wait-for (lambda () (null? (shell-connections shell)))))
     (test-equal "the listener accepted every connection" 'no-listen-error listen-error)
 
-    ;; One timer however many connections are open (M5.3): four clients
-    ;; that send nothing, on a shell of their own under decision 0005's
-    ;; limits, so no deadline of theirs passes while the suite looks.  The
-    ;; loop may hold other shells' timers, kept stopped, so what is counted
-    ;; is the timers the four add.
+    ;; One timer however many connections are open: four clients that send
+    ;; nothing, on a shell of their own under the default limits, so no
+    ;; deadline of theirs passes while the suite looks.  The loop may hold
+    ;; other shells' timers, kept stopped, so what is counted is the timers
+    ;; the four add.
     (let* ((steady (make-shell loop handler default-limits clock log! trace!))
            (timers (lambda () (filter uv-timer? (uv-loop-live-handles loop))))
            (before (length (timers)))
@@ -2370,7 +2288,7 @@
       (shell-shutdown! steady))
 
     ;; A write reads the loop's time too: its Date is the shell's clock's
-    ;; last reading plus the loop's time since (decision 0010).  On a shell
+    ;; last reading plus the loop's time since.  On a shell
     ;; whose clock reads 800 ms into RFC 9110's second, two requests in one
     ;; write: the first's answer reads the clock, and the second, `/slow`,
     ;; is answered once its handler has held the loop 300 ms, in the next
@@ -2387,7 +2305,7 @@
         (wait-for (lambda () (null? (shell-connections dated)))))
       (shell-shutdown! dated))
 
-    ;; Deadlines (M5.3), on a shell of their own with short limits, adopted
+    ;; Deadlines, on a shell of their own with short limits, adopted
     ;; through the suite's listener, which records when each was adopted.
     (let ((quick (make-shell loop handler quick-limits clock log! trace!)))
       (set! adopting quick)
@@ -2403,10 +2321,10 @@
                                     (map b '("cd" "ef" "gh"))))
              ;; A client that never reads.  The connection's send buffer is
              ;; made small as the listener accepts it, so what the kernel
-             ;; holds of the answer is about the client's receive buffer: on
-             ;; loopback, 408,300 B on Darwin and 131,072 B on Linux, left
-             ;; as they are, since Darwin grows one made small after the
-             ;; connect (the M5 exit's spike, m5-exit-rcvbuf.sps).
+             ;; holds of the answer is about the client's receive buffer,
+             ;; which differs by platform on loopback.  The client's is left
+             ;; as it is, since Darwin grows one made small after the
+             ;; connect.
              (reader (let ((p (begin (set! small-send-buffer 4096) (open-adopted! #f #f))))
                        (set! small-send-buffer #f)
                        (client-send! (car p) (b "GET /wide HTTP/1.1\r\nHost: x\r\n\r\n"))
@@ -2455,11 +2373,11 @@
                             (else (- armed written)))))
         (for-each (lambda (p) (client-close! (car p))) (cons reader all)))
 
-      ;; A handler that holds the loop past a deadline's length (M5.3's
-      ;; review).  libuv reads its clock once a turn, so the shell brings it
-      ;; up to date as it arms each deadline, and the deadline armed after
-      ;; the answer runs from then, not from before the handler ran.  Here
-      ;; the handler holds the loop 300 ms, past the idle limit's 250.
+      ;; A handler that holds the loop past a deadline's length.  libuv reads
+      ;; its clock once a turn, so the shell brings it up to date as it arms
+      ;; each deadline, and the deadline armed after the answer runs from
+      ;; then, not from before the handler ran.  Here the handler holds the
+      ;; loop 300 ms, past the idle limit's 250.
       (let ((slow (open-adopted! (b "GET /slow HTTP/1.1\r\nHost: x\r\n\r\n"))))
         (test-equal "after a handler that holds the loop 300 ms, the idle deadline armed after its answer is still ahead when the client has it"
                     '(satisfied #t)
@@ -2516,7 +2434,7 @@
         (client-close! (car late)))
 
       ;; Its wheel empty, the next firing stops the timer, and the shell
-      ;; keeps it for its next deadline (0005).  Fifty turns of the loop, each
+      ;; keeps it for its next deadline.  Fifty turns of the loop, each
       ;; waiting on the wait's own 1 ms timer, span five ticks of 10 ms and
       ;; more, so a timer that ran on would fire in them.
       (let ((timer (shell-timer quick)))
@@ -2533,7 +2451,7 @@
         ;; first.  Both ticks raise, as bugs would: the first an error, the
         ;; second byte-machine's contract condition.  Each is still ticked,
         ;; and closed, and the contract condition is the one the run loop
-        ;; raises again, which keeps it fatal (design §6.4).
+        ;; raises again, which keeps it fatal.
         (set! logged '())
         (set! pairing #t)
         (let* ((n (length adopted))
@@ -2569,7 +2487,7 @@
                     (list (shell-timer quick)
                           (and timer (memq (uv-handle-state timer) '(closing closed)) #t)))))
 
-    ;; The drain (M8.1; plan §14), on shells of their own under
+    ;; The drain, on shells of their own under
     ;; drain-limits, adopted through the suite's listener: shell-shutdown!
     ;; stands in for the signal, which tests/test-serve.sps sends `serve`
     ;; itself.  Three clients: one idle on its keep-alive connection, one
@@ -2631,7 +2549,7 @@
         (set! parked #f)))
 
     ;; A drain whose only connection is held in its handler: the core arms
-    ;; no deadline there (design §4.3), so the shell's wheel is empty, and
+    ;; no deadline there, so the shell's wheel is empty, and
     ;; the next firing of its timer stops it, which may come before the
     ;; handler is seen waiting.  Once it has, the shutdown: the timer is
     ;; started again and runs on, telling the server the time, until the
@@ -2659,8 +2577,7 @@
 
     ;; A client that never reads its answer, a write outstanding when the
     ;; drain's deadline closes its connection: the write the close cancels
-    ;; is no transport failure, and nothing logs a read error (M8.1's
-    ;; review).
+    ;; is no transport failure, and nothing logs a read error.
     (let ((stalled (make-shell loop handler drain-limits clock log! trace!)))
       (set! adopting stalled)
       (set! logged '())
@@ -2698,15 +2615,14 @@
         (client-close! (car p))))
     (set! adopting shell)
 
-;; A shutdown is dated by the loop's time brought up to date as it is
-    ;; asked for, as a deadline is armed (chez-libuv #28): one asked once the
-    ;; loop has been held 300 ms dates its drain after the hold.  The hold
-    ;; is timed by the loop's clock, read on a loop of its own, so the bound
-    ;; is exact, and the suite's loop keeps its time from before the hold,
-    ;; which a shutdown dated without bringing it up to date reads.  300 ms
-    ;; of Chez's monotonic clock ran 299 or 300 of the loop's, and on Linux,
-    ;; whose loop clock is CLOCK_MONOTONIC_COARSE, as few as 269 with four
-    ;; processes holding at once (measured 2026-10-10).
+    ;; A shutdown is dated by the loop's time brought up to date as it is
+    ;; asked for, as a deadline is armed: one asked once the loop has been
+    ;; held 300 ms dates its drain after the hold.  The hold is timed by the
+    ;; loop's clock, read on a loop of its own, so the bound is exact, and
+    ;; the suite's loop keeps its time from before the hold, which a
+    ;; shutdown dated without bringing it up to date reads.  300 ms of
+    ;; Chez's monotonic clock can be fewer than 300 of the loop's, by tens
+    ;; on Linux, whose loop clock is CLOCK_MONOTONIC_COARSE.
     (let ((late (make-shell loop handler drain-limits clock log! trace!)))
       (uv-update-time! loop)
       (let ((before (uv-now loop)))
@@ -2745,7 +2661,7 @@
     (set! adopting shell)
 
     ;; A shell asked to watch the process's signals holds a signal handle
-    ;; for SIGTERM and one for SIGINT (decided 2026-10-03), watches once,
+    ;; for SIGTERM and one for SIGINT, watches once,
     ;; while it listens, and closes them once it serves no more.  No signal
     ;; is sent here: tests/test-serve.sps sends them to `serve`'s process.
     (let ((watcher (make-shell loop handler drain-limits clock log! trace!)))
@@ -2769,12 +2685,12 @@
                                    'watched)))
                     (list watched (shell-signals stopped)))))
 
-    ;; The door (M8.2; decision 0016), through a real socket.  A client sends
+    ;; The door, through a real socket.  A client sends
     ;; a WebSocket handshake and, with it, a frame, as one write: the switch
     ;; is answered 101, and the taker, handed the stream, writes back what it
     ;; was handed and then what it reads, so the client reads the 101 and the
     ;; frame back whether the kernel delivered the frame with the handshake
-    ;; or after it (design §8.5: never asserting how the stream was split).
+    ;; or after it (never asserting how the stream was split).
     ;; A second frame comes back the same way; the client's end reaches the
     ;; taker, which closes, the close told to it once.
     (set! took '())
@@ -2799,14 +2715,13 @@
                             (took-of 'ended) (took-of 'closed) (if (connection? c) (phase c) 'none)))))
       (client-close! (car p)))
 
-    ;; Decision 0016's amendment (2026-10-11): the stream reads nothing
-    ;; between the hand-off and the taker's read-start, so what the client
-    ;; sends after the 101 waits for the taker.  A waiting taker that starts
-    ;; reading after a sleep of door-ms: the client sends a frame once it has
-    ;; the 101, inside the sleep, and gets it back once the taker reads.  As
-    ;; the frame is sent, the stream is handed off and the taker has not
-    ;; started reading, so the window is the one played, not one a slow turn
-    ;; skipped.
+    ;; The stream reads nothing between the hand-off and the taker's
+    ;; read-start, so what the client sends after the 101 waits for the
+    ;; taker.  A waiting taker that starts reading after a sleep of door-ms:
+    ;; the client sends a frame once it has the 101, inside the sleep, and
+    ;; gets it back once the taker reads.  As the frame is sent, the stream
+    ;; is handed off and the taker has not started reading, so the window is
+    ;; the one played, not one a slow turn skipped.
     (set! took '())
     (let* ((p (open-adopted! (door-handshake "/door-read-later")))
            (c (cdr p))
@@ -2824,9 +2739,9 @@
 
     ;; A client's end read while the 101 is written, a client that reads
     ;; nothing keeping it outstanding (door-pad): the core hands the end
-    ;; over (decision 0016's amendment of 2026-10-12), and the taker reading
-    ;; in its take-over is told eof from it, its reads not started again, so
-    ;; no end is read for it; its close at the end closes the stream.
+    ;; over, and the taker reading in its take-over is told eof from it, its
+    ;; reads not started again, so no end is read for it; its close at the
+    ;; end closes the stream.
     ;; Told on a later turn, not in the read-start's call; and a taker that
     ;; closes in its take-over, after its read-start, is told nothing, not
     ;; even by the calls deferred to the next turn.
@@ -2881,7 +2796,7 @@
                         (map car (filter (lambda (e) (eq? (car e) 'taker-failed)) logged))))
       (client-close! (car p)))
 
-    ;; A taker that waits (decision 0023): its take-over answers `awaiting`,
+    ;; A taker that waits: its take-over answers `awaiting`,
     ;; and the thunk, on a coroutine, waits for each read, which the read
     ;; callback resumes it with, and writes it back.  The client's end has
     ;; the taker close the stream, and the wait the thunk is in is told: it
@@ -2902,10 +2817,9 @@
                             (filter (lambda (e) (eq? (car e) 'taker-failed)) logged)))))
       (client-close! (car p)))
 
-    ;; A waiting taker woken with a read's bytes (plan §14, 2026-10-11): once
-    ;; it waits for the next read, nothing keeps the piece it was woken
-    ;; with, which it wrote back and let go.  The scheduler kept a wake's
-    ;; value until the next wake.
+    ;; A waiting taker woken with a read's bytes: once it waits for the next
+    ;; read, nothing keeps the piece it was woken with, which it wrote back
+    ;; and let go.
     (set! woken #f)
     (set! woken-waits #f)
     (let* ((p (open-adopted! (door-handshake "/door-woken")))
@@ -2973,7 +2887,7 @@
     ;; callback is told ECANCELED, and the close waits for the write before
     ;; it, which the client reads.  From here on, a client that reads a
     ;; taker's close closes in turn (closed-by-client), which ends the
-    ;; stream's linger (decision 0026).
+    ;; stream's linger.
     (set! took '())
     (let* ((p (open-adopted! (door-handshake "/door-late")))
            (gone (closed-by-client shell p))
@@ -2996,7 +2910,7 @@
                         (equal? (client-bytes (car p)) (joined (list door-101 big-door)))))
       (client-close! (car p)))
 
-    ;; Decision 0024, through a client that reads nothing (door-unread): a
+    ;; Through a client that reads nothing (door-unread): a
     ;; close waits for the 4 MiB under way, a deadline asked for then passes,
     ;; and its call's abort closes the stream at once, the write told
     ;; ECANCELED, its close call once, nothing logged.  And a raise in the
@@ -3054,7 +2968,7 @@
     ;; A write chez-libuv refuses for no transport's failure, from a thread
     ;; that is not the loop's (`&uv-wrong-thread`), raises to its caller and
     ;; leaves nothing outstanding, so the taker's close still closes the
-    ;; stream (M8.2's review, the second).
+    ;; stream.
     (set! thread-transport #f)
     (set! thread-raised #f)
     (let* ((p (open-adopted! (door-handshake "/door-thread")))
@@ -3121,7 +3035,7 @@
       (set! adopting shell))
 
     ;; A taker's deadline rides the shell's wheel: met the first time the
-    ;; timer fires at or after it, as a connection's are (design §8.5).  The
+    ;; timer fires at or after it, as a connection's are.  The
     ;; taker arms it as its first read comes, once the timer has stopped:
     ;; the hand-off took the connection's last deadline out of the wheel, and
     ;; the next firing found it empty, which may come before the hand-off is
@@ -3155,7 +3069,7 @@
       (set! adopting shell))
 
     ;; A taker's deadline disarmed leaves none armed, so an idle server's
-    ;; timer can stop (decision 0005).
+    ;; timer can stop.
     (let ((disarmer (make-shell loop handler drain-limits clock log! trace!)))
       (set! adopting disarmer)
       (set! took '())
@@ -3170,7 +3084,7 @@
       (set! adopting shell))
 
     ;; A taker's deadline is armed at the loop's time brought up to date, as
-    ;; a connection's is (chez-libuv #28): a taker that holds the loop 300 ms
+    ;; a connection's is: a taker that holds the loop 300 ms
     ;; by libuv's clock as it takes the stream, the loop's time left where
     ;; its turn read it, arms a deadline of a minute after the hold.  Each
     ;; side failing answers what it read.
@@ -3195,8 +3109,7 @@
       (shell-shutdown! holder)
       (set! adopting shell))
 
-    ;; A taker's close is staged (decision 0026), as the server's own are
-    ;; (decision 0011).  A taker that fails a client still sending writes its
+    ;; A taker's close is staged, as the server's own are.  A taker that fails a client still sending writes its
     ;; close and closes: the client reads the close, then the stream's end,
     ;; not a reset, and its 4 MiB all go out, read and dropped, none of it
     ;; the taker's.  The stream lingers until the client closes, and its close
@@ -3240,7 +3153,7 @@
                           (equal? (client-bytes cl) (joined (list door-101 big-door))))))
       (client-close! cl))
 
-    ;; The linger's bound (decision 0026 item 2): a client that reads the
+    ;; The linger's bound: a client that reads the
     ;; close and never closes is closed at the linger deadline, armed once
     ;; the close's writes are out, linger-timeout-ms past then, and met the
     ;; first time the timer fires at or after it.  It takes the place of the
@@ -3270,7 +3183,7 @@
       (shell-shutdown! lingerer)
       (set! adopting shell))
 
-    ;; Decision 0027: once a taker has asked to close, each write it waits
+    ;; Once a taker has asked to close, each write it waits
     ;; for has write-timeout-ms, 300 here, from the loop's time brought up
     ;; to date, as the server's own writes have; past it the stream is
     ;; aborted.  The taker's own deadline still runs beside it, the earlier
@@ -3340,7 +3253,7 @@
                           (and (bound-met? seen 0) (< (list-ref seen 4) 600) #t)
                           (list-ref seen 5))))
       ;; The bound is armed at the loop's time brought up to date, as the
-      ;; linger's is (decision 0026 item 2): a taker that holds the loop
+      ;; linger's is: a taker that holds the loop
       ;; 300 ms by libuv's clock, then closes behind a write the client reads
       ;; nothing of, has its bound armed after the hold.
       (set! took '())
@@ -3369,10 +3282,9 @@
       (shell-shutdown! bounder)
       (set! adopting shell))
 
-    ;; The linger deadline is armed at the loop's time brought up to date
-    ;; (decision 0026 item 2): a taker that holds the loop 300 ms by libuv's
-    ;; clock, then closes with nothing to write, has its stream's linger
-    ;; armed after the hold.  Each side failing answers what it read.
+    ;; The linger deadline is armed at the loop's time brought up to date: a
+    ;; taker that holds the loop 300 ms by libuv's clock, then closes with
+    ;; nothing to write, has its stream's linger armed after the hold.  Each side failing answers what it read.
     (set! took '())
     (let* ((p (open-adopted! (door-handshake "/door-held-close")))
            (done (wait-for (lambda () (pair? (took-of 'held)))))
@@ -3391,7 +3303,7 @@
                         (closed-by-client shell p)))
       (client-close! (car p)))
 
-    ;; A lingering stream is the server's (decision 0026): a deadline the
+    ;; A lingering stream is the server's: a deadline the
     ;; taker asks for then is not armed, nor is its cancel, and its read-stop
     ;; leaves the stream reading, so a client's 4 MiB still go out, read and
     ;; dropped.  Its abort still closes the stream at once.
@@ -3418,7 +3330,7 @@
       (client-close! (car p)))
     (set! lingering-transport #f)
 
-    ;; The drain tells a taken stream and waits (decision 0016 item 3): the
+    ;; The drain tells a taken stream and waits: the
     ;; taker's drain call says goodbye and closes, and the drain ends then,
     ;; before its deadline.  One that ignores the drain is closed at the
     ;; deadline, on time, its close told to it.
@@ -3498,17 +3410,16 @@
         (set! parked #f)))
     (set! adopting shell)
 
-    ;; Backpressure on the read side (M6.2), on a shell of its own with the
-    ;; short limits, made on credit, as M7's coroutine shell will hand a
-    ;; reader its pieces.  A client sends a 64 KiB body at once to `/credit`:
+    ;; Backpressure on the read side, on a shell of its own with the short
+    ;; limits, made on credit, as a handler that waits is handed a reader's
+    ;; pieces.  A client sends a 64 KiB body at once to `/credit`:
     ;; handed a read's pieces, its reader makes reading wait for its credit,
     ;; so the connection has no deadline armed, and its shell's wheel is
     ;; empty.  The timer then stops, firing once more at
     ;; most, while the connection stays, and a wait past the body deadline's
-    ;; 175 ms answers nothing: the server, not the client, is the one waiting
-    ;; (plan §14's notes of 2026-09-27).  Credited each time it waits, the
-    ;; reader is handed the rest a read at a time.  The body's bytes count up
-    ;; modulo 251, so their order shows.
+    ;; 175 ms answers nothing: the server, not the client, is the one waiting.
+    ;; Credited each time it waits, the reader is handed the rest a read at a
+    ;; time.  The body's bytes count up modulo 251, so their order shows.
     (let* ((waiter (make-shell loop handler quick-limits clock log! trace! #t))
            (fired (lambda ()
                     (length (filter (lambda (e) (and (eq? (car e) 'fire) (eq? (cadr e) waiter)))
@@ -3580,11 +3491,9 @@
       (shell-shutdown! waiter)
       (set! adopting shell))
 
-    ;; A lookup (decision 0015 item 1), against what uv-getaddrinfo! itself
-    ;; answers; names libuv refuses at the call, empty, with a NUL, or over
-    ;; 255 octets; and one the resolver refuses itself, with a network or
-    ;; without (measured on Darwin and on Linux in Docker, `--network none`
-    ;; and not): EAI_NONAME.
+    ;; A lookup, against what uv-getaddrinfo! itself answers; names libuv
+    ;; refuses at the call, empty, with a NUL, or over 255 octets; and one the
+    ;; resolver refuses itself, with a network or without: EAI_NONAME.
     (let* ((oracle (looked-up loop "localhost" cap))
            (cl (open-client! (b (string-append "GET /resolve HTTP/1.1\r\nHost: x\r\n\r\n"
                                                "GET /resolve-empty HTTP/1.1\r\nHost: x\r\n\r\n"
@@ -3598,13 +3507,13 @@
                         (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))))
       (client-close! cl))
 
-    ;; An idle connection carries no coroutine (decision 0003; design §5.2):
+    ;; An idle connection carries no coroutine:
     ;; once `/noted` is answered, each call into its code made on a
     ;; coroutine and each waiting, and its connection is idle, a full
     ;; collection leaves none of the coroutines it ran on, nor what their
     ;; waits kept of them, which the request's notice points to: the notice
-    ;; goes with the request (decision 0020).  The instrument is the weak
-    ;; pair's, calibrated above.
+    ;; goes with the request.  The instrument is the weak pair's, calibrated
+    ;; above.
     (set! noted '())
     (set! noted-waits '())
     ;; Each reading is bound in turn: the collection comes after the wait.
@@ -3625,8 +3534,7 @@
       (client-close! cl))
 
     ;; A shell that serves no more closes the timer of its loop's waits,
-    ;; which have nothing armed (decision 0015 item 3): the next sleep on
-    ;; the loop makes another.
+    ;; which have nothing armed: the next sleep on the loop makes another.
     (let ((cl (open-client! (b "GET /sleep HTTP/1.1\r\nHost: x\r\n\r\n"))))
       (test-equal "after a shell on the loop serves no more, closing the timer of the loop's waits, a handler that sleeps is answered: the timer is made again"
                   '(satisfied 200)

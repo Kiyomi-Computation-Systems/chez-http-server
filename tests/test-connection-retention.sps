@@ -1,13 +1,12 @@
 #!r6rs
 ;;; (http-server connection): the connection keeps no response bytes once
-;;; the write is issued.  M3.3.
+;;; the write is issued.
 ;;;
-;;; chez-libuv copies a write's segments into request-owned foreign memory at
-;;; the call (design §7.3; vendor/chez-libuv/src/libuv/stream.sls:88-128), so
-;;; once the write is issued nothing needs the response's bytes.  The core
-;;; must not keep them until the write completes, as a queue holding its
-;;; buffers for libuv would: a handler's body can be large, and the client
-;;; decides how long its write takes to complete.
+;;; chez-libuv's `uv-write*!` copies a write's segments into request-owned
+;;; foreign memory at the call, so once the write is issued nothing needs the
+;;; response's bytes.  The core must not keep them until the write completes,
+;;; as a queue holding its buffers for libuv would: a handler's body can be
+;;; large, and the client decides how long its write takes to complete.
 ;;;
 ;;; No wire test can see the difference, since the bytes written are the
 ;;; same either way, so the check is on liveness.  A connection as the shell
@@ -19,18 +18,18 @@
 ;;; response, its body, the write's segment list and its header block.  A
 ;;; weak pair sees it: its car is broken once nothing else holds the object.
 ;;;
-;;; M3.5: a connection that closes after its response lingers, for up to
-;;; 30 s, reading only to drop what arrives (decision 0011).  So it keeps
-;;; nothing of the input it read: not the delivery, whose rest a pause keeps
-;;; for the next message, and not the request, whose spans point into it.
-;;; The same instrument checks that while it lingers.
+;;; A connection that closes after its response lingers, for up to 30 s,
+;;; reading only to drop what arrives.  So it keeps nothing of the input it
+;;; read: not the delivery, whose rest a pause keeps for the next message,
+;;; and not the request, whose spans point into it.  The same instrument
+;;; checks that while it lingers.
 ;;;
-;;; M6.1: a body read whole is copied into one bytevector, which the core
-;;; hands to the reader the handler answered with (decision 0013).  Once the
-;;; reader's response is written, the connection keeps neither the reader
-;;; nor that body: a handler's body can be up to its cap, 1 MiB.
+;;; A body read whole is copied into one bytevector, which the core hands to
+;;; the reader the handler answered with.  Once the reader's response is
+;;; written, the connection keeps neither the reader nor that body: a
+;;; handler's body can be up to its cap, 1 MiB.
 ;;;
-;;; Oracles: design §7.3; decision 0011; and the instrument's calibration
+;;; Oracles: chez-libuv's copy at the call; the instrument's calibration
 ;;; below: an object still held is seen held, and a dropped one released.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?)
@@ -217,9 +216,8 @@
       (test-eq "a handler's response: the completion returns the connection to idle"
                'idle (caddr r)))
 
-    ;; A response with a fault is answered 500 (decision 0010 item 2): the
-    ;; handler's response and body are never written, and the 500's write is
-    ;; the one outstanding.
+    ;; A response with a fault is answered 500: the handler's response and
+    ;; body are never written, and the 500's write is the one outstanding.
     (let ((r (served (lambda ()
                        (make-response 200 #f (list (cons (b "Content-Length") (b "4096")))
                                       (make-bytevector 4096 97))))))
@@ -230,15 +228,15 @@
       (test-eq "a response with a fault: the completion starts the staged close"
                'lingering (caddr r)))
 
-    ;; M6.1: a body read whole, once its reader's response is written.
+    ;; A body read whole, once its reader's response is written.
     (let ((r (read-whole!)))
       (test-equal "a body read whole: once the reader's response is written, the connection holds neither the reader nor the body"
                   '((reader . released) (body . released)) (car r))
       (test-equal "a body read whole: collected in responding, the response's write outstanding"
                   '(responding 1) (cadr r)))
 
-    ;; M3.5: a lingering connection reads only to drop what arrives, so it
-    ;; keeps nothing of the input it read (decision 0011).
+    ;; A lingering connection reads only to drop what arrives, so it keeps
+    ;; nothing of the input it read.
     (let ((r (lingering)))
       (test-equal "a lingering connection holds none of its input: the delivery and the request"
                   '((delivery . released) (request . released)) (car r))
