@@ -1,7 +1,6 @@
 #!r6rs
 ;;; (kestrel-corpus) — ASP.NET Core Kestrel's HTTP/1 parsing tables, read from
-;;; the vendored HttpParsingData.cs (decision 0007) as data, never compiled.
-;;; M8.3, the strictness lane.
+;;; the vendored HttpParsingData.cs as data, never compiled.
 ;;;
 ;;; The file is C#: each table is a property whose body builds an array of
 ;;; string literals, one row a line, and a few end by appending another table
@@ -22,6 +21,8 @@
   ;; kestrel-path : String — the vendored file.
   (define kestrel-path "test/vendor/kestrel/src/Servers/Kestrel/shared/test/HttpParsingData.cs")
 
+  ;; kestrel-parse-error? : Any -> Boolean — a table was refused.
+  ;; kestrel-parse-error-detail : KestrelParseError -> String — why.
   (define-condition-type &kestrel-parse &error
     make-kestrel-parse-error kestrel-parse-error? (detail kestrel-parse-error-detail))
 

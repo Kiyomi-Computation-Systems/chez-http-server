@@ -1,6 +1,5 @@
 #!r6rs
-;;; M0 exit: a program importing all four libraries at once runs.  This wires
-;;; the ledger's smoke template through the harness so `make test` covers it —
+;;; Integration smoke: a program importing all four dependencies at once runs —
 ;;; chez-libuv, chez-httparse (generated parser + decisions + methods),
 ;;; byte-machine (transitive) and uriparse, all on the one library path.
 (import (rnrs) (srfi :64) (testing)

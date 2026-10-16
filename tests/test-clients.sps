@@ -1,18 +1,18 @@
 #!r6rs
-;;; Real clients: curl, ab, vtest and oha against the server.  The M4 exit
-;;; (plan §8), M8.3's black-box lane (plan §14): vtest2's scripts and curl's
-;;; own ways with a server it does not know, and M8.4's load smoke, oha's.
+;;; Real clients: curl, ab, vtest and oha against the server.
 ;;;
-;;; The brief's gate for M4: `curl` and `ab` get correct responses, and the
-;;; counters return to zero.  A server is started through an environment, as
-;;; `serve` starts one (tests/test-serve.sps), on a loop of the suite's own.
-;;; Each client runs as a child process on that loop: its standard output is
-;;; read through a pipe, and its exit is reported there, so every wait is
-;;; capped by an iteration count, a 1 ms ticker keeping the loop awake
-;;; (design §8.5).  A client that cannot be started is the harness's failure,
-;;; status 2, and named on standard error: curl, and ab, from Apache's
-;;; apache2-utils on Linux, are test tools, and so are vtest and oha, which
-;;; `make test` builds and fetches at their pins.
+;;; curl and `ab` get correct responses, and the counters return to zero.
+;;; vtest2's scripts and curl's own ways exercise the server as a client that
+;;; does not know it, and oha's load smoke checks that every request of a
+;;; crowd is answered.  A server is started through an environment, as `serve`
+;;; starts one (tests/test-serve.sps), on a loop of the suite's own.  Each
+;;; client runs as a child process on that loop: its standard output is read
+;;; through a pipe, and its exit is reported there, so every wait is capped by
+;;; an iteration count, a 1 ms ticker keeping the loop awake.  A client that
+;;; cannot be started is the harness's failure, status 2, and named on
+;;; standard error: curl, and ab, from Apache's apache2-utils on Linux, are
+;;; test tools, and so are vtest and oha, which `make test` builds and fetches
+;;; at their pins.
 ;;;
 ;;; Oracles:
 ;;;   - what each client reports of its exchanges.  curl's --write-out gives
@@ -20,32 +20,28 @@
 ;;;     one) and the body's size; ApacheBench's report the requests completed,
 ;;;     failed, answered with other than 2xx, and kept alive;
 ;;;   - RFC 9112 §9.3: an HTTP/1.1 connection persists, so curl sends its
-;;;     second request on the first's connection; decision 0006: a 1.0
-;;;     connection closes after its response unless it asks to be kept alive,
-;;;     as ab -k asks;
+;;;     second request on the first's connection; a 1.0 connection closes
+;;;     after its response unless it asks to be kept alive, as ab -k asks;
 ;;;   - RFC 9110 §9.3.2: the answer to a HEAD has the fields a GET's would,
 ;;;     and no content;
-;;;   - RFC 9112 §7.1 and §6.3 rule 8: a streamed body (decision 0013 item 8;
-;;;     M6.3) is chunked to HTTP/1.1, so the connection persists after it,
-;;;     and close-delimited to 1.0, so it does not;
+;;;   - RFC 9112 §7.1 and §6.3 rule 8: a streamed body is chunked to
+;;;     HTTP/1.1, so the connection persists after it, and close-delimited to
+;;;     1.0, so it does not;
 ;;;   - chez-libuv's live handles, and the counters of its dev build: with
 ;;;     every client gone, the listener is the one handle left but the timer
-;;;     the shell keeps for its next deadline (M5.3), and after the shutdown
-;;;     none is;
-;;;   - the M6 exit's 16 MiB each way (plan §14): every byte, checked a piece
-;;;     at a time against its piece's letter; the server's heap, read after
-;;;     two full collections as the M4 exit read a connection's (its budget
-;;;     spike), the client in a process of its own; and the bytes a
-;;;     connection has written and not yet seen completed, against decision
-;;;     0005's water marks;
-;;;   - vtest's verdict on each of tests/vtc/*.vtc (M8.3): a script is a
-;;;     client's exchanges and what it expects of each answer, written from
-;;;     RFC 9112 and the decisions before it first ran, and read by vtest's
-;;;     own HTTP/1 code, which is neither curl's nor chez-httparse's;
-;;;   - oha's report of a load (M8.4): the responses it counted by status and
-;;;     the requests that failed by kind, so every request it sent was
-;;;     answered 200 and none failed, many connections at a time, kept alive
-;;;     and not.
+;;;     the shell keeps for its next deadline, and after the shutdown none is;
+;;;   - 16 MiB each way: every byte, checked a piece at a time against its
+;;;     piece's letter; the server's heap, read after two full collections,
+;;;     the client in a process of its own; and the bytes a connection has
+;;;     written and not yet seen completed, against the write high and low
+;;;     water marks;
+;;;   - vtest's verdict on each of tests/vtc/*.vtc: a script is a client's
+;;;     exchanges and what it expects of each answer, written from RFC 9112
+;;;     and the server's documented behaviour, and read by vtest's own HTTP/1
+;;;     code, which is neither curl's nor chez-httparse's;
+;;;   - oha's report of a load: the responses it counted by status and the
+;;;     requests that failed by kind, so every request it sent was answered
+;;;     200 and none failed, many connections at a time, kept alive and not.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect getenv directory-list
               statistics sstats-bytes)
@@ -64,8 +60,7 @@
 (define (b s) (string->utf8 s))
 
 ;; The cap on every wait.  All of this suite's clients together take about
-;; 700 iterations (2026-09-27, Darwin arm64), and each 16 MiB run, the M6
-;; exit's, 324 to 1,021 more (2026-10-02, Darwin arm64 and Linux aarch64).
+;; 700 iterations, and each 16 MiB run up to about 1,000 more.
 (define cap 20000)
 
 ;; env : (Pair String String) ... -> (String -> (U String #f))
@@ -78,9 +73,9 @@
 
 ;; The handler answers with the path and the query it read, "-" for none,
 ;; reading a POST's body first: a response given instead of a reader to a
-;; request whose head announces a body closes the connection (decision 0013).
-;; `/stream` is answered with a producer of three pieces (M6.3;
-;; tests/producers.sls), and `/sixteen` moves the M6 exit's 16 MiB (below).
+;; request whose head announces a body closes the connection.  `/stream` is
+;; answered with a producer of three pieces (tests/producers.sls), and
+;; `/sixteen` moves 16 MiB each way (below).
 (define (handler r)
   (if (string=? (request-path r) "/sixteen")
       (sixteen r)
@@ -92,7 +87,7 @@
             (read-body (lambda (bv start end) #t) (lambda () answer))
             answer))))
 
-;; --- 16 MiB each way (the M6 exit) ---
+;; --- 16 MiB each way ---
 ;;
 ;; The 16 MiB are 1,024 pieces of 16 KiB, the k-th filled with the k-th
 ;; letter (mod 26) from `a`, as sized-producer makes them.
@@ -202,9 +197,9 @@
 ;; make-watch : UvLoop Shell Nat -> (Pair (-> Void) (-> (List Nat Nat Nat)))
 ;; A watch for run, and what it saw: the heap, read every `every-ms` by the
 ;; loop's clock, and the bytes each connection has written and not yet seen
-;; completed, read at every look, which chez-libuv holds outside the heap
-;; (design §7.3).  It answers the most heap read, how many readings, and the
-;; most bytes outstanding.
+;; completed, read at every look, which chez-libuv holds outside the heap.
+;; It answers the most heap read, how many readings, and the most bytes
+;; outstanding.
 (define (make-watch loop sh every-ms)
   (let ((most-heap 0) (readings 0) (most-out 0) (next 0))
     (cons (lambda ()
@@ -291,10 +286,10 @@
   (let ((v (lookup name)))
     (if (and v (not (string=? v ""))) v default)))
 
-;; --- vtest (M8.3) ---
+;; --- vtest ---
 ;;
-;; vtest2 is built at its pin by `make vtest` (decision 0017); VTEST names
-;; another build.  Its scripts run against a server of the lane's own, on a
+;; vtest2 is built at its pinned tag by `make vtest`; VTEST names another
+;; build.  Its scripts run against a server of the lane's own, on a
 ;; loop of its own, whose deadlines are a second each and whose bodies are
 ;; capped at 1 KiB, so its timeouts and limits act within a run.  vtest
 ;; gives each script 5 s (`-t`), the longest taking 1.24 s, so twelve that
@@ -302,7 +297,7 @@
 (define vtest (client-path getenv "VTEST" "build/vtest"))
 
 ;; The scripts, each with the verdict it is held to: the lane's manifest,
-;; gated both ways against tests/vtc, as M1's ratchet gates its fixtures.
+;; gated both ways against tests/vtc.
 (define vtc-manifest
   '(("chunked-upload.vtc" . passed) ("expect.vtc" . passed) ("framing.vtc" . passed)
     ("head.vtc" . passed) ("http10.vtc" . passed) ("keep-alive.vtc" . passed)
@@ -311,7 +306,7 @@
 
 ;; vtc-file? : String -> Boolean
 ;; A script's name: one ending .vtc, but no dotfile, such as the lock file
-;; an editor keeps beside a script it has changed (the review's seventh).
+;; an editor keeps beside a script it has changed.
 (define (vtc-file? name)
   (and (not (prefix? "." name)) (suffix? ".vtc" name)))
 
@@ -319,10 +314,9 @@
 ;; What the script `name`, its text `text`, breaks of the two rules the
 ;; lane's verdicts rest on: each rxresp is followed by a check of the
 ;; answer's status, or vtest reads stray content as the next status line
-;; and checks the rest (M8B-D1); and each client is run, `-run` at its
-;; block's end, or `-start` there and `-wait` after it, or it never
-;; connects and its script passes having checked nothing (the review's
-;; sixth).
+;; and checks the rest; and each client is run, `-run` at its block's end,
+;; or `-start` there and `-wait` after it, or it never connects and its
+;; script passes having checked nothing.
 (define (vtc-faults name text)
   (let loop ((ls (map trim (split text #\newline))) (n 1) (client #f) (started '()) (faults '()))
     (if (null? ls)
@@ -375,44 +369,42 @@
               (append (filter (lambda (l) (starts? "----" l)) log)
                       (if (exists (lambda (l) (find-sub l "TIMED OUT")) log) '("TIMED OUT") '()))))))
 
-;; --- oha, the load smoke (M8.4) ---
+;; --- oha, the load smoke ---
 ;;
-;; oha, the brief's load client, is fetched at its pin by `make oha`
-;; (decision 0018); OHA names another.  The smoke reads its report, the
+;; oha, the load client, is fetched at its pinned version by `make oha`; OHA
+;; names another.  The smoke reads its report, the
 ;; JSON it writes with `--output-format json`: two flat objects in it, the
 ;; responses it counted by status and the requests that failed by kind, the
 ;; bytes of their bodies, and the rate, which is printed and not checked.
 (define oha (client-path getenv "OHA" "build/oha"))
 
 ;; The cap on an oha run's wait, in turns of the loop, which serves many
-;; requests a turn under load.  Measured on 2026-10-04, three runs each: the
-;; 20,000 kept alive took 1,470 to 1,636 turns on Darwin arm64 and 466 to
-;; 495 on Linux aarch64, the 2,000 on connections of their own 5,492 to
-;; 5,493 and 472 to 489.  The cap is four and a half times the most.  With
-;; nothing to serve, the 1 ms ticker turns the loop a thousand times a
-;; second at most, so a run that never ends is cut after 25 s, and both
-;; runs, cut, end within the suite's 120 s, each failing by name: a server
-;; that stops answering would keep oha's 20,000 requests timing out 50 at a
-;; time for half an hour.
+;; requests a turn under load.  The longest run, the 2,000 requests on
+;; connections of their own, takes about 5,500 turns, and the cap is four and
+;; a half times that.  With nothing to serve, the 1 ms ticker turns the loop a
+;; thousand times a second at most, so a run that never ends is cut after
+;; 25 s, and both runs, cut, end within the suite's 120 s, each failing by
+;; name: a server that stops answering would keep oha's 20,000 requests
+;; timing out 50 at a time for half an hour.
 (define oha-cap 25000)
 
-;; --- what a GET allocates through the whole server (the guards' hoist) ---
+;; --- what a GET allocates through the whole server ---
 ;;
-;; Decision 0002's gate holds what the core allocates for a request; this
-;; ratchet holds what the whole server does, the libuv shell, the scheduler
-;; and chez-libuv included.  A server of its own, on a loop of its own, its
+;; The core's allocation gate holds what the core allocates for a request;
+;; this ratchet holds what the whole server does, the libuv shell, the
+;; scheduler and chez-libuv included.  A server of its own, on a loop of its own, its
 ;; handler answering every request with one response made once, so the
 ;; handler allocates nothing, is sent oha's GETs on one connection kept
 ;; alive, 2,000 and then 7,000, its loop turned as `serve` turns it
 ;; (shell-run-turns!) with nothing else on it.  The bytes this process
 ;; allocates over each run, Chez's cumulative counter, differ by what 5,000
 ;; GETs cost: what does not grow with the requests, oha's start, its
-;; connection and its report, cancels.  Measured on 2026-10-08 at
-;; chez-libuv v0.7.4, which allocates less around each callback (its #45):
-;; 5,150 B a GET on Darwin arm64 by the spike hoist-request-alloc.sps, and
-;; 5,143 to 5,156 here, against 7,333 at v0.7.3 and 10,005 before the
-;; shell's guards were hoisted.  The ratchet is 5.25 KiB, 220 B over the
-;; most measured: undoing any one of the hoist's three layers passes it.
+;; connection and its report, cancels.  A GET costs about 5,150 B, with
+;; chez-libuv v0.7.4 or later, which allocates less around each callback.
+;; The ratchet is 5.25 KiB, 220 B over that: undoing any one of the shell's
+;; three guard hoists (one guard for a run of turns, one handler for a
+;; dispatch and its drain, a handler's raise taken by the run loop's guard)
+;; takes a GET past it.
 (define get-ratchet 5376)
 
 ;; allocated-over : UvLoop Shell String Nat -> (List Nat (U (Listof (Pair String Nat)) #f))
@@ -490,7 +482,7 @@
       (require-client! loop sh "ab" "-V")
       (require-client! loop sh oha "--version")
 
-      ;; --- vtest (M8.3) ---
+      ;; --- vtest ---
       ;; Every script is run before any check, so a vtest that cannot be
       ;; started raises outside them: the harness's status, 2.  The lane's
       ;; loop is torn down before the suite's own handles are counted.
@@ -569,7 +561,7 @@
       ;; curl asks for the 100 on its own for a large upload; asked here for
       ;; a small one.  It waits up to a minute for the 100, so a server that
       ;; never sends one holds it past the cap, and --dump-header shows the
-      ;; 100 it read before the response (M6.4; RFC 9110 §10.1.1).
+      ;; 100 it read before the response (RFC 9110 §10.1.1).
       (test-equal "curl: a POST expecting 100-continue reads the 100, then the response to the body it sent after it"
                   (list 'satisfied '(0 #f)
                         (list (string-append "HTTP/1.1 100 Continue\r\n\r\n"
@@ -586,24 +578,23 @@
                   (list 'satisfied '(0 #f) "one two three200 1 13\n/b -\n200 0 5\n")
                   (run loop sh "curl" (list "-sS" "-w" curl-out (url "/stream") (url "/b"))))
       ;; Asked to keep the connection, as ab -k asks: the close still ends the
-      ;; body (M3.2's carried arm).
+      ;; body.
       (test-equal "curl: a streamed body to HTTP/1.0, read to the close though kept alive was asked, then a GET on a connection of its own"
                   (list 'satisfied '(0 #f) "one two three200 1 13\n/b -\n200 1 5\n")
                   (run loop sh "curl" (list "-sS" "--http1.0" "-H" "Connection: keep-alive" "-w" curl-out
                                             (url "/stream") (url "/b"))))
 
-      ;; --- curl's own ways with a server it does not know (M8.3) ---
+      ;; --- curl's own ways with a server it does not know ---
       ;; `--http2` asks an http:// URL to upgrade to h2c (curl's manual): the
-      ;; upgrade is served over HTTP/1.1, then the connection closed
-      ;; (decision 0006's amendment of 2026-09-25), so the GET after it opens
-      ;; a connection of its own.
+      ;; upgrade is served over HTTP/1.1, then the connection closed, so the
+      ;; GET after it opens a connection of its own.
       (test-equal "curl --http2: the h2c upgrade served over HTTP/1.1, then a GET on a connection of its own"
                   (list 'satisfied '(0 #f) "/u -\n200 1.1 1\n/b -\n200 1.1 1\n")
                   (run loop sh "curl" (list "-sS" "--http2" "-w" "%{http_code} %{http_version} %{num_connects}\\n"
                                             (url "/u") (url "/b"))))
       ;; A link with brackets and a pipe, as a browser sends it (-g: curl
       ;; leaves the brackets alone), is redirected once, then served, its
-      ;; query encoded (decision 0009).
+      ;; query encoded.
       (test-equal "curl -g -L: a link with brackets and a pipe redirected once, then served, its query encoded"
                   (list 'satisfied '(0 #f) "/a ids%5B%5D=1%7C2\n200 2 1\n")
                   (run loop sh "curl" (list "-sS" "-g" "-L" "-w" "%{http_code} %{num_connects} %{num_redirects}\\n"
@@ -618,7 +609,7 @@
                   (list 'satisfied '(0 #f) "/a/../b/./c -\n200 1 14\n")
                   (run loop sh "curl" (list "-sS" "--path-as-is" "-w" curl-out (url "/a/../b/./c"))))
 
-      ;; --- 16 MiB each way, against a slow peer (the M6 exit) ---
+      ;; --- 16 MiB each way, against a slow peer ---
       ;; curl sends 16 MiB, chunked from its standard input, which the suite
       ;; writes a piece at a time, then reads 16 MiB streamed back, each at
       ;; 16 MiB/s (--limit-rate), so curl is the slow end.  The server reads
@@ -626,10 +617,9 @@
       ;; from a producer of 16 KiB pieces; the suite takes curl's output a
       ;; read at a time and keeps none of it either.  As each moves, the
       ;; heap is read every 50 ms: five readings or more span 200 ms of it
-      ;; at least.  Measured on 2026-10-02, curl took 14 to 21 readings to
-      ;; move the 16 MiB at the limit, and two or three unlimited (Darwin
-      ;; arm64 and Linux aarch64).  The bound, 1 MiB, is a sixteenth of
-      ;; what moves; what grew was 32 to 83 KB (the ledger's M6 exit).
+      ;; at least.  Curl takes 14 to 21 readings to move the 16 MiB at the
+      ;; limit, and two or three unlimited.  The bound, 1 MiB, is a sixteenth
+      ;; of what moves; what grows is under 100 KB.
       (let* ((watch (make-watch loop sh 50))
              (before (heap))
              (r (run loop sh "curl" (list "-sS" "-f" "--limit-rate" "16M" "-T" "-" (url "/sixteen"))
@@ -645,7 +635,7 @@
       ;; Streamed to it, the answer's writes back up behind curl: each piece
       ;; is a write of 16,392 bytes, its size line `4000` CRLF, the piece and
       ;; CRLF, and the producer is asked only while the bytes outstanding are
-      ;; at or below the high water (decision 0005; M6.3).
+      ;; at or below the high water.
       (let* ((checker (make-checker))
              (watch (make-watch loop sh 50))
              (before (heap))
@@ -672,7 +662,7 @@
                   (list 'satisfied '(0 #f) '("200" "0" #f "200" "4 bytes"))
                   (ab-report (run loop sh "ab" (list "-k" "-n" "200" "-c" "8" (url "/")))))
 
-      ;; --- oha, the load smoke (M8.4) ---
+      ;; --- oha, the load smoke ---
       ;; Which oha runs, and how its report is read, on a snippet with a
       ;; failure of each kind.
       (test-equal "oha: OHA or VTEST unset or empty names the default, and any other value the client it names"
@@ -709,7 +699,7 @@
        '(("20,000 GETs, 50 connections kept alive" ("-n" "20000" "-c" "50") 20000)
          ("2,000 GETs, 10 at a time, each on a connection of its own" ("-n" "2000" "-c" "10" "--disable-keepalive") 2000)))
 
-      ;; --- what a GET allocates through the whole server (the guards' hoist) ---
+      ;; --- what a GET allocates through the whole server ---
       (let* ((aloop (make-uv-loop))
              (alogged '())
              (ok (make-response 200 #f '() (b "ok")))

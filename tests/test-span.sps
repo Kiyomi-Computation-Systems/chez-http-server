@@ -1,7 +1,7 @@
 #!r6rs
 ;;; (http-server span): a span is the bytes [start, end) of a bytevector, kept
-;;; without copying (design §7.1: the core retains spans of the delivery for
-;;; the request head).  Oracle: the bytes the span was made over.
+;;; without copying (the core retains spans of the delivery for the request
+;;; head).  Oracle: the bytes the span was made over.
 (import (rnrs) (srfi :64) (testing) (http-server span))
 
 (define (b s) (string->utf8 s))

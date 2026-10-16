@@ -1,8 +1,6 @@
 #!r6rs
-;;; (provenance) — a vendored corpus's bytes are the bytes we fetched
-;;; (decision 0007).  M8.3, for the corpora tests/vendor-corpus.sh vendors,
-;;; and since 2026-10-04 for libhtp's too, whose suite had kept its own check
-;;; (M1.3) that looked for an unlisted file only among LICENSE and the streams.
+;;; (provenance) — a vendored corpus's bytes are the bytes we fetched: the
+;;; check for the corpora tests/vendor-corpus.sh vendors and for libhtp's.
 ;;;
 ;;; A corpus directory holds upstream's files and a PROVENANCE that lists a
 ;;; sha256 per file and how many there are.  Every listed file must exist and
@@ -55,7 +53,7 @@
   ;; The files a refresh writes under `dir`, relative to it: every file but
   ;; the PROVENANCE itself and any dotfile, its own .gitattributes, a Finder
   ;; .DS_Store or a copy's AppleDouble ._ file, none of which a refresh
-  ;; copies from upstream (the review, 2026-10-04).
+  ;; copies from upstream.
   (define (vendored-files dir)
     (filter (lambda (rel) (not (string=? rel "PROVENANCE"))) (files-under dir "")))
 

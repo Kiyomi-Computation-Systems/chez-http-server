@@ -1,9 +1,9 @@
 #!r6rs
 ;;; The robustness lane: the server's answer to AWS http-desync-guardian's
-;;; cases (design §8.8, plan §14, M8.3).
+;;; cases.
 ;;;
-;;; The corpus is vendored (decision 0007); this suite verifies its bytes are
-;;; the bytes we fetched (PROVENANCE, status 3 on drift), loads every case
+;;; The corpus is vendored; this suite verifies its bytes are the bytes we
+;;; fetched (PROVENANCE, status 3 on drift), loads every case
 ;;; from the YAML, and gates three properties (tests/robustness-lane.sls):
 ;;; every Severe case is refused (guardian's own contract), each case's
 ;;; outcome is chunk-size invariant, and which cases reach the handler is our
@@ -22,7 +22,7 @@
   (guard (e ((guardian-parse-error? e) 'refused)) (thunk) 'accepted))
 
 ;; The delivery sizes, as the corpus lanes take them: size 1 and the whole
-;; input, unless CORPUS=full asks for every size (decision 0007).
+;; input, unless CORPUS=full asks for every size.
 (define selection (corpus-selection))
 
 ;; diag : String -> Void — a line to standard error.
@@ -62,8 +62,8 @@
     ;;    First, a file no refresh writes is not the corpus's: a Finder
     ;;    .DS_Store, or an AppleDouble ._ file a copy leaves.  The tree's own
     ;;    .gitattributes is one such dotfile, so the walk leaves it out by
-    ;;    what it is, not by name (the review's third finding).  Checked
-    ;;    before the manifest, which a walk that kept it would fail first.
+    ;;    what it is, not by name.  Checked before the manifest, which a walk
+    ;;    that kept it would fail first.
     (test-equal "the files a refresh writes leave out every dotfile" '()
                 (filter (lambda (rel) (exists (lambda (part) (and (> (string-length part) 0)
                                                                   (char=? (string-ref part 0) #\.)))
@@ -73,9 +73,8 @@
       (test-eqv "PROVENANCE lists LICENSE, NOTICE, the README and the ten YAML files"
                 13 (length listed)))
 
-    ;; 3. the corpus loads: the ten files, and 162 cases in all (measured on
-    ;;    the vendored corpus, 2026-10-04; the survey's 668 counted header
-    ;;    rows as cases).
+    ;; 3. the corpus loads: the ten files, and 162 cases in all (a case is a
+    ;;    request, not a header row).
     (test-eqv "ten guardian YAML files" 10 (length (guardian-files)))
     (test-eqv "162 guardian cases" 162 (length (guardian-cases)))
 
@@ -88,7 +87,7 @@
     ;; A whole case of the corpus's shape is read, so each fault below is the
     ;; one refused: YAML would drop a second space after a key's colon, and a
     ;; plain scalar's " #" comment, where reading them on would change the
-    ;; request (the review's fourth finding).
+    ;; request.
     (test-equal "a whole case of the corpus's shape is read as its request"
                 (string->utf8 "GET /x HTTP/1.1\r\nH: v\r\n\r\n")
                 (guardian-case-request (car (guardian-parse-text "probe" (probe-case "  uri: /x" "      value: v")))))
@@ -133,9 +132,8 @@
                 runs)
       (for-each (lambda (m) (diag (string-append "ROBUSTNESS MISMATCH " (car m) ": " (cdr m))))
                 mismatches)
-      ;; The lane is not vacuous: 162 cases, 63 of them Severe (measured on
-      ;; the vendored corpus, 2026-10-04), and 31 served, HTTP/1.2's
-      ;; acceptable#9 among them since decision 0006's amendment of that day.
+      ;; The lane is not vacuous: 162 cases, 63 of them Severe, and 31
+      ;; served, HTTP/1.2's acceptable#9 among them.
       (test-eqv "63 Severe cases" 63 (length (filter severe? cases)))
       (test-eqv "31 cases reach the handler" 31 (length served-cases))
       ;; Property 3 + the serve manifest's "refused" half: every case is

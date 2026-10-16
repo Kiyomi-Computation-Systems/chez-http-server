@@ -1,7 +1,7 @@
 vtest "An upgrade no handler takes is served over HTTP/1.1, then closed"
-# Decision 0006's amendment of 2026-09-25: Upgrade: h2c is an upgrade like
-# any other (RFC 9113 §3.1 deprecated it), served, then closed, as RFC 9110
-# §7.8 lets a server ignore it; decision 0010 item 3: Connection: close.
+# Upgrade: h2c is an upgrade like any other (RFC 9113 §3.1 deprecated it),
+# served, then closed, as RFC 9110 §7.8 lets a server ignore it; the server
+# writes Connection: close.
 client c1 -connect "${host} ${port}" {
     txreq -url "/u" -hdr "Connection: Upgrade, HTTP2-Settings" -hdr "Upgrade: h2c" -hdr "HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA"
     rxresp

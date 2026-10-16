@@ -1,11 +1,10 @@
 vtest "A version that is not 1.x is answered 505, HTTP/1.x is served as 1.1, and one the parser cannot read is a 400"
-# Decision 0006's amendments of 2026-10-04: a request line with no version
-# reads as HTTP/0.9, its head ended by an empty line, and is answered 505, as
-# are HTTP/2.0, HTTP/3.0 and every other version that is not 1.x; the HTTP/2
-# preface is answered 505 on the parser's error channel (item 2).  A 1.x past
-# 1.1, such as HTTP/1.2, is served as HTTP/1.1 and kept alive (RFC 9110
-# §6.2).  A version the parser cannot read, HTTP/1.x, is its error, 400.
-# Every status the server originates closes the connection (design §6.5).
+# A request line with no version reads as HTTP/0.9, its head ended by an
+# empty line, and is answered 505, as are HTTP/2.0, HTTP/3.0 and every other
+# version that is not 1.x; the HTTP/2 preface is answered 505 on the parser's
+# error channel.  A 1.x past 1.1, such as HTTP/1.2, is served as HTTP/1.1 and
+# kept alive (RFC 9110 §6.2).  A version the parser cannot read, HTTP/1.x, is
+# its error, 400.  Every status the server originates closes the connection.
 client c1 -connect "${host} ${port}" {
     send "GET /\r\n\r\n"
     rxresp

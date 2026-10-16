@@ -1,27 +1,23 @@
-# ratchet.txt -- the status of every corpus fixture, per lane (M1.4).
+# ratchet.txt -- the status of every corpus fixture, per lane.
 #
 # Format: <status> <lane>/<fixture-id>, where status is passing, not-yet or
 # deferred and lane is trace, outcome or libhtp.  tests/test-ratchet.sps gates
-# it BOTH WAYS (decision 0008 item 6): a passing entry that fails is an error
-# and a not-yet entry that passes is an error, so every promotion is a reviewed
-# diff and no exit criterion is met by accident.  The deferred/in-scope split is
-# derived per lane and checked against this file: the trace lane's from each
-# fixture's own meta, so a corpus refresh cannot smuggle a lenient fixture in as
-# not-yet.
+# it BOTH WAYS: a passing entry that fails is an error and a not-yet entry that
+# passes is an error, so every promotion is a reviewed diff and nothing starts
+# passing by accident.  The deferred/in-scope split is derived per lane and
+# checked against this file: the trace lane's from each fixture's own meta, so
+# a corpus refresh cannot smuggle a lenient fixture in as not-yet.
 #
-#   trace   -- the rendered parser trace equals the recorded log (M1.2): the 135
+#   trace   -- the rendered parser trace equals the recorded log: the 135
 #              strict fixtures pass; the 32 whose logs llhttp recorded under a
-#              lenient flag, or with the finish call, are deferred (plan §2.1,
-#              decision 0019).
-#   outcome -- the connection-level outcome is chunk-size invariant (M2.4, design
-#              §8.1 property 2): the 135 strict fixtures pass, the 4 upgrades
-#              since M2.5; the other 32 since decision 0019, as the lane runs the
-#              server's own parser and reads no log.
+#              lenient flag, or with the finish call, are deferred.
+#   outcome -- the connection-level outcome is chunk-size invariant: all 167
+#              request fixtures pass.  The lane runs the server's own parser
+#              and reads no log, so the 32 the trace lane defers are in scope.
 #   libhtp  -- our per-file expectations hold (tests/libhtp-lane.sls): the 12
-#              pipelining and multi-packet streams pass since the M2 exit, and
-#              the 2 Expect streams since M6.4, delivered with CRLF; since M8.3
-#              the robustness lane's 24 invalid and 4 HTTP/0.9 streams; the
-#              other 60 are not-yet.
+#              pipelining and multi-packet streams, the 2 Expect streams
+#              (delivered with CRLF), and the robustness lane's 24 invalid and
+#              4 HTTP/0.9 streams pass; the other 60 are not-yet.
 passing trace/request/connection.md#1
 passing trace/request/connection.md#2
 passing trace/request/connection.md#3

@@ -1,26 +1,24 @@
 #!r6rs
 ;;; (strictness-lane) — the server's verdicts on three origin servers' strict
 ;;; request tests: Kestrel's parsing tables, httpd's http_strict.t and
-;;; lighttpd's request.t.  M8.3 (plan §14: 0007 item 3 put them in M2; no
-;;; slice held them, and they join this lane).
+;;; lighttpd's request.t.
 ;;;
 ;;; Unlike guardian's (a proxy's classes), these sources are origin servers,
 ;;; so each case's verdict is theirs to compare with: the request was refused
 ;;; (a status of 400 or more, its handler never reached), or served (its
 ;;; handler reached), or left unanswered (the head never ended).  Exact
 ;;; statuses are not compared: servers choose differently there, as 505 or
-;;; 400 for a version (decision 0006's amendment of 2026-10-04).  A case where
-;;; this server parts from its source is listed in `departures` with the
-;;; reason, and the list is gated BOTH WAYS: a case not listed must agree, and
-;;; a listed one must still part, so a change in either direction fails until
-;;; reviewed (design §8.6's ratchet rule).
+;;; 400 for a version.  A case where this server parts from its source is
+;;; listed in `departures` with the reason, and the list is gated BOTH WAYS: a
+;;; case not listed must agree, and a listed one must still part, so a change
+;;; in either direction fails until reviewed.
 ;;;
 ;;; Each case is delivered as its source sends it, but a bare request line is
-;;; completed into a head (decided on the owner's word, by form, 2026-10-04):
-;;; Kestrel and httpd send a line alone and answer as soon as they read it,
-;;; where this server answers once a head ends, so a request that ends in
-;;; CRLF and holds no empty line gets one more CRLF and its line is judged.
-;;; The vendored bytes are untouched.  Then the client's eof.
+;;; completed into a head: Kestrel and httpd send a line alone and answer as
+;;; soon as they read it, where this server answers once a head ends, so a
+;;; request that ends in CRLF and holds no empty line gets one more CRLF and
+;;; its line is judged.  The vendored bytes are untouched.  Then the client's
+;;; eof.
 ;;;
 ;;; The sources' own wrapping, ported as our rows (Kestrel's tests at
 ;;; dc8b384: BadHttpRequestTests.cs, HttpParserTests.cs), and their scope:
@@ -30,8 +28,8 @@
 ;;;   - httpd: every row of the strict host's column but the response-header
 ;;;     rows ("R", run through httpd's CGI) and the one gated on a module;
 ;;;   - lighttpd: the blocks of its sections "Basic Request-Handling" and
-;;;     "keep-alive", picked by the file's own headings (the owner's word, by
-;;;     form, 2026-10-04): the rest test lighttpd's modules.
+;;;     "keep-alive", picked by the file's own headings: the rest test
+;;;     lighttpd's modules.
 (library (strictness-lane)
   (export strictness-cases strictness-case-id strictness-case-request strictness-case-expected
           kestrel-composition-faults
@@ -45,6 +43,10 @@
   ;; A case: its id, its request's bytes as delivered, and the verdicts its
   ;; source expects, one a response, each 'refused, 'served, 'unanswered or
   ;; 'dropped (httpd's undef: the connection closed with no answer).
+  ;;
+  ;; strictness-case-id       : StrictnessCase -> String
+  ;; strictness-case-request  : StrictnessCase -> Bytevector
+  ;; strictness-case-expected : StrictnessCase -> (Listof Symbol)
   (define-record-type strictness-case (fields id request expected))
 
   ;; --- Kestrel -----------------------------------------------------------------
@@ -60,7 +62,8 @@
       ("RequestLineInvalidDataLineFeedTerminator" . "") ("RequestLineIncompleteData" . "")))
 
   ;; kestrel-composition-faults : -> (Listof String)
-  ;; Each table whose tail no longer reads as ported, by name: none.
+  ;; The tables whose tail does not read as ported, by name; none when every
+  ;; one does.
   (define (kestrel-composition-faults)
     (map car (filter (lambda (p) (not (string=? (kestrel-table-tail (car p)) (cdr p)))) kestrel-tails)))
 
@@ -229,19 +232,17 @@
   ;;
   ;; departures : (Listof (List String (Listof Symbol) Symbol)) — each case
   ;; where this server parts from its source: its id, the verdict this server
-  ;; gives it, which the lane holds it to, and why.  Ours, each from RFC 9112
-  ;; or a decision:
+  ;; gives it, which the lane holds it to, and why.  Ours, each from an RFC
+  ;; or the server's documented behaviour:
   ;;   pct-encoding-undecoded  a percent-encoded octet, `%00` among them, is
   ;;                           a valid target (RFC 3986 §2.1); the server hands
   ;;                           it over undecoded (docs/request-targets.org),
   ;;                           where the source refuses a decoded NUL: RFC 3986
-  ;;                           §7.3 puts that check on the code that decodes
-  ;;                           (kept on the owner's word, 2026-10-04);
-  ;;   version-not-1.x         HTTP/2.0 or HTTP/0.9, answered 505 (decision
-  ;;                           0006's amendment), where httpd serves it;
+  ;;                           §7.3 puts that check on the code that decodes;
+  ;;   version-not-1.x         HTTP/2.0 or HTTP/0.9, answered 505, where httpd
+  ;;                           serves it;
   ;;   minor-version-served    HTTP/1.2, served as HTTP/1.1 (RFC 9110 §6.2's
-  ;;                           SHOULD; decision 0006's amendment of
-  ;;                           2026-10-04, later), where Kestrel answers 505;
+  ;;                           SHOULD), where Kestrel answers 505;
   ;;   answers-not-drops       a line ended by CR alone: the parser's 400,
   ;;                           where httpd closes with no answer;
   ;;   reg-name-host           an absolute-form host that is an RFC 3986
@@ -259,12 +260,11 @@
   ;;                           §6.6.2: Trailer is advisory), where lighttpd
   ;;                           refuses it;
   ;;   chunk-extension-space   a space after a chunk extension's `;`
-  ;;                           (`a; comment`): the parser's 400 (design §6.5;
-  ;;                           kept on the owner's word, 2026-10-04), where
-  ;;                           lighttpd reads RFC 9110 §5.6.3's BWS;
+  ;;                           (`a; comment`): the parser's 400, stricter than
+  ;;                           RFC 9112 §7.1.1's BWS, which lighttpd reads;
   ;;   empty-lines-allowed     two empty lines before a request line are
-  ;;                           ignored (RFC 9112 §2.2; the padding PR, by
-  ;;                           form), where lighttpd refuses the second request.
+  ;;                           ignored (RFC 9112 §2.2), where lighttpd refuses
+  ;;                           the second request.
   (define departures
     '(("kestrel/TargetWithEncodedNullCharData#1" (served) pct-encoding-undecoded)
       ("kestrel/TargetWithEncodedNullCharData#2" (served) pct-encoding-undecoded)

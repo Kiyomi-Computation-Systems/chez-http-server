@@ -1,9 +1,8 @@
 #!r6rs
 ;;; (testing) — the chez-http-server test-harness bridge.
 ;;;
-;;; Suites are SRFI-64 (global-constraints), but SRFI-64 sets no process
-;;; status.  `run-suite` runs a suite's assertions and then exits with the
-;;; project's status vocabulary:
+;;; Suites are SRFI-64, but SRFI-64 sets no process status.  `run-suite` runs a
+;;; suite's assertions and then exits with the project's status vocabulary:
 ;;;
 ;;;   0  every assertion passed and at least one ran
 ;;;   1  one or more assertions failed (or unexpectedly passed)
@@ -11,13 +10,13 @@
 ;;;      or the selection was empty (no assertion ran)
 ;;;   3  a provenance failure, raised by `provenance-failure`
 ;;;
-;;; "Empty selection is failure at every layer" (global-constraints): a suite
-;;; that registers no assertion exits 2, never 0.
+;;; An empty selection is a failure: a suite that registers no assertion exits
+;;; 2, never 0.
 ;;;
 ;;; The SRFI-64 footgun — an exception inside a test expression is silently
 ;;; turned into #f — is defended by discipline, not code: assertions compare
-;;; against a value only success can produce, never #f or bare truthiness
-;;; (global-constraints).  This library only computes the status.
+;;; against a value only success can produce, never #f or bare truthiness.
+;;; This library only computes the status.
 (library (testing)
   (export run-suite provenance-failure provenance-error? heap)
   (import (rnrs) (srfi :64)
@@ -32,6 +31,7 @@
     (bytes-allocated))
 
   ;; provenance-error : a raised marker mapping a suite to status 3.
+  ;; provenance-error? : Any -> Boolean
   (define-record-type provenance-error
     (fields (immutable message provenance-error-message)))
 

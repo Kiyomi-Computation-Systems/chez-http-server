@@ -1,11 +1,11 @@
 #!r6rs
 ;;; (read-back) — what a write looks like read back by (response-reader), for
 ;;; a row's expected value: the suites that drive the core and read its
-;;; writes back share it (test-connection-response.sps, M3.2, and
-;;; test-connection-originated.sps, M3.4).  M3.5 adds what the originated
-;;; and linger suites share besides: a client's two moves on a fake
-;;; connection, and the actions from the core's own response on.  M5.2 adds
-;;; `shown`, how those suites and the deadlines suite state an action.
+;;; writes back share it (test-connection-response.sps and
+;;; test-connection-originated.sps).  It also holds what the originated and
+;;; linger suites share besides: a client's two moves on a fake connection,
+;;; the actions from the core's own response on, and `shown`, how those suites
+;;; and the deadlines suite state an action.
 ;;;
 ;;; A field is a (name . value) pair of strings, as read-response returns it.
 ;;; The Date is the fake shell's: its clock starts at the epoch.

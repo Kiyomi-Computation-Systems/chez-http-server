@@ -4,11 +4,11 @@
 ;;;
 ;;; These suites run their clients on the loop the shell runs on, so one
 ;;; uv-run moves both ends and every wait is capped by an iteration count,
-;;; never wall-clock (design §8.5).  A client connects to 127.0.0.1, collects
-;;; what it reads with chez-libuv's own collector (tests/uv-testing.sls),
-;;; which keeps each delivery rather than a copy, and records how its stream
-;;; ended.  M4.2 wrote these inside tests/test-shell.sps, the socket lane;
-;;; M4.4 moved them here, to share them with the contract test (design §8.4).
+;;; never wall-clock.  A client connects to 127.0.0.1, collects what it reads
+;;; with chez-libuv's own collector (tests/uv-testing.sls), which keeps each
+;;; delivery rather than a copy, and records how its stream ended.  The socket
+;;; lane (tests/test-shell.sps) and the contract test (tests/test-contract.sps)
+;;; share them.
 ;;;
 ;;; NOT pure: it drives chez-libuv and the shell.
 (library (shell-testing)
@@ -85,9 +85,9 @@
   ;; on, a 1 ms ticker keeping the loop awake, until `pred` holds or `cap`
   ;; steps have been taken: 'satisfied or 'iterations-exhausted.  A step is a
   ;; turn of the loop's scheduler (shell-turn!), which calls the handlers
-  ;; the last one asked for, then runs the loop once (decision 0014).  The
+  ;; the last one asked for, then runs the loop once.  The
   ;; ticker is closed after, and its close drained, also when the run loop
-  ;; raises, as it does a byte-machine contract condition (design §6.4): the
+  ;; raises, as it does a byte-machine contract condition: the
   ;; raise goes on, and a failure to close the ticker then is dropped, so it
   ;; cannot take the raise's place (as chez-libuv's run-until/ticking does).
   (define (run-shell-until loop sh pred cap)

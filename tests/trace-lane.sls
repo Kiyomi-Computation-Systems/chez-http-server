@@ -1,47 +1,44 @@
 #!r6rs
 ;;; (trace-lane) — drive the strict llhttp corpus through our path and compare
-;;; against the recorded logs.  The M1.2 driver, extracted so the trace suite
-;;; and the M1.4 ratchet share one comparator rather than two that could drift.
+;;; against the recorded logs.  The trace suite and the ratchet share this one
+;;; comparator rather than two that could drift.
 ;;;
 ;;; It re-derives chez-httparse's own conformance result through OUR library
-;;; path, our Chez and our pins (design §8.1): drive each fixture through the
-;;; generated parser with the harness recorder bindings, render with
+;;; path, our Chez and our pins: drive each fixture through the generated
+;;; parser with the harness recorder bindings, render with
 ;;; `(httparse test trace-format)` behind our `render-trace` shim, and
 ;;; `trace-compare` bit-exactly against the fixture's log.  The driving loop
 ;;; mirrors chez-httparse's own conformance driver (run-at/fixture-mismatch,
 ;;; generated lane) restricted to the strict (type=request) lane.
 ;;;
-;;; M2.2 adds the same parse with the connection core's bindings installed
-;;; beside the recorder's (design §8.1, property 1: the connection layer must
-;;; not perturb parsing).  The core answers the parser; the recorder records.
-;;; The core pauses at every on-message-complete, and the driver then runs the
-;;; handler cycle and resumes, recording nothing, so the rendered trace must
-;;; still equal the fixture's log.  A fixture's own harness mode (a pause it
-;;; names, or skip-body) still answers as the recorder says, since that is part
-;;; of what llhttp recorded; a failure the core asks for always wins.
+;;; The same parse also runs with the connection core's bindings installed
+;;; beside the recorder's: the connection layer must not perturb parsing.  The
+;;; core answers the parser; the recorder records.  The core pauses at every
+;;; on-message-complete, and the driver then runs the handler cycle and
+;;; resumes, recording nothing, so the rendered trace must still equal the
+;;; fixture's log.  A fixture's own harness mode (a pause it names, or
+;;; skip-body) still answers as the recorder says, since that is part of what
+;;; llhttp recorded; a failure the core asks for always wins.
 ;;;
-;;; M2.3: the core refuses some messages llhttp accepts, by policy (design
-;;; §8.1: the corpus is parser truth, not server truth).  Such a fixture is
-;;; listed with its reason, and checked the other way: the core refuses it for
-;;; that reason at every chunk size, and the trace up to the refusal is the
-;;; recorded log's, line for line.  A refusal the list does not name is a
-;;; property-1 mismatch.
+;;; The core refuses some messages llhttp accepts, by policy: the corpus is
+;;; parser truth, not server truth.  Such a fixture is listed with its reason,
+;;; and checked the other way: the core refuses it for that reason at every
+;;; chunk size, and the trace up to the refusal is the recorded log's, line for
+;;; line.  A refusal the list does not name is a mismatch.
 ;;;
-;;; 2026-09-25: the core runs here with the Host requirement off
-;;; (`corpus-limits`).  The corpus is parser truth, and 61 of its strict
-;;; fixtures are HTTP/1.1 requests with no Host; refused, they would be
-;;; checked only up to their headers, losing the body, pausing and pipelining
-;;; coverage they give.  Decided on the owner's word, with decision 0005's
-;;; switch.  The other Host rules stay on; no fixture has two Host lines or
-;;; an invalid Host value.
+;;; The core runs here with the Host requirement off (`corpus-limits`).  The
+;;; corpus is parser truth, and 61 of its strict fixtures are HTTP/1.1
+;;; requests with no Host; refused, they would be checked only up to their
+;;; headers, losing the body, pausing and pipelining coverage they give.  The
+;;; other Host rules stay on; no fixture has two Host lines or an invalid Host
+;;; value.
 ;;;
 ;;; Each fixture is parsed under its own init, the one llhttp recorded its log
 ;;; under.  For a strict fixture that is the server's, but for the version
-;;; leniency the adapter has set since 2026-10-04 (decision 0006's amendment
-;;; of that date), and that reads one of them differently: `invalid.md#19`,
-;;; `GET / HTTP/5.6`, which a strict parser refuses at the version and the
-;;; server's reads on, as `lenient-version.md#1` records.  This lane checks
-;;; the corpus's parse; the outcome lane runs the server's (decision 0019).
+;;; leniency the adapter sets, and that reads one of them differently:
+;;; `invalid.md#19`, `GET / HTTP/5.6`, which a strict parser refuses at the
+;;; version and the server's reads on, as `lenient-version.md#1` records.  This
+;;; lane checks the corpus's parse; the outcome lane runs the server's.
 (library (trace-lane)
   (export request-fixtures strict-request-fixtures fixture-strict?
           trace-mismatch core-trace-mismatch core-refusal-mismatch trace-scan-runs
@@ -85,9 +82,11 @@
   ;; request-fixtures : (Listof (Pair String Fixture)) — all 167, file order.
   (define request-fixtures (apply append (map load-file request-files)))
 
-  ;; fixture-strict? : Fixture -> Boolean — type is exactly "request" (§2.1).
+  ;; fixture-strict? : Fixture -> Boolean — type is exactly "request".
   (define (fixture-strict? f) (equal? "request" (fixture-meta-ref f 'type 'no-type)))
 
+  ;; strict-request-fixtures : (Listof (Pair String Fixture)) — the strict
+  ;; ones of `request-fixtures`, in the same order.
   (define strict-request-fixtures
     (filter (lambda (p) (fixture-strict? (cdr p))) request-fixtures))
 
@@ -99,7 +98,7 @@
             (else #f))))
 
   ;; render-trace : Recorder -> (Listof Bytevector)
-  ;; Our thin shim over the harness renderer; the seam M1.2's mutation perturbs.
+  ;; Our thin shim over the harness renderer.
   (define (render-trace r) (trace-format (trace-recorder-events r)))
 
   (define (trace-at f bv size)
@@ -122,9 +121,8 @@
                 (loop (cdr bounds) res)
                 (loop '() res))))))))
 
-  ;; corpus-limits : Limits — decision 0005's defaults with the Host
-  ;; requirement off, the one limit this lane changes; (outcome-lane) runs
-  ;; under it too.
+  ;; corpus-limits : Limits — the default limits with the Host requirement
+  ;; off, the one limit this lane changes; (outcome-lane) runs under it too.
   (define corpus-limits (limits-with default-limits '((require-host? . #f))))
 
   ;; core-trace-at : Fixture Bytevector Nat -> (values (Listof Bytevector) (U #f Symbol))
@@ -173,10 +171,10 @@
       ;; One chunk, through every pause nobody outside asked for.  The
       ;; harness's own pause is recorded as the plain driver records it; the
       ;; core's is followed by the handler cycle: the feed's result, which
-      ;; asks the handler of a request whose head announced a body (decision
-      ;; 0013); the handler answering with a reader, which is handed the body
-      ;; and its end; the reader's response; and the write's completion, with
-      ;; its byte count.  Either way the parse resumes where it stopped.
+      ;; asks the handler of a request whose head announced a body; the
+      ;; handler answering with a reader, which is handed the body and its end;
+      ;; the reader's response; and the write's completion, with its byte
+      ;; count.  Either way the parse resumes where it stopped.
       (define (feed from to)
         (let again ((at from))
           (set! harness-paused #f)
@@ -296,7 +294,8 @@
                         "\" got \"" (mismatch-actual d)
                         "\" (" (symbol->string (mismatch-reason d)) ")")))
 
-  ;; trace-scan-runs : (Listof Fixture) Symbol -> Nat — scheduled replays (§2.2).
+  ;; trace-scan-runs : (Listof Fixture) Symbol -> Nat — how many replays `selection`
+  ;; schedules across `fixtures`.
   (define (trace-scan-runs fixtures selection)
     (fold-left
      (lambda (acc f)

@@ -1,21 +1,20 @@
 #!r6rs
-;;; (test-outcome-lane) — the outcome lane: design §8.1's property 2.  M2.4.
+;;; (test-outcome-lane) — the outcome lane: a connection's outcome does not
+;;; depend on how its input is split.
 ;;;
-;;; Every request fixture, fed to one fake connection at every
-;;; scheduled chunk size, has one outcome: the handlers called and the
-;;; requests they got, the responses written, the close and its reason, the
-;;; state it ended in, and every action run from the outermost drain (see
-;;; (outcome-lane)).  `make test` runs 'extremes; the release lane runs 'full
-;;; under CORPUS=full (plan §2.2), the M2 exit's two selections.
+;;; Every request fixture, fed to one fake connection at every scheduled chunk
+;;; size, has one outcome: the handlers called and the requests they got, the
+;;; responses written, the close and its reason, the state it ended in, and
+;;; every action run from the outermost drain (see (outcome-lane)).  `make
+;;; test` runs 'extremes; the release lane runs 'full under CORPUS=full.
 ;;;
-;;; Since M2.5 that holds for all 135, the four upgrades M2.4 listed
-;;; included: the core serves an upgrade and closes the connection after the
-;;; response, so the parser is never resumed onto its own hand-off (decision
-;;; 0006's amendment, on the owner's word, 2026-09-25).  Since M6.1 it holds
-;;; with two handlers, one that reads every body and one that reads none
-;;; (decision 0013; see (outcome-lane)).  Since decision 0019 it holds for all
-;;; 167: the 32 the trace lane defers, whose logs llhttp recorded under a
-;;; lenient flag or with the finish call, are bytes like any others here.
+;;; That holds for all 167 request fixtures, the four upgrades among them: the
+;;; core serves an upgrade a handler answers with a response and closes the
+;;; connection after it, so the parser is never resumed onto its own hand-off.
+;;; It holds with two handlers, one that reads every body and one that reads
+;;; none (see (outcome-lane)).  The 32 fixtures the trace lane defers, whose
+;;; logs llhttp recorded under a lenient flag or with the finish call, are
+;;; bytes like any others here.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) getenv)
         (only (http-server switch) switch-protocols)
@@ -24,14 +23,13 @@
 (define selection
   (let ((v (getenv "CORPUS"))) (if (and (string? v) (string=? v "full")) 'full 'extremes)))
 
-;; The lane's fixtures, counted and compared: every request fixture (decision
-;; 0019).
+;; The lane's fixtures, counted and compared: every request fixture.
 (define lane-fixtures request-fixtures)
 
-;; The instrument, calibrated on an input whose outcome is known from
-;; decision 0004 and the input's own bytes: research/spike/pipeline-pause.sps's
-;; three messages, the second close-marked.  An outcome that saw nothing
-;; would pass every fixture.
+;; The instrument, calibrated on an input whose outcome is known from its own
+;; bytes and from pipelining being strictly serial: three messages, the
+;; second close-marked, so the third is never read.  An outcome that saw
+;; nothing would pass every fixture.
 (define spike
   (string->utf8 (string-append "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 3\r\n\r\nabc"
                                "GET /b HTTP/1.1\r\nHost: y\r\nConnection: close\r\n\r\n"
@@ -44,7 +42,7 @@
      (close not-keep-alive))
     closed not-keep-alive ()))
 ;; With a handler that reads no body, the POST, whose head announces one, is
-;; answered at once and closes the connection (decision 0013 item 4).
+;; answered at once and closes the connection.
 (define spike-answered
   '(((call-handler (POST "/a" 1 1 (("Host" . "x") ("Content-Length" . "3"))))
      (write 200)
@@ -60,15 +58,15 @@
                          " scan-runs=" (number->string
                                         (trace-scan-runs (map cdr lane-fixtures) selection))))
     (test-eqv "167 request fixtures in the lane" 167 (length lane-fixtures))
-    (test-equal "the instrument: the spike's messages whole give two handlers, two responses, the close"
+    (test-equal "the instrument: three pipelined messages whole give two handlers, two responses, the close"
                 spike-outcome (outcome-at spike 117))
     (test-equal "and a byte at a time, the same" spike-outcome (outcome-at spike 1))
     (test-equal "a handler that reads no body: the POST answered, then the close, whole and a byte at a time"
                 (list spike-answered spike-answered)
                 (list (outcome-at spike 117 answers) (outcome-at spike 1 answers)))
-    ;; The lane renders a hand-off by the bytes handed over (M8.2): a
-    ;; WebSocket handshake taken by a handler's switch, read whole, with
-    ;; another protocol's 5 bytes after it.
+    ;; The lane renders a hand-off by the bytes handed over: a WebSocket
+    ;; handshake taken by a handler's switch, read whole, with another
+    ;; protocol's 5 bytes after it.
     (test-equal "the instrument renders a hand-off: a handshake taken, the bytes after it handed over"
                 '(((call-handler (GET "/chat" 1 1 (("Host" . "x") ("Connection" . "upgrade") ("Upgrade" . "websocket"))))
                    (write 101)

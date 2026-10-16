@@ -1,28 +1,25 @@
 #!r6rs
 ;;; The libhtp lane: our expectations for libhtp's pipelining and multi-packet
-;;; streams (design §8.2).  The M2 exit; its two Expect streams since M6.4;
-;;; and since the M6 exit, libhtp's early-response stream answered at the
-;;; head too, as its recorded origin answered it.
+;;; streams, its two Expect streams, and its early-response stream answered at
+;;; the head too, as its recorded origin answered it.
 ;;;
-;;; The scope is what the streams carry, not their names (the owner's word,
-;;; 2026-09-25): every stream whose client packets hold two or more requests,
-;;; or one request split across packets.  Since M8.3 the robustness lane adds
-;;; libhtp's invalid streams and its HTTP/0.9 streams, which plan §14 names,
-;;; so these are found by name.  A plain strict request parser counts
-;;; that over all 102 streams, as the lane delivers them, so a stream that
-;;; carries either with no expectation is red, and so is an expectation for
-;;; one that carries neither.  Then each of those streams must meet its
-;;; expectation, from (libhtp-lane).  And a stream whose run raises is a
-;;; mismatch that says what it raised, never a raise out of
+;;; The scope is what the streams carry, not their names: every stream whose
+;;; client packets hold two or more requests, or one request split across
+;;; packets.  The robustness lane adds libhtp's invalid streams and its
+;;; HTTP/0.9 streams, which are found by name.  A plain strict request parser
+;;; counts what the streams carry over all 102 streams, as the lane delivers
+;;; them, so a stream that carries either with no expectation is red, and so
+;;; is an expectation for one that carries neither.  Then each of those
+;;; streams must meet its expectation, from (libhtp-lane).  And a stream whose
+;;; run raises is a mismatch that says what it raised, never a raise out of
 ;;; `libhtp-mismatch`, which the ratchet calls outside any check.
 ;;;
 ;;; The two Expect streams end their lines in a bare LF, which the strict
-;;; parser refuses at the first line, so the lane delivers them with CRLF (the
-;;; owner's word, by form, 2026-09-29): as delivered, each carries a request
-;;; split across packets.  Every other stream is delivered as libhtp's
-;;; chunker cuts it, which is checked here, and so is the conversion: the two
-;;; delivered have no bare LF left, and with their CRs taken out they are the
-;;; chunks as cut, which have none.
+;;; parser refuses at the first line, so the lane delivers them with CRLF: as
+;;; delivered, each carries a request split across packets.  Every other
+;;; stream is delivered as libhtp's chunker cuts it, which is checked here, and
+;;; so is the conversion: the two delivered have no bare LF left, and with
+;;; their CRs taken out they are the chunks as cut, which have none.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) directory-list)
         (libhtp-corpus) (libhtp-lane)
@@ -102,7 +99,7 @@
     (test-equal "the streams that carry pipelining or a split request are the ones with one, but the robustness lane's"
                 (filter (lambda (f) (not (member f robustness-expected-files))) libhtp-expected-files)
                 (carrying-files))
-    ;; M8.3: the robustness lane's streams are named, not found by a parser.
+    ;; The robustness lane's streams are named, not found by a parser.
     (test-eqv "twenty-eight robustness streams: twenty-four invalid, four HTTP/0.9"
               28 (length robustness-expected-files))
     (test-equal "the robustness lane's streams are libhtp's invalid and HTTP/0.9 streams, by name"
@@ -126,8 +123,9 @@
               libhtp-expected-files)
     (test-equal "35-early-response.t answered 400 at the head, as its recorded origin answered it: the head's packet alone brings the 400, and the body after it is dropped as the connection lingers"
                 early-response-expectation (early-response-outcomes))
-    ;; The raise M3.2-T's fault gave the fake shell (2026-09-25), which the
-    ;; ratchet met as an uncaught exception, exit 255.
+    ;; A run that raises (here an assertion violation, as a fake shell's
+    ;; fault would) is a mismatch; the ratchet calls `libhtp-mismatch` outside
+    ;; any check, where an uncaught raise would end the process with exit 255.
     (test-equal "a stream whose run raises is a mismatch that says what it raised"
                 "raised fake-shell a write's byte count is not its bytes'"
                 (libhtp-mismatch "07-pipelined-connection.t"

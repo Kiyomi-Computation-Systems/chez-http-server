@@ -8,7 +8,7 @@
 ;;; "waited" at its end: the request stays in flight until the suite sends
 ;;; the body.  `/long` writes `holding`, then waits a minute, which the
 ;;; drain's deadline, 2 s, cuts short.  It serves until it is killed, or
-;;; until a signal's drain ends and `serve` returns (M8.1), when it exits 0;
+;;; until a signal's drain ends and `serve` returns, when it exits 0;
 ;;; started with the argument `sigint-after`, it first sends itself SIGINT,
 ;;; and runs on a while, so that were a keyboard interrupt handled, it would
 ;;; be.  Started with `sigterm-at-listening`, it sends itself SIGTERM as

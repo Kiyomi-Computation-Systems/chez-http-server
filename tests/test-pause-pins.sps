@@ -1,16 +1,15 @@
 #!r6rs
-;;; Brief risk 3, pinned as the parser's: a pause inside a body.  M6.1.
+;;; Pause pins: a pause inside a body, pinned as the parser's behaviour.
 ;;;
 ;;; A consumer that pauses the parser inside on-body-data must feed it again
 ;;; from `parser-result-next`, which points one past the piece just
 ;;; delivered, and after a pause on a body's last byte the message ends only
 ;;; with one more feed, which may be empty.  chez-httparse documents the
-;;; first (docs/api.org, "Pausing, and where to resume"; #34), and the brief
-;;; carries both as risk 3.  Decision 0013 hands a reader each read's pieces
-;;; as the parser meets them, so the core never pauses inside a body in v1:
-;;; these checks pin the two facts as the parser's, at the pin, for the
-;;; reader that will need the pause (an awaiting one, M7).  A dependency bump
-;;; that moves either reddens this suite first.
+;;; first (docs/api.org, "Pausing, and where to resume").  The core hands a
+;;; reader each read's pieces as the parser meets them, so it never pauses
+;;; inside a body: these checks pin the two facts as the parser's, for any
+;;; reader that would need the pause.  A dependency bump that moves either
+;;; reddens this suite first.
 ;;;
 ;;; Each check pauses at every piece and feeds again as the rule says, then
 ;;; compares what the parser delivered with the input's own bytes.
@@ -65,8 +64,9 @@
     (values p (lambda () (reverse seen)) note!)))
 
 ;; again-from : ParserResult Nat -> Nat
-;; Where the feed after a pause starts: `next`, as the rule says.  The plan's
-;; mutation (M6.1) starts it where the read started.
+;; Where the feed after a pause starts: `next`, as the rule says.  Starting it
+;; where the read started instead (`start`) makes the parser take the head's
+;; first bytes as body.
 (define (again-from r start) (parser-result-next r))
 
 ;; feed-read : Parser Bytevector (Datum -> Any) -> Void
@@ -75,8 +75,7 @@
 ;; pause on the read's last byte leaves nothing to feed.  A read is fed at
 ;; most `feeds-cap` times, one more than it has bytes: past that the loop is
 ;; feeding the same bytes again, and it notes `(looped)` and stops, so a
-;; wrong resume fails its check rather than never ending (global-constraints:
-;; cap by iteration count).
+;; wrong resume fails its check rather than never ending.
 (define (feed-read p bv note!)
   (let ((feeds-cap (+ (bytevector-length bv) 1)))
     (let loop ((at 0) (feeds 1))

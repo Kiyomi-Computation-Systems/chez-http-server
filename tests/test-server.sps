@@ -1,22 +1,19 @@
 #!r6rs
-;;; (http-server server): `server-step`, the listener's pure step.  M4.3, and
-;;; the drain, M8.1.
+;;; (http-server server): `server-step`, the listener's pure step.
 ;;;
-;;; The listener has a connection's shape (decision 0002 item 5): an event in,
-;;; the actions for the shell to perform out, the state linear.  M4.3 fixes
-;;; the vocabulary (design §4.6, and `listener-failed`, decided 2026-09-26)
-;;; and the rows a listener needs:
+;;; The listener has a connection's shape: an event in, the actions for the
+;;; shell to perform out, the state linear.  The rows cover:
 ;;;   - a connection that arrives is accepted while fewer than max-connections
 ;;;     are open, the count the shell hands in, and refused once that many are;
 ;;;   - a refusal episode is logged twice at most: its first refusal, then how
 ;;;     many were refused, when a connection is next accepted or the server
-;;;     shuts down (decided 2026-09-26);
+;;;     shuts down;
 ;;;   - a shutdown, or a listener that fails, stops listening, and what arrives
 ;;;     after is refused;
 ;;;   - every event in the vocabulary is one the step takes, and no row asks
 ;;;     for an action outside it.
-;;; M8.1 writes the drain (design §4.6; plan §14), table-tested on a fake
-;;; clock, the loop's time each event carries:
+;;; The drain is table-tested on a fake clock, the loop's time each event
+;;; carries:
 ;;;   - a shutdown, or a listener that fails, tells the connections open to
 ;;;     finish, and the drain's deadline is the time it was asked at plus the
 ;;;     limits' drain timeout;
@@ -25,12 +22,13 @@
 ;;;   - the drain ends when the last connection has closed, or at once if
 ;;;     none was open, and then the server has stopped;
 ;;;   - it logs `draining` with the connections it waits for, `drain-timeout`
-;;;     at the deadline, and `stopped` at its end (decided 2026-10-03).
+;;;     at the deadline, and `stopped` at its end.
 ;;;
-;;; Oracles: design §4.6's vocabulary; decision 0005's max-connections,
-;;; 10 000, "refuse in on-connection", and drain-timeout-ms, 10 000,
-;;; force-close all; the owner's decisions of 2026-09-26 and 2026-10-03
-;;; (ledger, M4.3 and M8.1); the counts and times each row starts from.
+;;; Oracles: the step's vocabulary of events and actions; the limits'
+;;; defaults, max-connections 10 000 (a connection that arrives over the cap
+;;; is refused at once, in on-connection) and drain-timeout-ms 10 000 (every
+;;; connection still open is closed at the deadline); and the counts and
+;;; times each row starts from.
 (import (rnrs) (srfi :64) (testing) (http-server server) (http-server limits))
 
 ;; capped : Nat -> Limits — the defaults, with at most `n` connections open.
@@ -157,11 +155,11 @@
 
 (run-suite "server"
   (lambda ()
-    ;; --- the vocabulary (design §4.6, listener-failed, and finish-all) ---
-    (test-equal "the events are design §4.6's four and listener-failed"
+    ;; --- the vocabulary ---
+    (test-equal "the events: arrival, shutdown, listener failure, tick and close"
                 '(connection-arrived shutdown-requested listener-failed tick connection-closed)
                 server-events)
-    (test-equal "the actions are design §4.6's five and finish-all"
+    (test-equal "the actions: accept, refuse, close-listener, finish-all, force-close-all and log"
                 '(accept refuse close-listener finish-all force-close-all log) server-actions)
     (test-equal "a server listens, drains, then has stopped" '(listening draining stopped)
                 server-phases)

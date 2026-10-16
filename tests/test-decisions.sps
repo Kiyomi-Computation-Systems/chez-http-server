@@ -1,24 +1,21 @@
 #!r6rs
-;;; (http-server decisions): every status the server originates, in one place
-;;; (design §6.5).
+;;; (http-server decisions): every status the server originates, in one place.
 ;;;
-;;; Oracles: design §6.5's table of originated statuses; design §6.3's parser
-;;; map, every parser error a 400, as amended on the owner's word, 2026-09-26:
-;;; a request's Transfer-Encoding the parser refuses leaves the body's length
-;;; undetermined, which RFC 9112 §6.3 answers 400; decision 0006 item 2 (the
-;;; HTTP/2 preface is answered 505) as amended on 2026-09-25; chez-httparse's
-;;; own table of its error codes (`adapter-error-codes`, from its test
-;;; harness), which fixes the codes the map must cover; and the four hand-off
-;;; rows research/spike/smoke-v040.sps ran at the pin (ledger, 2026-09-19
-;;; night).  Which requests upgrade is the parser's own answer, its `upgrade`
-;;; field (chez-httparse v0.4.1, #47), pinned in test-flag-pins.sps.
+;;; Oracles: the library's table of originated statuses; the parser map, every
+;;; parser error a 400: a request's Transfer-Encoding the parser refuses leaves
+;;; the body's length undetermined, which RFC 9112 §6.3 answers 400; the
+;;; HTTP/2 preface is answered 505; chez-httparse's own table of its error
+;;; codes (`adapter-error-codes`, from its test harness), which fixes the codes
+;;; the map must cover; and four hand-off rows run against chez-httparse: a
+;;; CONNECT tunnel, `Connection: upgrade`, the HTTP/2 preface and a plain
+;;; pause.  Which requests upgrade is the parser's own answer, its `upgrade`
+;;; field (chez-httparse v0.4.1 or later), pinned in test-flag-pins.sps.
 ;;;
-;;; The framing decision (M3.2) is RFC 9112 §6's and RFC 9110 §8.6's rules,
-;;; each row citing its own, and decision 0010's: only a HEAD's answer
-;;; announces a length, and an HTTP/1.0 client that keeps the connection is
-;;; told `keep-alive`.  Its answers are the serializer's own framing modes.
-;;; The request versions in the rows are the four chez-httparse's strict
-;;; parser hands a handler, measured 2026-09-25 at the pin: 0.9, 1.0, 1.1 and
+;;; The framing decision is RFC 9112 §6's and RFC 9110 §8.6's rules, each row
+;;; citing its own: only a HEAD's answer announces a length, and an HTTP/1.0
+;;; client that keeps the connection is told `keep-alive`.  Its answers are
+;;; the serializer's own framing modes.  The request versions in the rows are
+;;; the four chez-httparse's strict parser hands a handler: 0.9, 1.0, 1.1 and
 ;;; 2.0 reach on-headers-complete, and 1.2, 1.9, 2.1, 3.0 and 9.9 are refused.
 (import (rnrs) (srfi :64) (testing)
         (http-server decisions)
@@ -83,12 +80,12 @@
 ;; The framing table.  A row: what it shows; the request's method, #f for
 ;; none the core has read; its major and minor version; the response's
 ;; status; its body's length, #f for no body and `unknown` for a length not
-;; known before the body is written (M6's stream); and the framing mode.
+;; known before the body is written (a stream); and the framing mode.
 (define framing-rows
   '(;; A length the server knows is announced: an origin server SHOULD send
     ;; Content-Length when it knows the size (RFC 9110 §8.6).
     ("a body of known length gets Content-Length" GET 1 1 200 13 content-length)
-    ("no body gets Content-Length: 0 (decision 0010 item 6)" GET 1 1 200 #f content-length)
+    ("no body gets Content-Length: 0" GET 1 1 200 #f content-length)
     ("an empty body gets Content-Length: 0" GET 1 1 200 0 content-length)
     ("HTTP/1.0 gets Content-Length too (RFC 1945 §10.4)" GET 1 0 200 13 content-length)
     ("a 205 with no body gets Content-Length: 0, one of RFC 9110 §15.3.6's three framings"
@@ -106,7 +103,7 @@
     ;; any, must be the GET's (§8.6).
     ("a HEAD answered with the GET's body gets its Content-Length and no body"
      HEAD 1 1 200 13 content-length-only)
-    ("a HEAD answered with no body gets neither: the GET's length is unknown (0010 item 6)"
+    ("a HEAD answered with no body gets neither: the GET's length is unknown"
      HEAD 1 1 200 #f no-body)
     ("a HEAD answered with an unknown length gets neither" HEAD 1 1 200 unknown no-body)
     ("a HEAD to HTTP/1.0 of unknown length gets neither: it ends at the blank line (RFC 9112 §6.3 rule 1)"
@@ -114,8 +111,9 @@
     ;; A 1xx, a 204 and a 304 end at the blank line whatever they say (RFC
     ;; 9112 §6.3 rule 1).  A 1xx and a 204 must not carry Content-Length or
     ;; Transfer-Encoding (RFC 9110 §8.6, RFC 9112 §6.1); a 304 may carry the
-    ;; 200's Content-Length, but only a HEAD's answer announces one (0010).
-    ("a 1xx gets neither (M6's 100 Continue)" GET 1 1 100 #f no-body)
+    ;; 200's Content-Length, but the server announces a length only in a
+    ;; HEAD's answer.
+    ("a 1xx gets neither (such as 100 Continue)" GET 1 1 100 #f no-body)
     ("the last 1xx gets neither" GET 1 1 199 #f no-body)
     ("a 204 with a body gets neither, and its body is not written" GET 1 1 204 13 no-body)
     ("a 204 of unknown length is not chunked" GET 1 1 204 unknown no-body)
@@ -137,9 +135,8 @@
                     (list-ref row 4) (list-ref row 5)))
 
 ;; The Connection field, by the request's version: what the last response
-;; says, and what a response on a connection that stays says (decision 0010
-;; items 3 and 6).  A row: what it shows, the major and minor version, and
-;; the two answers.
+;; says, and what a response on a connection that stays says.  A row: what it
+;; shows, the major and minor version, and the two answers.
 (define connection-rows
   '(("HTTP/1.1: close on the last response, nothing while it stays: persistence is 1.1's default (RFC 9112 §9.3)"
      1 1 (close #f))
@@ -150,10 +147,9 @@
 
 (run-suite "decisions"
   (lambda ()
-    ;; --- the core's own reasons (design §6.5, policy and application) -----
+    ;; --- the core's own reasons (policy and application) ------------------
     ;; invalid-response: a handler's response the serializer cannot write
-    ;; safely is answered 500, as a handler that raised is (decision 0010
-    ;; item 2).
+    ;; safely is answered 500, as a handler that raised is.
     (test-equal "each reason the core closes with after a response, and its status"
                 '((target-redirect . 301) (invalid-target . 400)
                   (invalid-host . 400) (faulty-framing . 400)
@@ -170,9 +166,8 @@
                        invalid-response unsupported-transfer-coding version-not-supported
                        http2-preface)))
     ;; A connection that closes with no response has no status to give, and
-    ;; one that closes after the handler's response (an upgrade, M2.5; the
-    ;; handler's own `Connection: close`, or a body the close ends, M3.2)
-    ;; gives the handler's.
+    ;; one that closes after the handler's response (an upgrade; the handler's
+    ;; own `Connection: close`, or a body the close ends) gives the handler's.
     (test-equal "a reason with no originated response is refused" '()
                 (filter (lambda (r) (eq? 'accepted (verdict (lambda () (reason-status r)))))
                         '(not-keep-alive upgrade handler-close close-delimited eof read-error
@@ -182,7 +177,7 @@
     (test-eq "parser-error has no status of its own" 'refused
              (verdict (lambda () (reason-status 'parser-error))))
 
-    ;; --- the parser's codes (design §6.3) ---------------------------------
+    ;; --- the parser's codes -----------------------------------------------
     (test-eqv "chez-httparse's error channel carries 18 codes" 18 (length error-channel-codes))
     ;; invalid-transfer-encoding among them, at whichever node the parser
     ;; refused: none leaves the body's length known (RFC 9112 §6.3).  The
@@ -194,7 +189,7 @@
                                (not (= 400 (parser-error-status c)))))
                         error-channel-codes))
     ;; Both hand-off codes are refused: a hand-off is answered by the core's
-    ;; own reason (http2-preface, above), never as a parser error (M2.5).
+    ;; own reason (http2-preface, above), never as a parser error.
     (test-eq "paused-h2-upgrade is a hand-off, not an error" 'refused
              (verdict (lambda () (parser-error-status 'paused-h2-upgrade))))
     (test-eq "paused-upgrade is a pause reason, not an error" 'refused
@@ -215,11 +210,11 @@
     (test-eq "at the pin, a coding before a final chunked is no parser error" 'no-error
              (parse-error-status "POST / HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n"))
 
-    ;; --- the hand-off, on either channel (design §4.4; M2.5) -----------------
+    ;; --- the hand-off, on either channel ---------------------------------
     ;; chez-httparse's docs/api.org: a CONNECT tunnel, `Connection: upgrade`
     ;; and a 101 pause with the reason paused-upgrade, and the HTTP/2 preface
     ;; is an error with the code paused-h2-upgrade; a plain pause carries no
-    ;; reason.  The four rows research/spike/smoke-v040.sps ran at the pin.
+    ;; reason.
     (test-eq "at the pin, a CONNECT tunnel hands off (the pause channel)" #t
              (hands-off? (feed-whole "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com\r\n\r\nTUNNEL"
                                      callback-continue)))
@@ -235,7 +230,7 @@
                 (list (result-hands-off-stream? 'error 'paused-upgrade #f)
                       (result-hands-off-stream? 'paused #f 'paused-h2-upgrade)))
 
-    ;; --- the framing decision (M3.2) -----------------------------------------
+    ;; --- the framing decision --------------------------------------------
     (for-each (lambda (row) (test-eq (car row) (list-ref row 6) (framing row)))
               framing-rows)
     (test-equal "every answer is one of the serializer's framing modes" '()

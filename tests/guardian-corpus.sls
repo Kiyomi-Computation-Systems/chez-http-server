@@ -1,7 +1,7 @@
 #!r6rs
 ;;; (guardian-corpus) — AWS http-desync-guardian's test cases, read from the
-;;; vendored YAML (decision 0007), and each case's request, written as
-;;; guardian's own test harness writes it.  M8.3.
+;;; vendored YAML, and each case's request, written as guardian's own test
+;;; harness writes it.
 ;;;
 ;;; Each case names a request line's three parts, its fields, and the tier
 ;;; guardian's classifier gives it: Compliant, Acceptable, Ambiguous or
@@ -36,9 +36,23 @@
   ;; guardian-dir : String — where the corpus is vendored.
   (define guardian-dir "test/vendor/http-desync-guardian")
 
+  ;; A case: its id ("file#n"), name, expected tier (Compliant, Acceptable,
+  ;; Ambiguous or Severe), request line parts, headers, and request bytes.
+  ;;
+  ;; guardian-case-id      : GuardianCase -> String
+  ;; guardian-case-name    : GuardianCase -> String
+  ;; guardian-case-tier    : GuardianCase -> String
+  ;; guardian-case-uri     : GuardianCase -> String
+  ;; guardian-case-method  : GuardianCase -> String
+  ;; guardian-case-version : GuardianCase -> String
+  ;; guardian-case-headers : GuardianCase -> (Listof (Pair String String))
+  ;; guardian-case-request : GuardianCase -> Bytevector
   (define-record-type guardian-case
     (fields id name tier uri method version headers request))
 
+  ;; guardian-parse-error? : Any -> Boolean — a file was refused.
+  ;; guardian-parse-error-detail : GuardianParseError -> String — why, with the
+  ;; file and line.
   (define-condition-type &guardian-parse &error
     make-guardian-parse-error guardian-parse-error? (detail guardian-parse-error-detail))
 

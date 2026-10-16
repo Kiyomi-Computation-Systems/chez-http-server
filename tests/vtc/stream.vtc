@@ -1,8 +1,7 @@
 vtest "A streamed body: chunked to HTTP/1.1, close-delimited to 1.0"
-# Decision 0013 item 8 (M6.3): a body of unknown length is chunked to an
-# HTTP/1.1 client, the connection kept (RFC 9112 §7.1), and delimited by
-# the close to 1.0, Connection: close though it asked to keep it (RFC 9112
-# §6.3 rule 8; decision 0006 item 1).
+# A body of unknown length is chunked to an HTTP/1.1 client, the connection
+# kept (RFC 9112 §7.1), and delimited by the close to 1.0, Connection: close
+# though it asked to keep it (RFC 9112 §6.3 rule 8).
 client c1 -connect "${host} ${port}" {
     txreq -url "/stream"
     rxresp

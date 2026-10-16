@@ -1,31 +1,32 @@
 #!r6rs
-;;; (http-server serializer): a response, as the bytes the server writes.  M3.1.
+;;; (http-server serializer): a response, as the bytes the server writes.
 ;;;
 ;;; Four tables:
 ;;;   - the wire: a response, a framing mode and a Connection, to the bytes of
 ;;;     one write, written out here by hand from RFC 9112's grammar.  Each row
-;;;     also asserts how many segments the write is (the plan's check: status
-;;;     line, Date slot, header block and body stay separate, never
-;;;     concatenated; design §7.3), the byte count the serializer reports, and
-;;;     what chez-httparse's strict response parser reads back (response-reader),
-;;;     a client that is not our code;
+;;;     also asserts how many segments the write is (status line, Date slot,
+;;;     header block and body stay separate, never concatenated: chez-libuv
+;;;     copies each segment as the write is issued), the byte count the
+;;;     serializer reports, and what chez-httparse's strict response parser
+;;;     reads back (response-reader), a client that is not our code;
 ;;;   - the status lines: RFC 9110 §15's and RFC 6585's reason phrases, each
-;;;     line made once and shared by every response (the M3 exit);
+;;;     line made once and shared by every response;
 ;;;   - the Date line: RFC 9110 §5.6.7's example, and Chez's own UTC calendar
 ;;;     over four centuries of instants;
-;;;   - the faults: what a handler's response may not carry (decision 0010
-;;;     item 2), each with its reason.
-;;; And, since M3.2: the reader's own calibration, what it sees after a
-;;; message and past an interim one; and the entry for a response already
-;;; checked for faults, which writes every wire row as serialize-response does.
-;;; And, since M6.3: a body of unknown length, a producer (decision 0013 item
-;;; 8), whose head writes no body, and whose pieces and end are each the
-;;; segments of one write of their own, chunked (RFC 9112 §7.1) or
-;;; close-delimited (§6.3 rule 8), read back whole by the same parser.
-;;; And, since M8.2: the 101 a switch is written as (decision 0016 item 1),
-;;; its status line and its fields with `Connection: upgrade` (RFC 9110
-;;; §7.8), no Date and no framing (§6.6.1, §15.2), read back by the same
-;;; parser; and what a switch may not carry, each with its reason.
+;;;   - the faults: what a handler's response may not carry (a status outside
+;;;     200..599, control characters, framing fields, a Connection field but
+;;;     close), each with its reason.
+;;; And the reader's own calibration, what it sees after a message and past an
+;;; interim one; and the entry for a response already checked for faults,
+;;; which writes every wire row as serialize-response does.
+;;; And a body of unknown length, a producer, whose head writes no body, and
+;;; whose pieces and end are each the segments of one write of their own,
+;;; chunked (RFC 9112 §7.1) or close-delimited (§6.3 rule 8), read back whole
+;;; by the same parser.
+;;; And the 101 a switch is written as, its status line and its fields with
+;;; `Connection: upgrade` (RFC 9110 §7.8), no Date and no framing (§6.6.1,
+;;; §15.2), read back by the same parser; and what a switch may not carry,
+;;; each with its reason.
 ;;; Every slot is filled with RFC 9110 §5.6.7's example line, written out here,
 ;;; so the wire does not depend on the Date line under test.
 (import (rnrs) (srfi :64) (testing)
@@ -45,7 +46,7 @@
 
 ;; wire : (Listof Segment) -> String — the write as it reaches the socket: a
 ;; segment is a bytevector, the Date slot, or a span of a bytevector, `(bv
-;; start end)`, as uv-write*! takes one (M6.3).
+;; start end)`, as uv-write*! takes one.
 (define (wire segments)
   (apply string-append
          (map (lambda (seg)
@@ -123,8 +124,8 @@
              (string-append "HTTP/1.1 200 OK\r\n" D "Transfer-Encoding: chunked\r\n\r\n")
              3 #f #f
              `(200 "OK" (,read-date ("Transfer-Encoding" . "chunked")) "" need-input))
-   ;; Decision 0013 item 8: a producer's pieces follow its head, each a write
-   ;; of its own (serialize-piece, below), so the head writes no body.
+   ;; A producer's pieces follow its head, each a write of its own
+   ;; (serialize-piece, below), so the head writes no body.
    (make-row "a producer's head is chunked, and writes no body"
              (response 200 '() producer) 'chunked #f
              (string-append "HTTP/1.1 200 OK\r\n" D "Transfer-Encoding: chunked\r\n\r\n")
@@ -158,20 +159,22 @@
              `(200 "OK" (,read-date ("Content-Type" . "text/plain") ("X-Request-Id" . "7")
                          ("Content-Length" . "2") ("Connection" . "close"))
                    "ok" complete))
-   ;; Decision 0006 item 1; decision 0010 item 3.
+   ;; The server writes Connection: keep-alive to an HTTP/1.0 client that
+   ;; asked to keep the connection.
    (make-row "an HTTP/1.0 client kept alive is told so"
              (response 200 '() (b "ok")) 'content-length 'keep-alive
              (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 2\r\nConnection: keep-alive\r\n\r\n" "ok")
              4 #f #f
              `(200 "OK" (,read-date ("Content-Length" . "2") ("Connection" . "keep-alive")) "ok" complete))
-   ;; Decision 0010 item 4.
+   ;; A handler's own Date replaces the server's.
    (make-row "a handler's own Date is written, and no slot is left"
              (response 200 (list (h "Date" "Mon, 07 Nov 1994 08:49:37 GMT")) #f) 'content-length #f
              (string-append "HTTP/1.1 200 OK\r\n" "Date: Mon, 07 Nov 1994 08:49:37 GMT\r\n"
                             "Content-Length: 0\r\n\r\n")
              2 #f #f
              `(200 "OK" (("Date" . "Mon, 07 Nov 1994 08:49:37 GMT") ("Content-Length" . "0")) "" complete))
-   ;; Decision 0010 item 3: one Connection field, the server's.
+   ;; The Connection field is the server's: a handler's close is honoured,
+   ;; and written once.
    (make-row "a handler's Connection: close is written once"
              (response 200 (list (h "Connection" "close")) (b "ok")) 'content-length 'close
              (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 2\r\nConnection: close\r\n\r\n" "ok")
@@ -201,7 +204,7 @@
              (string-append "HTTP/1.1 200 OK\r\n" D "X-Tab: a\tb\xE9;\r\nContent-Length: 0\r\n\r\n")
              3 #f #f
              `(200 "OK" (,read-date ("X-Tab" . "a\tb\xE9;") ("Content-Length" . "0")) "" complete))
-   ;; Decision 0009: the core's own redirect.
+   ;; The core's own redirect, to the percent-encoded form of a target.
    (make-row "a redirect carries its Location, and closes"
              (response 301 (list (h "Location" "/a?x=%5B%5D")) #f) 'content-length 'close
              (string-append "HTTP/1.1 301 Moved Permanently\r\n" D
@@ -254,7 +257,7 @@
 
 (define (with-header name value) (response 200 (list (cons name value)) #f))
 
-;; (name value fault): decision 0010 item 2, one row per reason.
+;; (name value fault): one row per reason a response cannot be written safely.
 (define faults
   (list
    (list "a string is not a response" "HTTP/1.1 200 OK" 'not-a-response)
@@ -278,15 +281,15 @@
    (list "a value with a NUL" (with-header (b "X") (u8-list->bytevector '(97 0 98))) 'invalid-header-value)
    (list "a value with a 0x01" (with-header (b "X") (u8-list->bytevector '(97 1 98))) 'invalid-header-value)
    (list "a value with a DEL" (with-header (b "X") (u8-list->bytevector '(97 127 98))) 'invalid-header-value)
-   ;; Decision 0010 item 1: the framing is the server's.
+   ;; The framing is the server's, never the handler's.
    (list "a handler's Content-Length" (with-header (b "Content-Length") (b "2")) 'framing-field)
    (list "a handler's content-length" (with-header (b "content-length") (b "2")) 'framing-field)
    (list "a handler's Transfer-Encoding" (with-header (b "Transfer-Encoding") (b "chunked")) 'framing-field)
-   ;; Decision 0010 item 3: a handler's Connection may only be close.
+   ;; A handler's Connection field may only be close.
    (list "a handler's Connection: keep-alive" (with-header (b "Connection") (b "keep-alive")) 'connection-field)
    (list "a handler's Connection: close, upgrade" (with-header (b "Connection") (b "close, upgrade")) 'connection-field)
    (list "a body that is a string" (response 200 '() "hi") 'invalid-body)
-   ;; Decision 0013 item 8: a body of unknown length is a producer.
+   ;; A body of unknown length is a producer.
    (list "a body that is a procedure is a producer" (response 200 '() producer) #f)
    ;; And what is not a fault.
    (list "a handler's Connection: Close" (with-header (b "Connection") (b "Close")) #f)
@@ -301,7 +304,7 @@
 (define (assertion-raised? thunk)
   (guard (e ((assertion-violation? e) 'refused)) (thunk) 'accepted))
 
-;; --- a producer's pieces, and its end (M6.3) -----------------------------------
+;; --- a producer's pieces, and its end ------------------------------------------
 
 (define alphabet (b "abcdefghijklmnopqrstuvwxyz"))
 (define delivery (b "xxhelloyy"))
@@ -346,7 +349,7 @@
                  (list (call-with-values (lambda () (serialize-end mode))
                                          (lambda (segments bytes) (wire segments)))))))
 
-;; --- the 101 a switch is written as (M8.2; decision 0016) ---------------------
+;; --- the 101 a switch is written as --------------------------------------------
 
 (define (take-over transport retained) 'taken)
 (define (switch headers) (switch-protocols headers take-over))
@@ -357,7 +360,7 @@
 (define offered (list (h "Host" "server.example.com") (h "Upgrade" "websocket") (h "Connection" "Upgrade")))
 
 ;; (name switch offered fault): RFC 9110 §7.8 and §15.2's rules for a 101,
-;; and decision 0010 item 2's for the fields, one row per reason, then what
+;; and the rules for any response's fields, one row per reason, then what
 ;; is not a fault.
 (define switch-faults
   (list
@@ -438,8 +441,8 @@
      phrases)
 
     ;; A registered status's line is made once, so a response allocates
-    ;; nothing for it (the M3 exit; decision 0002's shapes): two responses
-    ;; with the same status write the same bytevector.  A refusal answers a
+    ;; nothing for it: two responses with the same status write the same
+    ;; bytevector.  A refusal answers a
     ;; fresh list each time, so it can never pass.
     (let ((line (lambda (status)
                   (guard (e ((assertion-violation? e) (list 'refused)))
@@ -479,7 +482,7 @@
               (lambda () (serialize-response (with-header (b "Connection") (b "close"))
                                              'content-length 'keep-alive))))
 
-    ;; --- a producer's pieces and its end (M6.3) ---
+    ;; --- a producer's pieces and its end ---
     (for-each
      (lambda (p)
        (let* ((name (list-ref p 0)) (w (piece-write (list-ref p 1) (list-ref p 2) (list-ref p 3) (list-ref p 4))))
@@ -490,8 +493,8 @@
          (test-eqv (string-append name ": its byte count") (string-length (list-ref p 5))
                    (if (pair? w) (cadr w) -1))))
      pieces)
-    ;; chez-libuv copies every segment as the write is issued (design §7.3),
-    ;; so the serializer copies none: a whole bytevector is its own segment,
+    ;; chez-libuv copies every segment as the write is issued, so the
+    ;; serializer copies none: a whole bytevector is its own segment,
     ;; and a span of one is uv-write*!'s `(bv start end)` over it.
     (test-equal "a piece is written from its own bytes, never copied"
                 '(#t #t #t)
@@ -506,8 +509,8 @@
                                                 (equal? (cdr seg) '(2 7)))))))))
     ;; A size line is made once for a piece whose length is a power of two,
     ;; as the pieces a buffer hands out are, and shared by every such piece
-    ;; (M6.3's review), as a status line is shared by every response; any
-    ;; other length's is made for its piece.
+    ;; as a status line is shared by every response; any other length's is
+    ;; made for its piece.
     (test-equal "a size line is shared by every piece of the same power-of-two length, and made afresh otherwise"
                 '(shared shared own)
                 (let ((line (lambda (bv) (let ((w (piece-write 'chunked bv 0 (bytevector-length bv))))
@@ -554,7 +557,7 @@
                         (lambda () (serialize-response (response 200 '() producer) mode #f))))
                      '(content-length content-length-only)))
 
-    ;; The reader, the oracle of these rows and of the core's (M3.2).  One
+    ;; The reader, the oracle of these rows and of the core's.  One
     ;; that never saw bytes after a message would pass every row whose body
     ;; must not be written.  An interim response is not the answer: a client
     ;; reads on to the final one (RFC 9110 §15.2), and so does the reader;
@@ -571,7 +574,7 @@
                 (read-response (b "HTTP/1.1 100 Continue\r\n\r\n") #f #f))
 
     ;; The entry for a response whose fault the caller has already asked for
-    ;; (M3.2: the core, which answers a fault with 500 before it frames).  It
+    ;; (the core, which answers a fault with 500 before it frames).  It
     ;; writes what serialize-response writes, and refuses what it refuses but
     ;; the fault, which it does not look for again.
     (test-equal "the checked entry writes every row as serialize-response does" '()
@@ -597,7 +600,7 @@
                        (lambda () (serialize-checked-response (with-header (b "Connection") (b "close"))
                                                               'content-length 'keep-alive)))))
 
-    ;; --- the 101 a switch is written as (M8.2; decision 0016 item 1) ---
+    ;; --- the 101 a switch is written as ---
     ;; The status line, the handler's fields in its order, `Connection:
     ;; upgrade` (§7.8: a sender of Upgrade MUST list it), and the blank
     ;; line: two segments, no Date slot (§6.6.1: a 1xx MAY carry one, and

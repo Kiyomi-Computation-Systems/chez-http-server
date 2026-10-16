@@ -1,86 +1,84 @@
 #!r6rs
 ;;; (fake-shell) — the imperative shell as a test double.
 ;;;
-;;; M1.4.  The real shell (design §5) delivers libuv events to the pure core and
-;;; runs the actions it returns.  It was written before the core existed, so its
-;;; own suite drives it against STUB steps the test supplies, and proves only
-;;; what does not depend on connection semantics:
+;;; The real shell delivers libuv events to the pure core and runs the actions
+;;; it returns.  This one does the same with no I/O, so a suite can script the
+;;; events.  Its own suite (test-fake-shell.sps) drives it against STUB steps
+;;; the test supplies, and proves only what does not depend on connection
+;;; semantics:
 ;;;
 ;;;   - it delivers scripted events IN ORDER and threads the step's state;
 ;;;   - it RECORDS every action the step returns, faithfully and in order;
 ;;;   - it takes time by INJECTION — a fake clock set and advanced explicitly,
 ;;;     never a real one, so a `tick` event carries the injected `now` and no
-;;;     test ever sleeps (decision 0005, consequences).
+;;;     test ever sleeps.
 ;;;
 ;;; The step is `(step state event) -> (values state' (Listof Action))`, the
-;;; shape of `conn-step` (design §4.1), so the real core drops in where a stub
-;;; stands; tests/test-connection-table.sps runs it that way (M2.1).
+;;; shape of `conn-step`, so the real core drops in where a stub stands;
+;;; tests/test-connection-table.sps runs it that way.
 ;;;
-;;; M2.4: THE MESSAGE LOOP.  Actions run after the outermost dispatch, in
-;;; order, from one queue (design §4.5).  A dispatch made while that queue
-;;; drains, or while the parser feeds, only queues, so no drain is ever nested
-;;; inside another.  `depth` counts the drain and the feed inside it: every
-;;; action must run at depth 1, from the outermost drain, and one that runs
-;;; anywhere else is a VIOLATION, recorded.  That is design §6.4's check, a
-;;; test rather than a comment, because the way it fails is silent:
-;;; byte-machine poisons a parser whose callback escapes, and chez-libuv defers
-;;; the raise.  Only `reply-parser` is answered inside a parser callback, and
-;;; the adapter does that without reaching the queue.
+;;; THE MESSAGE LOOP.  Actions run after the outermost dispatch, in order,
+;;; from one queue.  A dispatch made while that queue drains, or while the
+;;; parser feeds, only queues, so no drain is ever nested inside another.
+;;; `depth` counts the drain and the feed inside it: every action must run at
+;;; depth 1, from the outermost drain, and one that runs anywhere else is a
+;;; VIOLATION, recorded.  That is a test rather than a comment, because the
+;;; way it fails is silent: byte-machine poisons a parser whose callback
+;;; escapes, and chez-libuv defers the raise.  Only `reply-parser` is answered
+;;; inside a parser callback, and the adapter does that without reaching the
+;;; queue.
 ;;;
-;;; M3.5: A WRITE AFTER THE SHUTDOWN IS REFUSED.  The core shuts the write
-;;; side only once its last write has completed (decision 0011), and nothing
-;;; may be written after it: a `write` action run after a `shutdown` is the
-;;; core's bug, an assertion violation where it happens.  Any raise from an
-;;; action abandons its dispatch, and the shell dispatches the next event as
-;;; it would have.
+;;; A WRITE AFTER THE SHUTDOWN IS REFUSED.  The core shuts the write side only
+;;; once its last write has completed, and nothing may be written after it: a
+;;; `write` action run after a `shutdown` is the core's bug, an assertion
+;;; violation where it happens.  Any raise from an action abandons its
+;;; dispatch, and the shell dispatches the next event as it would have.
 ;;;
-;;; M4.4: A TRACE sees what the shell does in the order it does it, as the
-;;; libuv shell's does, so the cross-shell contract test (design §8.4) can
+;;; A TRACE sees what the shell does in the order it does it, as the libuv
+;;; shell's does, so the cross-shell contract test (test-contract.sps) can
 ;;; compare the two: each event as it is dispatched, and each action as it
-;;; runs, before it is performed; and, once the stream is taken, each event
-;;; of the door's, `door`, as the libuv shell traces its own: a delivery to
-;;; the taker or dropped, `(stream-read bv start end)` or `(stream-end why)`;
-;;; a taker's write at its turn, `(stream-wrote why)`; the timer firing
-;;; past the stream's deadline, `(stream-passed now)`; and its close's two
-;;; stages, the half-close, `(stream-shut)`, and the close begun,
-;;; `(stream-close)`.  And the events a
-;;; later turn brings are delivered one at a time on request, so that test
-;;; can deliver them where the libuv shell delivered its own, a taker's
+;;; runs, before it is performed; and, once the stream is taken, each event of
+;;; the door's, `door`, as the libuv shell traces its own: a delivery to the
+;;; taker or dropped, `(stream-read bv start end)` or `(stream-end why)`; a
+;;; taker's write at its turn, `(stream-wrote why)`; the timer firing past the
+;;; stream's deadline, `(stream-passed now)`; and its close's two stages, the
+;;; half-close, `(stream-shut)`, and the close begun, `(stream-close)`.  The
+;;; events a later turn brings are delivered one at a time on request, so that
+;;; test can deliver them where the libuv shell delivered its own, a taker's
 ;;; write with the libuv shell's outcome for it.
 ;;;
-;;; M5.3: THE WHEEL.  A fake connection keeps its deadline in a wheel of its
-;;; own, as the libuv shell keeps its connections' (decision 0005): armed at
-;;; the fake clock's now plus the kind's limit (limits-deadline-ms), the idle
-;;; deadline armed so when the connection is made, and disarmed on request.
-;;; The fake clock is the test's own, and so is the timer: `fake-shell-fire!`
-;;; is the timer firing at the clock's now, and it ticks the connection only
-;;; once its deadline has passed.  A stub step's shell keeps no wheel, and
-;;; `fake-shell-tick!` ticks its step, whatever it has armed.
+;;; THE WHEEL.  A fake connection keeps its deadline in a wheel of its own, as
+;;; the libuv shell keeps its connections': armed at the fake clock's now plus
+;;; the kind's limit (limits-deadline-ms), the idle deadline armed so when the
+;;; connection is made, and disarmed on request.  The fake clock is the test's
+;;; own, and so is the timer: `fake-shell-fire!` is the timer firing at the
+;;; clock's now, and it ticks the connection only once its deadline has
+;;; passed.  A stub step's shell keeps no wheel, and `fake-shell-tick!` ticks
+;;; its step, whatever it has armed.
 ;;;
-;;; `make-fake-connection` is the shell M2.4 drives the core with: the core
-;;; through the adapter's bindings, one real parser, and a handler that answers
-;;; at once.  It performs what a v1 shell performs:
+;;; `make-fake-connection` is the shell that drives the core: the core through
+;;; the adapter's bindings, one real parser, and a handler that answers at
+;;; once.  It performs what the libuv shell performs:
 ;;;
 ;;;   feed-parser     parser-feed!, then the result as `parser-result`
 ;;;   resume-parser   parser-resume!
 ;;;   call-handler    the handler called from the connection's scheduler,
 ;;;                   drained once the outermost dispatch's drain has ended,
-;;;                   as the libuv shell calls it after libuv's turn
-;;;                   (decision 0014; M7.1): its answer, a response or a
-;;;                   reader, as `handler-responded`, or `handler-failed` if
-;;;                   it raises; or, if it answers `awaiting`, its thunk run
-;;;                   on a coroutine (A HANDLER THAT WAITS, below)
+;;;                   as the libuv shell calls it after libuv's turn: its
+;;;                   answer, a response or a reader, as `handler-responded`,
+;;;                   or `handler-failed` if it raises; or, if it answers
+;;;                   `awaiting`, its thunk run on a coroutine (A HANDLER THAT
+;;;                   WAITS, below)
 ;;;   deliver-body    the piece to the reader the core is handing the body to
 ;;;                   (conn-body-reader), or `handler-failed` if it raises;
-;;;                   with no reader, nothing (M6.1, decision 0013)
+;;;                   with no reader, nothing
 ;;;   deliver-body-end  the reader's end: its response as `handler-responded`,
 ;;;                   or `handler-failed` if it raises
 ;;;   notify-producer the producer a streamed response is written from
 ;;;                   (conn-producer), called for its next piece, its answer
 ;;;                   as `handler-body-chunk` or `handler-body-end`
 ;;;                   (producer-event), or `handler-failed` if it raises or
-;;;                   answers neither; with no producer, nothing (M6.3,
-;;;                   decision 0013 item 8)
+;;;                   answers neither; with no producer, nothing
 ;;;   write           fills the Date slot from the fake clock, or from the
 ;;;                   instant given for the write (fake-shell-date-writes!),
 ;;;                   keeps the bytes as the client would read them, and
@@ -97,109 +95,101 @@
 ;;;                   fake connection and the bytes handed over, copied
 ;;;                   (THE DOOR, below)
 ;;;
-;;; and records the rest (logs) without acting on them.  A fake connection made on credit (M6.2) answers with
-;;; each handler's answer and `credit`, `(handler-responded answer credit)`,
-;;; as a handler that waits is answered (A HANDLER THAT WAITS, below): the
-;;; test then gives the reader's credit, `(body-credit n)`.
-;;; Input is delivered only while the connection reads, as libuv delivers
-;;; it.  An event the core cannot finish within `dispatch-cap` dispatches is
-;;; a harness error, never a hang (global-constraints: cap by iteration
-;;; count, never wall-clock).
+;;; and records the rest (logs) without acting on them.  A fake connection made
+;;; on credit answers with each handler's answer and `credit`,
+;;; `(handler-responded answer credit)`, as a handler that waits is answered
+;;; (A HANDLER THAT WAITS, below): the test then gives the reader's credit,
+;;; `(body-credit n)`.  Input is delivered only while the connection reads, as
+;;; libuv delivers it.  An event the core cannot finish within `dispatch-cap`
+;;; dispatches is a harness error, never a hang: loops are capped by iteration
+;;; count, never wall-clock.
 ;;;
-;;; M8.2: THE DOOR (decision 0016).  Handed off, the connection is the
-;;; taker's: the fake transport's verbs act on it as the libuv shell's do.
-;;; A write's bytes, copied at the call, are the client's on a later turn,
-;;; after the 101, and its callback is told then, #f; one asked for once the
-;;; close has been is not written, and its callback is told ECANCELED at the
-;;; connection's next drain, as the libuv shell tells it on its next turn.
-;;; Reading delivers each delivery to the taker, `(on-bytes bv start end)`,
-;;; and the client's end or a read error to its `on-end`, once, reading
-;;; then stopped; none reaches the core.  What the client sends while the
-;;; stream is not read, before the taker's read-start or after its
-;;; read-stop, is kept, as the kernel keeps it, and read on a later turn
-;;; once reading starts again, at a read-start or at the close, ahead of
-;;; what comes after it (plan §14's review note).  An end the core read as the 101
-;;; was written comes with the hand-off, and is told to the taker's
-;;; read-start at the connection's next drain; a stream that has ended
-;;; reads no more.  The close comes on a later turn, after the writes asked for
-;;; before it, as `closed` to the core and the taker's close call, which,
-;;; registered after it, runs at once.  The
-;;; deadline is the connection's one wheel entry, and `fake-shell-fire!`
-;;; calls it once its time has come; a stream closing arms none.
-;;; `fake-shell-drain!` is the shell
-;;; draining: the core told `shutdown-requested`, or a taker's drain call
-;;; run, once, and one registered while the shell drains runs at once.
-;;; A take-over that answers `(awaiting thunk)` has the thunk run on a
-;;; coroutine, the taker's notice given to it, told once the stream has
-;;; closed (decision 0023); a raise of it but that close is recorded
-;;; (`fake-shell-taker-failures`) and closes the stream.  Each delivery to a
-;;; taker and each of its completions is a turn of the libuv shell's, so
-;;; the scheduler is drained after it, unless held.
+;;; THE DOOR.  Handed off, the connection is the taker's: the fake transport's
+;;; verbs act on it as the libuv shell's do.  A write's bytes, copied at the
+;;; call, are the client's on a later turn, after the 101, and its callback is
+;;; told then, #f; one asked for once the close has been is not written, and
+;;; its callback is told ECANCELED at the connection's next drain, as the
+;;; libuv shell tells it on its next turn.  Reading delivers each delivery to
+;;; the taker, `(on-bytes bv start end)`, and the client's end or a read error
+;;; to its `on-end`, once, reading then stopped; none reaches the core.  What
+;;; the client sends while the stream is not read, before the taker's
+;;; read-start or after its read-stop, is kept, as the kernel keeps it, and
+;;; read on a later turn once reading starts again, at a read-start or at the
+;;; close, ahead of what comes after it.  An end the core read as the 101 was
+;;; written comes with the hand-off, and is told to the taker's read-start at
+;;; the connection's next drain; a stream that has ended reads no more.  The
+;;; close comes on a later turn, after the writes asked for before it, as
+;;; `closed` to the core and the taker's close call, which, registered after
+;;; it, runs at once.  The deadline is the connection's one wheel entry, and
+;;; `fake-shell-fire!` calls it once its time has come; a stream closing arms
+;;; none.  `fake-shell-drain!` is the shell draining: the core told
+;;; `shutdown-requested`, or a taker's drain call run, once, and one
+;;; registered while the shell drains runs at once.  A take-over that answers
+;;; `(awaiting thunk)` has the thunk run on a coroutine, the taker's notice
+;;; given to it, told once the stream has closed; a raise of it but that close
+;;; is recorded (`fake-shell-taker-failures`) and closes the stream.  Each
+;;; delivery to a taker and each of its completions is a turn of the libuv
+;;; shell's, so the scheduler is drained after it, unless held.
 ;;;
-;;; Decision 0024: A CLIENT THAT READS NOTHING.  A taker's write is
-;;; outstanding until its turn, which stands for the client reading it, so a
-;;; test that delivers no later turn plays a client that reads nothing.  A
-;;; close asked for waits for the writes outstanding before it begins, as
-;;; the libuv shell's does, so a deadline asked for meanwhile is armed; once
-;;; begun, it disarms the deadline, as the libuv shell's close does.  Once
-;;; the close has been asked for, the taker is read nothing more.  The
-;;; abort, `transport-abort!`, begins the close at once: each write
-;;; outstanding is told ECANCELED on its turn, and the client reads none of
-;;; it.  (The libuv shell's client may still get what the system already
-;;; held: a write libuv had written at the call, or part of one.  The fake
-;;; keeps to whole writes, and is told the libuv shell's outcome of each
-;;; where the contract test replays it: fake-shell-deliver-later!.)  Every call into the taker's
-;;; code is guarded, as the libuv shell's taker-call! guards it: the
-;;; take-over, its reads and its end, its deadline's, drain and close calls,
-;;; and a write's callback.  A raise there, or from a waiting thunk, is the
-;;; taker's failure, recorded, and aborts the stream.
+;;; A CLIENT THAT READS NOTHING.  A taker's write is outstanding until its
+;;; turn, which stands for the client reading it, so a test that delivers no
+;;; later turn plays a client that reads nothing.  A close asked for waits for
+;;; the writes outstanding before it begins, as the libuv shell's does, so a
+;;; deadline asked for meanwhile is armed; once begun, it disarms the
+;;; deadline, as the libuv shell's close does.  Once the close has been asked
+;;; for, the taker is read nothing more.  The abort, `transport-abort!`,
+;;; begins the close at once: each write outstanding is told ECANCELED on its
+;;; turn, and the client reads none of it.  (The libuv shell's client may
+;;; still get what the system already held: a write libuv had written at the
+;;; call, or part of one.  The fake keeps to whole writes, and is told the
+;;; libuv shell's outcome of each where the contract test replays it:
+;;; fake-shell-deliver-later!.)  Every call into the taker's code is guarded,
+;;; as the libuv shell's taker-call! guards it: the take-over, its reads and
+;;; its end, its deadline's, drain and close calls, and a write's callback.  A
+;;; raise there, or from a waiting thunk, is the taker's failure, recorded,
+;;; and aborts the stream.
 ;;;
-;;; Decision 0026: THE CLOSE IS STAGED, as the libuv shell stages it.  Asked
-;;; for, the taker is read nothing more, but the stream reads on, each
-;;; delivery dropped.  Once no write is outstanding, the write side is shut
-;;; (`fake-shell-shut?`) and the stream lingers, the linger deadline armed on
-;;; the fake clock in the taker's deadline's place, until the client's end
-;;; or that deadline's firing closes it; a read error closes it at once, as
-;;; an abort does.  A client whose end came while the writes were
-;;; outstanding is closed once they are written.  From the close on, the
-;;; taker's read-stop changes nothing, and once the stream lingers neither
-;;; does its deadline or its cancel.
+;;; THE CLOSE IS STAGED, as the libuv shell stages it.  Asked for, the taker
+;;; is read nothing more, but the stream reads on, each delivery dropped.  Once
+;;; no write is outstanding, the write side is shut (`fake-shell-shut?`) and
+;;; the stream lingers, the linger deadline armed on the fake clock in the
+;;; taker's deadline's place, until the client's end or that deadline's firing
+;;; closes it; a read error closes it at once, as an abort does.  A client
+;;; whose end came while the writes were outstanding is closed once they are
+;;; written.  From the close on, the taker's read-stop changes nothing, and
+;;; once the stream lingers neither does its deadline or its cancel.
 ;;;
-;;; Decision 0027: A CLOSE'S WRITES ARE BOUNDED, as the libuv shell bounds
-;;; them.  Until the stream lingers, each write the close waits for has the
-;;; write timeout, from the close and again from each write's end, and past
-;;; it the stream is aborted.  The taker's own deadline runs beside it: the
-;;; one wheel entry is armed at the earlier, and once that one passes, the
-;;; other is armed again.
+;;; A CLOSE'S WRITES ARE BOUNDED, as the libuv shell bounds them.  Until the
+;;; stream lingers, each write the close waits for has the write timeout, from
+;;; the close and again from each write's end, and past it the stream is
+;;; aborted.  The taker's own deadline runs beside it: the one wheel entry is
+;;; armed at the earlier, and once that one passes, the other is armed again.
 ;;;
-;;; M7.3: A HANDLER THAT WAITS, as the libuv shell's (decision 0014), so
-;;; the contract test (design §8.4) can hold the coroutine shell to it.  A
-;;; fake connection keeps a scheduler of its own, (http-server private
-;;; scheduler)'s, drained once each outermost dispatch has ended, as the
-;;; libuv shell's turn drains its loop's after libuv's run: the handler is
-;;; called there, and the coroutines run there.  A handler that answers
-;;; `(awaiting thunk)` has its thunk run on a coroutine, and its answer
-;;; dispatched on credit once it has ended.  Until the next request's
+;;; A HANDLER THAT WAITS, as the libuv shell's, so the contract test can hold
+;;; the two to one behaviour.  A fake connection keeps a scheduler of its own,
+;;; (http-server private scheduler)'s, drained once each outermost dispatch
+;;; has ended, as the libuv shell's turn drains its loop's after libuv's run:
+;;; the handler is called there, and the coroutines run there.  A handler that
+;;; answers `(awaiting thunk)` has its thunk run on a coroutine, and its
+;;; answer dispatched on credit once it has ended.  Until the next request's
 ;;; handler is called, the connection's calls into the handler's code, its
 ;;; reader's pieces and end and its producer, are each made on a coroutine,
-;;; one at a time, in order, each event its call brings dispatched once it
-;;; has ended: a streaming reader's piece is credited, `(body-credit n)`,
-;;; once the reader has taken it, whatever values the piece answers, none
-;;; included, as the libuv shell's (the M7 exit).  A call that waits goes on
-;;; when its connection closes, but what it answers is dropped, and the
-;;; connection makes no more calls (decision 0015 item 4).  The fake drains its
-;;; scheduler after every dispatch, so no event can close a connection
-;;; between the dispatch that asks for the handler's call and that call, as
-;;; libuv's turn can: it keeps none of the libuv shell's check for a handler
-;;; whose connection closed before its call (M7.1's review).  It never
-;;; polls: a coroutine that yields runs again at the connection's next
-;;; drain.  Its handler code waits with (http-server private waits)'s verbs
-;;; (decision 0015) on waits of its own, scripted: their clock is the
-;;; injected one; their timer is the test's, `fake-shell-fire-waits!` firing
-;;; it at the clock's now; and their resolver is the test's,
-;;; `fake-shell-answer-lookup!` answering the lookup asked for, one at a
-;;; time, as the connection's calls are made.  A deadline that ends a lookup
-;;; cancels it, and the lookup is answered no more.
+;;; one at a time, in order, each event its call brings dispatched once it has
+;;; ended: a streaming reader's piece is credited, `(body-credit n)`, once the
+;;; reader has taken it, whatever values the piece answers, none included, as
+;;; the libuv shell's.  A call that waits goes on when its connection closes,
+;;; but what it answers is dropped, and the connection makes no more calls.
+;;; The fake drains its scheduler after every dispatch, so no event can close
+;;; a connection between the dispatch that asks for the handler's call and
+;;; that call, as libuv's turn can: it keeps none of the libuv shell's check
+;;; for a handler whose connection closed before its call.  It never polls: a
+;;; coroutine that yields runs again at the connection's next drain.  Its
+;;; handler code waits with (http-server private waits)'s verbs on waits of
+;;; its own, scripted: their clock is the injected one; their timer is the
+;;; test's, `fake-shell-fire-waits!` firing it at the clock's now; and their
+;;; resolver is the test's, `fake-shell-answer-lookup!` answering the lookup
+;;; asked for, one at a time, as the connection's calls are made.  A deadline
+;;; that ends a lookup cancels it, and the lookup is answered no more.
 (library (fake-shell)
   (export make-fake-shell fake-shell?
           fake-shell-state fake-shell-now
@@ -237,6 +227,8 @@
   ;; fake-shell-now : FakeShell -> Nat — the injected clock
   ;; fake-shell-reading? : FakeShell -> Boolean — whether the next delivery
   ;;   is read: #t until a read-stop or a close, and again at a read-start
+  ;; fake-shell-shut? : FakeShell -> Boolean — whether a shutdown has run, so
+  ;;   the write side is shut
   (define-record-type fake-shell
     (fields step (mutable state) (mutable now) (mutable actions-rev) (mutable events-rev)
             perform
@@ -252,7 +244,7 @@
             trace
             (mutable wheel) (mutable entry)   ; a connection's deadline; #f for a stub's
             (mutable dated)                   ; instants its next writes are dated at, in order
-            (mutable credit?)                 ; whether it answers on credit (M6.2)
+            (mutable credit?)                 ; whether it answers on credit
             (mutable scheduler)               ; a connection's calls and coroutines; #f for a stub's
             (mutable waits?)                  ; whether the request's handler answered awaiting
             (mutable waiting)                 ; its calls on coroutines to make, in order
@@ -264,7 +256,7 @@
             (mutable draining?)               ; whether the shell has drained
             (mutable notice)                  ; the request's notice of its client's close, or #f
             (mutable held?)                   ; whether its scheduler waits to be drained (fake-shell-hold!)
-            (mutable taker-failures-rev))     ; what a waiting taker's thunks raised, newest first (decision 0023)
+            (mutable taker-failures-rev))     ; what a waiting taker's thunks raised, newest first
     (protocol (lambda (new)
                 (define (make step state0 now0 perform trace)
                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
@@ -293,8 +285,7 @@
 
   ;; fake-shell-taker-failures : FakeShell -> (Listof Any)
   ;; What a waiting taker's thunks raised, in order, the close their notice
-  ;; told not among them (decision 0023): the libuv shell logs each as
-  ;; `taker-failed`.
+  ;; told not among them: the libuv shell logs each as `taker-failed`.
   (define (fake-shell-taker-failures s) (reverse (fake-shell-taker-failures-rev s)))
 
   ;; fake-shell-advance! : FakeShell Nat -> Nat
@@ -369,10 +360,10 @@
   ;; Held, the connection's scheduler is drained only when asked
   ;; (fake-shell-schedule!), or as its waits fire or its lookup is answered,
   ;; not after each event: as the libuv shell drains its own once a turn of
-  ;; the loop, after every event the turn brought (decision 0014).  The
-  ;; contract test holds a fake it gives the libuv shell's events, and drains
-  ;; it where a turn of the libuv shell's began (decision 0020: a client's
-  ;; end can come in the turn a handler's call waits in).
+  ;; the loop, after every event the turn brought.  The contract test holds a
+  ;; fake it gives the libuv shell's events, and drains it where a turn of the
+  ;; libuv shell's began (a client's end can come in the turn a handler's call
+  ;; waits in).
   (define (fake-shell-hold! s held?) (fake-shell-held?-set! s held?))
 
   ;; fake-shell-schedule! : FakeShell -> Void — drain the connection's
@@ -519,7 +510,7 @@
   ;; its idle deadline armed there: (http-server connection)'s core through
   ;; the adapter, with a parser of its own, a scheduler of its own, and
   ;; `handler` answering every request, traced as make-fake-shell traces.
-  ;; Made `on-credit?`, it answers with each answer and `credit` (M6.2).
+  ;; Made `on-credit?`, it answers with each answer and `credit`.
   ;; Its state is the adapter's context; fake-shell-conn-state reads the
   ;; core's state from it.
   (define make-fake-connection
@@ -552,8 +543,8 @@
   ;; dropping it, then answers what `answer` gives for the request.  A
   ;; request with no body gets its reader's end at once.  A response given in
   ;; place of a reader to a request whose head announces a body closes the
-  ;; connection (decision 0013), so suites that keep the connection past a
-  ;; body read it with this.
+  ;; connection, so suites that keep the connection past a body read it with
+  ;; this.
   (define (drops-body answer)
     (lambda (request) (read-body (lambda (bv from to) #t) (lambda () (answer request)))))
 
@@ -616,7 +607,7 @@
       (else (values))))
 
   ;; request-notice : FakeShell -> Notice
-  ;; The notice of the request in flight (decision 0020), as the libuv
+  ;; The notice of the request in flight, as the libuv
   ;; shell's: the one its code's coroutines were given, or else a new one.
   (define (request-notice s)
     (or (fake-shell-notice s)
@@ -624,7 +615,7 @@
           (fake-shell-notice-set! s n)
           n)))
 
-  ;; --- the door (M8.2) ----------------------------------------------------------
+  ;; --- the door -----------------------------------------------------------------
 
   ;; door-write : a taker's write waiting for its turn, `turn` called then
   ;; with whether an outcome was given and the outcome
@@ -633,16 +624,14 @@
 
   ;; The calls a taker has registered, how far its stream has gone, the
   ;; notice its waits are told the close by, once a take-over has answered
-  ;; `awaiting` (decision 0023), how many of its writes are outstanding,
-  ;; whether it aborted, whether the client's end has come (decision 0024),
-  ;; whether the stream lingers, and how long it may (decision 0026); the
-  ;; end the core handed over, 'eof, until the taker is told it at its
-  ;; read-start, else #f (0016's amendment of 2026-10-12); what the client
-  ;; sent while the stream was not read, its reads and its end, in order,
-  ;; kept as the kernel keeps them (read-kept!); and the instants, by the
-  ;; fake clock, its own deadline passes at and its close's write bound
-  ;; does, each #f when none is armed, and how long a write may take
-  ;; (decision 0027).
+  ;; `awaiting`, how many of its writes are outstanding, whether it aborted,
+  ;; whether the client's end has come, whether the stream lingers, and how
+  ;; long it may; the end the core handed over, 'eof, until the taker is told
+  ;; it at its read-start, else #f; what the client sent while the stream was
+  ;; not read, its reads and its end, in order, kept as the kernel keeps them
+  ;; (read-kept!); and the instants, by the fake clock, its own deadline
+  ;; passes at and its close's write bound does, each #f when none is armed,
+  ;; and how long a write may take.
   (define-record-type fake-taker
     (fields (mutable on-bytes) (mutable on-end) (mutable on-passed) (mutable on-drain)
             (mutable on-close) (mutable closing?) (mutable drained?) (mutable closed?)
@@ -658,9 +647,9 @@
   ;; the bytes handed over, a copy, empty when none were.  A client's end
   ;; the core read as the 101 was written, `ended?`, is the taker's: the
   ;; stream has ended, and its read-start is told it, as the libuv shell's
-  ;; is (0016's amendment of 2026-10-12).
+  ;; is.
   ;; A take-over that answers `(awaiting thunk)` has the thunk run on a
-  ;; coroutine, as the libuv shell runs it (taker-wait!, decision 0023).
+  ;; coroutine, as the libuv shell runs it (taker-wait!).
   (define (hand-off! s take-over retained ended? limits)
     (let ((tk (make-fake-taker (limits-deadline-ms limits 'linger) (limits-deadline-ms limits 'write)))
           (answer #f))
@@ -696,14 +685,14 @@
   ;; taker-call! : FakeShell FakeTaker (-> Any) -> Void
   ;; A call into the taker's code.  A raise is the taker's failure,
   ;; recorded, and closes the stream at once, as the libuv shell's
-  ;; taker-call! logs it and closes (decision 0024).
+  ;; taker-call! logs it and closes.
   (define (taker-call! s tk thunk)
     (guard (e (#t (fake-shell-taker-failures-rev-set! s (cons e (fake-shell-taker-failures-rev s)))
                   (taker-abort! s tk)))
       (thunk)))
 
   ;; taker-close! : FakeShell FakeTaker -> Void
-  ;; The stream's staged close, asked for once (decision 0026): the taker is
+  ;; The stream's staged close, asked for once: the taker is
   ;; read nothing more, the stream reading on, each delivery dropped, and it
   ;; lingers once no write is outstanding, as the libuv shell's does; until
   ;; then its writes are bounded (taker-bound!).
@@ -719,8 +708,8 @@
 
   ;; taker-bound! : FakeShell FakeTaker -> Void
   ;; The close waits for a write: it has the write timeout from the fake
-  ;; clock's now, and the stream is aborted past it (decision 0027), armed
-  ;; beside the taker's own deadline (taker-arm!).
+  ;; clock's now, and the stream is aborted past it, armed beside the
+  ;; taker's own deadline (taker-arm!).
   (define (taker-bound! s tk)
     (fake-taker-bound-set! tk (+ (fake-shell-now s) (fake-taker-write-ms tk)))
     (taker-arm! s tk))
@@ -739,7 +728,7 @@
 
   ;; taker-passed! : FakeShell FakeTaker Nat -> Void
   ;; Its entry has passed at `now`: the stream lingering, its close; its
-  ;; close's write bound passed, its abort (decision 0027); else its own
+  ;; close's write bound passed, its abort; else its own
   ;; deadline, whose call is made, and then whichever is still armed is
   ;; armed again, as the libuv shell's taker-passed! has it.
   (define (taker-passed! s tk now)
@@ -789,7 +778,7 @@
   ;; taker-abort! : FakeShell FakeTaker -> Void
   ;; The stream closed now, whatever is outstanding: the taker stops, each
   ;; write outstanding is told ECANCELED on its turn, its bytes never the
-  ;; client's, and the close begins (decision 0024).
+  ;; client's, and the close begins.
   (define (taker-abort! s tk)
     (stop-taking! s tk)
     (fake-taker-aborted?-set! tk #t)
@@ -868,7 +857,7 @@
   ;; its bytes the client's and its callback told #f; or neither, its
   ;; callback told the errno, ECANCELED for a stream aborted before it; then,
   ;; if the close was asked for, the stream lingering once no write is left,
-  ;; or else its write bound armed again (decision 0027).
+  ;; or else its write bound armed again.
   (define (taker-wrote! s tk bytes written why)
     (trace! s 'door (list 'stream-wrote why))
     (fake-taker-writes-set! tk (fx- (fake-taker-writes tk) 1))
@@ -886,7 +875,7 @@
   ;; to its on-bytes, and the end to its on-end, once.  Once the taker's
   ;; close has been asked for, or its end told, nothing reaches it.  While
   ;; the stream closes, a read is dropped, the client's end closes it once no
-  ;; write is outstanding, and a read error closes it at once (decision 0026).
+  ;; write is outstanding, and a read error closes it at once.
   (define (taker-read! s tk event)
     (cond
      ((or (fake-taker-ended? tk) (fake-shell-closing? s)))
@@ -992,7 +981,7 @@
   ;; dispatched, or `handler-failed` if either raised; then the next call
   ;; starts.  A connection closing makes no more, and drops what one that
   ;; ends then answers.  Each coroutine is given the request's notice, as the
-  ;; libuv shell's (decision 0020).
+  ;; libuv shell's.
   (define (call-waiting! s thunk ->event)
     (fake-shell-waiting-set! s (append (fake-shell-waiting s) (list (cons thunk ->event))))
     (unless (fake-shell-calling? s) (next-call! s)))
@@ -1029,7 +1018,7 @@
   ;; write! : FakeShell (Listof Segment) Nat -> Void
   ;; Perform `(write segments nbytes)` as a shell does: the bytes are kept as
   ;; write-wire makes them, for the second of the write's instant (the clock
-  ;; counts milliseconds, decision 0005's unit), and the write completes on a
+  ;; counts milliseconds), and the write completes on a
   ;; later turn with its byte count.
   (define (write! s segments nbytes)
     (let ((wire (write-wire segments nbytes (div (write-instant! s) 1000))))
@@ -1048,8 +1037,8 @@
   ;; write-wire : (Listof Segment) Nat Nat -> Bytevector
   ;; The bytes `(write segments nbytes)` puts on the wire, copied out of the
   ;; segments as uv-write*! copies them, a span `(bv start end)` as the bytes
-  ;; it spans (M6.3), with the Date slot filled with the line for `second`
-  ;; (decision 0010 item 4).  The count must be the bytes' own, which the
+  ;; it spans, with the Date slot filled with the line for `second`.  The
+  ;; count must be the bytes' own, which the
   ;; serializer promises: one that is not is an assertion violation, never a
   ;; quiet pass.
   (define (write-wire segments nbytes second)
@@ -1099,7 +1088,7 @@
   ;; read is not delivered.  Each delivery is a slice of `input`; given an
   ;; `offset`, it is a bytevector of its own instead, its bytes from that
   ;; index, as a shell hands over a read: a delivery's index then differs
-  ;; from where the bytes sit in the connection (the padding PR).
+  ;; from where the bytes sit in the connection.
   (define fake-shell-feed-input!
     (case-lambda
       ((s input size) (feed-input! s input size #f))

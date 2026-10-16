@@ -1,17 +1,16 @@
 #!r6rs
 ;;; (test-corpus-inventory) — a drift guard on the chez-httparse pin.
 ;;;
-;;; M1.1.  The instrument's first obligation is to know its corpus.  This suite
-;;; loads every request fixture through the vendored harness ((httparse test
-;;; corpus-load) / corpus-decode), reachable only because M1.1 added
-;;; test/support/harness to the Makefile's LIBDIR_LIST, and asserts the request
-;;; lane's shape as measured for milestone-plan §2.
+;;; The instrument's first obligation is to know its corpus.  This suite loads
+;;; every request fixture through the vendored harness ((httparse test
+;;; corpus-load) / corpus-decode), reachable through test/support/harness on
+;;; the Makefile's LIBDIR_LIST, and asserts the request lane's shape: how many
+;;; files, fixtures, strict fixtures, and decoded bytes it holds.
 ;;;
-;;; The oracle is the vendored corpus AT THE PIN (chez-httparse v0.4.5,
-;;; 0b7058e; its corpus is v0.4.0's byte for byte), so these numbers are a
-;;; drift guard, not an invariant: move the pin and the guard reddens, and
-;;; §2's counts get re-measured on the new tree rather than silently aging.
-;;; Measured 2026-09-20, Darwin arm64, Chez 10.4.1 `tarm64osx`.
+;;; The oracle is the vendored corpus AT THE PIN (chez-httparse v0.4.5), so
+;;; these numbers are a drift guard, not an invariant: move the pin and the
+;;; guard reddens, and the counts get re-measured on the new tree rather than
+;;; silently aging.
 ;;;
 ;;; Two traps the meta reader must respect (corpus-load's own meta note):
 ;;;   - fixture-meta-ref takes a SYMBOL key (it is assq) and its third argument
@@ -48,7 +47,7 @@
     (map (lambda (f) (corpus-parse-file (slurp (string-append request-dir f))))
          request-files)))
 
-;; strict? : Fixture -> Boolean — type is exactly "request" (§2.1's strict lane).
+;; strict? : Fixture -> Boolean — type is exactly "request" (the strict lane).
 (define (strict? f) (equal? "request" (fixture-meta-ref f 'type 'no-type)))
 (define strict-fixtures (filter strict? all-fixtures))
 
@@ -67,8 +66,8 @@
 
 (run-suite "corpus-inventory"
   (lambda ()
-    ;; Each assertion compares a measured count against §2's oracle literal —
-    ;; a value only the corpus-at-the-pin produces, never #f or truthiness.
+    ;; Each assertion compares a measured count against a literal only the
+    ;; corpus at the pin produces, never #f or truthiness.
     (test-eqv "13 request corpus files"          13    (length request-files))
     (test-eqv "167 fixtures across all files"    167   (length all-fixtures))
     (test-eqv "135 type=request fixtures"        135   (length strict-fixtures))

@@ -1,11 +1,11 @@
 #!r6rs
-;;; (http-server view): what a handler sees of a request.  M4.5.
+;;; (http-server view): what a handler sees of a request.
 ;;;
 ;;; A handler reads the request through accessors that copy what it asks
-;;; for, as strings, a character per byte (decision 0012; its measurement
-;;; made its strings that way).  Each request here is fed whole to a fake
-;;; connection running the real core and parser, and read inside the
-;;; handler's call, as a handler reads it.
+;;; for, as strings, a character per byte (Latin-1), so every byte reads back
+;;; as it was sent and nothing is percent-decoded.  Each request here is fed
+;;; whole to a fake connection running the real core and parser, and read
+;;; inside the handler's call, as a handler reads it.
 ;;;
 ;;; Oracles:
 ;;;   - RFC 9112 §3.2's four forms of request-target.  origin-form is
@@ -19,13 +19,12 @@
 ;;;     form is to provide a path of "/" instead".
 ;;;   - RFC 9110 §5.1: field names are case-insensitive.  RFC 9112 §5: the
 ;;;     whitespace before and after a field value is not part of it.
-;;;   - Decision 0012: otherwise the host is the Host field's value, which
-;;;     may be empty, and a request with none reads empty too.  A header's
-;;;     value is its first field's, as `headers-ref` reads it in the
-;;;     decision's measurement.
-;;;   - Decision 0024: every field of a name, in the order they came, each
-;;;     as `request-header` reads the first; RFC 9110 §5.3 lets a list run
-;;;     over several field lines.
+;;;   - Otherwise the host is the Host field's value, which may be empty, and
+;;;     a request with none reads empty too.  A header's value is its first
+;;;     field's, as `headers-ref` reads it.
+;;;   - Every field of a name, in the order they came, each as
+;;;     `request-header` reads the first; RFC 9110 §5.3 lets a list run over
+;;;     several field lines.
 (import (rnrs) (srfi :64) (testing) (fake-shell)
         (http-server limits) (http-server response) (http-server view))
 
@@ -98,7 +97,7 @@
                 (list (seen (b "GET / HTTP/1.1\r\nHost:\r\n\r\n") request-host)
                       (seen (b "GET / HTTP/1.0\r\n\r\n") request-host)))
     ;; llhttp ends the value's span after the whitespace, and the core's Host
-    ;; judge reads the value without it (#54).
+    ;; judge reads the value without it.
     (test-equal "the host is the Host field's value without the whitespace after it"
                 "h"
                 (seen (b "GET / HTTP/1.1\r\nHost: h \t\r\n\r\n") request-host))

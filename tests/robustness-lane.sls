@@ -1,24 +1,23 @@
 #!r6rs
 ;;; (robustness-lane) — the server's answer to AWS http-desync-guardian's
-;;; cases, and the run they are held to.  M8.3 (design §8.8, plan §14).
+;;; cases, and the run they are held to.
 ;;;
 ;;; Guardian's corpus classifies a request for a proxy, by the risk it poses
 ;;; of an HTTP desync: Compliant, Acceptable, Ambiguous, or Severe, the last
 ;;; meaning "treat as an irrecoverable error (400 + close)" (severe.yaml).
 ;;; This server is an origin, not a proxy, so guardian's tier is not our
-;;; verdict; what we do with each case is ours (decision 0007's consequence,
-;;; as for libhtp).  Each case is fed to one fake connection as its bytes,
-;;; whole and at every chunk size, the handler reading any body it is given,
-;;; and the connection did one of two things: it reached the handler (the
-;;; request was accepted), or it refused the request before the handler, with
-;;; a status and a close.
+;;; verdict; what we do with each case is ours, as for libhtp's.  Each case is
+;;; fed to one fake connection as its bytes, whole and at every chunk size, the
+;;; handler reading any body it is given, and the connection did one of two
+;;; things: it reached the handler (the request was accepted), or it refused
+;;; the request before the handler, with a status and a close.
 ;;;
 ;;; Three properties are gated:
 ;;;   1. THE SERVE MANIFEST.  Which cases reach the handler is ours, written
 ;;;      from RFC 9112, and gated BOTH WAYS against `served-cases`: a case in
 ;;;      the list must be served and one not in it must be refused, so a
 ;;;      change that starts serving a refused case, or refuses a served one,
-;;;      fails until reviewed (the ratchet's rule, design §8.6).
+;;;      fails until reviewed.
 ;;;   2. THE SECURITY PROPERTY.  No Severe case is in the serve manifest, so
 ;;;      with property 1 no Severe case is ever served.  This is guardian's
 ;;;      own contract for Severe ("an irrecoverable error", severe.yaml), and
@@ -27,7 +26,7 @@
 ;;;   3. CHUNK INVARIANCE.  Each case's outcome is the same however its bytes
 ;;;      are split into reads, as (outcome-lane) gates the llhttp corpus, at
 ;;;      the sizes the corpus lanes share: size 1 and the whole by default,
-;;;      every size under CORPUS=full ((corpus-scan); decision 0007).
+;;;      every size under CORPUS=full ((corpus-scan)).
 (library (robustness-lane)
   (export robustness-outcome robustness-verdict robustness-mismatch
           served-cases guardian-short-id severe?)
@@ -45,9 +44,8 @@
   ;;   - a plainly valid request (rfc-compliant's first eight, the compliant
   ;;     PUT/POSTs), and a target carrying a percent-encoded CTL (%09, %20,
   ;;     %0D, %0A), which is a valid pct-encoded octet (RFC 3986 §2.1);
-  ;;   - a 1.x past 1.1, HTTP/1.2, served as HTTP/1.1 (RFC 9110 §6.2; decision
-  ;;     0006's amendment of 2026-10-04, later), which guardian rates
-  ;;     Acceptable.
+  ;;   - a 1.x past 1.1, HTTP/1.2, served as HTTP/1.1 (RFC 9110 §6.2), which
+  ;;     guardian rates Acceptable.
   ;; Every other case is refused: a conflicting or malformed framing, a bad
   ;; target, a coding we do not implement before chunked (501), or HTTP/0.9.
   (define served-cases

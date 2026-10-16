@@ -1,22 +1,21 @@
 #!r6rs
 ;;; The strictness lane: the server's verdicts on Kestrel's parsing tables,
-;;; httpd's http_strict.t and lighttpd's request.t (design §8.8, plan §14,
-;;; M8.3).
+;;; httpd's http_strict.t and lighttpd's request.t.
 ;;;
-;;; The three corpora are vendored (decision 0007); this suite verifies their
-;;; bytes against their PROVENANCE (status 3 on drift), reads each with a
-;;; reader that refuses a shape it does not know, and holds every case to
-;;; (strictness-lane): its refused-or-served verdict is its source's, or it is
-;;; a listed departure that still departs, and its outcome is chunk-size
-;;; invariant at the corpus lanes' sizes.  The handler reads any body it is
-;;; given and answers 200, as the outcome lane's does.
+;;; The three corpora are vendored; this suite verifies their bytes against
+;;; their PROVENANCE (status 3 on drift), reads each with a reader that refuses
+;;; a shape it does not know, and holds every case to (strictness-lane): its
+;;; refused-or-served verdict is its source's, or it is a listed departure
+;;; that still departs, and its outcome is chunk-size invariant at the corpus
+;;; lanes' sizes.  The handler reads any body it is given and answers 200, as
+;;; the outcome lane's does.
 (import (rnrs) (srfi :64) (testing)
         (sha256) (provenance) (corpus-scan) (only (corpus-text) prefix?)
         (kestrel-corpus) (httpd-corpus) (lighttpd-corpus)
         (strictness-lane))
 
 ;; The delivery sizes, as the corpus lanes take them: size 1 and the whole
-;; input, unless CORPUS=full asks for every size (decision 0007).
+;; input, unless CORPUS=full asks for every size.
 (define selection (corpus-selection))
 
 (define (diag line)
@@ -56,8 +55,8 @@
                   (map cdr corpora) counts))
 
     ;; 3. each reader reads its corpus whole, at the counts its file holds
-    ;;    (the survey's for Kestrel's tables: 90 invalid lines, 58 invalid
-    ;;    headers, 15 incomplete, 20 non-token methods; measured 2026-10-04).
+    ;;    (Kestrel's tables: 90 invalid lines, 58 invalid headers, 15
+    ;;    incomplete, 20 non-token methods).
     (test-equal "Kestrel's eleven tables, row by row"
                 '(90 4 20 4 7 4 2 5 58 4 15)
                 (map (lambda (t) (length (kestrel-table t)))
@@ -100,8 +99,8 @@
 
     ;; Kestrel's reader takes a table's rows from the "{" on the line after
     ;; its constructor; one opened on the constructor's line would have it
-    ;; take the next table's (the review's sixth).  Its rows are ASCII, as
-    ;; Kestrel's tests send them (the seventh).
+    ;; take the next table's.  Its rows are ASCII, as Kestrel's tests send
+    ;; them.
     (test-equal "Kestrel's reader refuses an array opened on its constructor's line, and a row past ASCII"
                 '(refused refused)
                 (list (refused? (lambda ()
@@ -125,9 +124,8 @@
                        '("kestrel/RequestLineInvalidData#1" "httpd/row-1" "lighttpd/request.t:35"))))
 
     ;; 6. a bare line is completed into a head, and nothing else is.
-    ;; Only a bare request line, one line ended by CRLF, is completed (the
-    ;; owner's word, by form: "Complete them into heads"); a header section
-    ;; ended by CRLF is not one (the review's third finding).
+    ;; Only a bare request line, one line ended by CRLF, is completed; a
+    ;; header section ended by CRLF is not one.
     (test-equal "complete-head: a line ending CRLF gains one; a head, a partial line, a pipeline, a header section do not"
                 (list (b "GET / HTTP/1.1\r\n\r\n") (b "GET / HTTP/1.1\r\n\r\n") (b "GET") (b "A\r\n\r\nB\r\n")
                       (b "GET / HTTP/1.1\r\nH: v\r\n"))
@@ -160,8 +158,8 @@
       (test-equal "every case agrees with its source, or departs as listed, and is chunk-invariant"
                   '() mismatches)
       ;; A departure is pinned to this server's own verdict, not only to
-      ;; differ from its source's (the review's first finding): httpd's row
-      ;; 50 is unanswered, and listed so; listed as served, it is a mismatch.
+      ;; differ from its source's: httpd's row 50 is unanswered, and listed
+      ;; so; listed as served, it is a mismatch.
       (test-equal "a departure listed with a verdict this server does not give is a mismatch"
                   '(#f mismatch)
                   (let ((row-50 (find (lambda (c) (string=? (strictness-case-id c) "httpd/row-50")) cases)))

@@ -1,36 +1,28 @@
 #!r6rs
-;;; (http-server limits): decision 0005's defaults and the environment
-;;; overrides.  Oracle: decision 0005 (the nginx-style bounded defaults) and
-;;; the documented override convention (seconds for timeouts), and its
-;;; amendment of 2026-09-25: the Host requirement is on unless
-;;; CHEZ_HTTP_REQUIRE_HOST is exactly "false"; decision 0011's linger
-;;; limit, 30 s, nginx's lingering_time; and 0005's connection cap and listen
-;;; backlog, 10 000 and 511, which arrive in M4.3 (milestone plan §3).  The
-;;; backlog reaches libuv's uv_listen as a C int, whose largest value is
-;;; 2147483647 on every platform the project targets (chez-libuv's native.sls
-;;; types it int).  `limits-with` replaces fields by the names below, which
-;;; this suite writes out itself, in make-limits' order.  Where the server
-;;; listens is decision 0012's: CHEZ_HTTP_HOST and CHEZ_HTTP_PORT, by default
-;;; 127.0.0.1 and 8080; a TCP port is 0 to 65535, 0 asking the kernel for one
-;;; (RFC 9293 §3.1's 16-bit port; libuv's bind takes port 0 so).  0005's
-;;; write timeout, 60 s per write completion, and its tick, 250 ms, arrive in
-;;; M5.1 (milestone plan §3).  The tick's variable, CHEZ_HTTP_TICK_MS, is read
-;;; in milliseconds, since 250 ms has no whole-second spelling (plan §3).  A
-;;; tick is 1 to 1,000 ms, decided on the owner's word on 2026-09-27: the
-;;; wheel's buckets are a tick wide, and a tick over a second would make a
-;;; timeout, given in whole seconds, late by more than its own unit.  Each
-;;; kind of deadline the core arms lasts its own timeout (design §4.3;
-;;; decision 0011's linger).  0005's write water marks, 262 144 and 65 536
-;;; bytes outstanding, arrive in M6.3 (its amendment of 2026-09-25; plan §14):
-;;; sizes, given in bytes, a low water above the high water refused.  0005's
-;;; drain timeout, 10 s after a shutdown is asked for, arrives in M8.1 (plan
-;;; §3), given in whole seconds as the other timeouts are.  There is no
-;;; pipeline cap: 0005's amendment of 2026-10-04 removes the field, and
-;;; CHEZ_HTTP_PIPELINE_CAP is read no more, since the server answers one
-;;; request at a time by design (decision 0004).  Every number, the port's
-;;; too, is written in ASCII digits alone, leading zeros allowed, decided on
-;;; the owner's word on 2026-10-05 (0005's amendment of that day): anything
-;;; else is refused, naming its variable.
+;;; (http-server limits): the defaults and the environment overrides.
+;;; Oracle: nginx-style bounded defaults and the documented override
+;;; convention: timeouts in whole seconds, sizes and counts in their stored
+;;; unit, the tick in milliseconds (250 ms has no whole-second spelling).
+;;; The Host requirement is on unless CHEZ_HTTP_REQUIRE_HOST is exactly
+;;; "false".  The linger limit is 30 s, nginx's lingering_time.  The
+;;; connection cap is 10 000 and the listen backlog 511; the backlog reaches
+;;; libuv's uv_listen as a C int, whose largest value is 2147483647 on every
+;;; platform the project targets (chez-libuv's native.sls types it int).  The
+;;; write timeout is 60 s per write completion.  A tick is 1 to 1,000 ms: the
+;;; timer wheel's buckets are a tick wide, and a tick over a second would
+;;; make a timeout, given in whole seconds, late by more than its own unit.
+;;; Each kind of deadline the core arms lasts its own timeout.  The write
+;;; water marks, 262 144 and 65 536 bytes outstanding, are sizes in bytes; a
+;;; low water above the high water is refused.  The drain timeout is 10 s
+;;; after a shutdown is asked for, in whole seconds like the other timeouts.
+;;; There is no pipeline cap: CHEZ_HTTP_PIPELINE_CAP is not read, since the
+;;; server answers one request at a time.  Where the server listens is
+;;; CHEZ_HTTP_HOST and CHEZ_HTTP_PORT, by default 127.0.0.1 and 8080; a TCP
+;;; port is 0 to 65535, 0 asking the kernel for one (RFC 9293 §3.1's 16-bit
+;;; port; libuv's bind takes port 0 so).  Every number, the port's too, is
+;;; written in ASCII digits alone, leading zeros allowed: anything else is
+;;; refused, naming its variable.  `limits-with` replaces fields by the names
+;;; below, which this suite writes out itself, in make-limits' order.
 (import (rnrs) (srfi :64) (testing) (http-server limits))
 
 ;; env : (Pair String String) ... -> (String -> (U String #f))
@@ -123,8 +115,8 @@
 ;; fraction; a decimal point; a space before and after; a word; an exactness
 ;; prefix; a complex number with no imaginary part, in both its forms; and
 ;; ARABIC-INDIC DIGIT THREE (U+0663), which char-numeric? takes for a digit.
-;; Chez's string->number reads "+5", "-0", "#x10", "#e1e3", "10/2", "#e5",
-;; "5+0i" and "5@0" as exact integers (measured, Chez 10.4.1).
+;; Chez 10.4.1's string->number reads "+5", "-0", "#x10", "#e1e3", "10/2",
+;; "#e5", "5+0i" and "5@0" as exact integers.
 (define malformed
   (list "-1" "+5" "-0" "#x10" "1e3" "#e1e3" "10/2" "1.5" " 5" "5 " "five" "#e5"
         "5+0i" "5@0" (string (integer->char #x0663))))
@@ -147,11 +139,11 @@
 
 (run-suite "limits"
   (lambda ()
-    ;; --- defaults (decision 0005) ---
+    ;; --- defaults ---
     (test-eqv "read-header default 60 s"  60000 (limits-read-header-timeout-ms default-limits))
     (test-eqv "idle default 75 s"         75000 (limits-idle-timeout-ms default-limits))
     (test-eqv "body-inactivity 60 s"      60000 (limits-body-inactivity-timeout-ms default-limits))
-    (test-eqv "linger 30 s (decision 0011)" 30000 (limits-linger-timeout-ms default-limits))
+    (test-eqv "linger 30 s" 30000 (limits-linger-timeout-ms default-limits))
     (test-eqv "write timeout 60 s per completion" 60000 (limits-write-timeout-ms default-limits))
     (test-eqv "tick 250 ms"               250   (limits-tick-ms default-limits))
     (test-eqv "max header bytes 16 KiB"   16384 (limits-max-header-bytes default-limits))
@@ -171,7 +163,7 @@
 
     ;; --- default-limits is exactly the empty environment (one code path) ---
     ;; Every field, so a default that moves in one place and not the other is
-    ;; caught whichever field it is (plan §3: each new limit extends this guard).
+    ;; caught whichever field it is; each new limit extends this guard.
     (let ((empty (limits-from-environment (lambda (name) #f))))
       (test-equal "empty env == default-limits, field by field"
                   (map (lambda (field) (field default-limits)) all-fields)
@@ -216,7 +208,7 @@
       (test-eqv "untouched read-header keeps default" 60000
                 (limits-read-header-timeout-ms L)))
 
-    ;; --- the write timeout in seconds, the tick in milliseconds (M5.1) ---
+    ;; --- the write timeout in seconds, the tick in milliseconds ---
     ;; Made inside the check, so a reader that refuses them fails the check.
     (test-equal "write 90 s -> 90000 ms; the tick is given in ms: 100 -> 100 ms"
                 '(90000 100)
@@ -224,7 +216,7 @@
                           (env '("CHEZ_HTTP_WRITE_TIMEOUT" . "90") '("CHEZ_HTTP_TICK_MS" . "100")))))
                   (list (limits-write-timeout-ms L) (limits-tick-ms L))))
 
-    ;; --- the drain timeout in whole seconds (M8.1) ---
+    ;; --- the drain timeout in whole seconds ---
     ;; Made inside the check, so a reader that refuses them fails the check.
     ;; A drain of 0 s is accepted: its deadline is the shutdown's own instant.
     (test-equal "drain 3 s -> 3000 ms, and 0 s -> 0 ms; below 0, or not a number, is refused"
@@ -235,7 +227,7 @@
                           (limits-from-environment (env (cons "CHEZ_HTTP_DRAIN_TIMEOUT" value))))))
                      '("3" "0" "-1" "soon")))
 
-    ;; --- the write water marks, in bytes (M6.3) ---
+    ;; --- the write water marks, in bytes ---
     ;; Made inside the checks, so a reader that refuses them fails the check.
     (let ((waters (lambda pairs
                     (guard (e (#t 'faulted))
@@ -286,9 +278,8 @@
                          'no-fault))
                      '("0" "no" "False")))
 
-    ;; --- no pipeline cap (0005's amendment of 2026-10-04): the variable
-    ;; that set one is not read, whatever it holds, a value v0.1.0 refused
-    ;; among them.
+    ;; --- no pipeline cap: CHEZ_HTTP_PIPELINE_CAP is not read, whatever it
+    ;; holds, a malformed value among them.
     (let ((defaults (map (lambda (field) (field default-limits)) all-fields)))
       (test-equal "CHEZ_HTTP_PIPELINE_CAP is not read: whatever it holds, the limits are default-limits, field by field"
                   (list defaults defaults defaults defaults)
@@ -327,7 +318,7 @@
                  (lambda (name) (if (string=? name "CHEZ_HTTP_MAX_HEADER_BYTES") "big" #f)))
                'no-fault))
 
-    ;; --- a numeric value is ASCII digits alone (0005's amendment of 2026-10-05) ---
+    ;; --- a numeric value is ASCII digits alone ---
     ;; Each variable alone, so a refusal can only be its own.
     (test-equal "a timeout not in ASCII digits alone is refused, naming its variable, for each of the six"
                 (refused-for timeout-variables)
@@ -349,7 +340,7 @@
                       (set-alone (car count-variables) "0100")
                       (set-alone body-variable "00")))
 
-    ;; --- where the server listens (decision 0012) ---
+    ;; --- where the server listens ---
     (test-equal "the server listens on 127.0.0.1:8080 by default, or when both are empty"
                 '(("127.0.0.1" 8080) ("127.0.0.1" 8080))
                 (list (address (env))
@@ -369,7 +360,7 @@
                 (cons (port-alone "#x1F90") (map port-alone malformed)))
     (test-eqv "a port's leading zeros are digits too: 08080 is 8080" 8080 (port-alone "08080"))
 
-    ;; --- how long each kind of deadline lasts (M5.1) ---
+    ;; --- how long each kind of deadline lasts ---
     (test-equal "each deadline kind lasts its own timeout"
                 '(1000 2000 3000 4000 5000)
                 (let ((L (limits-with default-limits

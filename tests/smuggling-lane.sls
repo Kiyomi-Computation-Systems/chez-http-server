@@ -1,7 +1,6 @@
 #!r6rs
 ;;; (smuggling-lane) — the server's answer to the request-framing vectors of
-;;; (smuggling-corpus), and the run they are held to.  M8.3's last open item
-;;; (plan §14; design §8.8, beside the robustness lane).
+;;; (smuggling-corpus), and the run they are held to.
 ;;;
 ;;; Each case is fed to one fake connection as its bytes, whole and at every
 ;;; chunk size (reusing (outcome-lane)), the handler reading any body it is
@@ -13,7 +12,7 @@
 ;;;   1. THE VERDICT.  Each case's measured verdict is the one the corpus
 ;;;      records (`served`, or a refusal status), gated BOTH WAYS: a change
 ;;;      that serves a recorded refusal, or refuses a recorded serve, or moves
-;;;      a refusal's status, fails until the corpus is updated under review.
+;;;      a refusal's status, fails until the corpus is updated.
 ;;;   2. THE SECURITY POLICY.  A `hazard` case is never recorded as served and
 ;;;      a `safe` case never as refused: the corpus's own `category` and its
 ;;;      recorded verdict agree.  With property 1 this is the lane's reason to

@@ -1,6 +1,6 @@
 #!r6rs
-;;; The pin test (brief, M0).  The F-* flag constants and method numbers the
-;;; recorded parser traces depend on are IMPORTED from (httparse decisions) and
+;;; Pin test: the F-* flag constants and method numbers the recorded parser
+;;; traces depend on are IMPORTED from (httparse decisions) and
 ;;; (httparse methods), never copied, and must equal llhttp's own values.
 ;;;
 ;;; Oracle: llhttp's FLAGS enum and method table (src/native/http.c and
@@ -9,8 +9,8 @@
 ;;; ever moves one of these, this suite reddens before any trace can lie.
 ;;;
 ;;; The adapter also reads the parser's `upgrade` field, llhttp's own answer to
-;;; whether a message upgrades, which chez-httparse documents since v0.4.1 as
-;;; llhttp's `llhttp_get_upgrade` (#47).  Its oracle is llhttp's recorded logs,
+;;; whether a message upgrades (chez-httparse v0.4.1 or later documents it as
+;;; llhttp's `llhttp_get_upgrade`).  Its oracle is llhttp's recorded logs,
 ;;; which pause for an upgrade exactly when one of a fixture's messages
 ;;; upgrades.
 (import (rnrs) (srfi :64) (testing)
@@ -73,7 +73,7 @@
 
 (run-suite "flag-pins"
   (lambda ()
-    ;; the two the brief names explicitly
+    ;; the connection-close and skip-body flags
     (test-eqv "F-CONNECTION-CLOSE = 1<<1" 2  F-CONNECTION-CLOSE)
     (test-eqv "F-SKIP-BODY = 1<<6"        64 F-SKIP-BODY)
 

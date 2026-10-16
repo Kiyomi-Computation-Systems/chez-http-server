@@ -1,23 +1,30 @@
 #!r6rs
 ;;; (http-server private scheduler): coroutines, and the turn of two levels,
-;;; the drain then the poll.  M7.1's first step; a park by a full
-;;; continuation, which lands once, decision 0025's.
+;;; the drain then the poll.  A park is by a full continuation, which lands
+;;; once.
 ;;;
-;;; Oracles: design §5.2 and §5.3's invariants, decision 0003 item 2,
-;;; decision 0014, and decision 0025.  `poll!` is the scheduler's one
-;;; injection point (design §5.3), so no check loads libuv: each scheduler
-;;; polls a script, which records the mode it was asked to poll in and runs
-;;; the next batch of callbacks, as `uv-run` runs the callbacks that landed,
-;;; answering whether more batches remain.  Every run of turns is capped by
-;;; a count, never by the clock (global-constraints).
+;;; Oracles: the scheduler's invariants R1 to R5, and the contract of the
+;;; drain and the turn.  The invariants, each a refusal naming it:
+;;;   R1  a callback captures no continuation: a park, or a drain, inside the
+;;;       poll is refused;
+;;;   R2  a continuation is captured only on a coroutine's stack, entered
+;;;       from the drain: a park on no coroutine is refused;
+;;;   R3  a coroutine never returns normally: it ends by jumping to the
+;;;       drain's current continuation;
+;;;   R4  a resume cell is one-shot (the waits' invariant, checked in
+;;;       test-waits.sps);
+;;;   R5  a parser callback never waits: a park inside a feed is refused.
+;;;
+;;; `poll!` is the scheduler's one injection point, so no check loads libuv:
+;;; each scheduler polls a script, which records the mode it was asked to poll
+;;; in and runs the next batch of callbacks, as `uv-run` runs the callbacks
+;;; that landed, answering whether more batches remain.  Every run of turns is
+;;; capped by a count, never by the clock.
 ;;;
 ;;; The checks, R3's first.  A coroutine that returns normally, R3 broken,
 ;;; returns into the drain that first entered it, which runs again from
-;;; there, and the drains after it break: that drain's continuation is a
-;;; full one (decision 0025), where Chez refused a return into a one-shot
-;;; one.  Since M7.2's handler for a coroutine's raise, that comes at the
-;;; first coroutine that raises, or parks and ends, so R3's row runs before
-;;; any other (the M7 exit):
+;;; there, and the drains after it break.  That comes at the first coroutine
+;;; that raises, or parks and ends, so R3's row runs before any other:
 ;;;   - R3: a coroutine that parks, is woken and ends, ends through the
 ;;;     scheduler: its end once, and the turns after it run on;
 ;;;   - a coroutine spawned runs at the next drain, not where it was spawned,
@@ -30,7 +37,7 @@
 ;;;     while it runs, in the order they were made ready; a coroutine that
 ;;;     yields runs again only after the poll;
 ;;;   - the poll is 'once when nothing is ready after the drain, and
-;;;     'nowait when a coroutine yielded (design §5.3's first mutation);
+;;;     'nowait when a coroutine yielded;
 ;;;   - R1: a callback that parks, and a drain inside a callback, are
 ;;;     refused as R1;
 ;;;   - R2: a park on no coroutine, from a call the drain makes or from
@@ -44,29 +51,27 @@
 ;;;     coroutine parameterizes stays its own across a park;
 ;;;   - a park's or a yield's continuation entered a second time is refused:
 ;;;     the coroutine whose turn it is ends by an assertion naming the verb,
-;;;     and the code after the park runs once (decision 0025: a one-shot
-;;;     continuation refused it, and a full one lands as often as it is
-;;;     entered); so inside a guard that catches everything, which never
+;;;     and the code after the park runs once (a full continuation lands as
+;;;     often as it is entered, so the scheduler refuses the second landing
+;;;     itself); so inside a guard that catches everything, which never
 ;;;     sees the refusal; and entered from another coroutine while its own
 ;;;     waits on a newer park, the one that entered it ends, and the one
 ;;;     parked stays parked, its newer park landing when it is woken;
 ;;;   - a coroutine that ends, by its value or by a raise, allocates no stack
-;;;     of its own (M7.2's first step: a `guard` around the thunk gave each
-;;;     one a stack);
+;;;     of its own (a `guard` around the thunk would give each one a stack);
 ;;;   - a coroutine that parks once, is woken and ends allocates under half
 ;;;     of what a one-shot continuation held at the same depth allocates
-;;;     (decision 0025's review: on a one-shot continuation the drain
-;;;     entered, its park cost a fresh stack segment);
+;;;     (on a one-shot continuation the drain entered, its park would cost a
+;;;     fresh stack segment);
 ;;;   - a coroutine parked keeps on the heap under half of what a one-shot
-;;;     continuation held at the same depth keeps (decision 0025: parked by
-;;;     a one-shot continuation, it kept that stack segment);
+;;;     continuation held at the same depth keeps (parked by a one-shot
+;;;     continuation, it would keep that stack segment);
 ;;;   - a coroutine woken with a value it lets go keeps none of it once it
 ;;;     parks again, and one it keeps is held, which calibrates the weak
-;;;     pairs the check reads (plan §14, 2026-10-11: the scheduler kept a
-;;;     wake's value until the next wake);
+;;;     pairs the check reads;
 ;;;   - a coroutine's record, kept, keeps its thunk no longer once it has
 ;;;     been entered, nor, once the coroutine has ended, what it ended with
-;;;     or its end procedure (the same day's review).
+;;;     or its end procedure.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) make-parameter parameterize statistics sstats-bytes call/1cc
               collect collect-maximum-generation weak-cons bwp-object?)
@@ -252,8 +257,8 @@
 
 ;; one-shot-held : Nat Nat -> Nat
 ;; What each of `n` one-shot continuations keeps on the heap, each captured
-;; `d` calls deep and left by an escape, never called: a park as the
-;; scheduler made one before decision 0025, with no scheduler.
+;; `d` calls deep and left by an escape, never called: a park by a one-shot
+;; continuation, with no scheduler.
 (define (one-shot-held n d)
   (let* ((before (heap))
          (kept (let loop ((i 0) (kept '()))
@@ -652,13 +657,12 @@
 
     ;; --- what a coroutine allocates --------------------------------------
     ;; A one-shot continuation captured 4 calls deep and left keeps a stack
-    ;; segment: 3,516 B each (Darwin arm64), whatever the scheduler does.
-    ;; Calibration: the counter sees it.  A coroutine that ends, by its value
-    ;; or by a raise, needs no stack of its own, and under 1,024 B it cannot
-    ;; have made one.  One that parks once, woken and ended, allocates under
-    ;; half of the reference, 4 calls deep: on a one-shot continuation the
-    ;; drain entered, its full park cost a fresh segment, 4,256 to 4,257 B;
-    ;; on a full one, 1,177 to 1,242 B (decision 0025's review).
+    ;; segment, whatever the scheduler does.  Calibration: the counter sees
+    ;; it.  A coroutine that ends, by its value or by a raise, needs no stack
+    ;; of its own, and under 1,024 B it cannot have made one.  One that parks
+    ;; once, woken and ended, allocates under half of the reference, 4 calls
+    ;; deep: on a one-shot continuation the drain entered, its full park would
+    ;; cost a fresh segment.
     (let ((reference (one-shot-allocates 1000 4)))
       (test-eq "a one-shot continuation captured 4 calls deep and left allocates a stack the counter sees"
                'stacks (if (> reference 2048) 'stacks reference))
@@ -673,14 +677,13 @@
                'stackless (if (< raised 1024) 'stackless raised)))
 
     ;; --- what a coroutine keeps, parked -----------------------------------
-    ;; Decision 0025: parked by a one-shot continuation, a coroutine kept the
-    ;; stack segment its park was captured on, 3,691 to 3,692 B 4 calls deep;
-    ;; by a full one, it keeps its frames, 802 B, the drain's continuation
-    ;; full too (Darwin arm64, and Linux aarch64 and x86_64, alike).  The
-    ;; reference is that one-shot park with no scheduler, a one-shot
-    ;; continuation captured 4 calls deep and left by an escape, 3,419 to
-    ;; 3,420 B on all three.  Should it keep under 2 KiB, the counter no
-    ;; longer sees a segment, and the suite stops as a provenance failure.
+    ;; Parked by a one-shot continuation, a coroutine would keep the stack
+    ;; segment its park was captured on; by a full one, it keeps its frames
+    ;; only, the drain's continuation full too.  The reference is that
+    ;; one-shot park with no scheduler, a one-shot continuation captured 4
+    ;; calls deep and left by an escape.  Should it keep under 2 KiB, the
+    ;; counter no longer sees a segment, and the suite stops as a provenance
+    ;; failure.
     (parked-held 100 4)
     (one-shot-held 100 4)
     (let* ((reference (one-shot-held 1000 4))

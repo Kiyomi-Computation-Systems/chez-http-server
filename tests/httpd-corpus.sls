@@ -1,19 +1,18 @@
 #!r6rs
 ;;; (httpd-corpus) — Apache httpd-tests' http_strict.t request table, read from
-;;; the vendored file (decision 0007) as data, never run.  M8.3, the
-;;; strictness lane.
+;;; the vendored file as data, never run.
 ;;;
 ;;; The table is Perl: `my @test_cases = ( ... );`, a row `[ REQUEST =>
 ;;; UNSAFE, STRICT, CONDITION ]`, where REQUEST is double-quoted strings
 ;;; joined by `.`, UNSAFE and STRICT are what the test expects of httpd's
 ;;; lenient and strict hosts (STRICT, absent or undef, is UNSAFE, as the
-;;; harness reads it), and CONDITION,
-;;; when present, gates the row on httpd's own build.  An expectation is a
-;;; number (0: any error, 1: any success, 90: an HTTP/0.9 body, else the
-;;; status) or `undef` (the connection dropped, with no answer).  A request
-;;; that begins "R" is a response-header test, sent through httpd's CGI.
-;;; This reads every row, decoding Perl's escapes, each character a byte, as
-;;; httpd's harness sends it, and refuses any other shape by its line.
+;;; harness reads it), and CONDITION, when present, gates the row on httpd's
+;;; own build.  An expectation is a number (0: any error, 1: any success, 90:
+;;; an HTTP/0.9 body, else the status) or `undef` (the connection dropped, with
+;;; no answer).  A request that begins "R" is a response-header test, sent
+;;; through httpd's CGI.  This reads every row, decoding Perl's escapes, each
+;;; character a byte, as httpd's harness sends it, and refuses any other shape
+;;; by its line.
 (library (httpd-corpus)
   (export httpd-path httpd-rows httpd-rows-of-text
           httpd-row-index httpd-row-request httpd-row-unsafe httpd-row-strict
@@ -26,11 +25,19 @@
 
   ;; A row: its index from 1, its request's bytes, the two expectations
   ;; (a Nat or 'undef), and its condition's text, or #f for none.
+  ;;
+  ;; httpd-row-index     : HttpdRow -> Nat
+  ;; httpd-row-request   : HttpdRow -> Bytevector
+  ;; httpd-row-unsafe    : HttpdRow -> (U Nat 'undef) — the lenient host's
+  ;; httpd-row-strict    : HttpdRow -> (U Nat 'undef) — the strict host's
+  ;; httpd-row-condition : HttpdRow -> (U String #f)
   (define-record-type httpd-row (fields index request unsafe strict condition))
 
   ;; httpd-row-conditional? : HttpdRow -> Boolean — the row has a condition.
   (define (httpd-row-conditional? r) (and (httpd-row-condition r) #t))
 
+  ;; httpd-parse-error? : Any -> Boolean — a row or the table was refused.
+  ;; httpd-parse-error-detail : HttpdParseError -> String — why.
   (define-condition-type &httpd-parse &error
     make-httpd-parse-error httpd-parse-error? (detail httpd-parse-error-detail))
 

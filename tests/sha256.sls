@@ -1,12 +1,12 @@
 #!r6rs
 ;;; (sha256) — a byte-exact SHA-256 in pure R6RS.
 ;;;
-;;; Decision 0007 vendors every corpus with a `sha256` per file; the harness's
-;;; own fingerprint is a polynomial rolling hash explicitly "not for anything
+;;; Every vendored corpus lists a `sha256` per file; the harness's own
+;;; fingerprint is a polynomial rolling hash explicitly "not for anything
 ;;; security relevant", so it cannot verify a sha256 manifest.  This can.  It is
 ;;; test-only support, imports only (rnrs), and is calibrated against FIPS 180-4
 ;;; vectors by every suite that uses it — an uncalibrated instrument measures
-;;; nothing (design §8, decision 0008 item 4).
+;;; nothing.
 ;;;
 ;;; Arithmetic is on exact integers masked to 32 bits, never native words; R6RS
 ;;; guarantees the range and `string-set!` is not in the base library, so the

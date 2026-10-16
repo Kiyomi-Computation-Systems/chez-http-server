@@ -1,10 +1,10 @@
 #!r6rs
 ;;; (test-fake-shell) — the fake shell records faithfully, queues in order, and
-;;; takes its clock by injection.  M1.4.  Its trace sees events and actions in
-;;; the order it handles them, as the libuv shell's does (M4.4).  Driven against stub steps, so these
-;;; checks hold whatever core it carries; conn-step runs in it in
-;;; test-connection-table.sps, and the whole message loop in
-;;; test-message-loop.sps (M2.4).
+;;; takes its clock by injection.  Its trace sees events and actions in the
+;;; order it handles them, as the libuv shell's does.  Driven against stub
+;;; steps, so these checks hold whatever core it carries; conn-step runs in it
+;;; in test-connection-table.sps, and the whole message loop in
+;;; test-message-loop.sps.
 (import (rnrs) (srfi :64) (testing) (fake-shell))
 
 ;; echo-step : count deliveries; each event's action echoes the event.
@@ -63,17 +63,17 @@
       (test-eq "advance! refuses a negative step" 'refused
                (guard (e (#t 'refused)) (fake-shell-advance! s -1) 'accepted)))
 
-    ;; M5.3: a fake connection's timer is its wheel's; a stub step's shell
-    ;; keeps none, so firing it is refused, where its tick is delivered.
+    ;; a fake connection's timer is its wheel's; a stub step's shell keeps
+    ;; none, so firing it is refused, where its tick is delivered.
     (let ((s (make-fake-shell echo-step 0 0)))
       (test-equal "a stub step's shell keeps no timer: firing it is refused, and nothing is delivered"
                   '(refused ())
                   (list (guard (e ((assertion-violation? e) 'refused)) (fake-shell-fire! s) 'fired)
                         (fake-shell-events s))))
 
-    ;; M2.4: actions run after the outermost dispatch, from one queue (design
-    ;; §4.5).  Performing (call b) dispatches b; b's action must wait behind
-    ;; the (note 1) already queued, never run in a drain nested inside this one.
+    ;; actions run after the outermost dispatch, from one queue.  Performing
+    ;; (call b) dispatches b; b's action must wait behind the (note 1) already
+    ;; queued, never run in a drain nested inside this one.
     (let ((s (make-fake-shell call-step 'st 0
                               (lambda (sh action)
                                 (when (eq? (car action) 'call)
@@ -84,11 +84,11 @@
       (test-equal "both events were dispatched, in order" '(a b) (fake-shell-events s))
       (test-equal "every action ran from the outermost drain" '() (fake-shell-violations s)))
 
-    ;; M4.4: a trace sees what the shell does in the order it does it, as the
-    ;; libuv shell's trace does (the contract test compares the two): each
-    ;; event as it is dispatched, and each action as it runs, before it is
-    ;; performed.  So b, dispatched while (call b) is performed, comes after
-    ;; (call b) and before (note 1).
+    ;; a trace sees what the shell does in the order it does it, as the libuv
+    ;; shell's trace does (the contract test compares the two): each event as
+    ;; it is dispatched, and each action as it runs, before it is performed.
+    ;; So b, dispatched while (call b) is performed, comes after (call b) and
+    ;; before (note 1).
     (let* ((seen '())
            (s (make-fake-shell call-step 'st 0
                                (lambda (sh action)
@@ -100,11 +100,11 @@
                   '((event a) (action (call b)) (event b) (action (note 1)) (action (note 2)))
                   (reverse seen)))
 
-    ;; M3.5: the core shuts the write side once its last write has completed
-    ;; (decision 0011), so a write after the shutdown is the core's bug,
-    ;; refused where it happens.  The raise abandons the dispatch it came
-    ;; from: the note queued behind the write never runs, and the shell
-    ;; dispatches the next event as it would have.
+    ;; the core shuts the write side once its last write has completed, so a
+    ;; write after the shutdown is the core's bug, refused where it happens.
+    ;; The raise abandons the dispatch it came from: the note queued behind
+    ;; the write never runs, and the shell dispatches the next event as it
+    ;; would have.
     (let ((s (make-fake-shell shut-step 'st 0)))
       (fake-shell-deliver! s 'write)
       (fake-shell-deliver! s 'shut)

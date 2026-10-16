@@ -1,6 +1,6 @@
 #!r6rs
 ;;; (lighttpd-corpus) — lighttpd's request.t blocks, read from the vendored
-;;; file (decision 0007) as data, never run.  M8.3, the strictness lane.
+;;; file as data, never run.
 ;;;
 ;;; request.t is Perl, in sections headed "## ...".  A block sets
 ;;; `$t->{REQUEST}` to a heredoc, `$t->{RESPONSE}` to the responses it
@@ -27,8 +27,17 @@
 
   ;; A block: the line its request begins on, its test name, its section,
   ;; its request's bytes, and the statuses it expects, in order.
+  ;;
+  ;; lighttpd-block-line     : LighttpdBlock -> Nat
+  ;; lighttpd-block-name     : LighttpdBlock -> String
+  ;; lighttpd-block-section  : LighttpdBlock -> String
+  ;; lighttpd-block-request  : LighttpdBlock -> Bytevector
+  ;; lighttpd-block-statuses : LighttpdBlock -> (Listof Nat)
   (define-record-type lighttpd-block (fields line name section request statuses))
 
+  ;; lighttpd-parse-error? : Any -> Boolean — a block was refused.
+  ;; lighttpd-parse-error-detail : LighttpdParseError -> String — why, with the
+  ;; line of request.t.
   (define-condition-type &lighttpd-parse &error
     make-lighttpd-parse-error lighttpd-parse-error? (detail lighttpd-parse-error-detail))
 

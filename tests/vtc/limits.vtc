@@ -1,7 +1,6 @@
 vtest "A target, a field value or a body past its limit is refused, then closed"
-# Decision 0005's defaults: 8,192 bytes of target (414) and of a field
-# value (431); the lane's server caps a body at 1,024 bytes
-# (CHEZ_HTTP_MAX_BODY_BYTES), 413 (decision 0013 item 5).
+# The defaults: 8,192 bytes of target (414) and of a field value (431); the
+# lane's server caps a body at 1,024 bytes (CHEZ_HTTP_MAX_BODY_BYTES), 413.
 client c1 -connect "${host} ${port}" {
     txreq -url "/${string,repeat,8200,a}"
     rxresp

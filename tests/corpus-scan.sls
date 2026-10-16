@@ -1,9 +1,8 @@
 #!r6rs
-;;; (corpus-scan) — the delivery sizes the M8.3 lanes share, and the check
-;;; that a case's outcome holds at each (step 2's review: one rule for both
-;;; lanes).  The sizes are the corpus lanes': size 1 and the whole input by
-;;; default, every size under CORPUS=full (decision 0007's pr/release split,
-;;; through chez-httparse's `corpus-scan-sizes`).
+;;; (corpus-scan) — the delivery sizes the corpus lanes share, and the check
+;;; that a case's outcome holds at each.  The sizes are size 1 and the whole
+;;; input by default, every size under CORPUS=full (through chez-httparse's
+;;; `corpus-scan-sizes`).
 (library (corpus-scan)
   (export corpus-selection delivery-sizes invariance-fault)
   (import (rnrs) (only (chezscheme) getenv)

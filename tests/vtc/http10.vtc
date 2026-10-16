@@ -1,8 +1,8 @@
 vtest "HTTP/1.0 closes after its answer unless it asks to keep alive"
-# Decision 0006 item 1: a 1.0 connection closes unless the client sends
-# Connection: keep-alive.  Decision 0010 item 3: the server writes
-# Connection: close when it closes, and Connection: keep-alive to a 1.0
-# client that asked to keep it.  RFC 9110 §2.5: the answer is HTTP/1.1.
+# A 1.0 connection closes unless the client sends Connection: keep-alive.
+# The server writes Connection: close when it closes, and Connection:
+# keep-alive to a 1.0 client that asked to keep it.  RFC 9110 §2.5: the
+# answer is HTTP/1.1.
 client c1 -connect "${host} ${port}" {
     txreq -proto HTTP/1.0 -url "/a"
     rxresp

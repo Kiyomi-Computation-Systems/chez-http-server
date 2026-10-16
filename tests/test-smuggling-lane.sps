@@ -1,9 +1,8 @@
 #!r6rs
 ;;; The smuggling-framing lane: the server's answer to the hand-written
 ;;; request-framing vectors of (smuggling-corpus) — the shapes an HTTP
-;;; request-smuggling (desync) attack is built from (plan §14's last open
-;;; item, M8.3; design §8.8).  Defensive and test-only: fixed vectors, no
-;;; generator, no probe.
+;;; request-smuggling (desync) attack is built from.  Defensive and test-only:
+;;; fixed vectors, no generator, no probe.
 ;;;
 ;;; The corpus loads and assembles to the exact bytes we wrote; then two
 ;;; properties are gated over every case (tests/smuggling-lane.sls): each
@@ -29,7 +28,6 @@
 
       ;; 1. the corpus loads: a fixed count and mix, so the lane is not
       ;;    vacuous and the properties below loop over the list this counts.
-      ;;    (measured at the time of writing, 2026-10-04.)
       (test-eqv "nineteen framing vectors" 19 (length cases))
       (test-eqv "six are safe (served)" 6
                 (length (filter (lambda (c) (eq? (smuggling-case-category c) 'safe)) cases)))
