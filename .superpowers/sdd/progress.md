@@ -317,3 +317,12 @@ NEXT: the pin waits in Unreleased for the server's next release, by the owner's 
 - `make test` green before the commit (Darwin arm64): fifty-one suites, 2,115 expected passes, every pin ok.
 
 NEXT: the PR, and its closing ritual when the owner asks. The pin waits in Unreleased for the server's next release, by #185's form; chez-websocket reaches chez-libuv v0.11.0 through it, and its pin to v0.6.0 is still to do. Plan §14's open list holds nine items.
+
+MERGED to main on 2026-10-16, on the owner's "Do closing ritual": **the chez-libuv v0.11.0 pin, #186** (the entry above). cc793b0 was squashed as 4fec604 (tree b86ce88, the tested tip's; parent 532cdc5), with `--match-head-commit` on the full SHA, its gitlink afe79a5.
+- **CI.** Billing-blocked. Each run's `linux` job was not started (0 steps, the payments annotation): the PR's 38882774720 and main's 38898493983 on the squash. The runs in the entry above stood in, as the PR body said. It merged past the red check on the owner's word.
+- **The shared checkout.** Its chez-libuv store lacked afe79a5, so the v0.11.0 tag was fetched into it from origin before the fast-forward. `make build` there then checked the submodule out at afe79a5; `check-pins` reads it ok, and its status is clean.
+- **Branches.** `chore/chez-libuv-v0.11.0` deleted, remote and local, once this session's worktree was detached at 4fec604 for this reflect. No PR is open.
+
+`make test` green on main: fifty-one suites, 2,115 expected passes, every pin ok (chez-libuv at afe79a5).
+
+NEXT: the pin waits in Unreleased for the server's next release, by #185's form; chez-websocket reaches chez-libuv v0.11.0 through it, and its pin to v0.6.0 is still to do. When main's runs start again, re-run main's latest run once. Plan §14's open list holds nine items.
