@@ -2917,3 +2917,75 @@ That suite loads no fake; run alone with KR-7's root, it passed twice, 38 each.
 
 **Each new check has a killer by value:** K-1, KR-1, KR-2, KR-3, KR-6 and KR-7; K-2, KR-1
 and KR-5; K-3, KR-1, KR-3 and KR-4.
+
+## The fake's write bound (decision 0027), on `fix/fake-door-write-bound` (2026-10-16)
+
+Five new checks in the switch suite (B-1 to B-5) and a thirteenth door script in the
+contract test (C-1, "a taker that closes behind 16 MiB its client reads nothing of: aborted
+at the write timeout"):
+- **B-1:** the bound armed at the write timeout from the close, met to the millisecond, the
+  write told ECANCELED, and a cancel after arms nothing.
+- **B-2 and B-3:** the taker's own deadline earlier, then later, than the bound.
+- **B-4:** a write's end moving the bound, and nothing armed once aborted.
+- **B-5:** the entry at the earlier of the two, and a cancel keeping the bound.
+- **C-1:** its client stops reading once it has the 101 (`(stop-reading)`), and its end step
+  `(bounded)` holds that the libuv shell told the taker's write ECANCELED.
+
+**Red on item 4's fake** (prediction 3, dec5d99f…, exact):
+- B-1 to B-5 by the values predicted: no bound, so a later turn let the client read the
+  write and the close lingered.
+- C-1's trace check `(differs-at 22 libuv (door (stream-passed T)) fake (door (stream-wrote
+  ECANCELED)))`: the fake's entry was unarmed, so its timer firing at the libuv shell's
+  pass traced nothing.
+
+**Eleven rows on the fake with its bound, every suite** (prediction 4, e2109c44…, with one
+value corrected before the run, 45a23f5b…):
+
+| Row | Mutant | Red, by value |
+|---|---|---|
+| BR-0 | unmutated (a comment) | none |
+| BR-1 | the close arms no bound, `(values)` | B-1 `(#f … 90000)`, B-2, B-3, B-5 `(65000 #f 5)`; C-1 at 22; and "a taker that waits, then says goodbye", both shells (below) |
+| BR-1b | the close arms no bound, `#f` | B-1, B-2, B-3, B-5 with BR-1's values; C-1 at 22 (prediction 5, 52dc3037…) |
+| BR-2 | a write's end re-arms nothing | B-4: `(60000 ((#f) 0) (ECANCELED ECANCELED #f) 1 closed #f …)` |
+| BR-3 | a passing ignores the bound | B-1 to B-4 (B-3's call made twice); C-1 `(differs-at 23 libuv (door (stream-close)) fake (door (stream-wrote ECANCELED)))` |
+| BR-4 | the entry at the later of the two | B-2 `(60000 (0 60000 handed-off) …)`, B-3, B-5 `(65000 60000 60000)`; and the existing "a close waiting on a write the client has not read: a deadline asked for then is armed …" `(60000 0 0 …)` |
+| BR-5 | a cancel disarms the entry | B-5: `(60000 #f 5)` |
+| BR-6 | no re-arm after the taker's call | B-2: `(1000 (1 #f handed-off) (#f) 0 handed-off)` |
+| BR-7 | the bound from the linger's limit | B-1 to B-5 at 30000; C-1 green (the quick limits' linger and write are both 300) |
+| BR-8 | the bound closes without aborting | B-1 to B-4, each write told #f and read; C-1 green (the replay gives the write's outcome) |
+| BR-10 | the entry armed while the stream closes | B-1 `(… #t 60000)`, B-4 `(… 120100 …)` |
+| BR-11 | the bound passes only after its instant (`<`) | B-1 to B-4 |
+
+**Prediction errors:**
+- **BR-1's door-waits reds.** The mutant's `(values)` made the close verb return no values,
+  and that script's waiting thunk ends with its close. A waiting taker's thunk that ends with
+  no values is taken as a raise: the scheduler stores its value in a one-value context. A
+  probe on today's fake records `"returned ~a values to single value return context"` as
+  the taker's failure. Decision 0023 says the value is dropped, so this is flagged as a task
+  of its own, not fixed here. BR-1b, re-cut to answer `#f`, reddens only what it predicts.
+- **BR-4** also reddens the existing deadline-after-close check, which arms a deadline beside
+  the bound.
+- **BR-10** leaves the existing "on a stream that has closed, a deadline arms nothing" green:
+  that stream lingered, and the deadline verb ignores a lingering stream.
+- **BR-11** reddens B-2 and B-4 too: every check that meets the bound at its instant.
+
+**The script's own harness, on the contract test alone** (prediction 6, 9ca876b2…):
+- **CT-1, `(stop-reading)` stops nothing.** C-1's check 1 is red, its last wait
+  `(not-bounded …)`, the write completed. Its check 2 is red too, `(wrong-length
+  13971173)`, which I did not predict: the last wait trusts the step and does not wait for
+  the client to read what is still in flight.
+- **CT-2, the last wait asks for the stopped client's end.** Check 1 red: `(satisfied
+  satisfied iterations-exhausted satisfied)`.
+- **SH-1, the libuv shell's close arms no bound** (src). Check 1 red: `(… iterations-exhausted
+  (not-bounded …))`.
+
+**Every mutant loaded:** 561 logs and the four run alone, none with `Exception` or
+`HARNESS`.
+
+**Each new check has a killer by value:**
+- B-1: BR-1, BR-3, BR-7, BR-8, BR-10, BR-11.
+- B-2: BR-1, BR-3, BR-4, BR-6, BR-7, BR-8, BR-11.
+- B-3: BR-1, BR-3, BR-4, BR-7, BR-8, BR-11.
+- B-4: BR-2, BR-3, BR-7, BR-8, BR-10, BR-11.
+- B-5: BR-1, BR-4, BR-5, BR-7.
+- C-1: check 1 by CT-1, CT-2 and SH-1; check 3 by BR-1 and BR-3.

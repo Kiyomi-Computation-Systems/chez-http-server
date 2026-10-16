@@ -88,3 +88,20 @@ Settled here by precedent, and flagged to the owner with the slice:
   - **the linger from the close call**, as ws's `closeTimeout` runs from `close()`: one
     bound for the whole close, writes included. That cuts a close with more than 30 s of
     writes to a client that reads slowly, and it changes 0026's bound.
+
+## Amendment (2026-10-16) — the fake shell bounds the close too
+
+On the owner's "fix items 4 and 5 from the open list" (plan §14's second review note).
+- **What this record said was wrong.** "The fake shell is unchanged ... no write a close
+  waits for outlasts a turn, and the bound never applies." A test that delivers no later
+  turn plays a client that reads nothing (decision 0024), so a fake write can be held. The
+  fake then made the taker's deadline call where the libuv shell aborts the stream, and
+  with no deadline of the taker's, it held the close open.
+- **Now** the fake keeps the taker's own deadline and the close's write bound as two
+  instants, its one wheel entry armed at the earlier, as the libuv shell does. The bound
+  runs from the close and again from each write's end, and the stream is aborted past
+  it.
+- **Held by** five checks in the switch suite, and a contract script whose client stops
+  reading once it has the `101`, its taker closing behind 16 MiB. The replay gives the
+  fake the libuv shell's pass at the bound, and the two traces must agree there. The
+  contract test's quick limits gain a 300 ms write timeout for it.

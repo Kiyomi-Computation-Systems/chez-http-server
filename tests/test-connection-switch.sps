@@ -30,6 +30,11 @@
 ;;; written.  Once lingering, the stream is the server's: a deadline, its
 ;;; cancel and a read-stop change nothing; an abort closes it at once.
 ;;;
+;;; Decision 0027: until then, each write the close waits for has the write
+;;; timeout, from the close and again from each write's end, and past it
+;;; the stream is aborted; the taker's own deadline runs beside it, the
+;;; earlier first.
+;;;
 ;;; Plan §14's review note (2026-10-12): what the client sends while the
 ;;; taker reads nothing, before its read-start or after its read-stop, is
 ;;; kept, as the kernel keeps it, and read once reading starts again.
@@ -815,6 +820,99 @@
                   '(("the waiting taker failed") (ECANCELED) 1 closed)
                   (list (map condition-message (fake-shell-taker-failures sh)) (taker-written t) (taker-closes t)
                         (conn-phase (fake-shell-conn-state sh)))))
+
+    ;; --- the close's write bound (decision 0027) ---------------------------
+    ;; Once a taker has asked to close, each write the close waits for has
+    ;; write-timeout-ms, from the close and again from each write's end, as
+    ;; the libuv shell's does, and past it the stream is aborted.  The
+    ;; taker's own deadline runs beside it, the stream's one entry armed at
+    ;; the earlier.  The client here reads nothing, so a write completes only
+    ;; where a test lets it.
+    (let* ((t (make-taker))
+           (w (limits-write-timeout-ms default-limits))
+           (sh (unread handshake
+                       (taking t (lambda (tr) (transport-write! tr (b "unread") 0 6 (noting t)) (transport-close! tr)))))
+           (armed (fake-shell-armed sh)))
+      (fake-shell-advance! sh (- w 1))
+      (fake-shell-fire! sh)
+      (let ((before (list (taker-written t) (taker-closes t) (conn-phase (fake-shell-conn-state sh)))))
+        (fake-shell-advance! sh 1)
+        (fake-shell-fire! sh)
+        (fake-shell-settle! sh)
+        (transport-deadline! (taker-transport t) #f)
+        (test-equal "a close waiting on a write the client reads nothing of, the taker arming no deadline: the bound armed at the write timeout from the close and met, the stream aborted, the write told ECANCELED, its close call once, nothing failed; a cancel after arms nothing"
+                    (list w '(() 0 handed-off) '(ECANCELED) 1 'closed '() #t #f)
+                    (list armed before (taker-written t) (taker-closes t) (conn-phase (fake-shell-conn-state sh))
+                          (fake-shell-taker-failures sh) (equal? (client-bytes sh) the-101) (fake-shell-armed sh)))))
+    (let* ((t (make-taker))
+           (w (limits-write-timeout-ms default-limits))
+           (sh (unread handshake
+                       (taking t (lambda (tr)
+                                   (transport-write! tr (b "unread") 0 6 (noting t))
+                                   (transport-close! tr)
+                                   (transport-deadline! tr 1000 (lambda () (taker-passes-set! t (+ 1 (taker-passes t)))))))))
+           (armed (fake-shell-armed sh)))
+      (fake-shell-advance! sh 1000)
+      (fake-shell-fire! sh)
+      (let ((after-own (list (taker-passes t) (fake-shell-armed sh) (conn-phase (fake-shell-conn-state sh)))))
+        (fake-shell-advance! sh (- w 1000))
+        (fake-shell-fire! sh)
+        (fake-shell-settle! sh)
+        (test-equal "a taker's own deadline, earlier, runs first, and its call, which does not abort, leaves the bound armed: aborted at the write timeout"
+                    (list 1000 (list 1 w 'handed-off) '(ECANCELED) 1 'closed)
+                    (list armed after-own (taker-written t) (taker-closes t) (conn-phase (fake-shell-conn-state sh))))))
+    (let* ((t (make-taker))
+           (w (limits-write-timeout-ms default-limits))
+           (sh (unread handshake
+                       (taking t (lambda (tr)
+                                   (transport-write! tr (b "unread") 0 6 (noting t))
+                                   (transport-close! tr)
+                                   (transport-deadline! tr (+ w 1000) (lambda () (taker-passes-set! t (+ 1 (taker-passes t)))))))))
+           (armed (fake-shell-armed sh)))
+      (fake-shell-advance! sh w)
+      (fake-shell-fire! sh)
+      (fake-shell-advance! sh 1000)
+      (fake-shell-fire! sh)
+      (fake-shell-settle! sh)
+      (test-equal "a taker's own deadline later than the bound: aborted at the write timeout, the taker's call never made"
+                  (list w '(ECANCELED) 1 'closed 0)
+                  (list armed (taker-written t) (taker-closes t) (conn-phase (fake-shell-conn-state sh)) (taker-passes t))))
+    ;; A write that ends moves the bound to the write timeout past its end;
+    ;; once the stream is aborted, the writes still told arm nothing.
+    (let* ((t (make-taker))
+           (w (limits-write-timeout-ms default-limits))
+           (sh (unread handshake
+                       (taking t (lambda (tr)
+                                   (transport-write! tr (b "one") 0 3 (noting t))
+                                   (transport-write! tr (b "two") 0 3 (noting t))
+                                   (transport-write! tr (b "three") 0 5 (noting t))
+                                   (transport-close! tr))))))
+      (fake-shell-advance! sh 100)
+      (fake-shell-deliver-later! sh)
+      (let ((moved (fake-shell-armed sh)))
+        (fake-shell-advance! sh (- w 1))
+        (fake-shell-fire! sh)
+        (let ((before (list (taker-written t) (taker-closes t))))
+          (fake-shell-advance! sh 1)
+          (fake-shell-fire! sh)
+          (fake-shell-settle! sh)
+          (test-equal "each write the close waits for has the write timeout: the first, written 100 ms after the close, moves the bound to the write timeout past it, where the other two are aborted, nothing armed after"
+                      (list (+ 100 w) '((#f) 0) '(ECANCELED ECANCELED #f) 1 'closed #f (concat (list the-101 (b "one"))))
+                      (list moved before (taker-written t) (taker-closes t) (conn-phase (fake-shell-conn-state sh))
+                            (fake-shell-armed sh) (client-bytes sh))))))
+    (let* ((t (make-taker))
+           (w (limits-write-timeout-ms default-limits))
+           (sh (unread handshake
+                       (taking t (lambda (tr) (transport-write! tr (b "unread") 0 6 (noting t)) (transport-close! tr)))))
+           (tr (taker-transport t)))
+      (transport-deadline! tr (+ w 5000) (lambda () #t))
+      (let ((later-own (fake-shell-armed sh)))
+        (transport-deadline! tr #f)
+        (let ((cancelled (fake-shell-armed sh)))
+          (transport-deadline! tr 5 (lambda () #t))
+          (test-equal "the bound and the taker's own deadline armed side by side: the entry at the earlier of the two, and a cancel of the taker's leaving the bound armed"
+                      (list w w 5)
+                      (list later-own cancelled (fake-shell-armed sh))))))
 
     ;; --- the door closed (decision 0016 items 1 and 4) ----------------------
     (test-equal "a request that does not upgrade, answered a switch: 500, logged not-an-upgrade, the staged close"

@@ -165,6 +165,13 @@
 ;;; taker's read-stop changes nothing, and once the stream lingers neither
 ;;; does its deadline or its cancel.
 ;;;
+;;; Decision 0027: A CLOSE'S WRITES ARE BOUNDED, as the libuv shell bounds
+;;; them.  Until the stream lingers, each write the close waits for has the
+;;; write timeout, from the close and again from each write's end, and past
+;;; it the stream is aborted.  The taker's own deadline runs beside it: the
+;;; one wheel entry is armed at the earlier, and once that one passes, the
+;;; other is armed again.
+;;;
 ;;; M7.3: A HANDLER THAT WAITS, as the libuv shell's (decision 0014), so
 ;;; the contract test (design §8.4) can hold the coroutine shell to it.  A
 ;;; fake connection keeps a scheduler of its own, (http-server private
@@ -449,14 +456,10 @@
         (assertion-violation 'fake-shell-fire! "a stub step's shell keeps no timer" s))
       (cond ((not (pair? (wheel-advance! wheel now))) '())
             ((fake-shell-taker s)
-             (let ((tk (fake-shell-taker s)))
-               (trace! s 'door (list 'stream-passed now))
-               (if (fake-taker-lingering? tk)
-                   (close-begun! s tk)
-                   (let ((passed (fake-taker-on-passed tk)))
-                     (when passed (taker-call! s tk passed))))
-               (unless (fake-shell-held? s) (schedule! s))
-               '()))
+             (trace! s 'door (list 'stream-passed now))
+             (taker-passed! s (fake-shell-taker s) now)
+             (unless (fake-shell-held? s) (schedule! s))
+             '())
             (else (fake-shell-deliver! s (list 'tick now))))))
 
   ;; fake-shell-run! : FakeShell (Listof Event) -> Void — deliver them in order.
@@ -608,7 +611,7 @@
       ((close) (fake-shell-reading?-set! s #f) (fake-shell-closing?-set! s #t) (later! s '(closed)))
       ((arm-deadline) (arm! s limits (cadr a)))
       ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
-      ((hand-off) (hand-off! s (cadr a) (caddr a) (cadddr a) (limits-deadline-ms limits 'linger)))
+      ((hand-off) (hand-off! s (cadr a) (caddr a) (cadddr a) limits))
       ((client-closed) (notice-close! (request-notice s)))
       (else (values))))
 
@@ -634,17 +637,23 @@
   ;; whether it aborted, whether the client's end has come (decision 0024),
   ;; whether the stream lingers, and how long it may (decision 0026); the
   ;; end the core handed over, 'eof, until the taker is told it at its
-  ;; read-start, else #f (0016's amendment of 2026-10-12); and what the
-  ;; client sent while the stream was not read, its reads and its end, in
-  ;; order, kept as the kernel keeps them (read-kept!).
+  ;; read-start, else #f (0016's amendment of 2026-10-12); what the client
+  ;; sent while the stream was not read, its reads and its end, in order,
+  ;; kept as the kernel keeps them (read-kept!); and the instants, by the
+  ;; fake clock, its own deadline passes at and its close's write bound
+  ;; does, each #f when none is armed, and how long a write may take
+  ;; (decision 0027).
   (define-record-type fake-taker
     (fields (mutable on-bytes) (mutable on-end) (mutable on-passed) (mutable on-drain)
             (mutable on-close) (mutable closing?) (mutable drained?) (mutable closed?)
             (mutable notice) (mutable writes) (mutable aborted?) (mutable ended?)
-            (mutable lingering?) (mutable unheard) (mutable kept) linger-ms)
-    (protocol (lambda (new) (lambda (linger-ms) (new #f #f #f #f #f #f #f #f #f 0 #f #f #f #f '() linger-ms)))))
+            (mutable lingering?) (mutable unheard) (mutable kept) (mutable due) (mutable bound)
+            linger-ms write-ms)
+    (protocol (lambda (new)
+                (lambda (linger-ms write-ms)
+                  (new #f #f #f #f #f #f #f #f #f 0 #f #f #f #f '() #f #f linger-ms write-ms)))))
 
-  ;; hand-off! : FakeShell (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) Boolean Nat -> Void
+  ;; hand-off! : FakeShell (Transport Bytevector -> Any) (U #f (List Bytevector Nat Nat)) Boolean Limits -> Void
   ;; The switch's take-over, called with a transport over the connection and
   ;; the bytes handed over, a copy, empty when none were.  A client's end
   ;; the core read as the 101 was written, `ended?`, is the taker's: the
@@ -652,8 +661,9 @@
   ;; is (0016's amendment of 2026-10-12).
   ;; A take-over that answers `(awaiting thunk)` has the thunk run on a
   ;; coroutine, as the libuv shell runs it (taker-wait!, decision 0023).
-  (define (hand-off! s take-over retained ended? linger-ms)
-    (let ((tk (make-fake-taker linger-ms)) (answer #f))
+  (define (hand-off! s take-over retained ended? limits)
+    (let ((tk (make-fake-taker (limits-deadline-ms limits 'linger) (limits-deadline-ms limits 'write)))
+          (answer #f))
       (when ended?
         (fake-taker-ended?-set! tk #t)
         (fake-taker-unheard-set! tk 'eof))
@@ -694,14 +704,51 @@
   ;; taker-close! : FakeShell FakeTaker -> Void
   ;; The stream's staged close, asked for once (decision 0026): the taker is
   ;; read nothing more, the stream reading on, each delivery dropped, and it
-  ;; lingers once no write is outstanding, as the libuv shell's does.
+  ;; lingers once no write is outstanding, as the libuv shell's does; until
+  ;; then its writes are bounded (taker-bound!).
   (define (taker-close! s tk)
     (unless (fake-taker-closing? tk)
       (fake-taker-closing?-set! tk #t)
       (if (fake-taker-ended? tk)
           (fake-shell-reading?-set! s #f)
           (reading-begun! s tk))
-      (when (fxzero? (fake-taker-writes tk)) (linger-begun! s tk))))
+      (if (fxzero? (fake-taker-writes tk))
+          (linger-begun! s tk)
+          (taker-bound! s tk))))
+
+  ;; taker-bound! : FakeShell FakeTaker -> Void
+  ;; The close waits for a write: it has the write timeout from the fake
+  ;; clock's now, and the stream is aborted past it (decision 0027), armed
+  ;; beside the taker's own deadline (taker-arm!).
+  (define (taker-bound! s tk)
+    (fake-taker-bound-set! tk (+ (fake-shell-now s) (fake-taker-write-ms tk)))
+    (taker-arm! s tk))
+
+  ;; taker-arm! : FakeShell FakeTaker -> Void
+  ;; The stream's one wheel entry armed at the earlier of the taker's own
+  ;; deadline and its close's write bound, or disarmed when neither is
+  ;; armed, as the libuv shell's.  A stream closing is armed no more.
+  (define (taker-arm! s tk)
+    (let ((due (fake-taker-due tk)) (bound (fake-taker-bound tk)))
+      (cond ((fake-shell-closing? s))
+            ((or due bound)
+             (wheel-arm! (fake-shell-wheel s) (fake-shell-entry s)
+                         (if (and due bound) (min due bound) (or due bound))))
+            (else (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s))))))
+
+  ;; taker-passed! : FakeShell FakeTaker Nat -> Void
+  ;; Its entry has passed at `now`: the stream lingering, its close; its
+  ;; close's write bound passed, its abort (decision 0027); else its own
+  ;; deadline, whose call is made, and then whichever is still armed is
+  ;; armed again, as the libuv shell's taker-passed! has it.
+  (define (taker-passed! s tk now)
+    (cond ((fake-taker-lingering? tk) (close-begun! s tk))
+          ((let ((bound (fake-taker-bound tk))) (and bound (<= bound now))) (taker-abort! s tk))
+          (else
+           (fake-taker-due-set! tk #f)
+           (let ((passed (fake-taker-on-passed tk)))
+             (when passed (taker-call! s tk passed)))
+           (taker-arm! s tk))))
 
   ;; reading-begun! : FakeShell FakeTaker -> Void
   ;; The stream reads: what was kept while it did not is read on a later
@@ -805,9 +852,8 @@
      (lambda (ms passed)
        (unless (fake-taker-lingering? tk)
          (fake-taker-on-passed-set! tk passed)
-         (cond ((not ms) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
-               ((not (fake-shell-closing? s))
-                (wheel-arm! (fake-shell-wheel s) (fake-shell-entry s) (+ (fake-shell-now s) ms))))))
+         (fake-taker-due-set! tk (and ms (+ (fake-shell-now s) ms)))
+         (taker-arm! s tk)))
      (lambda (thunk)
        (fake-taker-on-drain-set! tk thunk)
        (when (fake-shell-draining? s) (drain-taker! s tk)))
@@ -819,8 +865,9 @@
   ;; taker-wrote! : FakeShell FakeTaker Bytevector (U #f ((U #f Symbol) -> Any)) (U #f Symbol) -> Void
   ;; A write's turn, its outcome `why`: no longer outstanding, and, written,
   ;; its bytes the client's and its callback told #f; or neither, its
-  ;; callback told the errno, ECANCELED for a stream aborted before it; then
-  ;; the close begun if it was asked for and no write is left.
+  ;; callback told the errno, ECANCELED for a stream aborted before it; then,
+  ;; if the close was asked for, the stream lingering once no write is left,
+  ;; or else its write bound armed again (decision 0027).
   (define (taker-wrote! s tk bytes written why)
     (trace! s 'door (list 'stream-wrote why))
     (fake-taker-writes-set! tk (fx- (fake-taker-writes tk) 1))
@@ -828,8 +875,10 @@
       (fake-shell-writes-rev-set! s (cons bytes (fake-shell-writes-rev s))))
     (when written
       (taker-call! s tk (lambda () (written why))))
-    (when (and (fake-taker-closing? tk) (fxzero? (fake-taker-writes tk)))
-      (linger-begun! s tk)))
+    (when (fake-taker-closing? tk)
+      (if (fxzero? (fake-taker-writes tk))
+          (linger-begun! s tk)
+          (taker-bound! s tk))))
 
   ;; taker-read! : FakeShell FakeTaker Event -> Void
   ;; A delivery, the client's end or a read error, to the taker: each read
