@@ -1,6 +1,6 @@
 #!r6rs
 ;;; (http-server target) — the request-target's form, and uriparse's verdict
-;;; on it (pure).  M2.3.
+;;; on it (pure).
 ;;;
 ;;; RFC 9112 §3.2 gives a request-target four forms.  The method and the
 ;;; first byte say which one a target must be, in this order:
@@ -11,17 +11,17 @@
 ;;;   anything else  absolute-form, an absolute-URI (§3.2.2)
 ;;;
 ;;; The bytes are judged by uriparse's audited validators, never by a copy of
-;;; them here (decision 0001):
+;;; them here:
 ;;;
 ;;;   - origin-form, the form nearly every request carries, is judged by
 ;;;     `(uri charset)`'s `validate-component` in one pass: as a path up to
 ;;;     its first "?", which is outside the path's set and so ends the path's
 ;;;     judgement, then as a query after it.  Both are judged in place, in the
-;;;     bytevector the target is held in (a range since uriparse v0.5.0, #21):
-;;;     the judge copies nothing, and reads nothing outside the target.  No
-;;;     parser runs.  (A uriparse parse would read a leading "//" as an
-;;;     authority, as RFC 3986 requires; RFC 9110 §4.1's absolute-path is
-;;;     1*( "/" segment ), so "//a" is a path.)
+;;;     bytevector the target is held in (uriparse v0.5.0 or later judges a
+;;;     range): the judge copies nothing, and reads nothing outside the
+;;;     target.  No parser runs.  (A uriparse parse would read a leading "//"
+;;;     as an authority, as RFC 3986 requires; RFC 9110 §4.1's absolute-path
+;;;     is 1*( "/" segment ), so "//a" is a path.)
 ;;;   - absolute-form is parsed by the judge's collector, made on the
 ;;;     connection's first absolute-form target and reset before each one,
 ;;;     and judged by `uri-parse-result-validate`.  It must carry no fragment
@@ -32,15 +32,14 @@
 ;;;     the tunnel's destination (RFC 9112 §3.2.3).
 ;;;
 ;;; The last two run uriparse's own scanner, a byte-machine parser that this
-;;; judge owns and that is never the parser calling the core (0002's
-;;; amendment of 2026-09-24).  Every verdict is data: uriparse's error code,
-;;; or one of this library's four.
+;;; judge owns and that is never the parser calling the core.  Every verdict
+;;; is data: uriparse's error code, or one of this library's four.
 ;;;
-;;; ONE REFUSAL IS REDIRECTED INSTEAD (decision 0009).  Browsers send "[",
-;;; "]" and "|" unencoded, because the WHATWG URL standard's query and path
-;;; percent-encode sets leave them out, and RFC 9112 §3.2 lets a server answer
-;;; an invalid target with a 301 to the target properly encoded.
-;;; `target-redirect` gives that target, for bracket params and pipes only.
+;;; ONE REFUSAL IS REDIRECTED INSTEAD.  Browsers send "[", "]" and "|"
+;;; unencoded, because the WHATWG URL standard's query and path percent-encode
+;;; sets leave them out, and RFC 9112 §3.2 lets a server answer an invalid
+;;; target with a 301 to the target properly encoded.  `target-redirect` gives
+;;; that target, for bracket params and pipes only.
 ;;; PURE: imports (rnrs), (uri ...) and (http-server span).
 (library (http-server target)
   (export make-target-judge target-judge? target-fault target-redirect
@@ -77,7 +76,7 @@
   ;;   method target — the method as llhttp names it ('GET, 'CONNECT)
   ;; The form the target must be, by its method and first byte, in the order
   ;; above: 'authority, 'asterisk, 'origin or 'absolute.  The judge reads it,
-  ;; and so does the handler's view of the request (M4.5).
+  ;; and so does the handler's view of the request.
   (define (target-form method target)
     (let ((bv (span-bytevector target)) (start (span-start target)) (end (span-end target)))
       (cond
@@ -129,7 +128,7 @@
 
   ;; target-redirect : TargetJudge Symbol Span -> (U #f Bytevector)
   ;;   judge method target
-  ;; The target a refused one is redirected to (decision 0009), or #f.
+  ;; The target a refused one is redirected to, or #f.
   ;; Narrow on purpose.  The target must be:
   ;;   - a GET or HEAD request's: a client may turn a POST into a GET when it
   ;;     follows a 301 (RFC 9110 §15.4.2);
@@ -162,7 +161,7 @@
   ;; [start, end) percent-encoded, keeping the bytes `keeps?` accepts.
   ;; `pct-encode` takes a whole bytevector, so the range is copied first: the
   ;; redirect is a refusal, off the hot path, and builds a fresh Location
-  ;; anyway (accepted without an ask, decision 0008's note of 2026-09-24).
+  ;; anyway.
   (define (encoded bv start end keeps?)
     (pct-encode (span->bytevector (make-span bv start end)) keeps?))
 
@@ -242,9 +241,9 @@
 
   ;; authority-form-fault : Span -> (U #f Symbol)
   ;; The strict validator parses a whole bytevector fresh, so the target is
-  ;; copied first.  Accepted without an ask: CONNECT is rare, and the fresh
-  ;; parse, not the copy, is most of what it costs (design §7.5).  A valid
-  ;; target is an authority with no userinfo, so its host is `host?`'s.
+  ;; copied first: CONNECT is rare, and the fresh parse, not the copy, is
+  ;; most of what it costs.  A valid target is an authority with no
+  ;; userinfo, so its host is `host?`'s.
   (define (authority-form-fault target)
     (let* ((authority (span->bytevector target))
            (r (uri-parse-authority-form-validate authority)))

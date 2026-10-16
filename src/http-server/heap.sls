@@ -1,6 +1,6 @@
 #!r6rs
 ;;; (http-server heap) — the times a loop's waits wake at, kept in a binary
-;;; heap (decision 0015 item 3; M7.2).
+;;; heap.
 ;;;
 ;;; PURE functional core: imports only (rnrs), and reads no clock.  Every
 ;;; instant is a whole number of milliseconds the caller gives, from a clock

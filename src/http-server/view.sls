@@ -1,23 +1,21 @@
 #!r6rs
-;;; (http-server view) — what a handler sees of a request (pure).  M4.5.
+;;; (http-server view) — what a handler sees of a request (pure).
 ;;;
-;;; A handler reads the request through accessors that copy what it asks for
-;;; (decision 0012).  The path, the query, a header's value and the host are
-;;; strings, each made when it is asked for, a character per byte: the byte n
-;;; reads as the character whose code point is n, as Latin-1 reads it, so
-;;; every byte comes back as the byte it was.  The method is the request's
-;;; own, the symbol llhttp names.  A handler that asks for nothing costs
-;;; nothing: the request holds spans of the delivery it arrived in (design
-;;; §7.1), and a handler that keeps the request, or a span of it, keeps that
-;;; delivery too.
+;;; A handler reads the request through accessors that copy what it asks for.
+;;; The path, the query, a header's value and the host are strings, each made
+;;; when it is asked for, a character per byte: the byte n reads as the
+;;; character whose code point is n, as Latin-1 reads it, so every byte comes
+;;; back as the byte it was.  The method is the request's own, the symbol
+;;; llhttp names.  A handler that asks for nothing costs nothing: the request
+;;; holds spans of the delivery it arrived in, and a handler that keeps the
+;;; request, or a span of it, keeps that delivery too.
 ;;;
 ;;; Nothing is decoded.  The path and the query are as the client sent them,
 ;;; percent-encoding and all.  A header's value is its bytes without the
 ;;; whitespace around it (RFC 9112 §5): llhttp leaves out what comes before a
 ;;; value and keeps what comes after.  `request-header` reads a name's first
 ;;; field, and `request-header-values` every field of it, in the order they
-;;; came, since a list may run over several lines (RFC 9110 §5.3; decision
-;;; 0024).
+;;; came, since a list may run over several lines (RFC 9110 §5.3).
 ;;;
 ;;; THE QUERY is what follows the target's first "?", in every form.  A "?"
 ;;; can be in neither an authority nor a path (RFC 3986 §3.2 and §3.3), and
@@ -40,7 +38,7 @@
 ;;; target only with a "//", so it always has an authority, which may be
 ;;; empty ("ftp:///x").  An empty path reads "/", its normal form (RFC 9110
 ;;; §4.2.3).  The Host field's value may be empty, and a request with no Host
-;;; reads empty too (decision 0012).
+;;; reads empty too.
 ;;;
 ;;; PURE: imports (rnrs), (rnrs mutable-strings) to fill the strings it makes,
 ;;; (uri ...) and this project's own libraries.
@@ -91,7 +89,7 @@
   ;; The value of every field named `name`, in the order they came, each as
   ;; request-header reads the first: without regard to ASCII case, and
   ;; without the OWS around it; '() when there is none.  A list may run
-  ;; over several field lines (RFC 9110 §5.3; decision 0024).
+  ;; over several field lines (RFC 9110 §5.3).
   (define (request-header-values r name)
     (map field-value (headers-ref-all (request-headers r) (string->utf8 name))))
 

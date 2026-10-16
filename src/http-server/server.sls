@@ -1,15 +1,14 @@
 #!r6rs
-;;; (http-server server) — the listener's pure step (design §4.6; M4.3, and
-;;; the drain, M8.1).
+;;; (http-server server) — the listener's pure step, and the drain.
 ;;;
-;;; `server-step` is to the listener what `conn-step` is to a connection
-;;; (decision 0002 item 5): the shell turns what happens to the listener into
-;;; EVENTS, and the step answers with ACTIONS for the shell to perform.  Pure
-;;; by the same contract: a step allocates nothing but Scheme data, calls no
-;;; libuv procedure, reads no clock, and never raises on a well-formed event.
-;;; An event outside the vocabulary, or one without the time or the count it
-;;; carries, is a caller bug and an assertion violation.  The state is
-;;; linear, as a connection's is: updated in place and returned.
+;;; `server-step` is to the listener what `conn-step` is to a connection: the
+;;; shell turns what happens to the listener into EVENTS, and the step answers
+;;; with ACTIONS for the shell to perform.  Pure by the same contract: a step
+;;; allocates nothing but Scheme data, calls no libuv procedure, reads no
+;;; clock, and never raises on a well-formed event.  An event outside the
+;;; vocabulary, or one without the time or the count it carries, is a caller
+;;; bug and an assertion violation.  The state is linear, as a connection's
+;;; is: updated in place and returned.
 ;;;
 ;;;   events   (connection-arrived open)  (shutdown-requested now open)
 ;;;            (listener-failed errno now open)  (tick now)
@@ -18,37 +17,36 @@
 ;;;            (force-close-all)  (log what . details)
 ;;;
 ;;; `open` is the count of connections the shell holds, its table's size: the
-;;; step keeps no count of its own (decided 2026-09-26), so none can drift.
-;;; `now` is the loop's time, in milliseconds, as a connection's tick carries
-;;; it: the step reads no clock.
+;;; step keeps no count of its own, so none can drift.  `now` is the loop's
+;;; time, in milliseconds, as a connection's tick carries it: the step reads
+;;; no clock.
 ;;;
-;;; A CONNECTION THAT ARRIVES IS ALWAYS ANSWERED FIRST, `accept` or `refuse`
-;;; (decision 0005: "refuse in on-connection").  libuv has already taken it
-;;; off the socket and stops watching the listener until it is accepted, so
-;;; nothing is left waiting: an accepted connection is served, and a refused
-;;; one closed at once, as nginx closes one its worker_connections cannot
-;;; hold.  One is accepted while fewer than the limits' max-connections are
-;;; open, and refused once that many are.  A refusal episode is logged twice
-;;; at most (decided 2026-09-26): `(log refusing max-connections)` at its
-;;; first refusal, and `(log refused max-connections n)`, n its refusals,
-;;; when a connection is next accepted or the server stops listening.  So a
-;;; flood of connections writes two lines, not one a connection.
+;;; A CONNECTION THAT ARRIVES IS ALWAYS ANSWERED FIRST, `accept` or `refuse`,
+;;; in the shell's on-connection callback.  libuv has already taken it off the
+;;; socket and stops watching the listener until it is accepted, so nothing is
+;;; left waiting: an accepted connection is served, and a refused one closed
+;;; at once, as nginx closes one its worker_connections cannot hold.  One is
+;;; accepted while fewer than the limits' max-connections are open, and
+;;; refused once that many are.  A refusal episode is logged twice at most:
+;;; `(log refusing max-connections)` at its first refusal, and
+;;; `(log refused max-connections n)`, n its refusals, when a connection is
+;;; next accepted or the server stops listening.  So a flood of connections
+;;; writes two lines, not one a connection.
 ;;;
-;;; A SHUTDOWN STOPS LISTENING, `close-listener`, and the server DRAINS
-;;; (M8.1; design §4.6): what arrives after is refused, unlogged, and the
-;;; connections open are told to finish, `finish-all`, the drain logged as
-;;; `(log draining open)`.  Its deadline is the time the shutdown was asked
-;;; at plus the limits' drain-timeout-ms (decision 0005): the first tick at
-;;; or after it asks for every connection still open to be closed at once,
-;;; `force-close-all`, logged as `(log drain-timeout)`, and no tick after
-;;; asks again.  The drain ends when the shell says its last connection has
-;;; closed, `(connection-closed 0)`, or at once if none was open: the server
-;;; has STOPPED, logged as `(log stopped)` (decided 2026-10-03).  A LISTENER
-;;; THAT FAILS does the same, logged first as `(log listener-failed errno)`
-;;; (decided 2026-09-26), so the process ends once its connections have, and
-;;; whatever supervises it starts it again: a listener that has stopped
-;;; would otherwise leave a server that runs and never accepts.  A second
-;;; shutdown, or a failure while draining, asks for nothing.
+;;; A SHUTDOWN STOPS LISTENING, `close-listener`, and the server DRAINS: what
+;;; arrives after is refused, unlogged, and the connections open are told to
+;;; finish, `finish-all`, the drain logged as `(log draining open)`.  Its
+;;; deadline is the time the shutdown was asked at plus the limits'
+;;; drain-timeout-ms: the first tick at or after it asks for every connection
+;;; still open to be closed at once, `force-close-all`, logged as
+;;; `(log drain-timeout)`, and no tick after asks again.  The drain ends when
+;;; the shell says its last connection has closed, `(connection-closed 0)`, or
+;;; at once if none was open: the server has STOPPED, logged as
+;;; `(log stopped)`.  A LISTENER THAT FAILS does the same, logged first as
+;;; `(log listener-failed errno)`, so the process ends once its connections
+;;; have, and whatever supervises it starts it again: a listener that has
+;;; stopped would otherwise leave a server that runs and never accepts.  A
+;;; second shutdown, or a failure while draining, asks for nothing.
 (library (http-server server)
   (export server-phases server-events server-actions
           make-server-state server-state? server-phase server-refused server-limits
@@ -63,21 +61,20 @@
   (define server-phases '(listening draining stopped))
 
   ;; server-events : (Listof Symbol)
-  ;; Design §4.6's four event kinds and `listener-failed`: the closed set
-  ;; `server-step` accepts.
+  ;; The closed set of event kinds `server-step` accepts.
   (define server-events
     '(connection-arrived shutdown-requested listener-failed tick connection-closed))
 
   ;; server-actions : (Listof Symbol)
-  ;; Design §4.6's five action kinds, and `finish-all`, which tells the
-  ;; connections open to finish (M8.1).
+  ;; The closed set of action kinds `server-step` answers with; `finish-all`
+  ;; tells the connections open to finish.
   (define server-actions '(accept refuse close-listener finish-all force-close-all log))
 
   ;; make-server-state : Phase Nat Limits (U Nat #f) -> ServerState
   ;;   Phase    = one of server-phases (anything else is an assertion violation)
   ;;   Nat      = the refusals in the episode under way, 0 when none is
-  ;;   Limits   = the policy the step enforces: max-connections (decision
-  ;;              0005), an exact integer of at least 1, and drain-timeout-ms
+  ;;   Limits   = the policy the step enforces: max-connections, an exact
+  ;;              integer of at least 1, and drain-timeout-ms
   ;;              (anything else is an assertion violation)
   ;;   deadline = the loop's time a drain closes what is still open at, or #f
   ;;              when no drain waits for one: before a shutdown, and once

@@ -3,16 +3,15 @@
 ;;;
 ;;; A header list is an association list of (name . value) pairs in wire
 ;;; order.  A name or value is a bytevector or a span of one: the connection
-;;; core builds a request's headers as spans of the delivery (design §7.1),
-;;; and a handler may build a response's from bytevectors.  Field-name
-;;; comparison is ASCII case-insensitive (RFC 9110 §5.1).  Values are kept as
-;;; raw bytes; no decoding here.  The byte helpers a value's list is read with
-;;; are here too: OWS (RFC 9110 §5.6.3), and a range compared with a token
-;;; without regard to case, each reading the bytes in place; and whether a
-;;; field's list holds a token (§5.6.1), which the core asks of a request's
-;;; Expect (M6.4); and a field's elements, which the serializer reads a
-;;; switch's Upgrade with (M8.2).  PURE: imports only (rnrs) and (http-server
-;;; span).
+;;; core builds a request's headers as spans of the delivery, and a handler
+;;; may build a response's from bytevectors.  Field-name comparison is ASCII
+;;; case-insensitive (RFC 9110 §5.1).  Values are kept as raw bytes; no
+;;; decoding here.  The byte helpers a value's list is read with are here too:
+;;; OWS (RFC 9110 §5.6.3), and a range compared with a token without regard to
+;;; case, each reading the bytes in place; and whether a field's list holds a
+;;; token (§5.6.1), which the core asks of a request's Expect; and a field's
+;;; elements, which the serializer reads a switch's Upgrade with.  PURE:
+;;; imports only (rnrs) and (http-server span).
 (library (http-server headers)
   (export header-name=? headers-ref headers-ref-all ows? trim-ows range-ci=? field-lists?
           field-elements)

@@ -1,34 +1,32 @@
 #!r6rs
 ;;; (http-server private serve) — the process's edge: a server started from
-;;; the environment, its log, and its loop run (M4.5).
+;;; the environment, its log, and its loop run.
 ;;;
 ;;; `serve` is what the facade gives an embedder: a server on a loop of its
-;;; own, configured through the process's environment (the Twelve-Factor
-;;; App's config), logging a line for each thing that happens on standard
-;;; output (its logs), and run until it stops: once the process is sent
-;;; SIGTERM or SIGINT (decided 2026-10-03), or its listener fails, the server
-;;; drains (M8.1), and `serve` returns when the drain ends.
+;;; own, configured through the process's environment (the Twelve-Factor App's
+;;; config), logging a line for each thing that happens on standard output
+;;; (its logs), and run until it stops: once the process is sent SIGTERM or
+;;; SIGINT, or its listener fails, the server drains, and `serve` returns when
+;;; the drain ends.
 ;;;
 ;;; THE START (`start-server`) reads the settings through a lookup, as the
-;;; limits are read (decision 0005): the limits, and where the server
-;;; listens, CHEZ_HTTP_HOST and CHEZ_HTTP_PORT (decision 0012).  A malformed
-;;; setting is refused before anything listens, as an
-;;; &http-server-config-error composed with what refused it, whose irritants
-;;; name the variable (design §6.4).  A host that is not an IPv4 or IPv6
-;;; literal is refused by the listener's bind, and is a config error too; the
-;;; shell has closed the listener by then.  A server that listens logs
-;;; `listening`, with its host and port, the kernel's choice for port 0.
-;;; `serve` watches the process's signals before that line, so a supervisor
-;;; that signals the moment it reads it finds them watched.
+;;; limits are read ((http-server limits)): the limits, and where the server
+;;; listens, CHEZ_HTTP_HOST and CHEZ_HTTP_PORT.  A malformed setting is
+;;; refused before anything listens, as an &http-server-config-error composed
+;;; with what refused it, whose irritants name the variable.  A host that is
+;;; not an IPv4 or IPv6 literal is refused by the listener's bind, and is a
+;;; config error too; the shell has closed the listener by then.  A server
+;;; that listens logs `listening`, with its host and port, the kernel's choice
+;;; for port 0.  `serve` watches the process's signals before that line, so a
+;;; supervisor that signals the moment it reads it finds them watched.
 ;;;
-;;; THE CONDITIONS (design §6.4):
+;;; THE CONDITIONS:
 ;;;
 ;;;   &http-server-error < &error
 ;;;     └── &http-server-config-error   ; a malformed setting at startup
 ;;;
-;;; §6.4's &http-server-handler-error has nothing to carry in v1: a handler's
-;;; raise is answered 500 and logged as `handler-failed`, and never reaches
-;;; the embedder.
+;;; No condition carries a handler's failure: a handler's raise is answered
+;;; 500 and logged as `handler-failed`, and never reaches the embedder.
 ;;;
 ;;; THE LOG (`log-line`) writes each thing that happens as one line on
 ;;; standard output, flushed at once: what happened, then each detail after
@@ -59,14 +57,15 @@
   (define-condition-type &http-server-config-error &http-server-error
     make-http-server-config-error http-server-config-error?)
 
-  ;; serve : (Request -> Response) [(String -> (U String #f))] -> Void
+  ;; serve : (Request -> (U Answer Switch)) [(String -> (U String #f))] -> Void
+  ;; Answer as (http-server awaiting) defines it, Switch as (http-server switch).
   ;; Serve `handler` where the environment says, logging on standard output,
   ;; until the server stops: it drains once the process is sent SIGTERM or
   ;; SIGINT, or its listener fails, and `serve` returns when the drain ends,
   ;; whatever waits are still armed: the loop's teardown closes their timers
   ;; and cancels the lookups not yet begun, but one already running holds it
-  ;; until the lookup answers (M8.1's review).  A taker's calls deferred to a
-  ;; turn are made before it returns (run-until-stopped!).
+  ;; until the lookup answers.  A taker's calls deferred to a turn are made
+  ;; before it returns (run-until-stopped!).
   ;; `lookup` stands in for the process's environment, as `getenv` does by
   ;; default.  A malformed setting raises &http-server-config-error before
   ;; anything listens.  The signals are watched before `listening` is
@@ -84,7 +83,7 @@
   ;; Turn the shell's loop until its server stops, then make the taker's
   ;; calls still deferred to a turn (shell-call-deferred!): `serve`'s run, on
   ;; a loop its caller owns.  So the `done` of a taker's write refused as the
-  ;; server stops is told before the run returns (M8.2's review, its sixth).
+  ;; server stops is told before the run returns.
   (define (run-until-stopped! sh)
     (shell-run-turns! sh (lambda () (not (eq? (server-phase (shell-server sh)) 'stopped))))
     (shell-call-deferred! sh))

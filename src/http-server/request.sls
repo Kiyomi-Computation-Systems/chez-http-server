@@ -1,13 +1,13 @@
 #!r6rs
 ;;; (http-server request) — the parsed HTTP request record (pure).
 ;;;
-;;; The connection core builds a request from chez-httparse's callbacks
-;;; (M2.2).  The request-target and every header name and value are spans of
-;;; the delivery they arrived in, in wire order, kept without copying (design
-;;; §7.1; see (http-server span)) — no percent-decoding, no case folding, no
-;;; trimming happens here (the header library and uriparse own those).  The
-;;; target has been judged one of RFC 9112 §3.2's forms before the request is
-;;; built (M2.3; see (http-server target)).  PURE: imports only (rnrs).
+;;; The connection core builds a request from chez-httparse's callbacks.
+;;; The request-target and every header name and value are spans of the
+;;; delivery they arrived in, in wire order, kept without copying (see
+;;; (http-server span)) — no percent-decoding, no case folding, no trimming
+;;; happens here (the header library and uriparse own those).  The target
+;;; has been judged one of RFC 9112 §3.2's forms before the request is built
+;;; (see (http-server target)).  PURE: imports only (rnrs).
 (library (http-server request)
   (export make-request request?
           request-method request-target
@@ -21,12 +21,16 @@
   ;;   Nat Nat = the HTTP major and minor version
   ;;   Headers = (Listof (Pair Span Span))      ; name . value, wire order
   ;;   Body    = Any                            ; #f: a handler reads a body through
-  ;;                                            ; the reader it answers with (decision
-  ;;                                            ; 0013), and the core builds every
-  ;;                                            ; request with #f here
+  ;;                                            ; the reader it answers with, and
+  ;;                                            ; the core builds every request
+  ;;                                            ; with #f here
   ;; request? : Any -> Boolean
-  ;; request-method / -target / -http-major / -http-minor / -headers / -body :
-  ;;   Request -> the corresponding field
+  ;; request-method : Request -> Symbol
+  ;; request-target : Request -> Span
+  ;; request-http-major : Request -> Nat
+  ;; request-http-minor : Request -> Nat
+  ;; request-headers : Request -> Headers
+  ;; request-body : Request -> Body
   (define-record-type request
     (fields
       (immutable method      request-method)

@@ -1,51 +1,48 @@
 #!r6rs
-;;; (http-server private scheduler) — coroutines, and the turn of two levels
-;;; (design §5.2 and §5.3; decisions 0003 and 0014; M7.1).
+;;; (http-server private scheduler) — coroutines, and the turn of two levels.
 ;;;
 ;;; A handler that waits cannot wait inside libuv's callback: a continuation
-;;; captured under a C frame can never be resumed (design §5.1).  So a
-;;; coroutine is entered and resumed only from this scheduler's DRAIN, which
-;;; runs between libuv's runs, and libuv's callbacks only enqueue.  A TURN is
-;;; the drain, then one poll: `(poll! mode)`, the injected procedure the libuv
-;;; shell makes `uv-run` with, in 'once when nothing is ready and 'nowait
-;;; when a coroutine has yielded, so the poll blocks only when nothing is left
-;;; to run.  `poll!` is the one injection point, so a scheduler's checks
-;;; script the callbacks that land and never load libuv.
+;;; captured under a C frame can never be resumed.  So a coroutine is entered
+;;; and resumed only from this scheduler's DRAIN, which runs between libuv's
+;;; runs, and libuv's callbacks only enqueue.  A TURN is the drain, then one
+;;; poll: `(poll! mode)`, the injected procedure the libuv shell makes
+;;; `uv-run` with, in 'once when nothing is ready and 'nowait when a coroutine
+;;; has yielded, so the poll blocks only when nothing is left to run.  `poll!`
+;;; is the one injection point, so a scheduler's checks script the callbacks
+;;; that land and never load libuv.
 ;;;
 ;;; A COROUTINE is a thunk the drain enters on a continuation of the drain's
 ;;; own.  It parks by capturing its own continuation and jumping to the
 ;;; drain's; `coroutine-wake!` makes it ready again, from a callback or
 ;;; anywhere else, and the drain resumes it with what the wake gave.  Both
-;;; continuations are full ones (`call/cc`, decision 0025 and its review): a
-;;; one-shot park kept its stack segment for as long as the coroutine
-;;; waited, and a full park on a one-shot drain cost each coroutine that
-;;; waited a fresh segment.  A park's continuation lands once: a full one can
-;;; be entered again, so each park is numbered, and a second landing ends the
-;;; coroutine whose turn it is (below), where Chez refused a one-shot one.
-;;; It ends by jumping to the drain's current continuation, never by
-;;; returning (R3, below): its value, or what it raised, is caught on its own
-;;; stack and handed to its end procedure by the drain, on no coroutine.  A
-;;; CALL is a thunk the drain makes in place, on no coroutine: an ordinary
-;;; handler's call (decision 0014).
+;;; continuations are full ones (`call/cc`): a one-shot park would keep its
+;;; stack segment for as long as the coroutine waits, and a full park on a
+;;; one-shot drain would cost each coroutine that waits a fresh segment.  A
+;;; park's continuation lands once: a full one can be entered again, so each
+;;; park is numbered, and a second landing ends the coroutine whose turn it is
+;;; (below), as Chez would refuse a one-shot one.  It ends by jumping to the
+;;; drain's current continuation, never by returning (R3, below): its value,
+;;; or what it raised, is caught on its own stack and handed to its end
+;;; procedure by the drain, on no coroutine.  A CALL is a thunk the drain
+;;; makes in place, on no coroutine: an ordinary handler's call.
 ;;;
 ;;; THE DRAIN runs what is ready in the order it was made ready, coroutines
 ;;; and calls alike, and then what was made ready while it ran, until nothing
 ;;; is: a coroutine whose end hands on work, a producer asked again, runs in
-;;; the same drain (decided while building M7.1, measured by the M7 spike: a
-;;; drain that stopped at what was ready as it began made each piece of a
-;;; stream wait a turn).  A coroutine that yields is ready only once the
-;;; turn's poll is over, so a coroutine that keeps yielding never keeps the
-;;; loop from polling.
+;;; the same drain, where a drain that stopped at what was ready as it began
+;;; would make each piece of a stream wait a turn.  A coroutine that yields is
+;;; ready only once the turn's poll is over, so a coroutine that keeps
+;;; yielding never keeps the loop from polling.
 ;;;
 ;;; THE PHASE is 'scheduling outside the poll, 'in-uv-run inside it, where
-;;; libuv's callbacks run, and 'in-parser through a feed, whatever the
-;;; phase around it (`scheduler-feed-begin!` and `scheduler-feed-end!`,
-;;; which allocate nothing, so a shell may set it at every read).  It and the running
-;;; coroutine are the process's, not a scheduler's: v1 is one thread (design
-;;; §7.4), one turn runs at a time, and a waiting verb, which has no scheduler
-;;; to name, finds both here.
+;;; libuv's callbacks run, and 'in-parser through a feed, whatever the phase
+;;; around it (`scheduler-feed-begin!` and `scheduler-feed-end!`, which
+;;; allocate nothing, so a shell may set it at every read).  It and the
+;;; running coroutine are the process's, not a scheduler's: the server is one
+;;; thread, one turn runs at a time, and a waiting verb, which has no
+;;; scheduler to name, finds both here.
 ;;;
-;;; THE INVARIANTS ARE CHECKS (design §5.3), each a refusal raised as
+;;; THE INVARIANTS ARE CHECKS, each a refusal raised as
 ;;; `&scheduler-invariant`, an `&assertion` naming it:
 ;;;   R1  a callback captures no continuation: a park, or a drain, inside the
 ;;;       poll is refused as 'r1;
@@ -57,11 +54,11 @@
 ;;;       and a return into that one would run that drain again;
 ;;;   R5  a parser callback never waits: a park inside a feed is refused as
 ;;;       'r5.
-;;; R4, one-shot resume cells, is (http-server private waits)'s (M7.2).  A
-;;; wake of a coroutine that is not parked, a drain re-entered from a
-;;; coroutine, and a park's continuation entered a second time, are the
-;;; caller's bugs, plain assertion violations.  The last ends the coroutine
-;;; whose turn it is, naming the park's verb (refuse-landing!).
+;;; R4, one-shot resume cells, is (http-server private waits)'s.  A wake of a
+;;; coroutine that is not parked, a drain re-entered from a coroutine, and a
+;;; park's continuation entered a second time, are the caller's bugs, plain
+;;; assertion violations.  The last ends the coroutine whose turn it is,
+;;; naming the park's verb (refuse-landing!).
 ;;;
 ;;; A scheduler keeps its loop's WAITS, (http-server private waits)'s, and a
 ;;; coroutine what its waits keep of it, the wait it is parked on and how
@@ -78,7 +75,7 @@
           &scheduler-invariant scheduler-invariant? scheduler-invariant-name)
   (import (rnrs))
 
-  ;; &scheduler-invariant : an invariant of design §5.3 refused.
+  ;; &scheduler-invariant : R1, R2 or R5 refused (the header).
   ;; scheduler-invariant? : Any -> Boolean
   ;; scheduler-invariant-name : SchedulerInvariant -> (U 'r1 'r2 'r5)
   (define-condition-type &scheduler-invariant &assertion
@@ -115,7 +112,7 @@
   ;; a wake gave it, until the drain hands it over, and then its end, what it
   ;; returned or raised, until the end procedure is called with it.  Each is
   ;; let go once used, so a record kept, by a resume kept with its wait
-  ;; among others, keeps none of them (plan §14, 2026-10-11, and its review).
+  ;; among others, keeps none of them.
   ;; `parks` numbers its parks and their landings: 2n+1 while its n+1st park
   ;; waits to land, 2n once it has.
   (define-record-type (coroutine make-coroutine coroutine?)
@@ -227,13 +224,10 @@
     (or running (refuse 'r2 who "a wait on no coroutine")))
 
   ;; suspend! : Symbol Symbol -> Any — park, or yield, the coroutine running.
-  ;; Its continuation is a full one (decision 0025): a one-shot one kept the
-  ;; stack segment it was captured on for as long as the coroutine waited,
-  ;; 3,691 B parked 4 calls deep where this keeps 722 to 802.  A full one
-  ;; lands as often as it is entered, so the park is numbered first, and a
-  ;; second landing of it is refused (refuse-landing!).  The number costs
-  ;; 64 B of what a parked coroutine keeps, and 32 to 65 B of a wake and
-  ;; park's 531 to 534, the frame the landing keeps.
+  ;; Its continuation is a full one: a one-shot one would keep the stack
+  ;; segment it was captured on for as long as the coroutine waits.  A full
+  ;; one lands as often as it is entered, so the park is numbered first, and
+  ;; a second landing of it is refused (refuse-landing!).
   (define (suspend! who how)
     (let* ((c (waiting-coroutine who))
            (n (fx+ (coroutine-parks c) 1)))
@@ -252,9 +246,9 @@
   ;; A park's continuation entered a second time: the coroutine whose turn
   ;; it is, the one that entered it, ends by an assertion naming `who`, as
   ;; an uncaught raise ends it, through the drain, so that no handler of the
-  ;; frames entered sees it, and a coroutine parked stays parked (decision
-  ;; 0025's review, by form).  Entered on no coroutine, there is no drain to
-  ;; end it through, and the assertion is raised where it was entered.
+  ;; frames entered sees it, and a coroutine parked stays parked.  Entered
+  ;; on no coroutine, there is no drain to end it through, and the assertion
+  ;; is raised where it was entered.
   (define (refuse-landing! who n)
     (let ((e (condition (make-assertion-violation) (make-who-condition who)
                         (make-message-condition "a park's continuation entered a second time")
@@ -286,14 +280,11 @@
   ;; resume! : Scheduler Coroutine -> Void
   ;; Enter a ready coroutine, or resume a woken one, to its next park, yield
   ;; or end; at its end, hand what it returned or raised to its end
-  ;; procedure.  The drain's continuation is a full one too (decision
-  ;; 0025's review): a park's full capture made a one-shot one multi-shot,
-  ;; so Chez could not reuse its segment, and a coroutine that parked once
-  ;; 4 calls deep, one at a time, allocated 4,256 to 4,257 B, where this
-  ;; allocates 1,177 to 1,242 (a one-shot park, 720).  A woken coroutine is
-  ;; handed what its wake gave, and the coroutine keeps it no longer: kept,
-  ;; it stayed on the heap while the coroutine waited again, until its next
-  ;; wake (plan §14, 2026-10-11).
+  ;; procedure.  The drain's continuation is a full one too: a park's full
+  ;; capture would make a one-shot one multi-shot, so Chez could not reuse
+  ;; its segment.  A woken coroutine is handed what its wake gave, and the
+  ;; coroutine keeps it no longer: kept, it would stay on the heap while the
+  ;; coroutine waits again, until its next wake.
   (define (resume! s c)
     (coroutine-state-set! c 'running)
     (set! running c)
@@ -321,11 +312,7 @@
   ;; The coroutine's first run: its thunk, then the jump to the drain's
   ;; current continuation (R3).  A raise is caught on its own stack by a
   ;; handler that makes the same jump, never returning to the raise.  Not a
-  ;; `guard`: inside the one-shot continuation the drain entered until
-  ;; decision 0025's review, Chez gave each coroutine a stack of its own for
-  ;; one, 3,756 B where this cost under 400 (M7.2's first step, decision
-  ;; 0015); on the full one, a coroutine that runs a guard allocates 1,238
-  ;; to 1,304 B, and one whose raise this catches 625 to 691.
+  ;; `guard`, which costs a coroutine about twice what this handler does.
   (define (enter! s c)
     (with-exception-handler
      (lambda (e)
@@ -348,8 +335,8 @@
   ;; The drain, then the poll, 'nowait when something is ready and 'once
   ;; when nothing is, in the phase 'in-uv-run: whether work remains, as the
   ;; poll answers, or #t while something is ready.  The phase is set and
-  ;; left with no dynamic-wind, which costs every turn 96 B and more; a
-  ;; poll that raises leaves it 'in-uv-run until whoever catches the raise
+  ;; left with no dynamic-wind, which would allocate on every turn; a poll
+  ;; that raises leaves it 'in-uv-run until whoever catches the raise
   ;; calls scheduler-turn-abandoned!.
   (define (scheduler-turn! s)
     (scheduler-drain! s)

@@ -5,22 +5,21 @@
 ;;; "A server MUST respond with a 400 (Bad Request) status code to any
 ;;; HTTP/1.1 request message that lacks a Host header field and to any request
 ;;; message that contains more than one Host header field line or a Host header
-;;; field with an invalid field value."  Decided on the owner's word,
-;;; 2026-09-25 (the ledger's Host entry):
+;;; field with an invalid field value."  So:
 ;;;
 ;;;   - more than one Host line is refused, in any version;
 ;;;   - no Host on HTTP/1.1 is refused unless the caller's switch is off
-;;;     (decision 0005's amendment of 2026-09-25, CHEZ_HTTP_REQUIRE_HOST);
+;;;     (CHEZ_HTTP_REQUIRE_HOST);
 ;;;   - a value that is not RFC 9110 §7.2's `uri-host [ ":" port ]` is
 ;;;     refused: uriparse's `validate-authority` judges it as an RFC 3986
 ;;;     authority, and one with userinfo, which an authority allows and a Host
-;;;     does not, is refused here.  An empty value is valid, and what it means
-;;;     is M4's (RFC 9112 §3.3).
+;;;     does not, is refused here.  An empty value is valid, and the
+;;;     request's host then reads empty (RFC 9112 §3.3).
 ;;;
-;;; The value is judged without the OWS around it (RFC 9112 §5; 2026-09-27),
-;;; in place, in the bytevector the parser delivered, by uriparse's ranged
-;;; forms (v0.6.0, uriparse #24): nothing is copied, and nothing outside the
-;;; value is read.  Every verdict is data.
+;;; The value is judged without the OWS around it (RFC 9112 §5), in place,
+;;; in the bytevector the parser delivered, by uriparse's ranged forms
+;;; (v0.6.0 or later): nothing is copied, and nothing outside the value is
+;;; read.  Every verdict is data.
 ;;; PURE: imports (rnrs), (http-server span), (http-server headers) and
 ;;; (uri host).
 (library (http-server host)

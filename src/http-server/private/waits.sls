@@ -1,72 +1,66 @@
 #!r6rs
-;;; (http-server private waits) — what a handler waits with (decision 0015;
-;;; design §5.3's R4; M7.2).
+;;; (http-server private waits) — what a handler waits with.
 ;;;
-;;; A handler that answers `awaiting` runs on a coroutine (decision 0014),
-;;; and code on a coroutine may wait.  A WAIT is one-shot: `(await register)`
-;;; calls `register` with `resume`, then parks the coroutine until `resume`
-;;; is called, and answers what `resume` was given.  Its first call wakes
-;;; the coroutine, wherever the loop's thread makes it: a libuv callback of
-;;; the server's own, another handler, a reader or a producer, since a wake
-;;; only makes the coroutine ready, to run at the drain (R1 holds).  A
-;;; resume called while `register` still runs ends the wait at once: the
-;;; coroutine does not park.  Every later call is R4's recorded fault (design
-;;; §5.3): logged as `late-resume`, it wakes nothing, not even the coroutine
-;;; waiting again on a wait of its own since.  A wait begins only where a
-;;; coroutine may park, and is refused before `register` runs anywhere else,
-;;; as R1, R2 or R5 (the scheduler's `waiting-coroutine`): so a handler that
-;;; did not answer `awaiting` has failed (0014 item 3).  The log line names
-;;; the verb the late resume came for: `late-resume await`, `late-resume
-;;; resolve`.
+;;; A handler that answers `awaiting` runs on a coroutine, and code on a
+;;; coroutine may wait.  A WAIT is one-shot: `(await register)` calls
+;;; `register` with `resume`, then parks the coroutine until `resume` is
+;;; called, and answers what `resume` was given.  Its first call wakes the
+;;; coroutine, wherever the loop's thread makes it: a libuv callback of the
+;;; server's own, another handler, a reader or a producer, since a wake only
+;;; makes the coroutine ready, to run at the drain (R1 holds).  A resume
+;;; called while `register` still runs ends the wait at once: the coroutine
+;;; does not park.  Every later call is R4's recorded fault: logged as
+;;; `late-resume`, it wakes nothing, not even the coroutine waiting again on a
+;;; wait of its own since.  A wait begins only where a coroutine may park, and
+;;; is refused before `register` runs anywhere else, as R1, R2 or R5 (the
+;;; scheduler's `waiting-coroutine`): so a handler that waits without
+;;; answering `awaiting` has failed.  The log line names the verb the late
+;;; resume came for: `late-resume await`, `late-resume resolve`.
 ;;;
-;;; TIMED WAITS (decision 0015 item 3).  `(sleep-ms n)` parks the coroutine
-;;; until the loop's clock reads `n` milliseconds on.  `(with-deadline ms
-;;; thunk)` bounds the waits `thunk` makes: once `ms` milliseconds have
-;;; passed, the wait in progress, or else the next one, raises
-;;; `&deadline-passed`, and so does every later wait inside the deadline.
-;;; Code that does not wait is never cut short.  A deadline is in force from
-;;; its start until its thunk is left, by a return, a raise or a
-;;; continuation, once: a `dynamic-wind` holds it, whose after thunk a park
-;;; runs too, and tells from a leaving by the scheduler's
-;;; `coroutine-suspending?`.  A raise that a handler outside continues
-;;; leaves nothing; a continuation that enters the thunk again does not put
-;;; the deadline back.  Deadlines nest, and each passes on its own time.  A
-;;; wait a deadline ends has what it waited on taken back, a sleep's time,
-;;; or a lookup, cancelled if it has not begun; anything that still comes
-;;; for it is a late resume (R4).
+;;; TIMED WAITS.  `(sleep-ms n)` parks the coroutine until the loop's clock
+;;; reads `n` milliseconds on.  `(with-deadline ms thunk)` bounds the waits
+;;; `thunk` makes: once `ms` milliseconds have passed, the wait in progress,
+;;; or else the next one, raises `&deadline-passed`, and so does every later
+;;; wait inside the deadline.  Code that does not wait is never cut short.  A
+;;; deadline is in force from its start until its thunk is left, by a return,
+;;; a raise or a continuation, once: a `dynamic-wind` holds it, whose after
+;;; thunk a park runs too, and tells from a leaving by the scheduler's
+;;; `coroutine-suspending?`.  A raise that a handler outside continues leaves
+;;; nothing; a continuation that enters the thunk again does not put the
+;;; deadline back.  Deadlines nest, and each passes on its own time.  A wait a
+;;; deadline ends has what it waited on taken back, a sleep's time, or a
+;;; lookup, cancelled if it has not begun; anything that still comes for it is
+;;; a late resume (R4).
 ;;;
-;;; A CLIENT'S CLOSE (decision 0020): the shell makes a NOTICE for a request
-;;; whose code runs on coroutines, gives it to each coroutine it runs that
-;;; code on (`notice-attach!`), and closes it once the core says the client
-;;; has closed or reset the connection (`notice-close!`).  ONCE (decided by
-;;; form, 2026-10-04): the wait the code is parked in then, or else the next
-;;; wait any of those coroutines makes, raises `&client-closed`, what it
-;;; waited on taken back as a deadline takes it back; after that, waits work
-;;; as before.
+;;; A CLIENT'S CLOSE: the shell makes a NOTICE for a request whose code runs
+;;; on coroutines, gives it to each coroutine it runs that code on
+;;; (`notice-attach!`), and closes it once the core says the client has closed
+;;; or reset the connection (`notice-close!`).  ONCE: the wait the code is
+;;; parked in then, or else the next wait any of those coroutines makes,
+;;; raises `&client-closed`, what it waited on taken back as a deadline takes
+;;; it back; after that, waits work as before.
 ;;;
-;;; A LOOKUP (decision 0015 item 1): `(resolve host)` parks the coroutine
-;;; until the loop's resolver answers for `host`, through `uv-getaddrinfo!`
-;;; in the libuv shell: the addresses, as strings, in the resolver's order;
-;;; or, for a name that does not resolve, `&resolve-error`, whose reason
-;;; names why.
+;;; A LOOKUP: `(resolve host)` parks the coroutine until the loop's resolver
+;;; answers for `host`, through `uv-getaddrinfo!` in the libuv shell: the
+;;; addresses, as strings, in the resolver's order; or, for a name that does
+;;; not resolve, `&resolve-error`, whose reason names why.
 ;;;
 ;;; THE LOOP'S WAITS are one a loop, kept by the loop's scheduler
-;;; (`make-waits`), which a waiting verb finds through the coroutine
-;;; running: the log a late resume is recorded in; and, given by the libuv
-;;; shell, the loop's clock and a timer of their own (`waits-clock!`), and
-;;; its resolver (`waits-resolver!`).  The
-;;; waits keep each sleep's time and each deadline in a heap, (http-server
-;;; heap), with the timer armed for the earliest; each time it fires,
-;;; `waits-fire!` ends what is due and arms it for the earliest left, or
-;;; stops it when none is, so an idle loop sleeps (decision 0005).  A wait
-;;; on a loop that keeps no waits, or a timed one on waits with no clock, is
-;;; an assertion violation, and so is a lookup on waits with no resolver.
-;;; What a coroutine's deadlines need of it, the
-;;; wait it is parked on and how many of its deadlines in force have passed,
-;;; it keeps (`coroutine-waits`), from its first deadline on.
+;;; (`make-waits`), which a waiting verb finds through the coroutine running:
+;;; the log a late resume is recorded in; and, given by the libuv shell, the
+;;; loop's clock and a timer of their own (`waits-clock!`), and its resolver
+;;; (`waits-resolver!`).  The waits keep each sleep's time and each deadline
+;;; in a heap, (http-server heap), with the timer armed for the earliest; each
+;;; time it fires, `waits-fire!` ends what is due and arms it for the earliest
+;;; left, or stops it when none is, so an idle loop sleeps.  A wait on a loop
+;;; that keeps no waits, or a timed one on waits with no clock, is an
+;;; assertion violation, and so is a lookup on waits with no resolver.  What a
+;;; coroutine's deadlines need of it, the wait it is parked on and how many of
+;;; its deadlines in force have passed, it keeps (`coroutine-waits`), from its
+;;; first deadline on.
 ;;;
-;;; Nothing here catches with `guard`: on a coroutine, a `guard` costs the
-;;; coroutine a stack of its own (M7.2's first step, design §5.2's note).
+;;; Nothing here catches with `guard`, which on a coroutine costs about twice
+;;; what an exception handler does.
 (library (http-server private waits)
   (export make-waits waits? waits-clock! waits-fire! waits-timed waits-resolver!
           make-notice notice? notice-attach! notice-close! notice-closed?
@@ -126,8 +120,8 @@
   ;; a resume gave while `register` ran, until the wait answers it, and what
   ;; it waits on that a deadline takes back, a sleep's entry in the heap or a
   ;; lookup's request, or #f.  Whoever registered may keep the resume, and so
-  ;; the cell, after the wait: it keeps neither the coroutine nor a value
-  ;; then (plan §14, 2026-10-11, and its review).
+  ;; the cell, after the wait: it then keeps neither the coroutine nor a
+  ;; value.
   ;;   registering  `register` runs: a resume keeps its value, 'early
   ;;   parked       the coroutine has parked: a resume wakes it, 'resumed
   ;;   early, resumed  the wait is over: a resume is late (R4)

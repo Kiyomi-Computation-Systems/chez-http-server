@@ -3,8 +3,8 @@
 ;;; transfer codings, from the parser's flags and the head's kept fields
 ;;; (pure).
 ;;;
-;;; The server implements one transfer coding, chunked (RFC 9112 §7).
-;;; Decided on the owner's word, 2026-09-26:
+;;; The server implements one transfer coding, chunked (RFC 9112 §7).  The
+;;; two rules, and what the server does with each:
 ;;;
 ;;;   - "A server that receives a request message with a transfer coding it
 ;;;     does not understand SHOULD respond with 501 (Not Implemented)."  When
@@ -22,11 +22,11 @@
 ;;;     nginx does the same here.
 ;;;
 ;;; The parser says which applies, in the flags the core reads at
-;;; on-headers-complete: F-CHUNKED when it frames the body by a final
-;;; chunked, and F-TRANSFER-ENCODING whenever the field is present (measured
-;;; at the pin, ledger 2026-09-26).  So the codings are read only when the
-;;; parser will read chunked, and where chunked sits in them is the parser's
-;;; to judge, not this library's.
+;;; on-headers-complete: F-CHUNKED when it frames the body by a final chunked,
+;;; and F-TRANSFER-ENCODING whenever the field is present, as chez-httparse,
+;;; mirroring llhttp, sets them.  So the codings are read only when the parser
+;;; will read chunked, and where chunked sits in them is the parser's to
+;;; judge, not this library's.
 ;;;
 ;;; The codings are the elements of every Transfer-Encoding line (RFC 9110
 ;;; §5.3).  OWS around an element is not part of it, and an empty element is
