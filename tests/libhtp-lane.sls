@@ -1,23 +1,22 @@
 #!r6rs
-;;; (libhtp-lane) — our expectations for libhtp's pipelining and multi-packet
-;;; streams, and for its two Expect streams, and the run they are held to
-;;; (design §8.2).  The M2 exit; the Expect streams since M6.4; and since the
-;;; M6 exit, 35-early-response.t run a second time, its handler answering at
-;;; the head, as its recorded origin did (below).  Since M8.3, the robustness
-;;; lane's: libhtp's invalid streams and its HTTP/0.9 streams, by name.
+;;; (libhtp-lane) — our expectations for libhtp's streams, and the run they
+;;; are held to: its pipelining and multi-packet streams, its two Expect
+;;; streams, and the robustness lane's streams, libhtp's invalid streams and
+;;; its HTTP/0.9 streams, by name.  35-early-response.t is run a second time,
+;;; its handler answering at the head, as its recorded origin did (below).
 ;;;
 ;;; A stream's client chunks (`>>>`) are its packets.  Each is delivered to one
 ;;; fake connection as one `bytes-arrived`, while the connection reads, with
 ;;; every later turn in between.  After the last, the client's `eof` arrives if
 ;;; the connection still reads, as when a capture ends.  The `<<<` chunks are a
-;;; recorded origin's replies, not an oracle (decision 0007), so none is
-;;; delivered, and every handler reads the body, if the request has one, and
-;;; answers 200 ((outcome-lane)'s `reads`; decision 0013), but
-;;; 99-expect-100.t's (below).  The lane runs under the trace
-;;; lane's `corpus-limits`, with no Host required, like the llhttp lanes: six
-;;; of the twelve send HTTP/1.1 without one (the owner's word, 2026-09-25).
-;;; The two Expect streams end their lines in a bare LF, which the strict
-;;; parser refuses, so they are delivered with CRLF (`libhtp-packets`).
+;;; recorded origin's replies, not an oracle, so none is delivered, and every
+;;; handler reads the body, if the request has one, and answers 200
+;;; ((outcome-lane)'s `reads`), but 99-expect-100.t's (below).  The lane runs
+;;; under the trace lane's `corpus-limits`, with no Host required, like the
+;;; llhttp lanes: six of the twelve pipelining and multi-packet streams send
+;;; HTTP/1.1 without one.  The two Expect streams end their lines in a bare
+;;; LF, which the strict parser refuses, so they are delivered with CRLF
+;;; (`libhtp-packets`).
 ;;;
 ;;; What the connection did is the outcome lane's record, plus the body:
 ;;;   - each handler call, with the request it was given;
@@ -26,8 +25,8 @@
 ;;;   - the phase and close-after the connection ended with, and the actions
 ;;;     run anywhere but the outermost drain, which must be none.
 ;;;
-;;; The expectations are ours (design §8.2), written from RFC 9112 and the
-;;; decisions before the lane first ran, each with its reason beside it.
+;;; The expectations are ours, written from RFC 9112 and the server's
+;;; documented behaviour, each with its reason beside it.
 (library (libhtp-lane)
   (export libhtp-expected-files libhtp-expectation libhtp-packets crlf-files
           libhtp-outcome libhtp-mismatch
@@ -45,12 +44,11 @@
   ;; Each is (actions phase close-after violations).  A connection the client
   ;; keeps alive closes at its eof, with no close-after; an HTTP/1.0 one
   ;; closes after its response, as `not-keep-alive` (RFC 9112 §9.3: 1.1
-  ;; persists unless it says close, 1.0 only if it says keep-alive; decision
-  ;; 0006 item 1), in stages: it lingers, and the eof ends it (decision
-  ;; 0011).
+  ;; persists unless it says close, 1.0 only if it says keep-alive), in
+  ;; stages: it lingers, and the eof ends it.
 
-  ;; Two GETs on one connection, served in order (RFC 9112 §9.3.2; decision
-  ;; 0004: serially).
+  ;; Two GETs on one connection, served in order, one at a time (RFC 9112
+  ;; §9.3.2).
   (define two-gets
     '(((call-handler (GET "/first" 1 1 ())) (write 200)
        (call-handler (GET "/second" 1 1 ())) (write 200)
@@ -70,9 +68,9 @@
 
   ;; A chunked POST: chunks of 11 and 1 bytes, then a trailer, `Cookie: 2`,
   ;; split across packets.  The handler is asked once the head is in, and its
-  ;; reader is handed the body (decision 0013).  The trailer is not part of
-  ;; the request, which is built at on-headers-complete (design §4.2;
-  ;; trailers are M6.4's).
+  ;; reader is handed the body.  The trailer is not part of the request, which
+  ;; is built at on-headers-complete; a trailer is counted against the header
+  ;; limits and not kept.
   (define chunked-post
     '(((call-handler (POST "/" 1 1 (("Transfer-Encoding" . "chunked")
                                     ("Content-Type" . "application/x-www-form-urlencoded")
@@ -90,8 +88,8 @@
      ;; curl 7.18's upload, expecting 100-continue, its head alone in the
      ;; first packet (RFC 9110 §10.1.1).  The handler is asked at the head
      ;; and answers with a reader, so the 100 goes out before any of the
-     ;; body arrives (decision 0013; M6.4); then the body, in three packets,
-     ;; its Content-Length of 216 bytes, and the response.
+     ;; body arrives; then the body, in three packets, its Content-Length of
+     ;; 216 bytes, and the response.
      (cons "05-expect.t"
            `(((call-handler
                (POST "/" 1 1
@@ -177,34 +175,33 @@
      ;; A PUT to /forbidden expecting 100-continue, which its handler
      ;; refuses at the head, as the recorded origin did: answered with a
      ;; response, not a reader, so no 100 goes out, the body is not read, and
-     ;; the connection closes after the response (decision 0013 item 4),
-     ;; dropping the POST behind it, which the recorded origin served.
+     ;; the connection closes after the response, dropping the POST behind
+     ;; it, which the recorded origin served.
      (cons "99-expect-100.t"
            '(((call-handler (PUT "/forbidden" 1 1 (("Content-Length" . "14") ("Expect" . "100-continue"))))
               (write 401)
               (close unread-body))
              closed unread-body ()))))
 
-  ;; --- the robustness lane's streams (M8.3) ---------------------------------
+  ;; --- the robustness lane's streams -----------------------------------------
   ;;
-  ;; libhtp's invalid streams and its HTTP/0.9 streams, by name (plan §14's
-  ;; M8.3).  Each is one connection's client packets, then its eof.  A
-  ;; request the server refuses is answered with no handler asked, and the
-  ;; connection lingers until the eof (decision 0011).  Written from RFC
-  ;; 9112 and the decisions before the lane ran them, each with its reason.
+  ;; libhtp's invalid streams and its HTTP/0.9 streams, by name.  Each is one
+  ;; connection's client packets, then its eof.  A request the server refuses
+  ;; is answered with no handler asked, and the connection lingers until the
+  ;; eof.  Written from RFC 9112 and the server's documented behaviour, each
+  ;; with its reason.
 
   ;; A refusal at the head: the status, and the reason the connection closes
   ;; for.
   (define (refused status reason)
     `(((write ,status) (close ,reason)) closed ,reason ()))
 
-  ;; An HTTP/1.0 GET served, then closed (RFC 9112 §9.3; decision 0006).
+  ;; An HTTP/1.0 GET served, then closed (RFC 9112 §9.3).
   (define (served-1.0 target headers)
     `(((call-handler (GET ,target 1 0 ,headers)) (write 200) (close not-keep-alive))
       closed not-keep-alive ()))
 
-  ;; A chunked POST with libhtp's head, its handler asked at the head
-  ;; (decision 0013).
+  ;; A chunked POST with libhtp's head, its handler asked at the head.
   (define chunked-post-asked
     '(call-handler (POST "/" 1 1 (("Transfer-Encoding" . "chunked")
                                   ("Content-Type" . "application/x-www-form-urlencoded")
@@ -219,8 +216,8 @@
      (cons "21-http09.t" '(((close eof)) closed #f ()))
      ;; The second line, read as a field, has no colon (RFC 9112 §5.1): 400.
      (cons "23-http09-multiple.t" (refused 400 'parser-error))
-     ;; HTTP/0.9, named or with no version, is refused (RFC 9110 §15.6.6;
-     ;; decided on the owner's word, by form, 2026-10-03).
+     ;; HTTP/0.9, named or with no version, is refused with 505 (RFC 9110
+     ;; §15.6.6).
      (cons "24-http09-explicit.t" (refused 505 'version-not-supported))
      (cons "92-http_0_9-method_only.t" (refused 505 'version-not-supported))
      ;; A Host with a space is no uri-host (RFC 9112 §3.2: any request with an
@@ -338,9 +335,8 @@
   ;; libhtp's two Expect streams, whose lines end in a bare LF.  05's is curl
   ;; 7.18's upload, whose body comes to its Content-Length, 216 bytes, only
   ;; with CRLF: its capture was CRLF, and the file was converted after.  99's
-  ;; was written by hand.  Decided on the owner's word, by form, 2026-09-29:
-  ;; the vendored bytes are never edited, and every other stream is
-  ;; delivered as libhtp's chunker cuts it.
+  ;; was written by hand.  The vendored bytes are never edited, and every
+  ;; other stream is delivered as libhtp's chunker cuts it.
   (define crlf-files '("05-expect.t" "99-expect-100.t"))
 
   ;; libhtp-packets : String -> (Listof Bytevector)
@@ -409,15 +405,13 @@
 
   ;; --- 35-early-response.t, answered at the head ----------------------------
   ;;
-  ;; The lane's handler reads 35's body, the suites' one HTTP/1.0 body read,
-  ;; so its expectation stays.  Its recorded origin answered the POST 400
-  ;; before the body, as a handler can since M6.1, with a response instead
-  ;; of a reader (decision 0013 item 4), and the M6 exit runs it so too, on
-  ;; the owner's word, by form (2026-10-02).  The head's packet alone brings
-  ;; the 400, and with it the staged close HTTP/1.0 gets: the connection
-  ;; lingers, reading and dropping what the client still sends, the body
-  ;; among it, so no reader is handed it, and the client's close ends it
-  ;; (decision 0011).
+  ;; The lane's handler reads 35's body (the suites' one HTTP/1.0 body read),
+  ;; which is the expectation above.  Its recorded origin answered the POST
+  ;; 400 before the body, as a handler can with a response instead of a
+  ;; reader, so the lane runs it so too.  The head's packet alone brings the
+  ;; 400, and with it the staged close HTTP/1.0 gets: the connection lingers,
+  ;; reading and dropping what the client still sends, the body among it, so
+  ;; no reader is handed it, and the client's close ends it.
 
   ;; early-response-expectation : (List Outcome Outcome)
   ;; After the head's packet alone, and after the whole stream and its eof.
@@ -447,8 +441,8 @@
      (lambda (a acc)
        (case (car a)
          ((call-handler) (cons (list 'call-handler (render-request (cadr a))) acc))
-         ;; A hand-off by the bytes it hands over (M8.2), though no libhtp
-         ;; stream's handler takes an upgrade, so none reaches it.
+         ;; A hand-off by the bytes it hands over, though no libhtp stream's
+         ;; handler takes an upgrade, so none reaches it.
          ((hand-off)
           (cons (list 'hand-off (let ((r (caddr a))) (and r (utf8->string (piece (car r) (cadr r) (caddr r))))))
                 acc))

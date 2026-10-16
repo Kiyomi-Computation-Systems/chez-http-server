@@ -2,20 +2,15 @@
 ;;; (test-libhtp) — the vendored libhtp corpus loads, and its bytes are the
 ;;; bytes we fetched.
 ;;;
-;;; M1.3.  This is the first non-llhttp corpus and the first PROVENANCE gate.
-;;; It proves three things and asserts nothing about HTTP semantics (that is
-;;; M2), because the `<<<` chunks are a recorded origin's replies, not an oracle
-;;; (decision 0007):
+;;; It proves three things and asserts nothing about HTTP semantics, because
+;;; the `<<<` chunks are a recorded origin's replies, not an oracle:
 ;;;
 ;;;   1. the sha256 hasher is SHA-256 (FIPS 180-4 vectors) — an uncalibrated
 ;;;      instrument measures nothing;
 ;;;   2. every vendored file matches its recorded sha256 in PROVENANCE; a
 ;;;      mismatch, a miscount, or an unlisted file is a PROVENANCE FAILURE and
-;;;      exits 3 (the first use of `provenance-failure` in this repository).
-;;;      Since 2026-10-04 the check is (provenance)'s, the one every vendored
-;;;      corpus shares, so an unlisted file anywhere under test/vendor/libhtp
-;;;      fails it, where this suite's own looked only among LICENSE and the
-;;;      streams;
+;;;      exits 3.  The check is (provenance)'s, the one every vendored corpus
+;;;      shares, so an unlisted file anywhere under test/vendor/libhtp fails it;
 ;;;   3. the loader decomposes every stream into client/server chunks, byte-
 ;;;      faithfully to libhtp's test.c, and refuses a malformed marker.
 (import (rnrs) (srfi :64) (testing)
@@ -71,7 +66,7 @@
     (let ((listed (verify-provenance! vendor-dir)))
       (test-eqv "PROVENANCE lists LICENSE + the 102 streams" 103 (length listed)))
 
-    ;; 3a. the corpus is the 102 streams the survey names (§2.3, decision 0007).
+    ;; 3a. the corpus is the 102 streams the manifest lists.
     (test-eqv "102 libhtp .t stream files" 102 (length t-files))
 
     ;; 3b. every stream loads into client/server chunks, none refused.

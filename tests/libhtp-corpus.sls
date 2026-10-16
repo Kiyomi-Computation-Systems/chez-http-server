@@ -1,10 +1,10 @@
 #!r6rs
 ;;; (libhtp-corpus) — load a vendored libhtp `.t` connection stream.
 ;;;
-;;; M1.3.  libhtp's test/files/*.t files interleave a client and an origin's
-;;; bytes with packet markers: a line `>>>` opens a client chunk, `<<<` opens a
-;;; server chunk, and the chunk runs to the line before the next marker.  This
-;;; is a byte-faithful port of libhtp's own test.c chunker (test_is_boundary /
+;;; libhtp's test/files/*.t files interleave a client and an origin's bytes with
+;;; packet markers: a line `>>>` opens a client chunk, `<<<` opens a server
+;;; chunk, and the chunk runs to the line before the next marker.  This is a
+;;; byte-faithful port of libhtp's own test.c chunker (test_is_boundary /
 ;;; test_next_chunk), so the bytes we deliver are the bytes libhtp delivers:
 ;;;
 ;;;   - a chunk is the bytes after its marker line up to the `\n` that precedes
@@ -17,15 +17,18 @@
 ;;;
 ;;; The vendored corpus uses only `>>>`/`<<<`; libhtp's gap variants (`><>`,
 ;;; `<><`) appear in none of the 102 files, so a line where a marker is expected
-;;; that is not exactly `>>>` or `<<<` is REFUSED rather than guessed at (design
-;;; §8.2; the archived repo will not add one).  M1 proves the streams load and
-;;; the bytes are the bytes we fetched — no HTTP is parsed here (that is M2), and
-;;; the `<<<` chunks are a recorded origin's replies, not an oracle (0007).
+;;; that is not exactly `>>>` or `<<<` is REFUSED rather than guessed at (libhtp
+;;; is archived and will not add one).  The loader only splits streams: no HTTP
+;;; is parsed here, and the `<<<` chunks are a recorded origin's replies, not an
+;;; oracle.
 (library (libhtp-corpus)
   (export libhtp-parse-stream
           libhtp-parse-error? libhtp-parse-error-detail)
   (import (rnrs))
 
+  ;; libhtp-parse-error? : Any -> Boolean — a stream was refused.
+  ;; libhtp-parse-error-detail : LibhtpParseError -> String — why: the offset
+  ;; where a marker was expected.
   (define-condition-type &libhtp-parse &error
     make-libhtp-parse-error libhtp-parse-error? (detail libhtp-parse-error-detail))
 

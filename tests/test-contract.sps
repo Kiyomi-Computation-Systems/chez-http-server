@@ -1,38 +1,37 @@
 #!r6rs
-;;; The cross-shell contract (design §8.4; plan §8, M4.4).
+;;; The cross-shell contract.
 ;;;
 ;;; The fake shell and the direct libuv shell must do the same thing with the
 ;;; same events: the same bytes on the wire, and the same trace of the events
 ;;; each dispatched and the actions each ran, in order.  The core and the
 ;;; adapter are shared, so what the contract holds equal is what each shell
 ;;; adds: its message loop, its executors, and the completions it reports.
-;;; M7.3 adds the coroutine shell (THE COROUTINE SHELL, below).
+;;; The coroutine shell (THE COROUTINE SHELL, below) is held to the direct
+;;; shell's behaviour too.
 ;;;
 ;;; HOW THE SAME EVENTS REACH BOTH.  A script is a client's: what it sends,
 ;;; where it waits for the server to have read what it sent, and its end,
 ;;; which is the half-close, or a stall: the client sends nothing more and
 ;;; never ends its stream, and waits for the server's deadlines to close the
-;;; connection (M5.3).  The client ends its stream only once the server has
-;;; read all it sent and answered it, its connection idle, lingering or
-;;; gone, as it always did before decision 0020: since then the server reads
-;;; past a request's end, and an end that comes while a handler waits tells
-;;; it (THE CLIENT'S END, below).  A script marked `(end-early)` ends its
-;;; stream as soon as it has sent.  A script marked `(bare-close)` is one whose
-;;; connection the server closes at once, with no linger, before it reads
-;;; the client's half-close: a producer's failure once the head is on the
-;;; wire (M6.3).  The client plays it on the libuv shell's own loop,
-;;; to the shell's own listener, and the shell's trace records every event
-;;; and action, and the loop's time each event came at and each write was
-;;; made at.  How the kernel divides the bytes into reads is its policy
-;;; (design §8.5), so the libuv shell's events are then given to the fake,
-;;; its clock moved to each one's time first: each delivery and the
-;;; client's end as the libuv shell received them; each completion (a
-;;; write's, a half-close's, a close's) where the libuv shell received its
-;;; own, the fake delivering the one it has waiting; and each tick as the
-;;; fake's own timer firing then.  The events a shell makes itself while it
-;;; performs an action, a parser's result and a handler's answer, each makes
-;;; on its own.  Where the libuv shell's handler code ended a wait, the
-;;; fake's wait ends (THE WAITS' MARKS, below).
+;;; connection.  The client ends its stream only once the server has read all
+;;; it sent and answered it, its connection idle, lingering or gone: the
+;;; server reads past a request's end, and an end that comes while a handler
+;;; waits tells it (THE CLIENT'S END, below).  A script marked `(end-early)`
+;;; ends its stream as soon as it has sent.  A script marked `(bare-close)` is
+;;; one whose connection the server closes at once, with no linger, before it
+;;; reads the client's half-close: a producer's failure once the head is on
+;;; the wire.  The client plays it on the libuv shell's own loop, to the
+;;; shell's own listener, and the shell's trace records every event and
+;;; action, and the loop's time each event came at and each write was made
+;;; at.  How the kernel divides the bytes into reads is its policy, so the
+;;; libuv shell's events are then given to the fake, its clock moved to each
+;;; one's time first: each delivery and the client's end as the libuv shell
+;;; received them; each completion (a write's, a half-close's, a close's)
+;;; where the libuv shell received its own, the fake delivering the one it has
+;;; waiting; and each tick as the fake's own timer firing then.  The events a
+;;; shell makes itself while it performs an action, a parser's result and a
+;;; handler's answer, each makes on its own.  Where the libuv shell's handler
+;;; code ended a wait, the fake's wait ends (THE WAITS' MARKS, below).
 ;;;
 ;;; ONE CLOCK.  The libuv shell keeps two: the wall clock its Date line is
 ;;; made from, and the loop's (uv_now), which its deadlines are armed and
@@ -51,61 +50,57 @@
 ;;; second after its event: a fake dated at the event's instant, or at the
 ;;; instants out of order, writes another Date.
 ;;;
-;;; THE COROUTINE SHELL (M7.3) is the libuv shell whose handler waits: it
-;;; answers every request `(awaiting thunk)`, the thunk the same handler's
-;;; call, so the handler, its reader's pieces and end, and its producer run
-;;; on coroutines from the scheduler's drain, and its readers are answered on
-;;; credit (decision 0014).  Every script whose requests reach the handler
-;;; plays to it too: one the core refuses, and those that stall, reach none,
-;;; so through it they would play the direct shell again.  Its events are
-;;; given to a fake made the same way, whose own coroutine path makes its
-;;; answers and its credit: the credit the coroutine shell gives, unlike the
-;;; suite's own for a shell made on credit (M6.2), is the shell's own event,
-;;; not the script's.  Its trace cannot be the direct shell's: a handler that
-;;; waits is answered on credit, and a waiting reader's end is asked for
-;;; before its first piece has run.  What its client reads can be: each Date
-;;; line's value aside, since each run dates its own seconds (decided by
-;;; form, 2026-10-02).
+;;; THE COROUTINE SHELL is the libuv shell whose handler waits: it answers
+;;; every request `(awaiting thunk)`, the thunk the same handler's call, so
+;;; the handler, its reader's pieces and end, and its producer run on
+;;; coroutines from the scheduler's drain, and its readers are answered on
+;;; credit.  Every script whose requests reach the handler plays to it too:
+;;; one the core refuses, and those that stall, reach none, so through it
+;;; they would play the direct shell again.  Its events are given to a fake
+;;; made the same way, whose own coroutine path makes its answers and its
+;;; credit: the credit the coroutine shell gives, unlike the suite's own for a
+;;; shell made on credit, is the shell's own event, not the script's.  Its
+;;; trace cannot be the direct shell's: a handler that waits is answered on
+;;; credit, and a waiting reader's end is asked for before its first piece
+;;; has run.  What its client reads can be: each Date line's value aside,
+;;; since each run dates its own seconds.
 ;;;
-;;; THE DOOR (decision 0016; plan §14's door script, 2026-10-11).  A door
-;;; script's request asks to switch, `Upgrade: echo`, at a target the
-;;; handler takes (door-taker, below).  Once its 101 is written the stream
-;;; is the taker's, and what the stream does then is no event of the
-;;; core's.  The libuv shell traces it as `door`: each read and the end of
-;;; its reads, whether the taker's or dropped while its close lingers; each
-;;; of the taker's writes completing; its wheel entry passing; and its
-;;; close's two stages, the half-close and the close begun, which are its
-;;; own.  The fake traces its own door the same.  The replay gives the fake each: a read
-;;; and an end delivered; a completion as the fake's oldest write waiting,
-;;; with the outcome the libuv shell's had, since whether libuv had written
-;;; a write when its stream was aborted is the kernel's, as how it divides
-;;; the reads is; and a pass as the fake's timer firing.  The taker's code
-;;; marks each call it makes and each it is told (THE DOOR'S MARKS, below),
-;;; so the traces hold what the taker saw too.  A script marked `(aborts)`
-;;; is one whose stream the server closes at once, the client's end never
-;;; read; `(heard)` waits until the client has read the 101, as a WebSocket
-;;; client waits for it (RFC 6455 §4.1), and the taker has taken the stream;
-;;; and `(sent-before-read)`, after a send, holds that what the client sent
-;;; came after the hand-off and before the taker's read-start: the stream
-;;; was handed over with no bytes and the taker had not started reading as
-;;; it was sent, so the late reader's window is the one played, not one a
-;;; slow turn skipped; `(stop-reading)` stops the client reading, so
-;;; what the server writes after it waits, and the client, reading no
-;;; more, is not waited for to read the stream's end; and `(bounded)`
-;;; holds that the stream was aborted at the close's write bound, its
-;;; taker's write told ECANCELED, so the script plays what it is named for.  The door scripts
-;;; play to the direct shell and to the coroutine shell, whose handler
-;;; answers the switch from a coroutine; one whose client never ends its
-;;; stream plays to a shell with short limits, where its linger's deadline
-;;; closes it, and so does one whose client stops reading, where the close's
-;;; write bound aborts it (decision 0027).
+;;; THE DOOR.  A door script's request asks to switch, `Upgrade: echo`, at a
+;;; target the handler takes (door-taker, below).  Once its 101 is written the
+;;; stream is the taker's, and what the stream does then is no event of the
+;;; core's.  The libuv shell traces it as `door`: each read and the end of its
+;;; reads, whether the taker's or dropped while its close lingers; each of the
+;;; taker's writes completing; its wheel entry passing; and its close's two
+;;; stages, the half-close and the close begun, which are its own.  The fake
+;;; traces its own door the same.  The replay gives the fake each: a read and
+;;; an end delivered; a completion as the fake's oldest write waiting, with
+;;; the outcome the libuv shell's had, since whether libuv had written a
+;;; write when its stream was aborted is the kernel's, as how it divides the
+;;; reads is; and a pass as the fake's timer firing.  The taker's code marks
+;;; each call it makes and each it is told (THE DOOR'S MARKS, below), so the
+;;; traces hold what the taker saw too.  A script marked `(aborts)` is one
+;;; whose stream the server closes at once, the client's end never read;
+;;; `(heard)` waits until the client has read the 101, as a WebSocket client
+;;; waits for it (RFC 6455 §4.1), and the taker has taken the stream; and
+;;; `(sent-before-read)`, after a send, holds that what the client sent came
+;;; after the hand-off and before the taker's read-start: the stream was
+;;; handed over with no bytes and the taker had not started reading as it was
+;;; sent, so the late reader's window is the one played, not one a slow turn
+;;; skipped; `(stop-reading)` stops the client reading, so what the server
+;;; writes after it waits, and the client, reading no more, is not waited for
+;;; to read the stream's end; and `(bounded)` holds that the stream was
+;;; aborted at the close's write bound, its taker's write told ECANCELED, so
+;;; the script plays what it is named for.  The door scripts play to the
+;;; direct shell and to the coroutine shell, whose handler answers the switch
+;;; from a coroutine; one whose client never ends its stream plays to a shell
+;;; with short limits, where its linger's deadline closes it, and so does one
+;;; whose client stops reading, where the close's write bound aborts it.
 ;;;
-;;; HANDLER CODE THAT WAITS (M7.3), with the server's verbs (decision
-;;; 0015), plays to the direct shell, whose handler waits where a target
-;;; asks: a sleep, a deadline, a lookup, a reader and a producer that sleep,
-;;; and a reader's end that waits; the last, the brief's exit, a lookup
-;;; inside a pipelined connection, whose responses THE ORDER ROW (below)
-;;; holds to the order they were asked in.
+;;; HANDLER CODE THAT WAITS, with the server's verbs, plays to the direct
+;;; shell, whose handler waits where a target asks: a sleep, a deadline, a
+;;; lookup, a reader and a producer that sleep, and a reader's end that waits;
+;;; the last, a lookup inside a pipelined connection, whose responses THE
+;;; ORDER ROW (below) holds to the order they were asked in.
 ;;;
 ;;; The checks, for each script:
 ;;;   - the libuv shell read what the client sent, then its end alone, and
@@ -118,14 +113,15 @@
 ;;;   - and for the lookup inside a pipelined connection, the client read
 ;;;     the responses in the order it asked for them.
 ;;; A client that does not connect plays nothing, and the first check names
-;;; how its connect ended.  Where the two shells part, a line on stderr names the script and the
-;;; first byte, or the first event or action, that differs: `CONTRACT
-;;; MISMATCH`, beside the harness's FAIL, which gives only the check's name.
+;;; how its connect ended.  Where the two shells part, a line on stderr names
+;;; the script and the first byte, or the first event or action, that
+;;; differs: `CONTRACT MISMATCH`, beside the harness's FAIL, which gives only
+;;; the check's name.
 ;;;
-;;; Oracles: the scripts' bytes; the fake shell, which the core's table
-;;; suites hold to design §4.4's rows (M1.4 to M3.5) and its wheel to their
-;;; deadlines (M5.3); the loop's time, as both shells' clock, read where the
-;;; libuv shell's trace sees each event and each write.
+;;; Oracles: the scripts' bytes; the fake shell, which the core's table suites
+;;; hold to the transition table's rows and its wheel to their deadlines; the
+;;; loop's time, as both shells' clock, read where the libuv shell's trace
+;;; sees each event and each write.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) current-time time-second time-nanosecond)
         (libuv) (uv-testing)
@@ -145,16 +141,15 @@
 ;; The handler answers 200 with the request's target as the body, except
 ;; `/close`, whose response asks to close the connection, `/raise`, which
 ;; raises a message, and `/raise-who`, which raises a condition with no
-;; message; and it reads a body with a reader (decision 0013): `/read`
-;; streams it, dropping it, `/whole` reads it whole and answers with it,
-;; `/small` reads it whole, capped at 4 bytes, and `/piece-raises` and
-;; `/end-raises` have readers that raise, at the first piece and at the
-;; end.  `/stream` answers with a producer of three pieces (decision 0013
-;; item 8; M6.3; tests/producers.sls), and `/stream-raises` with one whose
-;; second call raises.  And it waits (decision 0015; M7.3), each wait
-;; marked where it ends (THE WAITS' MARKS, below): `/sleep` sleeps 20 ms;
-;; `/deadline` sleeps a minute inside a deadline of 10 ms, and answers
-;; "passed" when the deadline's raise comes, or "slept"; `/resolve` resolves
+;; message; and it reads a body with a reader: `/read` streams it, dropping
+;; it, `/whole` reads it whole and answers with it, `/small` reads it whole,
+;; capped at 4 bytes, and `/piece-raises` and `/end-raises` have readers that
+;; raise, at the first piece and at the end.  `/stream` answers with a
+;; producer of three pieces (tests/producers.sls), and `/stream-raises` with
+;; one whose second call raises.  And it waits, each wait marked where it
+;; ends (THE WAITS' MARKS, below): `/sleep` sleeps 20 ms; `/deadline`
+;; sleeps a minute inside a deadline of 10 ms, and answers "passed" when the
+;; deadline's raise comes, or "slept"; `/resolve` resolves
 ;; "localhost" and answers the addresses, a space between each;
 ;; `/resolve-unknown` resolves "a..b", whose empty label the resolver
 ;; refuses without asking a server, and answers the reason it raised with;
@@ -332,10 +327,10 @@
 
 ;; door-huge : Bytevector — 16 MiB, more than a client's receive buffer and
 ;; the server's send buffer hold once the client stops reading, so a write
-;; of it waits (decision 0027), as the shell suite's huge-door does.
+;; of it waits, as the shell suite's huge-door does.
 (define door-huge (make-bytevector (* 16 1024 1024) 7))
 
-;; THE WAITS' MARKS (M7.3).  The libuv shell's waits end inside libuv's run,
+;; THE WAITS' MARKS.  The libuv shell's waits end inside libuv's run,
 ;; where the suite cannot see them: a timer of the loop's fires, or a
 ;; lookup's answer comes, and the coroutine waiting runs again at the next
 ;; drain.  So the handler's code marks where each of its waits ended, in the
@@ -410,7 +405,7 @@
     ("three requests in one write"
      (send "GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\n\r\nGET /3 HTTP/1.1\r\nHost: x\r\n\r\n"))
     ;; Its end comes with requests held, often in the turn a handler's call
-    ;; waits in: each is answered, then the close (decision 0020; THE TURNS).
+    ;; waits in: each is answered, then the close (THE TURNS).
     ("three requests in one write, the client's end at once"
      (send "GET /1 HTTP/1.1\r\nHost: x\r\n\r\nGET /2 HTTP/1.1\r\nHost: x\r\n\r\nGET /3 HTTP/1.1\r\nHost: x\r\n\r\n")
      (end-early))
@@ -443,8 +438,8 @@
      (send "GET /stream-raises HTTP/1.1\r\nHost: x\r\n\r\n") (bare-close))
     ("two requests in one write, the second answered in the next second"
      (send "GET /now HTTP/1.1\r\nHost: x\r\n\r\nGET /next-second HTTP/1.1\r\nHost: x\r\n\r\n"))
-    ;; M6.4: a write made while the connection still reads, the 100 the core
-    ;; writes when the handler answers with a reader.
+    ;; A write made while the connection still reads: the 100 the core writes
+    ;; when the handler answers with a reader.
     ("a body expecting 100-continue, sent once the server has read the head"
      (send "POST /read HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n")
      (read) (send "hello"))))
@@ -485,8 +480,8 @@
 
 ;; A door script whose client stops reading once it has the 101, played to
 ;; the shell with short limits, where the close's write bound aborts the
-;; stream (decision 0027): its taker writes door-huge only once the client
-;; has stopped, so the client reads none of it.
+;; stream: its taker writes door-huge only once the client has stopped, so
+;; the client reads none of it.
 (define door-bound-scripts
   `(("a taker that closes behind 16 MiB its client reads nothing of: aborted at the write timeout"
      (send ,(upgrade "/door-bounded")) (heard) (stop-reading) (send "go") (bounded))))
@@ -505,7 +500,7 @@
                '((read-header-timeout-ms . 200) (idle-timeout-ms . 250) (linger-timeout-ms . 300)
                  (write-timeout-ms . 300) (tick-ms . 10))))
 
-;; The scripts played to a shell made on credit (M6.2), which answers with
+;; The scripts played to a shell made on credit, which answers with
 ;; each answer and `credit`, as the coroutine shell answers a handler that
 ;; waits, handing a reader its pieces on credit; the fake is made on credit
 ;; too.  Whenever the script's connection waits for its reader's credit, the
@@ -515,11 +510,11 @@
   '(("a body streamed to a reader on credit, credited each time it waits"
      (send "POST /read HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234") (read) (send "56789"))))
 
-;; The scripts whose handler code waits (M7.3), played to the direct shell,
-;; whose handler waits only where its target asks.  The last is the brief's
-;; exit (plan §14, M7.3): a handler awaiting uv-getaddrinfo! inside a
-;; pipelined connection, then an ordinary request and a sleep, which THE
-;; ORDER ROW (below) holds to the order they were asked in.
+;; The scripts whose handler code waits, played to the direct shell, whose
+;; handler waits only where its target asks.  The last is a handler awaiting
+;; uv-getaddrinfo! inside a pipelined connection, then an ordinary request
+;; and a sleep, which THE ORDER ROW (below) holds to the order they were
+;; asked in.
 (define lookup-in-a-pipeline
   '("a lookup inside a pipelined connection, then an ordinary request and a sleep"
     (send "GET /resolve HTTP/1.1\r\nHost: x\r\n\r\nGET /after HTTP/1.1\r\nHost: x\r\n\r\nGET /sleep HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -565,13 +560,12 @@
 ;; at once, before it reads the client's end.
 (define (aborts? script) (ends-with? script '(aborts)))
 
-;; THE CLIENT'S END.  Before decision 0020 the server did not read while a
-;; handler ran, so a client's end came after the answers however soon it
-;; was sent.  Now it can come while a request is answered, and tells a
-;; handler that waits, which these scripts' handlers let out: answered
-;; nothing.  So a script's client ends its stream once it has been answered
-;; (answered?), and the scripts meant for the end while a handler waits, or
-;; with requests held behind it, end early.
+;; THE CLIENT'S END.  The server reads past a request's end, so a client's
+;; end can come while a request is answered, and tells a handler that waits,
+;; which these scripts' handlers let out: answered nothing.  So a script's
+;; client ends its stream once it has been answered (answered?), and the
+;; scripts meant for the end while a handler waits, or with requests held
+;; behind it, end early.
 ;; ends-early? : Script -> Boolean — whether its client ends its stream as
 ;; soon as it has sent.
 (define (ends-early? script) (ends-with? script '(end-early)))
@@ -712,12 +706,11 @@
 
 ;; THE TURNS.  The libuv shell drains its scheduler, calling handlers and
 ;; running coroutines, at the start of each turn of its loop, then polls:
-;; every event the poll brings comes before the next drain (decision
-;; 0014).  The fake drains its own after each event it is given, unless
-;; held, so the replay holds it and drains it once for each turn the libuv
-;; shell began between two events.  Since decision 0020 the client's end
-;; can come in the turn a handler's call waits in, after it was asked for
-;; and before it is made.
+;; every event the poll brings comes before the next drain.  The fake
+;; drains its own after each event it is given, unless held, so the replay
+;; holds it and drains it once for each turn the libuv shell began between
+;; two events.  The client's end can come in the turn a handler's call waits
+;; in, after it was asked for and before it is made.
 ;; turn : Nat — the turns of the libuv shell's loop wait-for has begun.
 (define turn 0)
 
@@ -725,7 +718,7 @@
 ;; Run the libuv shell's own run loop until `pred` holds: 'satisfied or
 ;; 'iterations-exhausted.  The run loop logs a callback's error and runs on,
 ;; so such a bug shows in the checks; a byte-machine contract condition it
-;; raises again (design §6.4), which ends the suite, as it would end a server.
+;; raises again, which ends the suite, as it would end a server.
 ;; Each turn is counted as it begins: `pred` is asked before each.
 (define (wait-for pred)
   (run-shell-until loop shell (lambda () (or (pred) (begin (set! turn (+ turn 1)) #f))) cap))
@@ -852,7 +845,7 @@
 ;; replay :
 ;;   Limits Boolean Boolean (Listof (List* Nat Nat Event)) (Listof Nat) -> (values FakeShell (Listof Entry))
 ;; The libuv shell's events given to a fake connection under the same
-;; limits, made on credit if the libuv shell was (M6.2), its handler
+;; limits, made on credit if the libuv shell was, its handler
 ;; waiting if the libuv shell's did (`waits?`, the coroutine shell's), and
 ;; at the instant the libuv shell adopted its own, its clock moved to each
 ;; event's instant before it is given: a delivery, the client's end, a
@@ -870,10 +863,7 @@
 ;; and its fake is made at 0.  Whatever raises while the fake takes an
 ;; event, a bug in the core or in the fake, is recorded in its trace as
 ;; `(raised event condition)`, so the traces part there and the checks
-;; name it, where a raise out of the suite would end it (M6.3's mutants):
-;; its clock moved back among them, as by the mark of a wait that went on
-;; past an earlier script's close (decision 0015 item 4), which a mutant
-;; that answers a waiting handler at once makes (M7.3).
+;; name it, where a raise out of the suite would end it.
 (define (replay limits on-credit? waits? events writes)
   (let* ((seen '())
          (last-turn #f)
@@ -972,16 +962,14 @@
 ;; only with the close.
 (define unanswered '())
 
-;; THE ORDER ROW (the brief's exit; plan §14, M7.3).  Through the libuv
-;; shell, a handler awaiting uv-getaddrinfo! inside a pipelined connection
-;; keeps the responses in the order they were asked for: the lookup's
-;; answer, the addresses uv-getaddrinfo! itself answers for "localhost"
-;; (`looked-up`), then the ordinary request's, then the sleep's.  In v1 the
-;; core reads no request past one whose handler has not answered (decision
-;; 0004), so no later handler runs while one waits, and the plan's mutation,
-;; a later request's handler resumed first, cannot be made; the row goes red
-;; when the shell answers a waiting handler before its thunk has ended
-;; (decided by form, 2026-10-02).
+;; THE ORDER ROW.  Through the libuv shell, a handler awaiting
+;; uv-getaddrinfo! inside a pipelined connection keeps the responses in the
+;; order they were asked for: the lookup's answer, the addresses
+;; uv-getaddrinfo! itself answers for "localhost" (`looked-up`), then the
+;; ordinary request's, then the sleep's.  The core reads no request past one
+;; whose handler has not answered, so no later handler runs while one waits;
+;; the row goes red when the shell answers a waiting handler before its
+;; thunk has ended.
 (define (check-order! bytes addresses)
   (check (car lookup-in-a-pipeline) "the client read the responses in the order it asked for them"
          (list (list 200 (if (pair? addresses) (spaced addresses) addresses)) '(200 "/after") '(200 "/sleep"))
@@ -1071,15 +1059,14 @@
                          (let-values (((fake fake-trace) (replay default-limits #f #f '() '())))
                            (list (fake-shell-writes fake) fake-trace))))
       ;; A wait goes on when its connection closes, what it answers is
-      ;; dropped, and its connection makes no more calls (decision 0015
-      ;; item 4); the socket lane holds the libuv shell to it.  No script can
-      ;; close a connection while a call waits, so the fake is held to it
-      ;; here, alone: a reader whose piece sleeps, its end's call behind it,
-      ;; the connection closed by the shell meanwhile, as at a drain's
-      ;; deadline, which the core hears as a read's error, ECANCELED.  Its
-      ;; sleep ends, once; the piece's credit is dropped, and the end is
-      ;; never called.  A close the client makes ends the wait at once
-      ;; (decision 0020; the next check).
+      ;; dropped, and its connection makes no more calls; the socket lane
+      ;; holds the libuv shell to it.  No script can close a connection while
+      ;; a call waits, so the fake is held to it here, alone: a reader whose
+      ;; piece sleeps, its end's call behind it, the connection closed by the
+      ;; shell meanwhile, as at a drain's deadline, which the core hears as a
+      ;; read's error, ECANCELED.  Its sleep ends, once; the piece's credit is
+      ;; dropped, and the end is never called.  A close the client makes ends
+      ;; the wait at once (the next check).
       (let ((closed-while-sleeping
              (lambda (errno)
                (let* ((ended #f) (told #f) (seen '())

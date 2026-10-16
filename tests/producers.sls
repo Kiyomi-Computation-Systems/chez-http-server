@@ -1,11 +1,10 @@
 #!r6rs
-;;; (producers) — the producers the suites stream a response from (M6.3).
+;;; (producers) — the producers the suites stream a response from.
 ;;;
-;;; A producer is a response's body of unknown length (decision 0013 item
-;;; 8): a procedure the server calls for each piece, which answers a
-;;; bytevector, or the eof object at the end.  The stream, shell, contract
-;;; and clients suites share these, where five copies were (M6.3's review).
-;;; Each is made fresh by its caller, for the one response it streams.
+;;; A producer is a response's body of unknown length: a procedure the server
+;;; calls for each piece, which answers a bytevector, or the eof object at the
+;;; end.  The stream, shell, contract and clients suites share these.  Each is
+;;; made fresh by its caller, for the one response it streams.
 ;;;
 ;;; PURE apart from each producer's own count of what it has handed out.
 (library (producers)

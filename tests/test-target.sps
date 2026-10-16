@@ -1,6 +1,6 @@
 #!r6rs
 ;;; (http-server target): the request-target's form, its judgement, and the
-;;; narrow redirect.  M2.3.
+;;; narrow redirect.
 ;;;
 ;;; RFC 9112 §3.2 gives a request-target four forms, and the method and the
 ;;; first byte say which one a target must be:
@@ -15,22 +15,22 @@
 ;;; `uri-parse-result-validate`, and must carry neither a fragment (§3.2 has
 ;;; none) nor userinfo (RFC 9110 §4.2.4); an http or https one must name a
 ;;; host (RFC 9110 §4.2.1 and §4.2.2).  CONNECT's goes through
-;;; `uri-parse-authority-form-validate`, and must name a host too.  Decided on
-;;; the owner's word, 2026-09-24 (the ledger's M2.3 entry), and for the host,
-;;; 2026-09-25.
+;;; `uri-parse-authority-form-validate`, and must name a host too.
 ;;;
 ;;; A refused target that browsers produce is redirected rather than refused,
-;;; and only that one (decision 0009): a GET or HEAD origin-form target whose
+;;; and only that one: a GET or HEAD origin-form target whose
 ;;; only faults are "|" in its path and "[", "]" or "|" in its query.
 ;;;
 ;;; Oracles: RFC 9112 §3.2 and RFC 9110 §4.2.4 for the rules; RFC 3986's
 ;;; grammar and uriparse's documented error codes for the verdicts; and, where
 ;;; a code is the scanner's, uriparse's own one-shot `uri-parse-validate` on
-;;; the same bytes.  For the redirect: decision 0009, and RFC 3986 §2.1's
-;;; encoding, "%" and two uppercase hex digits: "[" %5B, "]" %5D, "|" %7C.
+;;; the same bytes.  For the redirect: RFC 9112 §3.2, which lets a server
+;;; answer an invalid target with a 301 to it properly encoded, and RFC 3986
+;;; §2.1's encoding, "%" and two uppercase hex digits: "[" %5B, "]" %5D,
+;;; "|" %7C.
 ;;;
 ;;; Every verdict is compared as 'accepted or a code, never as #f: SRFI-64
-;;; turns an exception inside a test expression into #f (design §3.4).
+;;; turns an exception inside a test expression into #f.
 (import (rnrs) (srfi :64) (testing)
         (http-server target) (http-server span)
         (uri collect))
@@ -120,7 +120,7 @@
                      '("http:///x" "http://:80/x" "https://?q" "HTTP:///x" "http:x" "http:/x")))
     ;; The rule is RFC 9110's, for http and https only: another scheme, even
     ;; one that begins "http", keeps uriparse's verdict.  Whether to serve it
-    ;; is M4's question.
+    ;; is the server's question, not the judge's.
     (test-equal "a target of another scheme keeps uriparse's verdict"
                 '(accepted accepted)
                 (map (lambda (t) (fault 'GET t)) '("ftp:///x" "httpx:///x")))
@@ -150,7 +150,7 @@
     (test-eq "a CONNECT target is judged by its own bytes"
              'accepted (judged (make-target-judge) 'CONNECT (inside "|example.com:443|" 1 16)))
 
-    ;; --- the narrow redirect (decision 0009) -----------------------------------------
+    ;; --- the narrow redirect -----------------------------------------
     ;; Browsers send "[", "]" and "|" unencoded (the WHATWG URL standard's query
     ;; and path percent-encode sets leave them out), and RFC 9112 §3.2 lets a
     ;; server answer an invalid target with a 301 to it properly encoded.

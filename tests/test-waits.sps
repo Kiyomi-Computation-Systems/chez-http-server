@@ -1,15 +1,17 @@
 #!r6rs
-;;; (http-server private waits): what a handler waits with.  M7.2.
+;;; (http-server private waits): what a handler waits with.
 ;;;
-;;; Oracles: decision 0015, design §5.3's R4, and the scheduler's refusals
-;;; (R1, R2 and R5, decision 0014 item 3).  As in the scheduler's suite, no
-;;; check loads libuv: each scheduler polls a script, which records the mode
-;;; it was asked to poll in and runs the next batch of callbacks, as
-;;; `uv-run` runs the callbacks that landed, answering whether more batches
-;;; remain.  Every run of turns is capped by a count, never by the clock
-;;; (global-constraints).
+;;; Oracles: the waits' contract, whose invariant R4 is that a wait is
+;;; one-shot (a resume called again is logged as `late-resume` and wakes
+;;; nothing); and the scheduler's refusals of a wait begun where no coroutine
+;;; may park: R1 (inside a callback), R2 (on no coroutine) and R5 (inside a
+;;; feed).  As in the scheduler's suite, no check loads libuv: each scheduler
+;;; polls a script, which records the mode it was asked to poll in and runs
+;;; the next batch of callbacks, as `uv-run` runs the callbacks that landed,
+;;; answering whether more batches remain.  Every run of turns is capped by a
+;;; count, never by the clock.
 ;;;
-;;; The checks (the second step, `await`):
+;;; The checks for `await`:
 ;;;   - a wait parks until its resume is called, from a callback, and
 ;;;     answers what the resume was given;
 ;;;   - a resume called while `register` runs: the wait answers at once,
@@ -19,10 +21,9 @@
 ;;;     second wait; and so for a resume called twice while `register` runs;
 ;;;   - what a resume gave, let go by the code once it waits again, is kept
 ;;;     by nothing of the wait, though the resume is kept: given while
-;;;     `register` runs, and given to the wait parked (plan §14,
-;;;     2026-10-11); and a resume kept once its wait is over keeps nothing
-;;;     of the coroutine that waited, once it has ended (the same day's
-;;;     review);
+;;;     `register` runs, and given to the wait parked; and a resume kept once
+;;;     its wait is over keeps nothing of the coroutine that waited, once it
+;;;     has ended;
 ;;;   - one coroutine's resume, called by another, wakes it in the same
 ;;;     drain;
 ;;;   - a raise out of `register` comes out of the wait, and nothing parks;
@@ -31,12 +32,11 @@
 ;;;     before `register` is called;
 ;;;   - a wait on a loop that keeps no waits is an assertion violation;
 ;;;   - a wait's park entered a second time ends the coroutine by an
-;;;     assertion naming the wait, `await` (decision 0025's review), and
-;;;     nothing is logged.
+;;;     assertion naming the wait, `await`, and nothing is logged.
 ;;;
-;;; The checks (the third step, `sleep-ms` and `with-deadline`), on a clock
-;;; the suite sets, the loop's timer standing in as a recorder of each start
-;;; and stop, and fired from a poll, as libuv fires it:
+;;; The checks for `sleep-ms` and `with-deadline`, on a clock the suite sets,
+;;; the loop's timer standing in as a recorder of each start and stop, and
+;;; fired from a poll, as libuv fires it:
 ;;;   - a sleep parks until the timer fires at or after its time, the timer
 ;;;     armed for it, again for what is left, and stopped once none is left;
 ;;;   - sleeps wake in the order of their times, equal times in the order
@@ -67,8 +67,8 @@
 ;;;     back; and a continuation that enters the thunk again, and leaves it
 ;;;     again, ends the deadline once, so a deadline after it still counts.
 ;;;
-;;; The checks (the fourth step, `resolve`), the loop's resolver standing in
-;;; as a recorder of each lookup asked and each cancelled:
+;;; The checks for `resolve`, the loop's resolver standing in as a recorder of
+;;; each lookup asked and each cancelled:
 ;;;   - `resolve` parks until the lookup answers, and answers its addresses;
 ;;;   - a lookup's failure raises `&resolve-error`, its reason the
 ;;;     resolver's;
@@ -79,8 +79,8 @@
 ;;;   - `resolve` takes a string, and on waits with no resolver is an
 ;;;     assertion violation.
 ;;;
-;;; The checks (decision 0020, a client's close), the notice the shell gives
-;;; each coroutine a request's code runs on, closed as a callback closes it:
+;;; The checks for a client's close, the notice the shell gives each coroutine
+;;; a request's code runs on, closed as a callback closes it:
 ;;;   - a close ends the wait parked then: it raises `&client-closed`, and
 ;;;     its sleep is taken out of the timer's keeping;
 ;;;   - a close while the code is not parked makes its next wait raise at
@@ -314,7 +314,7 @@
           '((returned 1) ((early now) (end returned done) next (end returned n)) ())
           (list t (seen) (logged)))))
 
-    ;; R4 (design §5.3): the first resume wakes, every later one is logged and
+    ;; R4: the first resume wakes, every later one is logged and
     ;; wakes nothing, even the coroutine parked on a wait of its own since.
     (let*-values (((note! seen) (recorder))
                   ((first second) (values #f #f))
@@ -343,9 +343,9 @@
           '((returned 1) ((end returned once)) ((late-resume await)))
           (list t (seen) (logged)))))
 
-    ;; What a resume gave is the waiting code's to keep or let go (plan §14,
-    ;; 2026-10-11): once that code waits again, nothing of the wait keeps
-    ;; it, though whoever registered keeps the resume, for R4.
+    ;; What a resume gave is the waiting code's to keep or let go: once that
+    ;; code waits again, nothing of the wait keeps it, though whoever
+    ;; registered keeps the resume, for R4.
     (test-equal "a wait's value, let go by its code waiting again, is kept by nothing, though the resume is kept: given while register runs, and given to the wait parked"
       '((early waiting let-go resume-kept) (parked waiting let-go resume-kept))
       (list (resumed-kept 'early) (resumed-kept 'parked)))
@@ -353,7 +353,7 @@
       '((early returned let-go resume-kept) (parked returned let-go resume-kept))
       (list (resumed-coroutine 'early) (resumed-coroutine 'parked)))
 
-    ;; One request can wake another (decision 0015 item 1).
+    ;; One request can wake another.
     (let*-values (((note! seen) (recorder))
                   ((resume) #f)
                   ((s logged) (waiting '())))
@@ -379,8 +379,8 @@
           '((returned 1) ((end raised refused) next (end returned n)))
           (list t (seen)))))
 
-    ;; Decision 0014 item 3: a wait outside a coroutine is refused, here
-    ;; before `register` runs, so nothing is left registered to resume.
+    ;; A wait outside a coroutine is refused, here before `register` runs, so
+    ;; nothing is left registered to resume.
     (let*-values (((registered) '())
                   ((s logged)
                    (waiting (list (list (lambda ()
@@ -763,8 +763,8 @@
           '((returned 1) (("127.0.0.1") next))
           (list t (seen)))))
 
-    ;; R4's own example (plan §14's M7.2): a lookup's answer after its
-    ;; deadline wakes nothing, and is logged.
+    ;; R4's own example: a lookup's answer after its deadline wakes nothing,
+    ;; and is logged.
     (let* ((clock (vector 0)) (answers '()) (w #f))
       (let*-values (((note! seen) (recorder))
                     ((s logged timer)
@@ -797,7 +797,7 @@
           '((returned 1) (returned 1) ((assertion resolve) (assertion resolve)))
           (list t u (seen)))))
 
-    ;; --- a client's close (decision 0020) ------------------------------------
+    ;; --- a client's close ----------------------------------------------------
     (let* ((clock (vector 0)) (w #f) (n (make-notice)))
       (let*-values (((note! seen) (recorder))
                     ((s logged timer)

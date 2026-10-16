@@ -2,9 +2,8 @@
 ;;; (decisive) — what a connection did, as the suites that drive one through
 ;;; the fake shell at every delivery size compare it: the handlers asked, the
 ;;; pieces handed over, each reader's end, and the writes by status.  Shared
-;;; by test-connection-body.sps (M6.1), test-connection-expect.sps (M6.4) and
-;;; test-connection-padding.sps (the padding PR), which each had a copy until
-;;; the padding PR's review.
+;;; by test-connection-body.sps, test-connection-expect.sps and
+;;; test-connection-padding.sps.
 (library (decisive)
   (export decisive text render-request)
   (import (rnrs) (http-server request) (http-server span)

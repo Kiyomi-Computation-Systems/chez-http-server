@@ -1,7 +1,7 @@
 vtest "Bracket params and pipes are redirected, encoded; any other method's are refused"
-# Decision 0009: a GET or HEAD whose only faults are | in the path and [, ]
-# or | in the query is answered 301, Location the target percent-encoded
-# in uppercase hex, no content, then the close; any other method's, 400.
+# A GET or HEAD whose only faults are | in the path and [, ] or | in the
+# query is answered 301, Location the target percent-encoded in uppercase
+# hex, no content, then the close; any other method's, 400.
 client c1 -connect "${host} ${port}" {
     send "GET /a|b?ids[]=1|2 HTTP/1.1\r\nHost: x\r\n\r\n"
     rxresp

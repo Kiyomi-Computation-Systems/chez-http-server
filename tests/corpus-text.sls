@@ -1,7 +1,7 @@
 #!r6rs
 ;;; (corpus-text) — the few string helpers the corpus readers share: the
-;;; guardian, Kestrel, httpd and lighttpd readers and (provenance).  M8.3
-;;; (step 2's review: one copy, not six).  Pure (rnrs).
+;;; guardian, Kestrel, httpd and lighttpd readers and (provenance).  Pure
+;;; (rnrs).
 (library (corpus-text)
   (export prefix? suffix? split trim strip-cr find-sub find-sub-from index-of last-pair)
   (import (rnrs))

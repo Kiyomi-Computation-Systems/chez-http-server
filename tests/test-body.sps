@@ -1,8 +1,8 @@
 #!r6rs
-;;; (http-server body): the readers a handler answers with.  M6.1.
+;;; (http-server body): the readers a handler answers with.
 ;;;
-;;; Decision 0013: a handler answers a request whose framing announces a body
-;;; with a response or a reader.  `read-body` streams: the server calls its
+;;; A handler answers a request whose framing announces a body with a
+;;; response or a reader.  `read-body` streams: the server calls its
 ;;; `on-piece` with each piece of the body, then its `on-end`, once, for the
 ;;; response.  `read-whole-body` buffers: the core copies the body into one
 ;;; bytevector and hands it over as the reader's only piece, and the
@@ -10,11 +10,11 @@
 ;;; the core answers 413; the reader only carries the cap.
 ;;;
 ;;; And (http-server awaiting): the answer of a handler that waits, a thunk
-;;; the server runs on a coroutine (decision 0014; M7.1).
+;;; the server runs on a coroutine.
 ;;;
-;;; Oracles: decision 0013 items 2 and 6, and decision 0005's
-;;; `max-body-bytes` row, whose buffering helper takes 1 MiB, 1,048,576 B;
-;;; the bytes each check hands the reader; decision 0014 item 2.
+;;; Oracles: the reader contract above, with no piece at all an empty body;
+;;; the buffering helper's default cap, 1 MiB, 1,048,576 B; the bytes each
+;;; check hands the reader; and an awaiting carrying its thunk.
 (import (rnrs) (srfi :64) (testing)
         (http-server body) (http-server awaiting))
 
@@ -60,8 +60,7 @@
     ;; --- read-whole-body: what its procedure is called with -------------------
     ;; The core hands a whole reader one piece, the body in a bytevector of
     ;; its own, which the procedure gets as it is.  A piece that is part of a
-    ;; bytevector is copied, and no piece at all is an empty body (decision
-    ;; 0013 item 6).
+    ;; bytevector is copied, and no piece at all is an empty body.
     (let ((whole (b "{\"a\":\"hello\"}")))
       (test-eq "the body handed over whole is the bytevector the procedure gets, not a copy"
                whole
@@ -92,7 +91,7 @@
                            (lambda () (read-whole-body (lambda (body) body) 1.5))
                            (lambda () (read-whole-body (lambda (body) body) 'many)))))
 
-    ;; --- awaiting: the answer of a handler that waits (decision 0014) -----------
+    ;; --- awaiting: the answer of a handler that waits -----------
     (let* ((thunk (lambda () 'answer)) (a (awaiting thunk)))
       (test-equal "awaiting carries its thunk, and is neither a reader nor anything else"
                   '(#t #t #f #f)

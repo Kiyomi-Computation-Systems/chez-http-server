@@ -1,14 +1,13 @@
 #!/bin/sh
-# tests/fetch-oha.sh OUT — fetch oha, the load smoke's client (decision
-# 0018), into OUT: the release binary of the version pinned below, for this
-# machine, from oha's GitHub release, kept only if its sha256 is the one
-# pinned beside it.  A binary already at OUT with that sha256 is kept.
+# tests/fetch-oha.sh OUT — fetch oha, the load smoke's client, into OUT: the
+# release binary of the version pinned below, for this machine, from oha's
+# GitHub release, kept only if its sha256 is the one pinned beside it.  A
+# binary already at OUT with that sha256 is kept.
 #
 # Pinned for macOS and Linux, amd64 and arm64, the platforms oha's release
 # and the clients suite share; elsewhere OHA names an oha for the suite.
-# Each sum was read from the downloaded file and matched the sha256 GitHub
-# records for the asset.  It needs curl, and sha256sum or shasum
-# (tests/sha256.sh).
+# Each sum matches the sha256 GitHub records for its asset.  It needs curl,
+# and sha256sum or shasum (tests/sha256.sh).
 set -eu
 
 [ $# -eq 1 ] || { echo "usage: $0 OUT" >&2; exit 2; }

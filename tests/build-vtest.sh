@@ -1,6 +1,6 @@
 #!/bin/sh
 # tests/build-vtest.sh DIR COMMIT BUILD OUT — build vtest2, the black-box
-# lane's client (decision 0017), from the submodule DIR at COMMIT, in BUILD,
+# lane's client, from the submodule DIR at COMMIT, in BUILD,
 # into OUT, with OUT.pin naming the commit it was built from.  A binary whose
 # stamp names COMMIT already is kept.
 #

@@ -1,12 +1,11 @@
 #!r6rs
 ;;; (http-server headers): ASCII case-insensitive field-name operations over a
-;;; header alist, the byte helpers a field value's list is read with, and
-;;; whether a field's list holds a token (M6.4), and its elements (M8.2's
-;;; review: the serializer reads a switch's Upgrade with them).  Oracles: RFC 9110 §5.1
-;;; (field names are case-insensitive), §5.6.1 (lists) and §5.6.3 (OWS is SP
-;;; and HTAB).  Names and values are bytevectors or spans: the
-;;; connection core builds a request's headers as spans of the delivery
-;;; (design §7.1).
+;;; header alist, the byte helpers a field value's list is read with, whether
+;;; a field's list holds a token, and a field's elements (the serializer
+;;; reads a switch's Upgrade with them).  Oracles: RFC 9110 §5.1 (field names
+;;; are case-insensitive), §5.6.1 (lists) and §5.6.3 (OWS is SP and HTAB).
+;;; Names and values are bytevectors or spans: the connection core builds a
+;;; request's headers as spans of the delivery.
 (import (rnrs) (srfi :64) (testing) (http-server headers) (http-server span))
 
 (define (b s) (string->utf8 s))
@@ -72,7 +71,7 @@
                        '((3 10 "chunked") (3 10 "CHUNKED") (3 9 "chunked") (3 10 "chunk")
                          (3 10 "chunkex")))))
 
-    ;; --- a token in a field's list (M6.4) ---------------------------------------------
+    ;; --- a token in a field's list ---------------------------------------------
     ;; RFC 9110 §5.6.1: a list-based field is `#element`, its elements
     ;; separated by commas with OWS around them, and empty elements are no
     ;; elements; a list may run over several lines of the same field (§5.3).
@@ -106,7 +105,7 @@
                    'in-bounds
                    'out-of-bounds)))
 
-    ;; --- a field's elements (M8.2's review) ------------------------------------------
+    ;; --- a field's elements ------------------------------------------
     ;; RFC 9110 §5.6.1: each element of every line of the field, in order,
     ;; the OWS around it trimmed, an empty one none, each a copy of its own.
     (let ((fields (lambda (pairs) (map (lambda (f) (cons (b (car f)) (b (cdr f)))) pairs)))

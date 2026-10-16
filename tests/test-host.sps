@@ -6,10 +6,9 @@
 ;;; HTTP/1.1 request message that lacks a Host header field and to any request
 ;;; message that contains more than one Host header field line or a Host header
 ;;; field with an invalid field value."  A valid value is RFC 9110 §7.2's
-;;; `uri-host [ ":" port ]`: an RFC 3986 authority with no userinfo.  Decided
-;;; on the owner's word, 2026-09-25 (the ledger's Host entry): the missing-Host
-;;; rule sits behind decision 0005's `require-host` switch; an empty value is
-;;; valid here and M4's to judge (RFC 9112 §3.3).
+;;; `uri-host [ ":" port ]`: an RFC 3986 authority with no userinfo.  The
+;;; missing-Host rule sits behind the limits' `require-host` switch; an empty
+;;; value is valid here and its meaning is the server's (RFC 9112 §3.3).
 ;;;
 ;;; Oracles: RFC 9112 §3.2 for the rules; uriparse's `validate-authority` and
 ;;; its documented error codes for a value's verdict; RFC 9110 §7.2 for the
@@ -45,7 +44,7 @@
                 '(accepted accepted accepted accepted)
                 (map one-host '("x" "example.com:8080" "[::1]:80" "192.0.2.1")))
     ;; RFC 9112 §3.2: a client sends an empty Host when the target has no
-    ;; authority, and §3.3 leaves the empty authority to the server: M4's.
+    ;; authority, and §3.3 leaves the empty authority to the server.
     (test-eq "an empty Host value passes" 'accepted (one-host ""))
     ;; RFC 9112 §5: the OWS around a field line value is not part of it.
     ;; llhttp leaves out the OWS before a value but keeps the OWS after it, so

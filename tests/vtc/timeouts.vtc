@@ -1,7 +1,7 @@
 vtest "A head or a body that stalls is answered 408; an idle connection is closed"
-# Decision 0005 and the core's deadline rows (M5.2): a head past the header
-# deadline, or a body past the body deadline, is answered 408, then closed;
-# an idle connection past the idle deadline is closed with no response.
+# A head past the header deadline, or a body past the body deadline, is
+# answered 408, then closed; an idle connection past the idle deadline is
+# closed with no response.
 # The lane's server sets each to 1 s; the three run side by side.
 client c1 -connect "${host} ${port}" {
     send "GET / HTTP/1.1\r\nHost: x\r\n"

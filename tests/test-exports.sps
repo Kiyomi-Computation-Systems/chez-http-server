@@ -1,8 +1,7 @@
 #!r6rs
-;;; The libraries a handler can reach export no chez-libuv name.  M4.2.
+;;; The libraries a handler can reach export no chez-libuv name.
 ;;;
-;;; Decision 0003 and design §7.6: the shell owns every libuv handle and verb.
-;;; A handler that could close a connection's handle would leave the shell's
+;;; The shell owns every libuv handle and verb.  A handler that could close a connection's handle would leave the shell's
 ;;; own close callback never run (chez-libuv keeps the first close's callback
 ;;; alone), and one that could write to it would put bytes on the wire the
 ;;; core never counted.  So no library outside src/http-server/private/ may

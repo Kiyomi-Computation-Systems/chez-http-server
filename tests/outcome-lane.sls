@@ -1,6 +1,6 @@
 #!r6rs
 ;;; (outcome-lane) — the llhttp request corpus through the fake shell's message
-;;; loop: design §8.1's property 2.  M2.4.
+;;; loop: the connection's outcome does not depend on how its input is split.
 ;;;
 ;;; Every request fixture is fed to one fake connection as `bytes-arrived`
 ;;; deliveries at every scheduled chunk size, and what the connection did must
@@ -12,30 +12,29 @@
 ;;;
 ;;; The client closes once its input is sent: a connection still reading
 ;;; then gets its eof, as the libhtp lane's streams end.  One kept alive
-;;; closes for `eof`; one that lingers after a response that closes it
-;;; (decision 0011) closes for the response's reason.
+;;; closes for `eof`; one that lingers after a response that closes it closes
+;;; for the response's reason.
 ;;;
-;;; That is §8.1's call-handler sequence, keep-alive decision and close
+;;; That covers the call-handler sequence, keep-alive decision and close
 ;;; reason: the keep-alive decision shows as whether a close follows a
 ;;; response.  Every action must also have run from the outermost drain (the
 ;;; shell's run-to-completion check).  A run that raises is a mismatch, never
 ;;; an outcome.
 ;;;
-;;; The corpus is parser truth, not server truth (§8.1), so no fixture says
-;;; what the outcome should be.  The lane checks that the pause protocol makes
-;;; it independent of how the bytes were split.  It runs under the trace
-;;; lane's `corpus-limits`, with no Host required, for the same reason.
+;;; The corpus is parser truth, not server truth, so no fixture says what the
+;;; outcome should be.  The lane checks that the pause protocol makes it
+;;; independent of how the bytes were split.  It runs under the trace lane's
+;;; `corpus-limits`, with no Host required, for the same reason.
 ;;;
 ;;; The connection parses with the server's own parser, and the lane reads no
-;;; log, so the flags a fixture's log was recorded under never enter it: since
-;;; decision 0019 it runs all 167, the 32 the trace lane defers among them.
+;;; log, so the flags a fixture's log was recorded under never enter it: it
+;;; runs all 167 request fixtures, the 32 the trace lane defers among them.
 ;;;
-;;; Two handlers (M6.1, decision 0013): `reads`, which reads every body,
-;;; dropping it, then answers 200, as every handler answered before M6; and
-;;; `answers`, which answers 200 at once, reading no body, so a request whose
-;;; head announces one is answered and the connection closes after it.  What
-;;; the feed that completed a head met of the body before the handler
-;;; answered, an error among it, waits for the answer, so both are
+;;; Two handlers: `reads`, which reads every body, dropping it, then answers
+;;; 200; and `answers`, which answers 200 at once, reading no body, so a
+;;; request whose head announces one is answered and the connection closes
+;;; after it.  What the feed that completed a head met of the body before the
+;;; handler answered, an error among it, waits for the answer, so both are
 ;;; independent of the split too.
 (library (outcome-lane)
   (export outcome-at outcome-mismatch render-request attempt reads answers)
@@ -67,7 +66,7 @@
   ;; decisive : (Listof Action) -> (Listof Datum)
   ;; The actions that make the outcome, rendered: the others (feeds, reads,
   ;; deadlines) follow the deliveries and differ by chunk size by design.  A
-  ;; hand-off is rendered by the bytes it hands over, as text, or #f (M8.2).
+  ;; hand-off is rendered by the bytes it hands over, as text, or #f.
   (define (decisive actions)
     (fold-right (lambda (a acc)
                   (case (car a)

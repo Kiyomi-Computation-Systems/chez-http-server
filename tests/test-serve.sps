@@ -1,46 +1,47 @@
 #!r6rs
-;;; (http-server), the facade, and the server it starts.  M4.5.
+;;; (http-server), the facade, and the server it starts.
 ;;;
 ;;; An embedder imports (http-server) and calls `serve` with a handler.
 ;;; `serve` starts a server on a loop of its own, configured through the
 ;;; environment and logging on standard output, and runs that loop until the
 ;;; server stops.  The start is `start-server`: this suite starts servers
 ;;; with it on a loop of the suite's own, through environments it makes, and
-;;; runs its clients on that loop, every wait capped by an iteration count
-;;; (design §8.5).  A start that fails raises before any loop runs, so those
-;;; checks call `serve` itself.  And `serve`'s own loop, the scheduler's turns
-;;; that call each handler after libuv's (decision 0014; M7.1), runs in a
-;;; process of its own, tests/serve-child.sps, started with the Chez the
-;;; environment's CHEZ names, as `make` runs it, or `chez`: the suite reads
-;;; the port it logs, and a client on the suite's loop asks it for a page.
-;;; Sent SIGTERM, or SIGINT, the child drains (M8.1; decided 2026-10-03): a
-;;; client idle on its keep-alive connection is closed at once, a request in
-;;; flight is answered, saying the connection closes, one held past the
-;;; drain's deadline is closed at it, the drain is logged, and `serve`
-;;; returns once its last connection has closed: the child exits 0, where it
-;;; was killed by SIGTERM and kept on by SIGINT before.  It drains so even
+;;; runs its clients on that loop, every wait capped by an iteration count.
+;;; A start that fails raises before any loop runs, so those checks call
+;;; `serve` itself.  And `serve`'s own loop, the scheduler's turns that call
+;;; each handler after libuv's, runs in a process of its own,
+;;; tests/serve-child.sps, started with the Chez the environment's CHEZ
+;;; names, as `make` runs it, or `chez`: the suite reads the port it logs,
+;;; and a client on the suite's loop asks it for a page.
+;;; Sent SIGTERM, or SIGINT, the child drains: a client idle on its
+;;; keep-alive connection is closed at once, a request in flight is
+;;; answered, saying the connection closes, one held past the drain's
+;;; deadline is closed at it, the drain is logged, and `serve` returns once
+;;; its last connection has closed, so the child exits 0.  It drains even
 ;;; when the SIGTERM comes as it logs `listening`.  Once `serve` has
 ;;; returned, a SIGINT ends the process at once.
 ;;;
 ;;; Oracles:
-;;;   - decision 0012: where the server listens, and what a handler reads;
-;;;   - design §6.4: a malformed setting at startup is an
-;;;     &http-server-config-error, which is an &http-server-error, an &error;
-;;;   - decision 0005's amendment of 2026-09-25: CHEZ_HTTP_REQUIRE_HOST is
-;;;     "true" or "false", and any other value is refused;
-;;;   - its amendment of 2026-10-05: a number is written in ASCII digits
-;;;     alone, so CHEZ_HTTP_PORT=#x1F90 is refused, not port 8080;
+;;;   - the documented configuration and handler reading (docs/handlers.org,
+;;;     docs/configuration.org): where the server listens, CHEZ_HTTP_HOST and
+;;;     CHEZ_HTTP_PORT, and what a handler reads;
+;;;   - a malformed setting at startup is an &http-server-config-error,
+;;;     which is an &http-server-error, an &error;
+;;;   - CHEZ_HTTP_REQUIRE_HOST is "true" or "false", and any other value is
+;;;     refused;
+;;;   - a number is written in ASCII digits alone, so CHEZ_HTTP_PORT=#x1F90
+;;;     is refused, not port 8080;
 ;;;   - chez-libuv's bind, which refuses a host that is not an IPv4 or IPv6
 ;;;     literal ('bad-address);
-;;;   - decision 0001: the handler contract is request -> response, so the
-;;;     facade exports what a handler needs, the server's start, and its
-;;;     errors; and decision 0016: a handler takes an upgrade with the
-;;;     facade's names alone, its switch, and the transport's verbs;
+;;;   - the handler contract is request -> response, so the facade exports
+;;;     what a handler needs, the server's start, and its errors; a handler
+;;;     takes an upgrade with the facade's names alone, its switch, and the
+;;;     transport's verbs;
 ;;;   - the Twelve-Factor App's logs (XI): one line for each thing that
 ;;;     happens, written to standard output.  A condition's text is Chez's
 ;;;     `display-condition`'s, as Chez 10.4.1 prints it;
 ;;;   - and its disposability (IX): a process shuts down gracefully when sent
-;;;     SIGTERM, and, decided on the owner's word, SIGINT too (M8.1).
+;;;     SIGTERM, and SIGINT too.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) library-exports with-output-to-string putenv getenv)
         (libuv) (uv-testing) (shell-testing) (response-reader)
@@ -71,9 +72,8 @@
 ;; The handler reads the request through the facade's names alone, and
 ;; answers with what it read: the method, the path, the query, the host and
 ;; the X-Probe header, "-" for one that is not there.  At `/door` it takes
-;; the upgrade to `echo` (decision 0016), with the facade's names alone: its
-;; taker writes back what it is handed and what it reads, and closes at the
-;; client's end.
+;; the upgrade to `echo`, with the facade's names alone: its taker writes
+;; back what it is handed and what it reads, and closes at the client's end.
 (define (handler r)
   (if (string=? (request-path r) "/door")
       (switch-protocols (list (cons (b "Upgrade") (b "echo")))
@@ -120,8 +120,8 @@
 ;; recording its number and what it is told; with `again?`, a `done` so told
 ;; asks for one more, until three have been asked for.  As the stream
 ;; closes, other work is queued on the scheduler too, which notes that it
-;; ran.  The taker's drain call closes its stream, which lingers (decision
-;; 0026) for the server's 1 s, its client open.  Once the client has been
+;; ran.  The taker's drain call closes its stream, which lingers for the
+;; server's 1 s, its client open.  Once the client has been
 ;; handed over, the server is shut down and run as `serve` runs it
 ;; (run-until-stopped!): what the `done`s had been told when that run
 ;; returned, and once the loop had turned on until only timers were left;
@@ -396,7 +396,7 @@
       ;; Sent in one write, the target and the byte after it reach the
       ;; parser in one read, and the parser's error cuts the target off: the
       ;; shell hands the core the span it had open, so the limit it passed
-      ;; first still names the answer (the cut-off-span PR).
+      ;; first still names the answer.
       (test-equal "and so does such a target followed by a byte no target may hold, the parser's error cutting it off"
                   '(414 "" complete)
                   (exchange loop sh port
@@ -427,9 +427,8 @@
       (test-equal "shut down, the server leaves nothing on the loop" '() (uv-loop-live-handles loop))
       (uv-loop-teardown! loop))
 
-    ;; --- a taker's write refused as the server stops (M8.2's review, its
-    ;; sixth): its `done` waits for a turn, and `serve` runs no turn once its
-    ;; server has stopped.
+    ;; --- a taker's write refused as the server stops: its `done` waits for
+    ;; a turn, and `serve` runs no turn once its server has stopped.
     (test-equal "two writes a taker asks for once its stream has closed: their dones are told ECANCELED before serve's run returns, in order, and once each, and nothing else the scheduler holds is run"
                 '(((1 ECANCELED) (2 ECANCELED)) ((1 ECANCELED) (2 ECANCELED)) #f)
                 (dones-at-stop 2 #f))
@@ -481,13 +480,13 @@
                 (drained-by-a-child 'sigint))
     ;; `serve` watches the signals before it logs `listening`, so a
     ;; supervisor that signals the moment it reads the line finds them
-    ;; watched (plan §14's open list, from #167's run under emulation).
+    ;; watched.
     (test-equal "serve, sent SIGTERM as it logs listening, drains, as it does a moment later, the process exiting 0"
                 '(satisfied #t ("draining 0" "stopped") (0 #f))
                 (signalled-at-listening))
     ;; Once `serve` has returned it watches no signal, and chez-libuv leaves
     ;; SIGINT's default disposition, not Chez's keyboard interrupt, so the
-    ;; next one ends the process (docs/handlers.org; decided 2026-10-03).
+    ;; next one ends the process (docs/handlers.org).
     (test-equal "once serve has returned, a SIGINT ends the process at once"
                 '(satisfied satisfied ("draining 0" "stopped") (0 sigint))
                 (returned-then-interrupted))

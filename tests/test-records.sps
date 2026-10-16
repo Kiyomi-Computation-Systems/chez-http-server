@@ -1,12 +1,12 @@
 #!r6rs
-;;; (http-server request) and (http-server response): the pure records M0 fixes
-;;; for the connection core to fill in M2/M3.  Construct, read back, and
-;;; distinguish the two types.  And M8.2's two (decision 0016): the switch a
-;;; handler answers to take an upgrade, and the transport the taker is handed,
-;;; a record of verbs whose arguments are checked before the verb is called,
-;;; so a fake and the server's shell are handed the same shapes.  Its eighth
-;;; verb, the abort, is decision 0024's: a transport made of seven, as
-;;; 0.3.0's were, is still one, and refuses it.
+;;; (http-server request), (http-server response), (http-server switch) and
+;;; (http-server transport): the pure records the connection core fills in.
+;;; Construct, read back, and distinguish the types.  The switch is what a
+;;; handler answers to take an upgrade; the transport is the record of verbs
+;;; the taker is handed, whose arguments are checked before the verb is
+;;; called, so a fake and the server's shell are handed the same shapes.  A
+;;; transport made of seven procedures, without the abort, is still a
+;;; transport, and refuses the abort.
 (import (rnrs) (srfi :64) (testing)
         (http-server request) (http-server response) (http-server span)
         (http-server switch) (http-server transport))
@@ -59,7 +59,7 @@
     (let ((res (make-response 404 (b "Not Found") '() #f)))
       (test-equal "present reason kept" (b "Not Found") (response-reason res)))
 
-    ;; --- the switch a handler answers to take an upgrade (decision 0016) ---
+    ;; --- the switch a handler answers to take an upgrade ---
     (let* ((take-over (lambda (transport retained) 'taken))
            (hs (list (cons (b "Upgrade") (b "websocket"))))
            (sw (switch-protocols hs take-over)))
@@ -70,7 +70,7 @@
       (test-eq "a response is no switch" 'no
                (if (switch? (make-response 101 #f hs #f)) 'yes 'no)))
 
-    ;; --- the transport handed to the taker (decision 0016 item 2) ---
+    ;; --- the transport handed to the taker ---
     ;; Each verb hands its procedure the arguments in one shape: a write
     ;; its range, the whole bytevector by default, and its callback or #f;
     ;; a deadline its milliseconds and its callback, or #f twice to disarm.
@@ -101,7 +101,7 @@
     ;; What a verb is handed is checked before its procedure is called, so
     ;; a taker's mistake is the same refusal on a fake as on the server.  A
     ;; write of no bytes is refused: chez-libuv would complete an empty
-    ;; span a turn late (the trailing empty span), and a close cancel it.
+    ;; span a turn late, and a close cancel it.
     (let-values (((t seen) (recording)))
       (let ((bv (b "hello")) (cb (lambda () #t)))
         (test-equal "a write of no bytes, outside its bytevector, of no bytevector, or with a callback that is no procedure is refused"
@@ -130,7 +130,7 @@
     (test-equal "a transport is made of seven procedures, or eight, or refused" '(refused refused)
                 (list (refused (lambda () (make-transport car car car car car car 'not-a-procedure)))
                       (refused (lambda () (make-transport car car car car car car car 'not-a-procedure)))))
-    ;; A transport made of seven procedures, as 0.3.0's were, is still a
+    ;; A transport made of seven procedures, without an abort, is still a
     ;; transport, and refuses the abort it was made without, naming it,
     ;; before any of its procedures is called.
     (let* ((called '())

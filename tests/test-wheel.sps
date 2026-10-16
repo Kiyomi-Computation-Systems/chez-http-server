@@ -1,18 +1,16 @@
 #!r6rs
 ;;; (http-server wheel): the deadlines a loop's connections arm, kept in
-;;; tick-ms buckets.  M5.1.
+;;; tick-ms buckets.
 ;;;
-;;; Oracles: decision 0005 and its amendment of 2026-09-27 — a deadline of D
-;;; fires within [D, D + tick-ms], never before D, each deadline as now
-;;; reaches it, and the tick timer stops when the wheel is empty — and a
-;;; plain list of the armed deadlines, which says what an advance owes with no
-;;; buckets at all.  The wheel is an index over that list, so it must fire
-;;; what the list fires whatever its tick and however few slots it has.  The
-;;; entries are the caller's (decided 2026-09-27), so one the caller keeps
-;;; disarmed must hold nothing of the wheel: a weak pointer sees it, beside an
-;;; entry the wheel still holds, seen held.  The clock is the test's own:
-;;; every instant is a number of milliseconds it gives, and no test sleeps
-;;; (global-constraints).
+;;; Oracles: a deadline of D fires within [D, D + tick-ms], never before D,
+;;; each deadline as now reaches it, and the tick timer stops when the wheel is
+;;; empty; and a plain list of the armed deadlines, which says what an advance
+;;; owes with no buckets at all.  The wheel is an index over that list, so it
+;;; must fire what the list fires whatever its tick and however few slots it
+;;; has.  The entries are the caller's, so one the caller keeps disarmed must
+;;; hold nothing of the wheel: a weak pointer sees it, beside an entry the
+;;; wheel still holds, seen held.  The clock is the test's own: every instant
+;;; is a number of milliseconds it gives, and no test sleeps.
 (import (rnrs) (srfi :64) (testing) (http-server wheel)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?))
 

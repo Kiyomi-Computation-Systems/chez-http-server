@@ -1,22 +1,24 @@
 #!r6rs
-;;; (test-ratchet) — the three-lane, two-way ratchet.  M1.4.
+;;; (test-ratchet) — the three-lane, two-way ratchet.
 ;;;
 ;;; tests/ratchet.txt records a status per fixture per lane.  This suite gates
-;;; it BOTH WAYS (decision 0008 item 6, design §8.6): a `passing` entry that
-;;; does not pass is a regression, and a `not-yet` entry that does pass is an
-;;; unexplained improvement (usually a comparator that stopped comparing).  The
-;;; deferred/in-scope split is DERIVED, per lane, and checked against the
-;;; manifest: the trace lane's from each fixture's own meta, so a corpus refresh
-;;; cannot smuggle a lenient fixture in as not-yet; the outcome lane holds every
-;;; request fixture (decision 0019).
+;;; it BOTH WAYS: a `passing` entry that does not pass is a regression, and a
+;;; `not-yet` entry that does pass is an unexplained improvement (usually a
+;;; comparator that stopped comparing).  The deferred/in-scope split is
+;;; DERIVED, per lane, and checked against the manifest: the trace lane's from
+;;; each fixture's own meta, so a corpus refresh cannot smuggle a lenient
+;;; fixture in as not-yet; the outcome lane holds every request fixture, since
+;;; it runs the server's own parser and reads no recorded log.
 ;;;
 ;;; The lanes have different comparators:
-;;;   trace   — M1.2's, re-run here (via (trace-lane)), so the ratchet gates the
-;;;             trace lane itself rather than trusting the trace suite;
-;;;   outcome — M2.4's, re-run here (via (outcome-lane)): the connection-level
-;;;             outcome is the same at every chunk size ('extremes);
-;;;   libhtp  — the M2 exit's, re-run here (via (libhtp-lane)): a stream passes
-;;;             when it has one of our expectations and meets it.
+;;;   trace   — the trace lane's, re-run here (via (trace-lane)), so the
+;;;             ratchet gates the trace lane itself rather than trusting the
+;;;             trace suite;
+;;;   outcome — the outcome lane's, re-run here (via (outcome-lane)): the
+;;;             connection-level outcome is the same at every chunk size
+;;;             ('extremes);
+;;;   libhtp  — the libhtp lane's, re-run here (via (libhtp-lane)): a stream
+;;;             passes when it has one of our expectations and meets it.
 ;;;
 ;;; The gate runs the lanes, so it runs inside the suite: a raise there is a
 ;;; harness error (status 2), never a crash outside the status vocabulary.
@@ -70,9 +72,8 @@
 ;; Derived per lane.  The trace lane compares llhttp's recorded logs, so a
 ;; fixture recorded under a lenient flag, or with the finish call, is deferred
 ;; and a strict one in-scope, from its meta.  The outcome lane runs the
-;; server's own parser and reads no log, so every request fixture is in-scope
-;; (decision 0019).  Every libhtp file is in-scope; anything else is unknown
-;; (extra).
+;; server's own parser and reads no log, so every request fixture is in-scope.
+;; Every libhtp file is in-scope; anything else is unknown (extra).
 (define (lane-class lane fid)
   (cond
    ((string=? lane "trace")
@@ -156,11 +157,8 @@
 
 (run-suite "ratchet"
   (lambda ()
-    ;; the per-lane counts: the plan's at the opening, moved only by a
-    ;; reviewed promotion (M2.4: 131 outcomes; M2.5: the 4 upgrades; the M2
-    ;; exit: the 12 pipelining and multi-packet streams; M6.4: the 2 Expect
-    ;; streams; M8.3: the robustness lane's 28; decision 0019: the 32
-    ;; outcomes the trace lane defers)
+    ;; the per-lane counts, moved only by a reviewed promotion in
+    ;; tests/ratchet.txt
     (test-eqv "trace lane: 135 passing"   135 (lane-count "trace" 'passing))
     (test-eqv "trace lane: 32 deferred"    32 (lane-count "trace" 'deferred))
     (test-eqv "outcome lane: 167 passing" 167 (lane-count "outcome" 'passing))

@@ -1,7 +1,7 @@
 vtest "Expect: 100-continue: the 100 before the body, and none to HTTP/1.0"
 # RFC 9110 §10.1.1: a server answers 100 to a request that expects it
-# before reading its body (M6.4), and MUST ignore the expectation in an
-# HTTP/1.0 request: no 100, the body read as it comes.
+# before reading its body, and MUST ignore the expectation in an HTTP/1.0
+# request: no 100, the body read as it comes.
 client c1 -connect "${host} ${port}" {
     txreq -req POST -url "/e" -nolen -hdr "Content-Length: 3" -hdr "Expect: 100-continue"
     rxresp

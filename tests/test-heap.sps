@@ -1,17 +1,15 @@
 #!r6rs
 ;;; (http-server heap): the times a loop's waits wake at, in a binary heap.
-;;; M7.2's third step.
 ;;;
-;;; Oracles: decision 0015 item 3 — a sleep or a deadline wakes the first
-;;; time the loop's timer fires at or after its time, never before — and a
-;;; plain list of the entries put in, kept in the order they were put in,
-;;; which says what an advance owes with no heap at all: the entries at or
-;;; before `now`, by time, and equal times in that order (`list-sort` is
-;;; stable).  The heap is an index over that list, so it must take out what
-;;; the list takes out, through any mix of inserts, removals and advances; a
-;;; script of them, from a fixed seed, is played against both.  The clock is
-;;; the test's own: every instant is a number it gives, and no test sleeps
-;;; (global-constraints).
+;;; Oracles: a sleep or a deadline wakes the first time the loop's timer
+;;; fires at or after its time, never before; and a plain list of the entries
+;;; put in, kept in the order they were put in, which says what an advance
+;;; owes with no heap at all: the entries at or before `now`, by time, and
+;;; equal times in that order (`list-sort` is stable).  The heap is an index
+;;; over that list, so it must take out what the list takes out, through any
+;;; mix of inserts, removals and advances; a script of them, from a fixed
+;;; seed, is played against both.  The clock is the test's own: every instant
+;;; is a number it gives, and no test sleeps.
 ;;;
 ;;; The checks:
 ;;;   - an advance takes out exactly the entries at or before `now`, the
@@ -113,7 +111,7 @@
           '((a) 1 30 (c))
           (list first (heap-count h) (heap-earliest h) (heap-advance! h 100)))))
 
-;; Built as [0 100 50 101 102 60 70]: taking out 101 puts 70, the last,
+    ;; Built as [0 100 50 101 102 60 70]: taking out 101 puts 70, the last,
     ;; under 100, which it must move up past; then 300 and 301 bury it unless
     ;; it did.  An advance to 80 owes 0, 50, 60 and 70.
     (let ((h (make-heap)))

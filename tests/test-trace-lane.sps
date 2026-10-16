@@ -1,21 +1,22 @@
 #!r6rs
 ;;; (test-trace-lane) — the trace lane: our path, their comparator.
 ;;;
-;;; M1.2, now driven through the shared (trace-lane) library so this suite and
-;;; the M1.4 ratchet share one comparator.  Every strict (type=request) fixture
-;;; renders a trace, through OUR path, byte-identical to its recorded log at
-;;; every scheduled chunk size (design §8.1).  `make test` runs 'extremes; the
-;;; release lane runs 'full under CORPUS=full (§2.2).
+;;; Driven through the shared (trace-lane) library, so this suite and the
+;;; ratchet share one comparator.  Every strict (type=request) fixture renders
+;;; a trace, through OUR path, byte-identical to its recorded log at every
+;;; scheduled chunk size.  `make test` runs 'extremes; the release lane runs
+;;; 'full under CORPUS=full.
 ;;;
-;;; M2.2 adds design §8.1's property 1 with the connection core's bindings
-;;; installed beside the recorder's: the core answers every callback, pausing
-;;; at each message's end, and the trace must not change.
+;;; The same holds with the connection core's bindings installed beside the
+;;; recorder's (the connection layer must not perturb parsing): the core
+;;; answers every callback, pausing at each message's end, and the trace must
+;;; not change.
 ;;;
-;;; M2.3: except where the core refuses a message by policy.  The corpus is
-;;; parser truth, not server truth (design §8.1), so those fixtures are listed
-;;; below with the core's reason, and gated both ways: each listed fixture is
-;;; refused for its reason, its trace the log's own up to the refusal; every
-;;; other fixture's trace equals its log.
+;;; Except where the core refuses a message by policy.  The corpus is parser
+;;; truth, not server truth, so those fixtures are listed below with the
+;;; core's reason, and gated both ways: each listed fixture is refused for its
+;;; reason, its trace the log's own up to the refusal; every other fixture's
+;;; trace equals its log.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) getenv)
         (trace-lane))
@@ -24,11 +25,10 @@
   (let ((v (getenv "CORPUS"))) (if (and (string? v) (string=? v "full")) 'full 'extremes)))
 
 ;; The fixtures the core refuses by policy, with the reason it closes for.
-;; Each target is outside RFC 9112 §3.2's forms as the owner decided them
-;; (2026-09-24), so the core answers where llhttp parses on: 400, or a 301
-;; to the target encoded for the narrow case decision 0009 redirects.  And
-;; since M8.3, a request line with no version, HTTP/0.9's, answered 505
-;; (decided on the owner's word, by form, 2026-10-03).
+;; Each target is outside RFC 9112 §3.2's request-target forms, so the core
+;; answers 400 where llhttp parses on, or a 301 to the encoded target for a
+;; browser's unencoded pipe in the query.  A request line with no version,
+;; HTTP/0.9's, is answered 505.
 (define core-refusals
   '(("request/method.md#5" . invalid-target)             ; M-SEARCH *: asterisk-form is OPTIONS's
     ("request/sample.md#10" . version-not-supported)     ; GET / with no version: HTTP/0.9
@@ -48,10 +48,10 @@
     (diag (string-append "trace-lane: selection=" (symbol->string selection)
                          " scan-runs=" (number->string
                                         (trace-scan-runs (map cdr strict-request-fixtures) selection))))
-    ;; The lane is not vacuous: the strict split is M1.1's 135 (§2.1).
+    ;; The lane is not vacuous: the strict split is 135 fixtures.
     (test-eqv "135 strict fixtures in the lane" 135 (length strict-request-fixtures))
-    ;; The selection replayed the scheduled amount (§2.2): 253 / 9,394.
-    (test-eqv "scan-schedule runs match plan §2.2"
+    ;; The selection replayed the scheduled amount: 253 / 9,394.
+    (test-eqv "scan-schedule runs match the schedule for the selection"
               (if (eq? selection 'full) 9394 253)
               (trace-scan-runs (map cdr strict-request-fixtures) selection))
     ;; The trace lane: our rendered trace equals the recorded log for every

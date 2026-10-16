@@ -1,8 +1,8 @@
 vtest "HTTP/1.1 persists: two requests, a pipelined pair, then one asking to close"
 # RFC 9112 §9.3: an HTTP/1.1 connection persists; §9.3.2: pipelined
 # responses come in order; §9.6: Connection: close ends it after its answer.
-# Decision 0010: the server writes the framing and the Date of every final
-# response, and Connection: close only when it closes.
+# The server writes the framing and the Date of every final response, and
+# Connection: close only when it closes.
 client c1 -connect "${host} ${port}" {
     txreq -url "/a?x=1"
     rxresp

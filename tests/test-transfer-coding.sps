@@ -7,24 +7,23 @@
 ;;; receives a request message with a transfer coding it does not understand
 ;;; SHOULD respond with 501 (Not Implemented)."  And a server that receives
 ;;; an HTTP/1.0 message with Transfer-Encoding MUST treat its framing as
-;;; faulty and close the connection after processing it.  Decided on the
-;;; owner's word, 2026-09-26: a coding listed beside a final chunked is a
-;;; 501; every other invalid Transfer-Encoding is the parser's to refuse, a
-;;; 400 (§6.3); and a request below HTTP/1.1 with Transfer-Encoding is
-;;; refused as faulty framing, a 400 too.
+;;; faulty and close the connection after processing it.  So a coding listed
+;;; beside a final chunked is a 501; every other invalid Transfer-Encoding is
+;;; the parser's to refuse, a 400 (§6.3); and a request below HTTP/1.1 with
+;;; Transfer-Encoding is refused as faulty framing, a 400 too.
 ;;;
 ;;; The flags are llhttp's, as the core reads them at on-headers-complete:
 ;;; F-CHUNKED when the parser frames the body by a final chunked, and
-;;; F-TRANSFER-ENCODING whenever the request has the field.  Measured at the
-;;; pin (ledger, 2026-09-26): `chunked`, `Chunked`, `gzip, chunked`, and gzip
-;;; and chunked on two lines set both; `gzip` and `chunked;x=1` set only the
-;;; second, and the parser refuses them.
+;;; F-TRANSFER-ENCODING whenever the request has the field.  `chunked`,
+;;; `Chunked`, `gzip, chunked`, and gzip and chunked on two lines set both;
+;;; `gzip` and `chunked;x=1` set only the second, and the parser refuses
+;;; them.
 ;;;
 ;;; Oracles: RFC 9112 §6.1 and §7 (chunked, the one coding the server
 ;;; implements, matched without regard to case); RFC 9110 §5.3 (a field's
 ;;; lines combine into one list) and §5.6.1 (a list's elements, with OWS
-;;; around each and empty elements ignored); llhttp's flags, as measured;
-;;; llhttp's version gate, which only 1.1 passes.  Every verdict is compared
+;;; around each and empty elements ignored); llhttp's flags; llhttp's
+;;; version gate, which only 1.1 passes.  Every verdict is compared
 ;;; as a symbol, never as #f: SRFI-64 turns an exception inside a test
 ;;; expression into #f.
 (import (rnrs) (srfi :64) (testing)

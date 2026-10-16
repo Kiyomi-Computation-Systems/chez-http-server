@@ -1,6 +1,6 @@
 #!r6rs
 ;;; (response-reader) — a response read back off the wire by chez-httparse's
-;;; strict response parser: the serializer's independent oracle (M3.1).
+;;; strict response parser: the serializer's independent oracle.
 ;;;
 ;;; The serializer writes bytes.  This reads them as a client would, with a
 ;;; parser that is not ours, so wire that only looks right to our own code is
@@ -21,7 +21,7 @@
   ;;   eof?  — the connection ends after these bytes, as a client sees at EOF
   ;; The status, the reason phrase, the headers, the body and the end:
   ;; 'complete when the message completed at the last byte, 'bytes-after when
-  ;; it completed with bytes after it (M3.2: a body written where the client
+  ;; it completed with bytes after it (such as a body written where the client
   ;; reads none), else the status of the parser's last answer ('need-input
   ;; while a body is still owed, 'error, ...).  The parser pauses at the
   ;; message's end, so where it stopped is known.  An interim 1xx with bytes

@@ -1,14 +1,14 @@
 #!r6rs
 ;;; (smuggling-corpus) — a small, hand-written set of request-framing vectors,
 ;;; the kinds an HTTP request-smuggling (desync) attack is built from, each
-;;; stated so this server's answer to it can be pinned.  M8.3's last open
-;;; item (plan §14); test-only, defensive.
+;;; stated so this server's answer to it can be pinned.  Test-only,
+;;; defensive.
 ;;;
 ;;; These are FIXED vectors authored here, not generated and not a probe: no
 ;;; code here emits permutations or talks to a server.  Each case is one
-;;; request's bytes and the verdict we have measured this server give it, so a
-;;; parser or framing change that would start honouring a smuggling gadget
-;;; fails the lane (tests/smuggling-lane.sls) until reviewed.
+;;; request's bytes and the verdict this server gives it, so a parser or
+;;; framing change that would start honouring a smuggling gadget fails the
+;;; lane (tests/smuggling-lane.sls) until reviewed.
 ;;;
 ;;; The families are the well-known request-smuggling taxonomy (RFC 9112 §6.1,
 ;;; §6.3, §5.1; the PortSwigger/defparam catalogues name the same shapes):
@@ -42,12 +42,18 @@
   ;;   family    — Symbol, the smuggling taxonomy family.
   ;;   category  — Symbol, `safe` (served) or `hazard` (refused).
   ;;   reference — String, the RFC clause the verdict rests on.
-  ;;   expected  — the server's answer we have measured: the symbol `served`,
-  ;;               or a status Nat meaning "refused with this status, then
-  ;;               close".
+  ;;   expected  — the server's answer: the symbol `served`, or a status Nat
+  ;;               meaning "refused with this status, then close".
   ;;   lines     — (Listof String), the request line then the header lines,
   ;;               joined with CRLF; a blank line follows.
   ;;   body      — String, appended after the blank line verbatim (may be "").
+  ;;
+  ;; smuggling-case?          : Any -> Boolean
+  ;; smuggling-case-id        : SmugglingCase -> String
+  ;; smuggling-case-family    : SmugglingCase -> Symbol
+  ;; smuggling-case-category  : SmugglingCase -> (U 'safe 'hazard)
+  ;; smuggling-case-reference : SmugglingCase -> String
+  ;; smuggling-case-expected  : SmugglingCase -> (U 'served Nat)
   (define-record-type smuggling-case
     (fields id family category reference expected lines body)
     (sealed #t))
@@ -66,9 +72,8 @@
           (loop (cdr ls) (cons "\r\n" (cons (car ls) acc))))))
 
   ;; smuggling-cases : -> (Listof SmugglingCase)
-  ;; The corpus, in a fixed order.  Each `expected` is this server's measured
-  ;; answer on Darwin arm64, Chez 10.4.1, at the time of writing; the lane
-  ;; re-measures and holds the server to it.
+  ;; The corpus, in a fixed order.  Each `expected` is this server's answer;
+  ;; the lane runs the server on every case and holds it to that answer.
   (define (smuggling-cases)
     (list
      ;; --- safe: served, framing unambiguous --------------------------------
