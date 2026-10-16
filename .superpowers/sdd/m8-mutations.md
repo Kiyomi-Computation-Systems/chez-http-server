@@ -2989,3 +2989,47 @@ value corrected before the run, 45a23f5b…):
 - B-4: BR-2, BR-3, BR-7, BR-8, BR-10, BR-11.
 - B-5: BR-1, BR-4, BR-5, BR-7.
 - C-1: check 1 by CT-1, CT-2 and SH-1; check 3 by BR-1 and BR-3.
+
+## A waiting taker's thunk may end with no values (decision 0023's amendment), on `fix/taker-thunk-no-values` (2026-10-16)
+
+Two new checks, one in each shell's suite:
+- **TW-1**, the switch suite, "a thunk that ends with no values, or with two, is no failure:
+  the stream open, its taker reading on": two fake streams, one thunk ending `(values)` and
+  one `(values 1 2)`, each delivered "Hi" after its 101.
+- **TW-2**, the shell suite, "a waiting taker whose thunk ends with no values, or with two:
+  no failure, the stream stays open, its taker writing back what it reads, nothing
+  logged": `/door-wait-no-values` and `/door-wait-two-values` over loopback, each client
+  sending "Hi".
+
+**Red on main's shells** (Darwin arm64; the libuv probe first, three runs alike), read
+before the branch was rebased from 988d67d onto f6a76f1 (#187, #188):
+- TW-1: `((() closed 1) (() closed 1))`, each thunk's return the taker's failure, the
+  stream aborted before "Hi".
+- TW-2, its no-values half alone, as first written: `(satisfied satisfied eof <the 101>
+  closed ((taker-failed …)))`, the condition's message "returned ~a values to single
+  value return context".
+
+TV-1 and TV-2 below put main's `taker-wait!` back on the rebased tree, so they are the red
+of both whole checks there.
+
+**Five rows on the fixed tree, every suite** (prediction dd7ed38d…, exact by value):
+
+| Row | Mutant | Red, by value |
+|---|---|---|
+| TV-0 | unmutated (a comment) | none |
+| TV-1 | the libuv shell spawns the thunk bare (main's) | TW-2: both halves `(satisfied satisfied eof <the 101> closed ((taker-failed …)))` |
+| TV-2 | the fake spawns the thunk bare (main's) | TW-1: `((() closed 1) (() closed 1))` |
+| TV-3 | the libuv shell drops no values only, `(case-lambda (() #t) ((v) v))` | TW-2: the two-values half, as TV-1's |
+| TV-4 | the fake drops no values only | TW-1: `(((hi) handed-off 0) (() closed 1))` |
+
+The contract test's `/door-waits` thunk ends with its close, which returns one value in
+both shells, so no row reddens it, as predicted.
+
+**The clients suite** exited 2 in every row, TV-0 too: this worktree had no `build/oha`
+yet ("cannot start build/oha"). Once `make test` had fetched it, each row ran that suite
+alone, one at a time: green, 38 each. It holds no switch and no `awaiting`.
+
+**Every mutant loaded:** 255 logs and the five clients reruns, none with `Exception`; the
+only `HARNESS` lines are the clients suite's five before oha was fetched.
+
+**Each new check has a killer by value:** TW-1, TV-2 and TV-4; TW-2, TV-1 and TV-3.

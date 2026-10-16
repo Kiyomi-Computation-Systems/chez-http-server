@@ -58,3 +58,19 @@ By form, the recommended of three:
     taker, starts each a turn later, and costs each a coroutine;
   - a spawn verb, `(transport-spawn! t thunk)`: as many coroutines as wanted, but more
     public API, each with a notice and a lifetime of its own.
+
+## Amendment (2026-10-16) — the thunk's values are dropped, however many
+
+Found while mutating the fake's write bound (decision 0027's amendment of this date).
+- **What did not hold.** Item 3's "what the thunk returns is dropped". The shells spawned
+  the thunk itself, and the scheduler keeps the one value a coroutine returns. So a thunk
+  that ended with no values, as one whose last call is `sleep-ms` does, or with two, was
+  taken as a raise: `taker-failed` was logged and the stream closed. A probe on the libuv
+  shell showed it three times in three runs. A thunk that ended with one value was fine.
+- **Now** each shell's `taker-wait!` spawns `(lambda () (thunk) #t)`, as a waiting
+  handler's reader's piece is spawned (the M7 exit). The scheduler is unchanged, since its
+  other callers read that value.
+- **Held by** one check in each shell's suite: a thunk that ends with no values, and one
+  that ends with two, leaves its stream open, nothing logged. Four mutants, each red only
+  where predicted (`.superpowers/sdd/m8-mutations.md`, the last section). The wrap's
+  closure costs a waiting taker about 16 B, once.

@@ -1180,14 +1180,17 @@
   ;; raises `&client-closed` once the stream has closed (decision 0020's
   ;; notice; 0023).  If the thunk raises, `taker-failed` is logged and the
   ;; stream closed, as for a take-over that raises, unless what it raised is
-  ;; the close the notice told.  What it returns is dropped.
+  ;; the close the notice told.  What it returns is dropped, so it may
+  ;; return no values, or several, as one whose last call is a sleep does:
+  ;; the coroutine answers #t after it, since the scheduler keeps the one
+  ;; value a coroutine returns.
   ;; The notice is made here, before the stream can have closed: its close
   ;; completes in a later callback (handle-closed!), which closes it.
   (define (taker-wait! c tk thunk)
     (let ((sh (connection-shell c)) (n (make-notice)))
       (taker-notice-set! tk n)
       (notice-attach!
-       (scheduler-spawn! (shell-scheduler sh) thunk
+       (scheduler-spawn! (shell-scheduler sh) (lambda () (thunk) #t)
          (lambda (kind v)
            (when (and (eq? kind 'raised) (not (taker-told? tk v)))
              (log-quietly! sh 'taker-failed (list v))
