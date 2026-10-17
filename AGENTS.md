@@ -54,6 +54,22 @@
   line in the plan's open list, not a fix, and a soak raises no follow-up
   tasks.
 
+### Guix development container
+
+* On a Guix host, run every build and test through `scripts/guix-env`,
+  e.g. `scripts/guix-env make test`; a bare `make` there has no `chez`.
+  Batch with `scripts/guix-env sh -c 'make a && make b'`: each call takes
+  a few seconds to start. With no command and no terminal, it exits at
+  once.
+* Edit, commit and push on the host. The container has git and the
+  network, but no identity, credentials or agent, and nothing of `HOME`.
+* The container exports `CHEZ` (the real `scheme` binary) and `CC` (gcc;
+  the toolchain has no `cc`), and mounts `scripts/guix-env-nsswitch.conf`
+  over the host's `/etc/nsswitch.conf`. In a linked worktree it also
+  shares the main repository's `.git`.
+* Verify a change to `channels.scm`, `manifest.scm` or the `guix-env`
+  scripts with `make check-guix`, run on the host.
+
 ## Closing ritual
 
 We run this when we're done and ready to merge the PR.

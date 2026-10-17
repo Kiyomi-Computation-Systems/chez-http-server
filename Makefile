@@ -11,6 +11,9 @@
 # the library path, and refuses a vendored checkout with local edits.
 # chez-cmark-gfm, which renders the docs site, is pinned by Akku.lock instead
 # (the docs site section below).
+#
+# On a Guix host, run targets through the pinned Guix container:
+#   scripts/guix-env make <target>
 
 CHEZ ?= chez
 
@@ -63,7 +66,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock
+.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock check-guix
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -245,6 +248,17 @@ check-site-deps: ## Test scripts/fetch-akku-lock and scripts/check-akku-lock off
 AKKU ?= akku
 check-akku-lock: ## Check Akku.lock is what `akku lock` makes of Akku.manifest (skipped where akku is missing or broken)
 	@AKKU="$(AKKU)" sh scripts/check-akku-lock
+
+# --- the Guix container -------------------------------------------------------
+# scripts/guix-env runs a command in a container pinned to channels.scm's
+# Guix, holding manifest.scm's toolchain and the clients the suites run.
+# check-guix runs the launcher's own tests on the host, which need no Guix,
+# then scripts/guix-env-selftest in the container, which ends by running
+# check-help, test, check-site-deps and check-site there.
+check-guix: ## Test scripts/guix-env on the host, then the toolchain and every suite inside the pinned Guix container
+	@sh tests/guix-env-launcher.sh
+	@command -v guix >/dev/null 2>&1 || { echo "check-guix: guix not found; the container's checks run on a Guix host" >&2; exit 2; }
+	@scripts/guix-env sh scripts/guix-env-selftest
 
 # make hands FLAVOR=prod to the suite's chez-libuv build, which would
 # otherwise relink a dev shim.  check-prod depends on nothing, so the last
