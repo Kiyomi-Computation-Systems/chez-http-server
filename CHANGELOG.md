@@ -26,6 +26,14 @@ All notable changes to chez-http-server are recorded here. The format follows
   cmark-gfm library. `make test` needs none of it. A development-only
   `Akku.manifest` names it, and `make check-akku-lock` checks `akku lock`
   still makes `Akku.lock` from it.
+- **A pinned Guix development container: `scripts/guix-env`.** On a Guix
+  host, `scripts/guix-env make test` runs any target in a container built
+  from the Guix commit in `channels.scm` and the toolchain in `manifest.scm`:
+  Chez Scheme 10.4.1, libuv 1.52.1, gcc, the clients the suites run, and
+  cmark-gfm for the docs site. It has the network, so a fresh clone needs
+  nothing else, and nothing of the user's home directory. `make check-guix`
+  tests the launcher on the host, then checks the container from inside and
+  runs every suite and the docs site's checks there.
 
 ### Changed
 

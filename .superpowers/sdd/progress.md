@@ -250,3 +250,38 @@ MERGED to main on 2026-10-16, on the owner's "do closing ritual": **#202, `docs/
 MERGED to main on 2026-10-17, on the owner's "do closing ritual": **#203, `docs/performance.md` beside Node, and the Python one-connection claim corrected.** The owner asked whether we had compared against Node (only M8.4's spike, 2026-10-04, in `.plans/research/spike/`, never on the page), then "yes please", then "verify the python claim". Node 26.0.0 (Homebrew): `http.createServer` for hello and a 16-line `fs.createReadStream` file server, printed on the page and run as printed; with the two servers taking turns, hello within 10% in every row; the file Node 1.2-1.3 times ahead at 50 kept-alive connections, where it kept 1.65 cores busy over a 3-second sample (fs work on libuv's thread pool), ours ahead in the other three rows. The Python claim ("a little faster" on one connection without keep-alive) had come from one 2-second run each, ours a noisy one (99th percentile 1.52 ms); three rounds taking turns put the two even, 3,200-3,500 a second here against 3,100-3,200, ours ahead in two, so the page now says so and counts each column's runs. f3479d8 (atop 89176c6) squashed as 8b07bd4 (tree 6aaf984, the tested head's; parent 036925d) with `--delete-branch`, which switched the checkout to main and deleted the branch, local and remote. CI billing-blocked: the head's 38992713621 and main's 39026461225 each a `linux` job not started (0 steps, the payments annotation); merged on local evidence. `make test` green on main: fifty-three suites, 2,181 expected passes, every pin ok; `make check-site` green.
 
 NEXT: the next release carries CHANGELOG.md's Unreleased (the examples, the Markdown docs, the docs site and its Akku.manifest), with v0.7.0's entries moved to `v0.7.0-progress.md`. For the public release, chez-http-server itself is still private. When main's runs start again, re-run main's latest run once; the docs step in CI then runs for the first time.
+
+---
+
+**THE GUIX DEVELOPMENT CONTAINER, on `chore/guix-env` (2026-10-17),** decision 0029. The owner asked for "a Guix profile similar to chez-libuv and chez-cmark-gfm", so that Guix users "launch and develop this project in a guix container". By form: "Always network (cmark-gfm)" (weighed: an offline default with a `--network` opt-in, recommended, and chez-libuv's always-offline container).
+- **Built:**
+  - `channels.scm`, the peers' pin, b532aa7d;
+  - `manifest.scm`: chez-libuv's Chez 10.4.1 variant unchanged, which shares its store item, then libuv-for-node-lts 1.52.1, gcc, the clients, vtest2's libraries, cmark-gfm, git and nss-certs;
+  - `scripts/guix-env`, `scripts/guix-env-enter`, `scripts/guix-env-selftest`, and `scripts/guix-env-nsswitch.conf`;
+  - `tests/guix-env-launcher.sh` (80 checks) and `make check-guix`;
+  - docs/building.md's "On a Guix host", a line in README.org, AGENTS.md's "Guix development container", and CHANGELOG.md's Unreleased, under Added.
+- **Found on the way.** `--network` brings the host's `/etc/nsswitch.conf`. This host's names NSS modules the container's glibc 2.41 cannot load, so test-shell's lookup row got `EAI_SYSTEM` for `a..b`, not `EAI_NONAME`: the one failure in a fresh checkout's first `make test` in the container. The launcher now mounts `scripts/guix-env-nsswitch.conf` (files, dns) over it. `--emulate-fhs` is kept for chez-cmark-gfm's library search; without it, `make check-site` raised `&cmark-library-unavailable`.
+- **Measured** (x86_64, this host):
+  - a fresh checkout's `scripts/guix-env make test`, cloning the submodules, building the shim and vtest2 and fetching oha: 72 s;
+  - `make check-guix`: 87 s, all green, `make test` at fifty-three suites and 2,181 expected passes, main's counts, and `make check-site` green.
+- **Watched to fail** (decision 0029's Measured section):
+  - 10 launcher mutants, 6 for the entry script, and 18 container runs, each failing its self-test assertion by name. Unwatched: chez-floor's empty-ci.yml branch, libuv-floor's vendored and not-in-the-store branches, and make-check-help and make-check-site-deps;
+  - one full run without the nsswitch mount and with a broken docs anchor, which failed `nsswitch`, `make-test` and `make-check-site`.
+  - T16's "says why" caught its own case: `env` took the launcher's path, which holds an `=`, for a variable assignment.
+
+- **The read-only review** (Opus) found one defect. `make check-guix` failed on a fresh clone: `libuv-floor` read chez-libuv's Makefile before any submodule was cloned. The self-test now runs `make submodules` first, and that branch was watched failing offline. The review's other findings were wording and coverage, and all were taken:
+  - docs/building.md's first-run time now includes fetching the pinned Guix;
+  - it now says a worktree shares the main repository's `.git`;
+  - README.org's link dropped the Markdown anchor;
+  - the nsswitch assertion's comment now says it checks the mount;
+  - the launcher's 80 checks now run on a host without guix;
+  - the unwatched branches are named above.
+- **A fresh clone's `make check-guix`**, with the fix: 75 s, all green, fifty-three suites, 2,181 expected passes, and `make check-site` green.
+- **More in `docs/`, on the owner's ask** ("We should add mention of the guix container to the `docs/`"):
+  - docs/installing.md points a Guix host at `scripts/guix-env` from "What you need";
+  - docs/README.md's "Read next" says building works with or without Guix;
+  - docs/building.md says a server run inside answers on the host, and that the environment stays out but for `TERM`, `COLORTERM` and `LANG`.
+  - Both facts were checked before they were written. The host's curl got `Hello` from `make run` in the container. A host `CHEZ_HTTP_PORT` arrived unset, and `env CHEZ_HTTP_PORT=3000` set it.
+  - The new anchor was broken once to watch `make check-site` name it.
+
+NEXT: the PR when the owner asks. The container waits in Unreleased for the next release.

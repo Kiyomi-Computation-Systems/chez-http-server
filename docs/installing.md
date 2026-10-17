@@ -18,6 +18,11 @@ yet: chez-libuv, the libuv binding it runs on, does not support it.
   newer.
 - **A C compiler and `make`.**
 
+On a Guix host, skip the list: `scripts/guix-env` runs a command in a
+container that has all of it. Put it before `make build` and `make run`
+below, as in `scripts/guix-env make build`. See
+[On a Guix host](building.md#on-a-guix-host).
+
 ## Build it
 
 ```sh

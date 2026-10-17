@@ -67,6 +67,44 @@ The vendored corpora live in `test/vendor/`, each with a `PROVENANCE` file
 giving its source and the sha256 of every file. They are never edited by
 hand; `make corpus-refresh` re-vendors one from an upstream checkout.
 
+## On a Guix host
+
+With [Guix](https://guix.gnu.org) installed, one script gives you every
+tool the build, the tests and the docs site need, without installing any of
+them into your system:
+
+```sh
+scripts/guix-env make test    # run one command
+scripts/guix-env              # or open a shell
+```
+
+The command runs in a container built from the Guix commit pinned in
+`channels.scm` and the packages in `manifest.scm`: Chez Scheme 10.4.1,
+libuv 1.52.1, gcc, curl, ab, what vtest2 builds with, and cmark-gfm.
+
+- **The first run is slow.** Guix fetches its pinned commit and the
+  packages, then builds Chez from source, which alone takes about two
+  minutes. Later runs start in a few seconds, so batch commands:
+  `scripts/guix-env sh -c 'make test && make check-site'`.
+- **A fresh clone needs nothing else.** The container has the network, so
+  `make test` clones the submodules and fetches oha itself.
+- **It sees this checkout and nothing else of your home directory** (in a
+  linked worktree, also the main repository's `.git`): no git identity, no
+  keys, no tokens. Edit, commit and push outside it.
+- **It sets `CHEZ` and `CC`,** so no `CHEZ=` is needed.
+- **A server it runs answers on your machine.** It shares the network, so
+  after `scripts/guix-env make run PROGRAM=examples/hello.sps`,
+  `curl http://127.0.0.1:8080/` from outside answers `Hello`.
+- **Your environment stays outside,** except `TERM`, `COLORTERM` and
+  `LANG`. Set a variable inside instead:
+  `scripts/guix-env env CHEZ_HTTP_PORT=3000 make run PROGRAM=examples/hello.sps`.
+
+`make check-guix`, run outside the container, tests the script, then checks
+the container from inside: the pinned tools, Chez and libuv at their floors,
+the isolation, and finally `make test` and `make check-site`. To move the
+pin, change the commit in `channels.scm` (`guix describe -f channels` prints
+yours) and run `make check-guix`.
+
 ## The docs site
 
 These pages render to a small static site:
