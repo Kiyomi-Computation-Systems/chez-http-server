@@ -22,8 +22,8 @@
 ;;; returned, a SIGINT ends the process at once.
 ;;;
 ;;; Oracles:
-;;;   - the documented configuration and handler reading (docs/handlers.org,
-;;;     docs/configuration.org): where the server listens, CHEZ_HTTP_HOST and
+;;;   - the documented configuration and handler reading (docs/handlers.md,
+;;;     docs/configuration.md): where the server listens, CHEZ_HTTP_HOST and
 ;;;     CHEZ_HTTP_PORT, and what a handler reads;
 ;;;   - a malformed setting at startup is an &http-server-config-error,
 ;;;     which is an &http-server-error, an &error;
@@ -486,7 +486,7 @@
                 (signalled-at-listening))
     ;; Once `serve` has returned it watches no signal, and chez-libuv leaves
     ;; SIGINT's default disposition, not Chez's keyboard interrupt, so the
-    ;; next one ends the process (docs/handlers.org).
+    ;; next one ends the process (docs/handlers.md).
     (test-equal "once serve has returned, a SIGINT ends the process at once"
                 '(satisfied satisfied ("draining 0" "stopped") (0 sigint))
                 (returned-then-interrupted))

@@ -15,19 +15,19 @@ An HTTP 1.1 Server for Chez Scheme built on libuv.
   is served as 1.1.
 - *Bounded by default.* Every limit and timeout has an nginx-style default and
   an environment override, and a client that stalls is closed (see
-  [[file:docs/configuration.org][docs/configuration.org]]).
+  [[file:docs/configuration.md][docs/configuration.md]]).
 - *Streaming both ways.* A handler reads a request's body as it arrives and
   can stream its response, so a big upload or download is never held in
   memory whole.
 - *Handlers that wait.* A handler can wait for another request, a time, a
   deadline or a name's lookup, and is told when its client leaves (see
-  [[file:docs/handlers.org][docs/handlers.org]]).
+  [[file:docs/waiting.md][docs/waiting.md]]).
 - *Upgrades.* A handler can take an upgrade, a WebSocket's say, and speak the
   new protocol over the connection itself; its close is as gentle as the
   server's own.
 - *Graceful shutdown.* Sent SIGTERM or SIGINT (Ctrl-C), it finishes the
   requests in flight, closes the rest after ~CHEZ_HTTP_DRAIN_TIMEOUT~, and
-  ~serve~ returns (see [[file:docs/connections.org][docs/connections.org]]).
+  ~serve~ returns (see [[file:docs/connections.md][docs/connections.md]]).
 - *Tested against the real thing.* curl, ApacheBench, vtest2's scripts and an
   oha load test run against the server. llhttp's and libhtp's request
   corpora, AWS http-desync-guardian's cases, the strict request tests of
@@ -48,8 +48,7 @@ release changes.
 #+end_src
 
 Save it as ~hello.sps~, start it with ~make run PROGRAM=hello.sps~, and
-~curl http://127.0.0.1:8080/~. How a handler reads the request is in
-[[file:docs/handlers.org][docs/handlers.org]].
+~curl http://127.0.0.1:8080/~. The [[file:docs/quickstart.md][quickstart]] goes on from there.
 
 ** Build and test
 
@@ -83,31 +82,22 @@ make test    # runs every tests/test-*.sps
 ~make help~ lists every target; ~make check-pins~ verifies each submodule sits
 at its pinned release commit.
 
-** Configuration
+** Examples
 
-Where the server listens, and every connection limit, has a default and an
-environment override — see [[file:docs/configuration.org][docs/configuration.org]].
+[[file:examples/][examples/]] holds small servers to copy from, each one file: a hello world,
+reading bodies, streaming and server-sent events, a long poll, and a file
+server that does what ~python3 -m http.server~ does:
 
-** Request targets
+#+begin_src sh
+make run PROGRAM=examples/file-server.sps ARGS="8000 --directory ."
+#+end_src
 
-Which request-targets the server accepts, refuses or redirects — see
-[[file:docs/request-targets.org][docs/request-targets.org]].
+** Documentation
 
-** The Host header
-
-Which ~Host~ lines the server refuses, and the switch for HTTP/1.1 requests
-with none — see [[file:docs/host-header.org][docs/host-header.org]].
-
-** Connections
-
-How one connection carries many requests, answered one at a time, and what a
-request to switch protocols gets — see [[file:docs/connections.org][docs/connections.org]]. How a handler
-takes one is in [[file:docs/handlers.org][docs/handlers.org]].
-
-** Responses
-
-What the server writes around your handler's response, which bodies it never
-sends, and what it answers 500 instead — see [[file:docs/responses.org][docs/responses.org]].
+The guides are in [[file:docs/README.md][docs/]]: [[file:docs/installing.md][installing]], a [[file:docs/quickstart.md][quickstart]], [[file:docs/handlers.md][handlers]],
+[[file:docs/bodies.md][bodies and streaming]], [[file:docs/waiting.md][waiting]], [[file:docs/upgrades.md][upgrades]], [[file:docs/requests.md][requests]], [[file:docs/responses.md][responses]],
+[[file:docs/connections.md][connections]], [[file:docs/configuration.md][configuration]], [[file:docs/deploying.md][deploying]], [[file:docs/how-it-works.md][how it works]], [[file:docs/performance.md][performance]],
+and the [[file:docs/reference.md][API reference]].
 
 ** License
 

@@ -236,7 +236,7 @@
   ;; or the server's documented behaviour:
   ;;   pct-encoding-undecoded  a percent-encoded octet, `%00` among them, is
   ;;                           a valid target (RFC 3986 §2.1); the server hands
-  ;;                           it over undecoded (docs/request-targets.org),
+  ;;                           it over undecoded (docs/requests.md),
   ;;                           where the source refuses a decoded NUL: RFC 3986
   ;;                           §7.3 puts that check on the code that decodes;
   ;;   version-not-1.x         HTTP/2.0 or HTTP/0.9, answered 505, where httpd
