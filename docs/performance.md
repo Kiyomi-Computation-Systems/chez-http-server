@@ -51,14 +51,18 @@ while (`TIME_WAIT`).
 
 | Connections | file-server.sps, kept alive | file-server.sps, new each time | Python's http.server |
 |:--|--:|--:|--:|
-| 50 | 16,200–17,300 a second | 6,500 a second | 4,100 a second |
-| 1 | 8,100 a second | 2,700 a second | 3,100 a second |
+| 50 | 16,200–17,300 a second | 6,600–6,700 a second | 4,200–5,000 a second |
+| 1 | 8,100 a second | 3,200–3,500 a second | 3,100–3,200 a second |
 
 Python's server answers in HTTP/1.0 and closes every connection, so it never
-gets keep-alive's head start. With 50 clients its 99th percentile latency
-was 93 ms, against 6–8 ms here. On one connection with no keep-alive the two
-are close; Python's is a little faster. The rows without keep-alive, and
-Python's, are single 2-second runs.
+gets keep-alive's head start: compare it with the middle column, where this
+server opens a new connection for each request too. With 50 clients,
+Python's 99th percentile latency was 63–123 ms, against 13–14 ms here with
+a new connection each time and 6–8 ms kept alive. On one connection the two
+are about even: this server was ahead in two rounds of three, Python in one.
+The two right-hand columns are three 2-second runs each, the servers taking
+turns; the kept-alive column is two 10-second runs at 50 connections and
+one at 1.
 
 For one large file, Python is faster: a 512 MiB download ran at
 1.43–1.45 GB/s from Python against 0.83–0.93 GB/s here.
