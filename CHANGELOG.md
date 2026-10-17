@@ -36,7 +36,8 @@ All notable changes to chez-http-server are recorded here. The format follows
   performance, an API reference, and building and testing. The six `.org`
   pages they replace are gone; their content is in the new pages.
   `docs/performance.md` gives fresh measurements, among them requests a
-  second with oha and the file server beside `python3 -m http.server`.
+  second with oha, the file server beside `python3 -m http.server`, and
+  both beside Racket's `web-server`.
 
 ## [0.7.0] - 2026-10-16
 
