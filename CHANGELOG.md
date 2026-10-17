@@ -6,6 +6,17 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`examples/`: five small servers, each one file.** `hello.sps`; `echo.sps`,
+  reading a request and its body; `stream.sps`, a streamed response and
+  server-sent events; `long-poll.sps`, a handler that waits for another
+  request, with a deadline; and `file-server.sps`, which serves a directory as
+  `python3 -m http.server` does. `tests/test-examples.sps` starts each one and
+  checks what it answers.
+- **`make run` passes `ARGS` to the program:**
+  `make run PROGRAM=examples/file-server.sps ARGS="8000 --directory ."`.
+
 ## [0.7.0] - 2026-10-16
 
 The eighth release. The test fake's door, which a taker's own tests load, now acts as

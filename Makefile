@@ -166,9 +166,9 @@ oha: ## Fetch oha, the load smoke's client, at its pin into build/oha, sha256-ch
 dev: build ## Start a REPL with everything on the library path
 	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ)
 
-run: build ## Run a program on the library path: make run PROGRAM=hello.sps
+run: build ## Run a program on the library path: make run PROGRAM=examples/hello.sps [ARGS="..."]
 	@test -n "$(PROGRAM)" || { echo "run: set PROGRAM=path/to/program.sps" >&2; exit 2; }
-	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ) --program $(PROGRAM)
+	CHEZSCHEMELIBDIRS=$(LIBDIRS) $(CHEZ) --program $(PROGRAM) $(ARGS)
 
 # A vtest that does not build stops no suite but the clients suite, which
 # names it (status 2): vtest2 builds on POSIX systems only.

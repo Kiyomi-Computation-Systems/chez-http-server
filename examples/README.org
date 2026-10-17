@@ -1,0 +1,44 @@
+* Examples
+
+Small servers, each one file, each showing one thing. Run one from the
+repository's root after ~make build~:
+
+#+begin_src sh
+make run PROGRAM=examples/hello.sps
+#+end_src
+
+Each listens on ~127.0.0.1:8080~ unless ~CHEZ_HTTP_HOST~ and ~CHEZ_HTTP_PORT~
+say otherwise, and stops on Ctrl-C.
+
+| File              | Shows                                                    | Try                                                   |
+|-------------------+----------------------------------------------------------+-------------------------------------------------------|
+| [[file:hello.sps][hello.sps]]         | the smallest server                                      | ~curl 127.0.0.1:8080/~                                |
+| [[file:echo.sps][echo.sps]]          | reading the request and its body                         | ~curl --data hi 127.0.0.1:8080/~                      |
+| [[file:stream.sps][stream.sps]]        | streaming a response, and server-sent events             | ~curl -N '127.0.0.1:8080/ticks?n=5&ms=1000'~          |
+| [[file:long-poll.sps][long-poll.sps]]     | a handler that waits for another request, with a timeout | ~curl 127.0.0.1:8080/wait~, then ~curl --data hi 127.0.0.1:8080/send~ |
+| [[file:file-server.sps][file-server.sps]]   | serving a directory, like ~python3 -m http.server~        | ~make run PROGRAM=examples/file-server.sps ARGS="8000 --directory docs"~ |
+
+** The file server
+
+~file-server.sps~ does what Python's ~python3 -m http.server~ does, for local
+use:
+
+#+begin_src sh
+make run PROGRAM=examples/file-server.sps ARGS="8000 --directory ."
+# or, with the library path set:
+chez --program examples/file-server.sps 8000 --bind 127.0.0.1 --directory .
+#+end_src
+
+- It serves the files under the directory, ~GET~ and ~HEAD~, and answers
+  ~501~ to any other method.
+- A directory with an ~index.html~ is served that file; one without is listed.
+  A directory asked for without its trailing slash is redirected to it.
+- A file's ~Content-Type~ comes from its extension. A file up to 1 MiB is sent
+  whole, with its length; a bigger one is streamed in 64 KiB pieces.
+- ~.~ and ~..~ in a path are dropped, so no request reaches outside the
+  directory.
+- It listens on ~127.0.0.1~ unless told ~--bind 0.0.0.0~. Python's listens on
+  every address by default.
+
+The examples are tested: ~tests/test-examples.sps~ starts each one and checks
+what it answers.
