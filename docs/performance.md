@@ -109,6 +109,58 @@ The file server is the same with
 `web-server/dispatchers/filesystem-map`. Both ran compiled with
 `raco make`.
 
+## Beside Node
+
+The same two jobs in Node 26.0.0: `http.createServer` answering `Hello\n`,
+and, since Node has no file server of its own, the one below. Node runs on
+libuv too, with one JavaScript thread. These runs, too, were made apart
+from the other tables, the two servers taking turns, and counted as for
+Racket.
+
+| Job | Connections | This server | Node's |
+|:--|:--|--:|--:|
+| hello, kept alive | 50 | 35,300–35,600 a second | 37,900–38,000 a second |
+| hello, kept alive | 1 | 11,100–11,400 a second | 11,100–11,700 a second |
+| hello, new each time | 50 | 6,400 a second | 6,300 a second |
+| hello, new each time | 1 | 3,900 a second | 4,200 a second |
+| the file, kept alive | 50 | 13,200–14,100 a second | 17,200–17,600 a second |
+| the file, kept alive | 1 | 7,400–7,600 a second | 6,400–6,500 a second |
+| the file, new each time | 50 | 6,600 a second | 5,500 a second |
+| the file, new each time | 1 | 3,300 a second | 3,000 a second |
+
+Saying hello, the two are within 10% of each other in every row. Node
+answered a few more requests at 50 kept-alive connections; this server's
+latency was
+a little lower, a median of 1.05 ms against 1.24 ms, and a 99th percentile
+of 2.3–2.4 ms against 2.5–2.6 ms.
+
+Serving the file, Node was 1.2–1.3 times ahead at 50 kept-alive
+connections, and this server ahead in the other three rows. There Node
+kept 1.65 cores busy against this server's one, measured over 3 seconds:
+Node hands each file's stat, open and reads to libuv's thread pool, while
+file-server.sps reads the file on the loop's one thread. Saying hello,
+both used one core.
+
+The Node file server:
+
+```js
+// node files.mjs PORT DIR: DIR's files on 127.0.0.1:PORT
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+const port = Number(process.argv[2]);
+const root = path.resolve(process.argv[3]);
+http.createServer((req, res) => {
+  const file = path.join(root, decodeURIComponent(new URL(req.url, 'http://x').pathname));
+  if (!file.startsWith(root + path.sep)) { res.writeHead(404).end(); return; }
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) { res.writeHead(404).end(); return; }
+    res.writeHead(200, {'Content-Type': 'text/plain', 'Content-Length': st.size});
+    fs.createReadStream(file).pipe(res);
+  });
+}).listen(port, '127.0.0.1', () => console.log(`listening 127.0.0.1 ${port}`));
+```
+
 ## Big bodies
 
 A 512 MiB file, downloaded with curl over one connection, three times:
