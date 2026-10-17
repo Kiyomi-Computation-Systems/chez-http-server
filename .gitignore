@@ -7,3 +7,6 @@
 # Chez compiled objects / whole-program optimization outputs
 *.so
 *.wpo
+
+# `akku install` (the docs site's chez-cmark-gfm, as Akku.lock pins it)
+/.akku/

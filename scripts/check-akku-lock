@@ -1,0 +1,81 @@
+#!/bin/sh
+# scripts/check-akku-lock
+#
+# Checks that Akku.lock is what `akku lock` makes of Akku.manifest: runs akku
+# lock on a copy of the manifest in a scratch directory and compares the two
+# locks project by project, every string field of each (name, url, sha256),
+# so locks that differ only in layout agree.
+#
+# The check needs a working akku. Where akku is not on PATH, or cannot lock a
+# manifest with no dependencies (the probe), it says so and exits 0. akku
+# resolves against its local index, which `akku update` refreshes, so a newer
+# chez-cmark-gfm 2.x there fails the check until Akku.lock is made again.
+#
+# AKKU (default akku), AKKU_MANIFEST (default Akku.manifest) and AKKU_LOCK
+# (default Akku.lock) exist so tests/check-akku-lock.sh can run it with a fake
+# akku. Exits 0 when the locks agree or the check is skipped, and 1 when they
+# differ or a working akku cannot lock the manifest.
+set -u
+
+manifest=${AKKU_MANIFEST:-Akku.manifest}
+lock=${AKKU_LOCK:-Akku.lock}
+
+skip() { echo "check-akku-lock: skipped: $*"; exit 0; }
+fail() { echo "check-akku-lock: FAIL: $*" >&2; exit 1; }
+
+akku=$(command -v "${AKKU:-akku}") || skip "no ${AKKU:-akku} on PATH"
+[ -f "$manifest" ] || fail "$manifest not found"
+[ -f "$lock" ] || fail "$lock not found"
+
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/check-akku-lock.XXXXXX")
+trap 'rm -rf "$scratch"' EXIT
+mkdir "$scratch/probe" "$scratch/made"
+
+cat > "$scratch/probe/Akku.manifest" <<'EOF'
+#!r6rs
+(import (akku format manifest))
+(akku-package ("probe" "0.0.0")
+  (synopsis "probe")
+  (authors "probe")
+  (license "BSD-3-Clause"))
+EOF
+if ! (cd "$scratch/probe" && "$akku" lock) > "$scratch/probe.log" 2>&1 \
+   || [ ! -f "$scratch/probe/Akku.lock" ]; then
+  sed 's/^/  /' "$scratch/probe.log"
+  skip "$akku cannot lock a manifest with no dependencies"
+fi
+
+cp "$manifest" "$scratch/made/Akku.manifest"
+if ! (cd "$scratch/made" && "$akku" lock) > "$scratch/made.log" 2>&1 \
+   || [ ! -f "$scratch/made/Akku.lock" ]; then
+  sed 's/^/  /' "$scratch/made.log" >&2
+  fail "$akku lock could not lock $manifest"
+fi
+
+# projects LOCK: one line a project, its (key "string") fields in order,
+# the lines sorted. A lock is read as one line, so a string on the line after
+# its key reads as one beside it.
+projects() {
+  awk '{ text = text " " $0 }
+    END {
+      line = ""
+      while (match(text, /\([a-z0-9-]+[ \t]+"[^"]*"/)) {
+        field = substr(text, RSTART + 1, RLENGTH - 1)
+        text = substr(text, RSTART + RLENGTH)
+        key = field; sub(/[ \t].*/, "", key)
+        value = field; sub(/^[^"]*"/, "", value); sub(/"$/, "", value)
+        if (key == "name" && line != "") { print line; line = "" }
+        line = line (line == "" ? "" : " ") key "=" value
+      }
+      if (line != "") print line
+    }' "$1" | sort
+}
+
+projects "$lock" > "$scratch/committed"
+projects "$scratch/made/Akku.lock" > "$scratch/made.projects"
+if ! cmp -s "$scratch/committed" "$scratch/made.projects"; then
+  echo "< $lock, > akku lock:" >&2
+  diff "$scratch/committed" "$scratch/made.projects" >&2
+  fail "$lock is not what akku lock makes of $manifest: run akku lock and commit it"
+fi
+echo "check-akku-lock: $lock is akku lock's output for $manifest ($(wc -l < "$scratch/committed" | tr -d ' ') project(s))"

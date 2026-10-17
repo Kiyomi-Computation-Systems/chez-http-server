@@ -1,0 +1,19 @@
+#!r6rs ; -*- scheme -*-
+(import (akku format manifest))
+
+;; For development only: the one dependency is chez-cmark-gfm, which renders
+;; docs/ into the docs site (`make site`), and Akku.lock is `akku lock`'s
+;; output for this file. `make check-akku-lock` checks it still is.
+;;
+;; No `depends` and no `scripts`. The server's runtime dependencies,
+;; chez-libuv, chez-httparse and uriparse, are pinned submodules under
+;; vendor/, and the Akku index does not list them, so chez-http-server is not
+;; installable through Akku: this manifest describes the docs site's tooling,
+;; not a package to publish.
+(akku-package ("chez-http-server" "0.7.0")
+  (synopsis "An HTTP/1.1 server for Chez Scheme, built on libuv")
+  (description "An HTTP/1.1 and 1.0 server for Chez Scheme on libuv: a handler is a procedure from request to response; the server reads, checks and answers requests, keeps connections alive, bounds every timeout and size, and shuts down cleanly. Requires threaded Chez.")
+  (authors "Kiyomi Computation Systems LLC")
+  (homepage "https://github.com/Kiyomi-Computation-Systems/chez-http-server")
+  (license "BSD-3-Clause")
+  (depends/dev ("chez-cmark-gfm" "^2.0.0")))

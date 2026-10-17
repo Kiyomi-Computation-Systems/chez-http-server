@@ -5,7 +5,8 @@ name: CI
 # hosted macOS runner bills at ~10x the Linux rate for coverage that is never
 # in doubt here. The one job builds the shim against system libuv, resolves all
 # four pinned dependencies onto one library path, builds vtest2 for the
-# black-box lane, fetches oha for the load smoke, and runs the suite.
+# black-box lane, fetches oha for the load smoke, runs the suite, and checks
+# the docs site.
 
 on:
   push:
@@ -37,14 +38,15 @@ jobs:
       # libuv for the shim (pkg-config path); the X11/ncurses/uuid headers are
       # what Chez's from-source build needs; curl and ab (apache2-utils) are
       # the real clients tests/test-clients.sps runs against the server, and
-      # pcre2, zlib and python3 what `make vtest` builds the third with.
+      # pcre2, zlib and python3 what `make vtest` builds the third with;
+      # cmark-gfm is the library the docs site renders through.
       - name: Install toolchain
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake pkg-config libuv1-dev \
             libx11-dev libncurses-dev uuid-dev git \
-            curl apache2-utils libpcre2-dev zlib1g-dev python3
+            curl apache2-utils libpcre2-dev zlib1g-dev python3 cmark-gfm
 
       # The OS release for the Chez cache key, read off the machine rather than
       # restated from runs-on (which a bump could forget), so a new image misses
@@ -173,6 +175,16 @@ jobs:
 
       - name: Test
         run: make test
+
+      # The docs site: the generator's suites, then docs/ rendered in memory
+      # (every page in the nav, every link and anchor resolving, anchors
+      # GitHub agrees with), so a pull request that breaks the docs fails
+      # before merge. chez-cmark-gfm comes from the archive Akku.lock pins and
+      # loads the cmark-gfm installed above; the download is tested offline.
+      - name: Docs site
+        run: |
+          make check-site-deps
+          make check-site
 
       - name: Check help is complete
         run: make check-help
