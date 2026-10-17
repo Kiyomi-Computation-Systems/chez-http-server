@@ -76,5 +76,5 @@ which builds on this server's upgrades.
   handler.
 - [Performance](performance.md): what it costs in time and memory.
 - [API reference](reference.md): every exported name, one entry each.
-- [Building and testing](building.md): working on the server itself, with
-  or without Guix.
+- [Building and testing](building.md): working on the server itself, on
+  your machine, in Docker or with Guix.

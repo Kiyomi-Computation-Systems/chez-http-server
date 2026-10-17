@@ -82,8 +82,9 @@ make test    # runs every tests/test-*.sps
 ~make help~ lists every target; ~make check-pins~ verifies each submodule sits
 at its pinned release commit.
 
-On a machine with Guix, ~scripts/guix-env make test~ runs it in a pinned
-container that holds every prerequisite; see "On a Guix host" in
+With Docker, ~scripts/docker-env make test~ runs it in a container that
+holds every prerequisite, and on a machine with Guix ~scripts/guix-env make
+test~ does the same in a pinned one; see "In Docker" and "On a Guix host" in
 [[file:docs/building.md][docs/building.md]].
 
 ** Examples

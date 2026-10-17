@@ -34,6 +34,15 @@ All notable changes to chez-http-server are recorded here. The format follows
   nothing else, and nothing of the user's home directory. `make check-guix`
   tests the launcher on the host, then checks the container from inside and
   runs every suite and the docs site's checks there.
+- **A Docker development container: `scripts/docker-env`.** For a host
+  without the toolchain, `scripts/docker-env make test` runs any target in a
+  container built from `docker/dev.Dockerfile`: the Ubuntu and packages CI
+  uses, and Chez Scheme 10.4.1 built from source. It runs as the user,
+  mounts the checkout and nothing else of the machine, and has the network,
+  so a fresh clone needs nothing else. `-p PORT` serves on the host's
+  127.0.0.1:PORT. `make check-docker` tests the launcher on the host, checks
+  the container from inside and runs every suite and the docs site's checks
+  there, then asks a server it runs from the host.
 
 ### Changed
 

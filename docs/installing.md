@@ -18,9 +18,13 @@ yet: chez-libuv, the libuv binding it runs on, does not support it.
   newer.
 - **A C compiler and `make`.**
 
-On a Guix host, skip the list: `scripts/guix-env` runs a command in a
-container that has all of it. Put it before `make build` and `make run`
-below, as in `scripts/guix-env make build`. See
+To build and try the server without installing these, use a container:
+`scripts/docker-env` with Docker, or `scripts/guix-env` on a Guix host,
+runs a command in one that has all of it. Put it before `make build` and
+`make run` below, as in `scripts/docker-env make build`. For Docker,
+`make run` also needs `-p 8080` before it, so that `curl` can reach the
+server. Using the server from your own project still needs the list. See
+[In Docker](building.md#in-docker) and
 [On a Guix host](building.md#on-a-guix-host).
 
 ## Build it
