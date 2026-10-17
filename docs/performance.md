@@ -63,6 +63,52 @@ Python's, are single 2-second runs.
 For one large file, Python is faster: a 512 MiB download ran at
 1.43–1.45 GB/s from Python against 0.83–0.93 GB/s here.
 
+## Beside Racket's web server
+
+The same two jobs in Racket v9.3 (CS) with its `web-server` library, 1.13:
+a servlet that answers `Hello\n`, and the library's file dispatcher serving
+the 254-byte file. Like this server, Racket's keeps connections alive and
+runs on one core; it gives each connection a Racket thread. These runs were
+made apart from the tables above, the two servers taking turns, so compare
+the two columns with each other. Each kept-alive figure is two
+10-second runs, each figure without keep-alive one 2-second run.
+
+| Job | Connections | This server | Racket's |
+|:--|:--|--:|--:|
+| hello, kept alive | 50 | 33,100–33,800 a second | 11,600–12,800 a second |
+| hello, kept alive | 1 | 10,700–11,400 a second | 6,300–6,400 a second |
+| hello, new each time | 50 | 6,400 a second | 6,600 a second |
+| hello, new each time | 1 | 3,900 a second | 3,200 a second |
+| the file, kept alive | 50 | 16,300–16,400 a second | 6,900 a second |
+| the file, kept alive | 1 | 7,900–8,000 a second | 4,300 a second |
+| the file, new each time | 50 | 6,600 a second | 5,600 a second |
+| the file, new each time | 1 | 3,400 a second | 2,700 a second |
+
+With keep-alive this server answered 1.7 to 2.9 times as many requests.
+With 50 clients saying hello, Racket's median latency was 4.7–5.2 ms
+against 1.1–1.2 ms here, and its 99th percentile 7.4–10.6 ms against
+3.0–3.2 ms. Without keep-alive the gap is at most 1.3 times, and Racket's
+was a little ahead at 50 clients saying hello: opening the connection costs
+more than either server's work.
+
+The Racket hello server:
+
+```racket
+#lang racket/base
+(require web-server/web-server web-server/servlet-dispatch web-server/http)
+(define (start req)
+  (response/full 200 #"OK" (current-seconds) #"text/plain" '() (list #"Hello\n")))
+(define stop (serve #:dispatch (dispatch/servlet start)
+                    #:listen-ip "127.0.0.1" #:port 8080))
+(with-handlers ([exn:break? (lambda (e) (stop))]) (sync never-evt))
+```
+
+The file server is the same with
+`(files:make #:url->path (make-url->path dir))` as the dispatcher, from
+`web-server/dispatchers/dispatch-files` and
+`web-server/dispatchers/filesystem-map`. Both ran compiled with
+`raco make`.
+
 ## Big bodies
 
 A 512 MiB file, downloaded with curl over one connection, three times:
