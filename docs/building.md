@@ -67,6 +67,52 @@ The vendored corpora live in `test/vendor/`, each with a `PROVENANCE` file
 giving its source and the sha256 of every file. They are never edited by
 hand; `make corpus-refresh` re-vendors one from an upstream checkout.
 
+## In Docker
+
+With [Docker](https://www.docker.com) installed, one script gives you every
+tool the build, the tests and the docs site need, without installing any of
+them on your machine:
+
+```sh
+scripts/docker-env make test    # run one command
+scripts/docker-env              # or open a shell
+```
+
+The command runs in a container built from `docker/dev.Dockerfile`: the
+Ubuntu and packages CI uses, and Chez Scheme 10.4.1 built from source.
+
+- **The first run is slow.** It builds the image first, mostly compiling
+  Chez, which takes a few minutes. Later runs start in about a second. The
+  image is rebuilt only when `docker/dev.Dockerfile` or the Chez version
+  changes.
+- **A fresh clone needs nothing else.** The container has the network, so
+  `make test` clones the submodules and fetches oha itself.
+- **It mounts this checkout and nothing else of your machine** (in a
+  linked worktree, also the main repository's `.git`): none of your git
+  config but the repository's own, no keys, no tokens, and no environment
+  variables but the terminal's and your Docker proxy settings. Edit,
+  commit and push outside it. It runs as you, so the files it writes are
+  yours.
+- **It is not a sandbox.** It reaches the network, your machine's own
+  services included, and your machine later runs what it writes into the
+  checkout, `.git` included.
+- **To reach a server it runs, give a port with `-p`.**
+  `scripts/docker-env -p 8080 make run PROGRAM=examples/hello.sps` serves
+  on your machine's 127.0.0.1:8080, and `curl http://127.0.0.1:8080/`
+  from outside answers `Hello`. `-p` sets the port inside too, so for
+  another one give `-p 3000`, not `CHEZ_HTTP_PORT`.
+- **Set a variable inside it** with `env`, after `-p`:
+  `scripts/docker-env -p 8080 env CHEZ_HTTP_DRAIN_TIMEOUT=5 make run PROGRAM=examples/hello.sps`.
+- **One toolchain at a time.** The container shares `build/` with your
+  machine, and each toolchain records paths the others lack. Run
+  `make clean` when you switch between it, your machine's own tools and
+  the Guix container.
+
+`make check-docker`, run outside the container, tests the script, then
+checks the container from inside: the tools, Chez and libuv at their
+floors, the isolation, then `make test` and `make check-site`. Last, it
+serves an example through `-p` and asks it from your machine.
+
 ## On a Guix host
 
 With [Guix](https://guix.gnu.org) installed, one script gives you every

@@ -1,0 +1,127 @@
+#!/bin/sh
+# The Docker development container, for a host without the toolchain.
+#
+#   scripts/docker-env                    an interactive bash
+#   scripts/docker-env CMD [ARG...]       run CMD, e.g. `make test`
+#   scripts/docker-env -p PORT [CMD...]   and publish PORT on the host's
+#                                         127.0.0.1, for a server run inside
+#
+# The image is docker/dev.Dockerfile, built at ci.yml's CHEZ_FLOOR_VERSION
+# the first time and again whenever either changes. The container mounts
+# the checkout and nothing else of yours: no git config but the
+# repository's own, no keys, no agents, no tokens, no environment but the
+# terminal's and the proxy settings in the user's Docker config. It is not
+# a sandbox: it reaches the host's services over the network, and the host
+# later runs what it writes. Edit, commit and push on the host; send builds
+# and tests through here.
+set -eu
+
+die() { printf 'docker-env: %s\n' "$*" >&2; exit 2; }
+
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$root"
+
+# -p PORT, first or not at all: a later -p is the command's own.
+port=
+if [ "${1:-}" = -p ]; then
+  [ $# -ge 2 ] || die "-p takes a port from 1 to 65535"
+  port=$2
+  shift 2
+  case "$port" in
+    [1-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-9][0-9][0-9][0-9]|[1-9][0-9][0-9][0-9][0-9]) in_range=$port ;;
+    *) in_range=99999 ;;
+  esac
+  [ "$in_range" -le 65535 ] || die "-p takes a port from 1 to 65535, not '$port'"
+fi
+
+if [ $# -eq 0 ]; then
+  set -- bash
+fi
+
+# The Chez floor is ci.yml's, so it is stated in one place.
+floor=$(sed -n 's/^  CHEZ_FLOOR_VERSION: *"\(.*\)"/\1/p' .github/workflows/ci.yml)
+[ -n "$floor" ] || die ".github/workflows/ci.yml names no CHEZ_FLOOR_VERSION"
+
+# The image is named for its inputs, the Dockerfile and the floor, so a
+# change to either builds a new one and every checkout shares the old.
+sum=$({ printf '%s\n' "$floor"; cat docker/dev.Dockerfile; } | cksum | cut -d ' ' -f 1)
+image=chez-http-server-dev:$floor-$sum
+
+# mnt DIR: a --mount that binds DIR at the same path inside. Its fields are
+# CSV, so each is quoted, any quote doubled: a path may hold , or ".
+mnt() {
+  q=$(printf '%s' "$1" | sed 's/"/""/g')
+  printf 'type=bind,"source=%s","target=%s"' "$q" "$q"
+}
+
+# A linked worktree's .git is a file naming its git directory, which lies
+# inside the main repository's .git: the common directory, named by that
+# directory's `commondir` file. The container mounts only $root, so git
+# there would find no repository, and `make submodules` and
+# `make check-pins` would fail. Mount the common directory too,
+# read-write, since `git submodule update` writes there. Either path may be
+# relative (worktree.useRelativePaths): a gitdir from $root, which is the
+# working directory by now, and a commondir from the gitdir.
+share=
+if [ -f .git ]; then
+  gitdir=$(sed -n 's/^gitdir: //p' .git)
+  [ -n "$gitdir" ] || die "$root/.git is a file with no gitdir line"
+  common=$gitdir
+  if [ -f "$gitdir/commondir" ]; then
+    c=$(cat "$gitdir/commondir")
+    case "$c" in /*) common=$c ;; *) common=$gitdir/$c ;; esac
+  fi
+  named=$common
+  common=$(CDPATH='' cd -- "$named" 2>/dev/null && pwd) \
+    || die "$root/.git names $gitdir, whose common directory $named does not exist"
+  # Mount only a git directory, and nothing that holds the checkout or
+  # HOME: a hand-edited .git file (gitdir: .., gitdir: /) must not hand the
+  # container a parent of the repository. ${common%/} so that / holds
+  # everything.
+  case "$root/" in
+    "${common%/}"/*) die "refusing to mount $common, named by $root/.git: it holds $root" ;;
+  esac
+  case "$HOME/" in
+    "${common%/}"/*) die "refusing to mount $common, named by $root/.git: it holds $HOME" ;;
+  esac
+  [ -f "$common/HEAD" ] \
+    || die "$root/.git names $gitdir, whose common directory $common is not a git directory"
+  case "$common/" in
+    "$root"/*) ;;
+    *) share=$common ;;
+  esac
+fi
+
+command -v docker >/dev/null 2>&1 \
+  || die "docker not found on PATH; install Docker, or use scripts/guix-env on a Guix host"
+
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+  # inspect fails the same way when Docker is not running.
+  docker version --format '{{.Server.Version}}' >/dev/null 2>&1 \
+    || die "cannot reach the Docker daemon; start Docker and try again"
+  printf 'docker-env: building %s, once; Chez builds from source in a few minutes\n' "$image" >&2
+  docker build --build-arg "CHEZ_VERSION=$floor" --tag "$image" \
+    --file docker/dev.Dockerfile docker >&2 \
+    || die "building $image failed"
+fi
+
+# Built back to front. The command follows the image. -p publishes on the
+# host's loopback alone, and has the server listen on every address
+# inside: the published port reaches the container's own interface, not
+# its loopback. --tty only when both ends are a terminal, so a pipe or a
+# redirect gets plain output. --init forwards Ctrl-C and SIGTERM to the
+# command, and reaps what it leaves. HOME is the image's /tmp: nothing of
+# the host's HOME is mounted. Docker passes TERM, COLORTERM and LANG only
+# where they are set.
+set -- "$image" "$@"
+if [ -n "$port" ]; then
+  set -- --publish "127.0.0.1:$port:$port" \
+    --env CHEZ_HTTP_HOST=0.0.0.0 --env "CHEZ_HTTP_PORT=$port" "$@"
+fi
+set -- --workdir "$root" --env HOME=/tmp --env TERM --env COLORTERM --env LANG "$@"
+[ -z "$share" ] || set -- --mount "$(mnt "$share")" "$@"
+set -- --user "$(id -u):$(id -g)" --mount "$(mnt "$root")" "$@"
+if [ -t 0 ] && [ -t 1 ]; then
+  set -- --tty "$@"
+fi
+exec docker run --rm --interactive --init "$@"

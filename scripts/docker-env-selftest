@@ -1,0 +1,254 @@
+#!/bin/sh
+# Runs INSIDE the Docker container. Not a launcher: `make check-docker`
+# runs tests/docker-env-launcher.sh on the host, then this through
+# scripts/docker-env. Asserts what the environment exists for: CI's
+# toolchain, nothing of the host but the checkout, files written as the
+# host user, no git credentials, and a network to fetch with. Then runs the
+# suites and the docs site's checks. Each failure names its assertion.
+set -u
+
+if [ ! -f /.dockerenv ]; then
+  echo "check-docker: FAILED not-in-container: this is the self-test, not the launcher; use make check-docker" >&2
+  exit 2
+fi
+
+fail=0
+ok()  { echo "check-docker: ok $*"; }
+bad() { echo "check-docker: FAILED $*" >&2; fail=1; }
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# Each make below runs without the MAKEFLAGS of any make that started this
+# script, so a variable set on that make's command line changes nothing
+# the assertions compare against.
+cleanmake() { env -u MAKEFLAGS -u MFLAGS make "$@"; }
+
+# at_least FLOOR VERSION: VERSION is a dotted number, and FLOOR or later by
+# version order. sort -V puts a digit before a letter, so without the first
+# test any error message would count as later than every floor.
+at_least() {
+  printf '%s\n' "$2" | grep -Eqx '[0-9]+(\.[0-9]+)*' \
+    && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" = "$1" ]
+}
+
+# The git common directory, when this is a linked worktree: the launcher
+# mounts it too.
+common=
+if [ -f .git ]; then
+  common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+fi
+
+# Assertion 1: the only host directories mounted are the checkout and, in
+# a worktree, the common directory. The rest are Docker's own: the kernel's
+# filesystems, the three files of /etc it writes, and the init --init
+# brings. Anything else (HOME, a key, a socket, a sibling checkout) means
+# the isolation this environment exists for is gone. mountinfo's fifth
+# field is the mount point, with a space written \040.
+mounts_ok=1
+while read -r _ _ _ _ point _; do
+  point=$(printf '%b' "$point")
+  case "$point" in
+    /|/proc|/proc/*|/dev|/dev/*|/sys|/sys/*) continue ;;
+    /etc/resolv.conf|/etc/hostname|/etc/hosts|/sbin/docker-init|/usr/sbin/docker-init) continue ;;
+    "$PWD") continue ;;
+  esac
+  [ -n "$common" ] && [ "$point" = "$common" ] && continue
+  bad "isolated-mounts: $point is mounted from the host"; mounts_ok=0
+done </proc/self/mountinfo
+[ "$mounts_ok" -eq 1 ] && ok "isolated-mounts (the host's $PWD${common:+ and $common} alone)"
+
+# Assertion 2: no host variable got in. What is set is Docker's, the
+# image's, the terminal's three, the shell's own, and the proxy settings
+# Docker's CLI adds from the user's Docker config, which the network may
+# need; a token, an agent socket, or a CHEZ_HTTP_* the suites would read is
+# not among them.
+env_ok=1
+for name in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p'); do
+  case "$name" in
+    PATH|HOSTNAME|HOME|CHEZ|TERM|COLORTERM|LANG|PWD|OLDPWD|SHLVL|_) ;;
+    HTTP_PROXY|http_proxy|HTTPS_PROXY|https_proxy|FTP_PROXY|ftp_proxy) ;;
+    NO_PROXY|no_proxy|ALL_PROXY|all_proxy) ;;
+    *) bad "isolated-env: $name is set"; env_ok=0 ;;
+  esac
+done
+if [ "$HOME" != /tmp ]; then
+  bad "isolated-env: HOME is '$HOME', expected the image's /tmp"; env_ok=0
+fi
+[ "$env_ok" -eq 1 ] && ok "isolated-env"
+
+# Assertion 3: files written here are the host user's. The container runs
+# as the host user's uid, never root, so a file it writes has the owner the
+# checkout has, however the host's file sharing reports owners, and `make`
+# leaves nothing on the host that its user cannot remove.
+uid=$(id -u)
+owner=$(stat -c %u .)
+mkdir -p build 2>/dev/null
+probe=$(mktemp build/.docker-env-owner.XXXXXX 2>/dev/null)
+if [ "$uid" -eq 0 ]; then
+  bad "host-user: running as root"
+elif [ -z "$probe" ]; then
+  bad "host-user: uid $uid cannot write to $PWD/build, which is uid $owner's"
+elif [ "$(stat -c %u "$probe")" != "$owner" ]; then
+  bad "host-user: a file written here is uid $(stat -c %u "$probe")'s, but $PWD is uid $owner's"
+else
+  ok "host-user (uid $uid; what it writes is uid $owner's, as $PWD is)"
+fi
+[ -z "$probe" ] || rm -f "$probe"
+
+# Assertion 4: however a tool is found, it is the image's: on the PATH
+# this script, and so make, runs with ("env"), and however a login shell
+# rebuilds PATH, both forms, since rc files branch on $-. None comes from
+# the mounted checkout.
+for mode in env -lc -lic; do
+  for tool in scheme cc gcc pkg-config git make curl ab python3 awk; do
+    if [ "$mode" = env ]; then
+      p=$(command -v "$tool")
+    else
+      p=$(bash "$mode" "command -v $tool" 2>/dev/null | tail -n 1)
+    fi
+    case "$p" in
+      /usr/bin/*|/usr/local/bin/*) ok "tool-path[$mode] ($tool: $p)" ;;
+      *) bad "tool-path[$mode]: $tool resolves to '${p:-nothing}', expected the image's /usr/bin or /usr/local/bin" ;;
+    esac
+  done
+done
+
+# Assertion 5: the Makefile's $(CHEZ) is the image's Chez, at the
+# project's floor, and threaded. The floor is ci.yml's CHEZ_FLOOR_VERSION.
+chez=${CHEZ:-}
+case "$(command -v "${chez:-chez-unset}")" in
+  /usr/local/bin/scheme) ok "chez-variable ($chez)" ;;
+  *) bad "chez-variable: CHEZ is '${chez:-unset}', expected scheme, the image's /usr/local/bin/scheme" ;;
+esac
+floor=$(sed -n 's/^  CHEZ_FLOOR_VERSION: *"\(.*\)"/\1/p' .github/workflows/ci.yml)
+version=$("$chez" --version 2>&1)
+if [ -z "$floor" ]; then
+  bad "chez-floor: ci.yml names no CHEZ_FLOOR_VERSION"
+elif at_least "$floor" "$version"; then
+  ok "chez-floor ($version, floor $floor)"
+else
+  bad "chez-floor: '${chez:-unset}' is '${version:-nothing}', not a version at or above the floor $floor"
+fi
+threaded=$(printf '%s\n' '(display (if (threaded?) "threaded" "not threaded"))' \
+  | "$chez" -q 2>&1)
+if [ "$threaded" = threaded ]; then
+  ok "chez-threaded"
+else
+  bad "chez-threaded: '${chez:-unset}' answered '${threaded:-nothing}'"
+fi
+
+# Assertion 6: cc compiles and runs a program against libuv's headers and
+# library, found as chez-libuv's Makefile finds them: through pkg-config.
+# It prints the headers' version, then the loaded library's.
+cat >"$tmp/uv.c" <<'EOF'
+#include <stdio.h>
+#include <uv.h>
+int main(void) {
+  printf("libuv %d.%d.%d %s\n", UV_VERSION_MAJOR, UV_VERSION_MINOR,
+         UV_VERSION_PATCH, uv_version_string());
+  return 0;
+}
+EOF
+got=
+# shellcheck disable=SC2046
+if cc -o "$tmp/uv" "$tmp/uv.c" $(pkg-config --cflags --libs libuv) 2>"$tmp/cc.err"; then
+  got=$("$tmp/uv")
+fi
+case "$got" in
+  "libuv "[0-9]*.[0-9]*.[0-9]*" "[0-9]*.[0-9]*.[0-9]*) ok "libuv-headers (${got#libuv })" ;;
+  *) bad "libuv-headers: cc could not build and run against <uv.h>: $(grep -m 1 -E 'error|undefined' "$tmp/cc.err" || head -n 1 "$tmp/cc.err")" ;;
+esac
+
+# Assertion 7: chez-libuv builds its shim against the image's libuv,
+# through pkg-config, and that libuv is at chez-libuv's floor. A libuv
+# below it is passed over for a vendored build, which `make submodules`
+# never clones. The floor, and the choice, are chez-libuv's Makefile's own,
+# so the submodules come first: `make submodules` clones them in a fresh
+# clone, and changes nothing once they are at their pins.
+libuv=vendor/chez-libuv
+if ! cleanmake --no-print-directory submodules >"$tmp/submodules.log" 2>&1; then
+  cat "$tmp/submodules.log" >&2
+  bad "libuv-floor: make submodules failed"
+elif [ ! -f "$libuv/Makefile" ]; then
+  bad "libuv-floor: $libuv holds no checkout after make submodules"
+else
+  uv_floor=$(cleanmake --no-print-directory -s -C "$libuv" \
+    --eval 'print-floor: ; @echo $(UV_FLOOR_DOTTED)' print-floor)
+  uv_version=$(pkg-config --modversion libuv 2>/dev/null)
+  info=$(cleanmake --no-print-directory -s -C "$libuv" deps-info 2>&1)
+  source_line=$(printf '%s\n' "$info" | sed -n 's/^libuv source : //p')
+  dlls=$(printf '%s\n' "$info" | sed -n 's/^uv dlls *: //p')
+  if [ -z "$uv_floor" ] || ! at_least "$uv_floor" "$uv_version"; then
+    bad "libuv-floor: pkg-config's libuv is '${uv_version:-nothing}', not a version at or above chez-libuv's floor '${uv_floor:-nothing}'"
+  elif [ "$source_line" != pkg-config ]; then
+    bad "libuv-floor: chez-libuv's deps-info chose '${source_line:-nothing}', expected pkg-config"
+  else
+    case "$dlls" in
+      /usr/lib/*) ok "libuv-floor ($uv_version, floor $uv_floor: $dlls)" ;;
+      *) bad "libuv-floor: chez-libuv links '${dlls:-nothing}', not the image's under /usr/lib" ;;
+    esac
+  fi
+fi
+
+# Assertion 8: the container reaches GitHub over https, through DNS and
+# the image's CA bundle. `make submodules`, `make test` and `make site`
+# each fetch from it the first time, and in a checkout that has them
+# nothing else here would notice the network gone.
+if err=$(curl -sS -o /dev/null -m 20 https://github.com/ 2>&1); then
+  ok "network (https://github.com/ answers)"
+else
+  bad "network: curl https://github.com/ failed: $err"
+fi
+
+# Assertion 9: git and curl check TLS certificates against the image's CA
+# bundle. Without it each fetch over https fails.
+bundle=/etc/ssl/certs/ca-certificates.crt
+if [ -s "$bundle" ]; then
+  ok "ca-bundle ($bundle)"
+else
+  bad "ca-bundle: $bundle is empty or missing"
+fi
+
+# Assertion 10: git reads this repository, in a worktree too: `make
+# submodules` and `make check-pins` need it.
+top=$(git rev-parse --show-toplevel 2>&1)
+pin=$(git ls-files -s vendor/chez-srfi 2>&1 | awk '{print $1}')
+if [ "$top" = "$PWD" ] && [ "$pin" = 160000 ]; then
+  ok "git-reads-repo ($top${common:+, common $common})"
+else
+  bad "git-reads-repo: toplevel '$top' (expected $PWD), vendor/chez-srfi entry '${pin:-none}'"
+fi
+
+# Assertion 11: git has nothing to act as anyone with. No identity, no
+# credential helper, no remote URL carrying a password, no agent. The
+# repository's own .git/config is mounted, so this is where a token written
+# into it would show.
+cred_ok=1
+for key in user.name user.email; do
+  v=$(git config --get "$key")
+  [ -z "$v" ] || { bad "no-git-credentials: git has $key '$v'"; cred_ok=0; }
+done
+# Keys only, never values: a value may be the secret.
+keys=$(git config --name-only --get-regexp '^(credential\..*|http\..*extraheader|core\.askpass)$' 2>/dev/null | tr '\n' ' ')
+[ -z "$keys" ] || { bad "no-git-credentials: git has credential settings: $keys"; cred_ok=0; }
+# A URL with userinfo, user:password@ or a bare token@, in a remote or in
+# an insteadOf rule's key. scp-like ssh URLs (git@host:path) have no ://.
+# Printed as key names with any userinfo masked: an insteadOf rule's key
+# is itself the URL.
+urls=$(git config --get-regexp '^(remote\..*\.(push)?url|url\..*)$' 2>/dev/null | grep -E '://[^/@]*@' | cut -d ' ' -f 1 | sed -E 's#://[^/@]*@#://***@#' | tr '\n' ' ')
+[ -z "$urls" ] || { bad "no-git-credentials: a URL carries credentials: $urls"; cred_ok=0; }
+[ "$cred_ok" -eq 1 ] && ok "no-git-credentials"
+
+# Assertion 12: the Makefile's own checks pass in here too: check-help;
+# test, which runs check-pins and every suite; and the docs site's.
+for target in check-help test check-site-deps check-site; do
+  if ! cleanmake --no-print-directory "$target"; then
+    bad "make-$target"
+  fi
+done
+
+if [ "$fail" -eq 0 ]; then
+  echo "check-docker: ALL CHECKS PASSED"
+fi
+exit "$fail"

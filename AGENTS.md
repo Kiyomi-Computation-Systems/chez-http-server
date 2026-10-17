@@ -70,6 +70,26 @@
 * Verify a change to `channels.scm`, `manifest.scm` or the `guix-env`
   scripts with `make check-guix`, run on the host.
 
+### Docker development container
+
+* On a host with Docker but not the toolchain, run builds and tests
+  through `scripts/docker-env`, e.g. `scripts/docker-env make test`. Each
+  call starts in about a second once the image is built. With no command
+  and no terminal, it exits at once.
+* Edit, commit and push on the host. The container has git and the
+  network, but no identity, credentials or agent beyond the repository's
+  own `.git/config`, nothing of `HOME`, and no host environment but `TERM`,
+  `COLORTERM`, `LANG` and Docker's proxy settings. It is not a sandbox: it
+  reaches the host's own services over the network.
+* It runs as the host user, sets `CHEZ=scheme` (the image has no `chez`),
+  and mounts only the checkout, and in a linked worktree the main
+  repository's `.git`. `-p PORT` publishes PORT on the host's 127.0.0.1
+  and sets `CHEZ_HTTP_HOST=0.0.0.0` and `CHEZ_HTTP_PORT=PORT` inside.
+* Builds inside and outside it share `build/`; run `make clean` when
+  switching.
+* Verify a change to `docker/dev.Dockerfile` or the `docker-env` scripts
+  with `make check-docker`, run on the host.
+
 ## Closing ritual
 
 We run this when we're done and ready to merge the PR.

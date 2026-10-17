@@ -12,7 +12,9 @@
 # chez-cmark-gfm, which renders the docs site, is pinned by Akku.lock instead
 # (the docs site section below).
 #
-# On a Guix host, run targets through the pinned Guix container:
+# Without the toolchain, run targets through the Docker container, or on a
+# Guix host through the pinned Guix one:
+#   scripts/docker-env make <target>
 #   scripts/guix-env make <target>
 
 CHEZ ?= chez
@@ -66,7 +68,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock check-guix
+.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock check-guix check-docker
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -259,6 +261,16 @@ check-guix: ## Test scripts/guix-env on the host, then the toolchain and every s
 	@sh tests/guix-env-launcher.sh
 	@command -v guix >/dev/null 2>&1 || { echo "check-guix: guix not found; the container's checks run on a Guix host" >&2; exit 2; }
 	@scripts/guix-env sh scripts/guix-env-selftest
+
+# check-docker runs the launcher's own tests on the host, which need no
+# Docker, then scripts/docker-env-selftest in the container, which ends by
+# running check-help, test, check-site-deps and check-site there, then
+# serves examples/hello.sps through -p and asks it from the host.
+check-docker: ## Test scripts/docker-env on the host, then the toolchain and every suite inside the Docker container
+	@sh tests/docker-env-launcher.sh
+	@command -v docker >/dev/null 2>&1 || { echo "check-docker: docker not found; the container's checks need Docker" >&2; exit 2; }
+	@scripts/docker-env sh scripts/docker-env-selftest
+	@sh tests/docker-env-publish.sh
 
 # make hands FLAVOR=prod to the suite's chez-libuv build, which would
 # otherwise relink a dev shim.  check-prod depends on nothing, so the last
