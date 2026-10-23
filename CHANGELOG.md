@@ -23,9 +23,22 @@ All notable changes to chez-http-server are recorded here. The format follows
   resolves to nothing, or an anchor GitHub spells differently; CI runs it.
   The site renders through chez-cmark-gfm 2.0.0, which `Akku.lock` pins and
   `make site-deps` fetches, checked by its sha256; it needs the system
-  cmark-gfm library. `make test` needs none of it. A development-only
-  `Akku.manifest` names it, and `make check-akku-lock` checks `akku lock`
+  cmark-gfm library. `make test` needs none of it. `Akku.manifest` names it
+  as a development dependency, and `make check-akku-lock` checks `akku lock`
   still makes `Akku.lock` from it.
+- **An Akku package.** `Akku.manifest` describes the server for the
+  [Akku](https://akkuscm.org) index: the libraries under `src/`, depending on
+  chez-libuv `^0.11.0`, chez-httparse `^0.5.0`, chez-uri `^0.8.0` and
+  byte-machine `^0.8.0`, each range starting at the version vendored under
+  `vendor/`. In a project that uses Akku, `akku install chez-http-server`
+  fetches them all, and chez-libuv's install hook builds the shim; it needs
+  libuv 1.48 or newer where `pkg-config` sees it. `make check-pins` now also
+  fails when `Akku.manifest`, a vendored copy and `Akku.lock` name different
+  versions, or when the package's version is not the latest release here,
+  and needs Chez to read them. `make check-akku`, which needs akku, installs
+  the checkout into a
+  scratch project as a consumer would and serves a request on Akku's library
+  path. Release archives leave out `.plans/`, `.superpowers/` and `AGENTS.md`.
 - **A pinned Guix development container: `scripts/guix-env`.** On a Guix
   host, `scripts/guix-env make test` runs any target in a container built
   from the Guix commit in `channels.scm` and the toolchain in `manifest.scm`:
@@ -377,7 +390,7 @@ byte-machine v0.7.0, and uriparse v0.6.2.
 The first release: an HTTP/1.1 server for Chez Scheme on libuv. `serve` runs your
 handler on one libuv loop, on one thread, and answers each connection's requests
 one at a time. The server is a composition layer over three pinned libraries
-([0001](.plans/decisions/0001-the-project-is-the-composition-layer-and-where-it-stops.md)):
+([0001](https://github.com/Kiyomi-Computation-Systems/chez-http-server/blob/main/.plans/decisions/0001-the-project-is-the-composition-layer-and-where-it-stops.md)):
 - chez-libuv v0.7.3, for the loop and the sockets;
 - chez-httparse v0.4.5, for the request parser, with byte-machine v0.7.0 under it;
 - uriparse v0.6.2, for request targets.
@@ -444,7 +457,7 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
 - Each request on a connection of its own, 20,000 at 10, 100 and 500 at a time, was
   answered too, on macOS (`m8-no-keepalive.sh`).
 - These numbers are a baseline, not a goal: v0.1.0 sets no throughput goal
-  ([0002](.plans/decisions/0002-the-connection-is-a-pure-state-machine-with-an-action-interpreter.md)'s
+  ([0002](https://github.com/Kiyomi-Computation-Systems/chez-http-server/blob/main/.plans/decisions/0002-the-connection-is-a-pure-state-machine-with-an-action-interpreter.md)'s
   amendment of 2026-10-04).
 
 **Memory.**

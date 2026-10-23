@@ -2,7 +2,8 @@
 
 chez-http-server is a set of R6RS libraries. You build its one native piece,
 chez-libuv's small C *shim*, once on each machine with `make build`. Then you
-put five folders on Chez's library path and import `(http-server)`.
+put five folders on Chez's library path and import `(http-server)`. Or let
+[Akku](#with-akku) do both.
 
 It runs on macOS and Linux, on x86-64 and arm64. Windows is not supported
 yet: chez-libuv, the libuv binding it runs on, does not support it.
@@ -10,7 +11,8 @@ yet: chez-libuv, the libuv binding it runs on, does not support it.
 ## What you need
 
 - **Chez Scheme 10.4.1 or newer, threaded.** Threaded is Chez's default
-  build. The examples here call the binary `chez`; yours may be `scheme`.
+  build. The examples here call the binary `chez`; yours may be `scheme`,
+  and then each `make` command takes `CHEZ=scheme`.
 - **libuv 1.48 or newer**, where `pkg-config` can see it:
   `brew install libuv` on macOS, `apt install libuv1-dev` on Ubuntu 24.04 or
   newer. With no libuv, or an older one (Debian 12 has 1.44), the build
@@ -73,10 +75,32 @@ chez --program my-server.sps
 A common setup is to add chez-http-server to your own repository as a git
 submodule, pinned to a release tag, and set the path in your `Makefile`.
 
+## With Akku
+
+In a project that uses [Akku](https://akkuscm.org), one command fetches the
+server and its four dependencies (chez-libuv, chez-httparse, chez-uri and
+byte-machine), and builds the shim into your project's `.akku/ffi`. It needs
+a release of chez-http-server on the Akku index;
+`akku list | grep chez-http-server` shows whether there is one.
+
+```sh
+akku install chez-http-server
+. .akku/bin/activate    # puts .akku/lib on Chez's library path
+chez --program my-server.sps
+```
+
+It needs what the list above does, but not CMake: libuv must be 1.48 or
+newer where `pkg-config` sees it, since an Akku install has no copy of its
+own to fall back on. Your project's path may hold no spaces, nor any of
+`$ : % ' " \`. If the shim does not build, `.akku/ffi/chez-libuv-install.log`
+says why. [chez-libuv's own page](https://github.com/Kiyomi-Computation-Systems/chez-libuv/blob/main/docs/installing.md#akku)
+has the rest.
+
 ## Check the pins
 
 `make check-pins` checks that every submodule sits at the commit this
-release was tested with. Run it after you pull, or after moving a submodule.
+release was tested with, and that `Akku.manifest` asks for the same
+versions. Run it after you pull, or after moving a submodule.
 
 ## Next
 

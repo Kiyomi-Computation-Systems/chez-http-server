@@ -1,7 +1,7 @@
 # 0028: the docs site renders through chez-cmark-gfm, pinned by Akku.lock as chez-libuv's does
 
 Date: 2026-10-16
-Status: accepted (user decision, 2026-10-16, by form: "Akku.lock, as chez-libuv" and "A step in the linux job (Recommended)"); amended 2026-10-16 (item 1, the owner's word)
+Status: accepted (user decision, 2026-10-16, by form: "Akku.lock, as chez-libuv" and "A step in the linux job (Recommended)"); amended 2026-10-16 (item 1, the owner's word); its dev-only manifest superseded 2026-10-23 by 0031
 Plan: none; the docs site follows the Markdown rewrite of `docs/`
 
 ## Context
@@ -85,6 +85,10 @@ chez-libuv, chez-httparse, uriparse and byte-machine each ship one.
   did a manifest asking for `^9.0.0`. `tests/check-akku-lock.sh` checks it with a
   fake akku, offline, in `make check-site-deps`; CI has no akku, so CI runs only
   that.
+
+**Superseded 2026-10-23 by 0031,** once the index listed the runtime dependencies: the
+manifest now names them in `depends`, so the server is an Akku package, and
+`.akkuignore` no longer names `src`. The rest of this amendment stands.
 
 ## Consequences
 

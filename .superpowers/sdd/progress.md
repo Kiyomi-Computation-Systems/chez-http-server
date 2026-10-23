@@ -309,3 +309,45 @@ MERGED to main on 2026-10-17, on the owner's "do closing ritual": **#204, the Gu
 MERGED to main on 2026-10-17, on the owner's "do closing ritual": **#205, the Docker development container.** ac9df35 squashed as db73a1f (tree 65c0695, the tested head's; parent d3bb7f4) with `--match-head-commit` and `--delete-branch`, which switched the checkout to main and deleted the branch, local and remote. CI billing-blocked: the head's 39063240128 and main's 39063309342 each a `linux` job not started (0 steps, the payments annotation); merged on local evidence, the fresh clone's `make check-docker` above. On main: `tests/docker-env-launcher.sh` 113 passed, `tests/guix-env-launcher.sh` 80, and in the container `make check-pins` and `make check-site` green.
 
 NEXT: the next release carries CHANGELOG.md's Unreleased (the examples, the Markdown docs, the docs site and its Akku.manifest, the Guix container and the Docker one), with v0.7.0's entries moved to `v0.7.0-progress.md`. For the public release, chez-http-server itself is still private. When main's runs start again, re-run main's latest run once; the docs step in CI then runs for the first time. Open: the `make deps` space-in-path bug, when the owner asks for it.
+
+---
+
+**THE AKKU PACKAGE, on `chore/akku-package` (2026-10-23),** decision 0031. The owner: "The following akku packages are now published: Chez-libuv, Chez-httparse, Chez-uri". By form: "Package it, keep submodules (Recommended)" (weighed: replacing the submodules with Akku, and only moving the pins).
+- **The index,** fetched with a good signature from the Akku archive's 2018 key: chez-libuv 0.11.0 (its install hook in `scripts`), chez-httparse 0.5.0, chez-uri 0.8.0 (the uriparse repository's package) and byte-machine 0.8.0. Each archive's sha256 is the index's.
+- **The pins, a commit of their own:** chez-httparse v0.4.5 → v0.5.0 (52a62e5) and uriparse v0.6.2 → v0.8.0 (9416299), each carrying byte-machine c1f7791 (v0.8.0). Both tags are signed with key 6362A78F…, which signed v0.4.5 and v0.6.2. This host has no copy of the public key, so the signatures themselves were not checked. Both commits are on their repositories' main. `make test` passed in Docker (libuv 1.48.0) and in the Guix container (libuv 1.52.1): fifty-three suites, 2,181 expected passes each, each suite's count main's. The whole-server GET allocates 5,159 B in Docker against 5,131 to 5,158 B before, and 5,139 B under Guix.
+  - Trap: `make test` runs `git submodule update`, which put an unstaged gitlink back on the recorded commit. Stage a pin before you test it.
+- **Built:**
+  - `Akku.manifest`'s `depends`: chez-libuv `^0.11.0`, chez-httparse `^0.5.0`, chez-uri `^0.8.0` and byte-machine `^0.8.0`. `src/` imports `(byte-machine runtime)` and `(byte-machine private conditions)` itself;
+  - `Akku.lock` remade by `akku lock` (akku 1.1.0, from Guix): five projects, chez-libuv's carrying its hook;
+  - `.akkuignore` without `src`, and `.gitattributes` export-ignoring `.plans`, `.superpowers` and `AGENTS.md`;
+  - `scripts/check-akku-manifest.ss` in `make check-pins`, with `AKKU_VENDORED` mapping each package to its vendored copy, and `tests/check-akku-manifest.sh` (14 rows) in `make check-site-deps`;
+  - `scripts/check-akku` and `make check-akku`, which runs `make check-akku-lock` first;
+  - docs/installing.md's "With Akku", docs/building.md's "The Akku package", docs/README.md, README.org, AGENTS.md's Dependencies, CHANGELOG.md's Unreleased (Added, and the pins under Changed). CHANGELOG.md's two relative `.plans` links now point at GitHub, since archives leave `.plans` out;
+  - decision 0031, and 0028's dev-only manifest marked superseded.
+- **Found on the way:**
+  - `akku lock` on a consumer that depends on a directory locks that directory alone: Akku takes a package's dependencies only from its index. So `check-akku` writes the consumer's lock itself, from `Akku.lock`'s entries.
+  - Akku leaves `tests/*.sls` out with or without `.akkuignore`, but installs `site/*.sls` unless `.akkuignore` names `site`.
+  - akku 1.1.0 asked nothing on a pipe.
+- **Watched to fail** (decision 0031's Mutation testing section):
+  - all 15 mutants of the manifest check, after three loose rows were tightened; two of them came after the review;
+  - 10 of 11 `check-akku` mutants, each by the check named. The survivor, `tests` out of `.akkuignore`, is equivalent.
+- **Measured:**
+  - `make check-akku`, about 20 s with the archives cached;
+  - `make check-docker`, 66 s, all green: the launcher, the container (every pin, the manifest at its pins, fifty-three suites, `check-site-deps` and `check-site`), and both publish checks;
+  - `make check-akku-lock` with the real akku: Akku.lock is `akku lock`'s output (5 projects).
+- **The read-only review** (Opus, 231,523 tokens, 75 tool uses, about 16 min) found no high-severity defect. Each finding was reproduced, then acted on:
+  - the docs offered `akku install chez-http-server`, which fails until a release is on the index. installing.md now says the route needs one, and shows how to look (`akku show` answers a missing package with a backtrace; `akku list | grep` does not); README.org drops the command;
+  - building.md promised the code the suites ran against, though a later patch meets the range;
+  - `make check-pins` failed with `make: chez: No such file or directory` where Chez is `scheme`. It now names `CHEZ=scheme`, and installing.md says every `make` command takes it there;
+  - the version check was undocumented;
+  - `check-akku` did not check the lock first;
+  - three stale comments;
+  - the manifest check passed duplicate `depends` entries and an empty `AKKU_VENDORED`. Two rows were added and watched to fail, then the check was fixed.
+
+  Moot: `.gitattributes` staged beside the pins, since the pin commit comes from the tree saved before (a97859d), and the untracked new files. Its "not measured" consequence was measured after: `akku install` in a copy of the tracked files installs the checkout's 26 entries, the dependencies and chez-cmark-gfm, and `make site` then writes seventeen pages from `.akku/lib` in an `--emulate-fhs` Guix container.
+- **After the review:** in the Guix container, `check-help`, `check-pins`, `check-site-deps` and `check-site` are green; `make check-akku` is green.
+- **Untested:** `make check-akku` on macOS, with Akku 1.1.1, and on arm64.
+- **The checkout here is now Guix-built.** Before the next `scripts/docker-env make test`, run `make clean`.
+- **Open:** publishing chez-http-server to the Akku index is a release step, from the tag. Until then, `akku install chez-http-server` finds nothing.
+
+NEXT: the closing ritual for both PRs, bottom-up, when the owner asks. The pins are a PR of their own, the package's stacked on it, since the ritual squashes and a pin moves alone, on its own commit. The next release then carries the package, and publishing it to the Akku index from the release's tag.

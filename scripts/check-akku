@@ -1,0 +1,211 @@
+#!/bin/sh
+# check-akku: install this checkout with Akku the way a consumer would, and
+# serve a request from what lands.
+#
+# A consumer project is made in a temporary directory. Akku takes a
+# package's dependencies only from its index, which cannot see this
+# checkout, so the consumer's Akku.lock is written here: this package, as a
+# directory unpacked from `git archive`, beside Akku.lock's own entry for
+# each package Akku.manifest's depends names. Those entries are the archives
+# the index serves, checked by sha256, and chez-libuv's carries the install
+# hook the index copies into every lock, so the dependencies are what a
+# consumer gets. `git stash create` snapshots tracked files as they are on
+# disk, so uncommitted edits to them, and new files once `git add`ed, are
+# what gets tested. Checks:
+#
+#   0. the archive leaves out the design records, the ledger and the agent
+#      instructions (.plans, .superpowers, AGENTS.md), and holds the server;
+#   1. `akku install` runs chez-libuv's hook, which builds the shim into the
+#      consumer's .akku/ffi, and the installed config.sls names it;
+#   2. this package's libraries are exactly the .sls files git tracks under
+#      src/: a test, site or example library would land on every consumer's
+#      library path, and a missing one would fail at import;
+#   3. each package installed libraries, and no other package did: a
+#      guard on the lock written below as much as on the package;
+#   4. examples/hello.sps, with only the library path .akku/bin/activate
+#      sets, listens, answers Hello, and stops on SIGTERM.
+#
+# Needs akku, chez, git and curl, and what chez-libuv's hook needs: a C
+# compiler, pkg-config and libuv 1.48 or newer. AKKU and CHEZ override the
+# first two. CHECK_AKKU_KEEP=1 keeps the work directory.
+set -eu
+
+AKKU=${AKKU:-akku}
+CHEZ=${CHEZ:-chez}
+root=$(cd "$(dirname "$0")/.." && pwd -P)
+
+fail() { echo "check-akku: FAIL: $*" >&2; exit 1; }
+say() { echo "check-akku: $*"; }
+
+command -v "$AKKU" > /dev/null 2>&1 ||
+  fail "no $AKKU on PATH; install Akku (https://akkuscm.org), or set AKKU"
+command -v curl > /dev/null 2>&1 || fail "no curl on PATH"
+
+# chez-libuv's hook refuses a project path make cannot take, so such a
+# TMPDIR would fail the install.
+case ${TMPDIR:-/tmp} in
+  *[[:space:]]* | *'$'* | *:* | *%* | *"'"* | *'"'* | *'\'*)
+    fail "TMPDIR ($TMPDIR) holds a character make cannot take, so chez-libuv's install hook would refuse the consumer; set TMPDIR to a plain path" ;;
+esac
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/check-akku.XXXXXX")
+work=$(cd "$work" && pwd -P)
+server=
+cleanup() {
+  [ -z "$server" ] || kill -KILL "$server" 2> /dev/null || true
+  if [ -n "${CHECK_AKKU_KEEP:-}" ]; then
+    echo "check-akku: kept $work"
+  else
+    rm -rf "$work"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# The package's name and version, then each dependency's name, a line each.
+cat > "$work/manifest.ss" <<'EOF'
+(with-input-from-file "Akku.manifest"
+  (lambda ()
+    (let loop ()
+      (let ((d (read)))
+        (cond ((eof-object? d) (error 'check-akku "no akku-package form"))
+              ((and (pair? d) (eq? (car d) 'akku-package))
+               (display (car (cadr d))) (newline)
+               (display (cadr (cadr d))) (newline)
+               (for-each (lambda (dep) (display (car dep)) (newline))
+                         (cond ((assq 'depends (cddr d)) => cdr)
+                               (else '()))))
+              (else (loop)))))))
+EOF
+(cd "$root" && "$CHEZ" -q --script "$work/manifest.ss") > "$work/manifest.out" ||
+  fail "could not read Akku.manifest"
+package=$(sed -n 1p "$work/manifest.out")
+version=$(sed -n 2p "$work/manifest.out")
+depends=$(sed '1,2d' "$work/manifest.out")
+[ -n "$depends" ] || fail "Akku.manifest's depends names nothing"
+
+# The consumer's lock: this package from DIR, then Akku.lock's entry for each
+# dependency, as Akku.lock wrote it. A dependency it does not lock fails.
+cat > "$work/lock.ss" <<'EOF'
+(let* ((args (cdr (command-line)))
+       (name (car args)) (dir (cadr args)) (deps (cddr args))
+       (projects (with-input-from-file "Akku.lock"
+                   (lambda ()
+                     (let loop ()
+                       (let ((d (read)))
+                         (cond ((eof-object? d) '())
+                               ((and (pair? d) (eq? (car d) 'projects)) (cdr d))
+                               (else (loop))))))))
+       (entry (lambda (dep)
+                (let loop ((ps projects))
+                  (cond ((null? ps)
+                         (error 'check-akku "Akku.lock does not lock this dependency; run akku lock" dep))
+                        ((equal? (assq 'name (car ps)) (list 'name dep)) (car ps))
+                        (else (loop (cdr ps))))))))
+  (display "#!r6rs\n(import (akku format lockfile))\n")
+  (write `(projects ((name ,name) (location (directory ,dir)))
+                    ,@(map entry deps)))
+  (newline))
+EOF
+
+# 0. What the archive ships.
+mkdir -p "$work/pkg/$package"
+ref=$(cd "$root" && git stash create)
+(cd "$root" && git archive --format=tar "${ref:-HEAD}") > "$work/pkg.tar"
+tar -tf "$work/pkg.tar" | awk -F/ '!seen[$1]++ { print $1 }' > "$work/archive-top.txt"
+for record in .plans .superpowers AGENTS.md; do
+  if grep -qxF "$record" "$work/archive-top.txt"; then
+    fail "the package would ship $record; .gitattributes must mark it export-ignore"
+  fi
+done
+tar -tf "$work/pkg.tar" | grep -qxF src/http-server.sls ||
+  fail "the archive holds no src/http-server.sls, so it cannot be what the package is built from"
+(cd "$work/pkg/$package" && tar -xf -) < "$work/pkg.tar"
+
+mkdir "$work/consumer"
+cd "$work/consumer"
+cat > Akku.manifest <<EOF
+#!r6rs
+(import (akku format manifest))
+(akku-package ("check-akku-consumer" "0.0.0")
+  (synopsis "check-akku's consumer") (authors "check-akku") (license "MIT")
+  (depends ("$package" "^$version")))
+EOF
+# shellcheck disable=SC2086 # one dependency name per word
+(cd "$root" && "$CHEZ" -q --script "$work/lock.ss" "$package" "$work/pkg/$package" $depends) \
+  > Akku.lock 2> "$work/lock.err" || { cat "$work/lock.err" >&2; fail "could not write the consumer's Akku.lock"; }
+
+# 1. The install, and chez-libuv's hook. Akku logs a script's output at
+# debug level. Both prompts are answered y, as Akku before 1.1.1 has no
+# --yes, and a parent make's variables are cleared.
+say "installing $package $version with $(echo $depends)"
+printf 'y\ny\n' | env -u MAKEFLAGS -u MFLAGS -u MAKELEVEL AKKU_LOG_LEVEL=debug "$AKKU" install \
+  > install.log 2>&1 || { tail -n 40 install.log >&2; fail "akku install failed"; }
+grep -qF "chez-libuv: built $work/consumer/.akku/ffi/libchezlibuv." install.log ||
+  { tail -n 40 install.log >&2; fail "chez-libuv's install hook did not say it built the shim into .akku/ffi"; }
+grep -qF "\"$work/consumer/.akku/ffi/libchezlibuv." .akku/lib/libuv/private/config.sls ||
+  fail "the installed config.sls does not name the shim in .akku/ffi"
+
+# 2. This package's libraries are exactly src/. Akku installs a library that
+# imports (chezscheme) as NAME.chezscheme.sls, so that suffix is folded
+# back; and a library whose name has one part, (http-server), twice, as
+# http-server.sls and http-server/main.sls, which counts only as a
+# byte-for-byte copy of the first.
+awk -F '\t' -v p="$package" '$2 == p && $3 == "r6rs-library" { sub("^\\.akku/lib/", "", $1); print $1 }' \
+  .akku/list | sed 's/\.chezscheme\.sls$/.sls/' | sort > installed.all
+while read -r f; do
+  case $f in
+    */main.sls)
+      twin=${f%/main.sls}.sls
+      if grep -qxF "$twin" installed.all && cmp -s ".akku/lib/$f" ".akku/lib/$twin"; then
+        continue
+      fi ;;
+  esac
+  echo "$f"
+done < installed.all > installed.txt
+(cd "$root" && git ls-files -- 'src/*.sls' | sed 's#^src/##' | sort) > expected.txt
+[ -s expected.txt ] || fail "git tracks no src/*.sls; nothing to compare against"
+diff -u expected.txt installed.txt > libraries.diff ||
+  { cat libraries.diff >&2; fail "$package installs a different set of libraries than src/ (- missing, + extra)"; }
+
+# 3. The packages installed are exactly this one and its depends.
+awk -F '\t' '$3 == "r6rs-library" { print $2 }' .akku/list | sort -u > packages.txt
+{ echo "$package"; echo "$depends"; } | sort -u > packages.expected
+diff -u packages.expected packages.txt > packages.diff ||
+  { cat packages.diff >&2; fail "the installed packages are not exactly $package and its depends (- missing, + extra)"; }
+
+# 4. A server on Akku's library path alone: started, asked, stopped.
+cp "$work/pkg/$package/examples/hello.sps" hello.sps
+# The single quotes are deliberate: $0 is expanded by the inner shell.
+# shellcheck disable=SC2016
+env -u CHEZSCHEMELIBDIRS -u CHEZ_LIBUV_SHIM R6RS_PATH= R7RS_PATH= LD_LIBRARY_PATH= DYLD_LIBRARY_PATH= \
+  CHEZ_HTTP_HOST=127.0.0.1 CHEZ_HTTP_PORT=0 \
+  sh -c '. .akku/bin/activate && exec "$0" --program hello.sps' "$CHEZ" > server.out 2>&1 &
+server=$!
+port=
+tries=0
+while [ -z "$port" ]; do
+  port=$(sed -n 's/^listening 127\.0\.0\.1 \([0-9][0-9]*\)$/\1/p' server.out)
+  [ -n "$port" ] && break
+  kill -0 "$server" 2> /dev/null || { cat server.out >&2; fail "hello.sps exited before it listened"; }
+  tries=$((tries + 1))
+  [ $tries -le 600 ] || { cat server.out >&2; fail "hello.sps did not listen within 60 s"; }
+  sleep 0.1
+done
+body=$(curl -sS -m 10 "http://127.0.0.1:$port/") ||
+  { cat server.out >&2; fail "curl could not ask hello.sps on port $port"; }
+[ "$body" = Hello ] || fail "hello.sps answered '$body', not 'Hello'"
+kill -TERM "$server"
+tries=0
+while kill -0 "$server" 2> /dev/null; do
+  tries=$((tries + 1))
+  [ $tries -le 300 ] || { cat server.out >&2; fail "hello.sps did not stop within 30 s of SIGTERM"; }
+  sleep 0.1
+done
+status=0
+wait "$server" || status=$?
+server=
+[ "$status" = 0 ] || { cat server.out >&2; fail "hello.sps exited $status after SIGTERM, not 0"; }
+
+say "$package $version: $(wc -l < installed.txt | tr -d ' ') libraries from src/, its $(echo "$depends" | wc -l | tr -d ' ') dependencies from Akku.lock, chez-libuv's shim built by its hook, and hello.sps answered on Akku's library path"
