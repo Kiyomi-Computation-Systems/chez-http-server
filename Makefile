@@ -28,10 +28,10 @@ BYTE_MACHINE_DIR := $(HTTPARSE_DIR)/vendor/byte-machine
 VTEST_DIR        := vendor/vtest2
 
 LIBUV_PIN        := afe79a538b708be60b83cb567236bc6e6390a7db  # v0.11.0
-HTTPARSE_PIN     := 0b7058eeb9ccda767be4d20db207b4d3d6fe763f  # v0.4.5
-URIPARSE_PIN     := 5ecd88faefc66965361da2b701a78337c672fc68  # v0.6.2
+HTTPARSE_PIN     := 52a62e5cf8995c1ba2e3fa5162ba174939d8d87b  # v0.5.0
+URIPARSE_PIN     := 94162999e7b91568a0925bd95a9d5ff2b6353476  # v0.8.0
 SRFI_PIN         := 7879b527f267f067416552fb989135ad1b4ea436
-BYTE_MACHINE_PIN := c338a576f2166ada18c02ac0740afeb4ae4b0ea8  # v0.7.0
+BYTE_MACHINE_PIN := c1f77911efb55030df0b2cd811903d74d2ba3d64  # v0.8.0
 VTEST_PIN        := 803dcd000b1328f6e766774e23aedbd7f53e7d97  # last
 
 # --- one library path --------------------------------------------------------

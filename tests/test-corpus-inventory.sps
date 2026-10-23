@@ -7,7 +7,7 @@
 ;;; the Makefile's LIBDIR_LIST, and asserts the request lane's shape: how many
 ;;; files, fixtures, strict fixtures, and decoded bytes it holds.
 ;;;
-;;; The oracle is the vendored corpus AT THE PIN (chez-httparse v0.4.5), so
+;;; The oracle is the vendored corpus AT THE PIN (chez-httparse v0.5.0), so
 ;;; these numbers are a drift guard, not an invariant: move the pin and the
 ;;; guard reddens, and the counts get re-measured on the new tree rather than
 ;;; silently aging.
