@@ -1,0 +1,5 @@
+# Release archives, the Akku package among them, leave out the design
+# records, the development ledger and the agent instructions.
+/.plans export-ignore
+/.superpowers export-ignore
+/AGENTS.md export-ignore

@@ -50,6 +50,9 @@ release changes.
 Save it as ~hello.sps~, start it with ~make run PROGRAM=hello.sps~, and
 ~curl http://127.0.0.1:8080/~. The [[file:docs/quickstart.md][quickstart]] goes on from there.
 
+To use it from a project of your own, put its libraries on Chez's library
+path, or install it with [[https://akkuscm.org][Akku]]; [[file:docs/installing.md][installing]] says how.
+
 ** Build and test
 
 Prerequisites:
@@ -80,7 +83,8 @@ make test    # runs every tests/test-*.sps
 
 ~make test~ builds vtest2 and downloads oha itself the first time.
 ~make help~ lists every target; ~make check-pins~ verifies each submodule sits
-at its pinned release commit.
+at its pinned release commit, and ~Akku.manifest~'s dependencies at the same
+versions.
 
 With Docker, ~scripts/docker-env make test~ runs it in a container that
 holds every prerequisite, and on a machine with Guix ~scripts/guix-env make

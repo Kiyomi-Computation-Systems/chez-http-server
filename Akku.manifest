@@ -1,19 +1,32 @@
 #!r6rs ; -*- scheme -*-
 (import (akku format manifest))
 
-;; For development only: the one dependency is chez-cmark-gfm, which renders
-;; docs/ into the docs site (`make site`), and Akku.lock is `akku lock`'s
-;; output for this file. `make check-akku-lock` checks it still is.
+;; The package installs the libraries under src/. Akku leaves the test
+;; libraries under tests/ out itself; .akkuignore keeps out the docs site's
+;; generator under site/, and the rest of the tree no consumer needs.
+;; `make check-akku` installs the package as a consumer would and checks
+;; that exactly src/'s libraries land.
 ;;
-;; No `depends` and no `scripts`. The server's runtime dependencies,
-;; chez-libuv, chez-httparse and uriparse, are pinned submodules under
-;; vendor/, and the Akku index does not list them, so chez-http-server is not
-;; installable through Akku: this manifest describes the docs site's tooling,
-;; not a package to publish.
+;; depends: the libraries under src/ import chez-libuv, chez-httparse,
+;; chez-uri (the uriparse repository) and byte-machine, the parsers'
+;; runtime. Each range's floor is the version vendored under vendor/, which
+;; is what the suites run against; `make check-pins` holds each floor to
+;; its vendored copy's version, Akku.lock to the same versions, and this
+;; package's version to CHANGELOG.md's latest release. chez-libuv builds its
+;; C shim on the consumer's machine, through its own install hook.
+;;
+;; depends/dev: chez-cmark-gfm renders docs/ into the docs site
+;; (`make site`). A project that depends on chez-http-server does not get
+;; it. Akku.lock is `akku lock`'s output for this file;
+;; `make check-akku-lock` checks it still is.
 (akku-package ("chez-http-server" "0.7.0")
   (synopsis "An HTTP/1.1 server for Chez Scheme, built on libuv")
-  (description "An HTTP/1.1 and 1.0 server for Chez Scheme on libuv: a handler is a procedure from request to response; the server reads, checks and answers requests, keeps connections alive, bounds every timeout and size, and shuts down cleanly. Requires threaded Chez.")
+  (description "An HTTP/1.1 and 1.0 server for Chez Scheme on libuv: a handler is a procedure from request to response; the server reads, checks and answers requests, keeps connections alive, bounds every timeout and size, and shuts down cleanly. Requires threaded Chez and a C compiler.")
   (authors "Kiyomi Computation Systems LLC")
   (homepage "https://github.com/Kiyomi-Computation-Systems/chez-http-server")
   (license "BSD-3-Clause")
+  (depends ("chez-libuv" "^0.11.0")
+           ("chez-httparse" "^0.5.0")
+           ("chez-uri" "^0.8.0")
+           ("byte-machine" "^0.8.0"))
   (depends/dev ("chez-cmark-gfm" "^2.0.0")))

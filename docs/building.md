@@ -20,7 +20,7 @@ make build
 | `make test` | runs every suite, `tests/test-*.sps` |
 | `make run PROGRAM=... [ARGS="..."]` | runs a program on the library path |
 | `make dev` | starts a Chez REPL with everything on the library path |
-| `make check-pins` | checks every submodule sits at its pinned commit |
+| `make check-pins` | checks every submodule sits at its pinned commit, and `Akku.manifest` at the same versions |
 | `make prod` | rebuilds the shim optimized and runs the suite on it |
 | `make clean` | removes build artifacts |
 
@@ -164,11 +164,31 @@ The site is built by `build-site.sps` and the libraries in `site/`, through
 [chez-cmark-gfm](https://github.com/Kiyomi-Computation-Systems/chez-cmark-gfm),
 which needs the system **cmark-gfm** library (`brew install cmark-gfm`, or
 `apt install cmark-gfm`). `make site` fetches chez-cmark-gfm the first time,
-as `Akku.lock` pins it, or uses `.akku/` after `akku install`;
+as `Akku.lock` pins it, or uses `.akku/` after `akku install`, which also
+installs the server's dependencies and builds chez-libuv's shim;
 `make check-akku-lock` checks `Akku.lock` is what `akku lock` makes of
 `Akku.manifest`. A new page goes
 in `docs/` and in `site/pages.sls`, the nav's order; `make check-site` fails
 until both name it.
+
+## The Akku package
+
+`Akku.manifest` also makes the server an [Akku](https://akkuscm.org)
+package: the libraries under `src/`, depending on chez-libuv, chez-httparse,
+chez-uri (the uriparse repository) and byte-machine. Each range starts at
+the version vendored under `vendor/`, the one the suites ran against; a later
+patch release meets it too. `make check-pins` fails when a range, a vendored
+copy and `Akku.lock` disagree, so a pin moves in all three at once: the
+submodule, its range, then `akku lock`. It also fails when the package's
+version is not the latest release in `CHANGELOG.md`, so bump it in
+`Akku.manifest` with each release.
+
+`make check-akku` needs akku. It checks `Akku.lock` with
+`make check-akku-lock`, then installs this checkout into a scratch project as
+someone using the server would, with the dependencies `Akku.lock` locks, and
+checks that exactly `src/`'s libraries land, that
+chez-libuv's install hook builds the shim, and that `examples/hello.sps`
+answers on Akku's library path alone.
 
 ## House rules
 

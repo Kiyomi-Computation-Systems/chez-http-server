@@ -17,6 +17,12 @@
 * chez-libuv https://github.com/Kiyomi-Computation-Systems/chez-libuv
 * chez-httparse https://github.com/Kiyomi-Computation-Systems/chez-httparse
 * uriparse https://github.com/Kiyomi-Computation-Systems/uriparse
+* They are pinned submodules under `vendor/`, and on the Akku index as
+  chez-libuv, chez-httparse and chez-uri, with byte-machine.
+  `Akku.manifest`'s `depends` names each at `^` its vendored version;
+  `make check-pins` holds a pin, its range and `Akku.lock` together, so
+  move all three on one commit (`akku lock` writes the lock). Verify the
+  package with `make check-akku` where akku is installed.
 
 ### Layout, process & libraries
 

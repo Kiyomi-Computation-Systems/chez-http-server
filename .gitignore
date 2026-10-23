@@ -8,5 +8,6 @@
 *.so
 *.wpo
 
-# `akku install` (the docs site's chez-cmark-gfm, as Akku.lock pins it)
+# `akku install`: what Akku.lock pins, chez-libuv's shim, and this checkout's
+# own libraries
 /.akku/

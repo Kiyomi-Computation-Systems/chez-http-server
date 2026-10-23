@@ -56,7 +56,7 @@ which builds on this server's upgrades.
 ## Read next
 
 - [Installing](installing.md): what you need, building, and using the server
-  from your own project.
+  from your own project, from a checkout or with Akku.
 - [Quickstart](quickstart.md): a first server, step by step.
 - [Examples](examples.md): small servers to copy from, including a file
   server like `python3 -m http.server`.
