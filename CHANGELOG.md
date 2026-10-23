@@ -46,6 +46,14 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ### Changed
 
+- **chez-httparse is pinned at v0.5.0 and uriparse at v0.8.0, both with
+  byte-machine v0.8.0,** the versions the Akku index lists. Nothing the server
+  calls behaves differently. chez-httparse's generated message parser changes
+  six lines, so a digit of `Content-Length`, a chunk size or a status code no
+  longer allocates a bignum; its URL parser and uriparse's scanner are
+  byte-identical. uriparse adds `(uri easy)` and `(uri query)`, which the
+  server does not use; every library it does use is unchanged. Every suite
+  passes as many checks as before.
 - **The guides in `docs/` are Markdown, rewritten as seventeen pages** for a
   static site, home first (`docs/README.md`): installing, a quickstart, the
   examples, handlers, bodies and streaming, waiting, upgrades, requests,
