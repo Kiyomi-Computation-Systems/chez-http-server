@@ -26,6 +26,11 @@ All notable changes to chez-http-server are recorded here. The format follows
   cmark-gfm library. `make test` needs none of it. `Akku.manifest` names it
   as a development dependency, and `make check-akku-lock` checks `akku lock`
   still makes `Akku.lock` from it.
+- **The docs site is published on GitHub Pages,**
+  https://kiyomi-computation-systems.github.io/chez-http-server/, from each
+  release tag or by hand, after `make check-site` passes. `make check-site`
+  now clones chez-srfi alone (`make srfi`) and builds no shim, so the site
+  builds with Chez and cmark-gfm alone; CI's `site` job checks that it does.
 - **An Akku package.** `Akku.manifest` describes the server for the
   [Akku](https://akkuscm.org) index: the libraries under `src/`, depending on
   chez-libuv `^0.11.0`, chez-httparse `^0.5.0`, chez-uri `^0.8.0` and
