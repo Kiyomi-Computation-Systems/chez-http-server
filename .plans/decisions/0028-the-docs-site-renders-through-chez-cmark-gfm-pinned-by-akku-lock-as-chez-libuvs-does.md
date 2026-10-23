@@ -1,7 +1,7 @@
 # 0028: the docs site renders through chez-cmark-gfm, pinned by Akku.lock as chez-libuv's does
 
 Date: 2026-10-16
-Status: accepted (user decision, 2026-10-16, by form: "Akku.lock, as chez-libuv" and "A step in the linux job (Recommended)"); amended 2026-10-16 (item 1, the owner's word); its dev-only manifest superseded 2026-10-23 by 0031
+Status: accepted (user decision, 2026-10-16, by form: "Akku.lock, as chez-libuv" and "A step in the linux job (Recommended)"); amended 2026-10-16 (item 1, the owner's word); its dev-only manifest superseded 2026-10-23 by 0031; amended 2026-10-23 (published on GitHub Pages, the owner's word)
 Plan: none; the docs site follows the Markdown rewrite of `docs/`
 
 ## Context
@@ -89,6 +89,29 @@ chez-libuv, chez-httparse, uriparse and byte-machine each ship one.
 **Superseded 2026-10-23 by 0031,** once the index listed the runtime dependencies: the
 manifest now names them in `depends`, so the server is an Akku package, and
 `.akkuignore` no longer names `src`. The rest of this amendment stands.
+
+## Amendment, 2026-10-23: published on GitHub Pages
+
+The owner, in their words, once the repository was public: "we need to setup the
+Pages properly". chez-libuv, chez-httparse, uriparse, byte-machine and chez-cmark-gfm
+each publish theirs the same way: `.github/workflows/pages.yml`, on a `v*` tag or by
+hand, gates with `make check-site`, builds with `make site`, and hands `build/site/`
+to `actions/deploy-pages`; Pages builds from the workflow, the `github-pages`
+environment admits `main` and `v*` tags, and the repository's homepage is the site.
+
+- **chez-libuv's `pages.yml` failed here as it stood.** Its job installs apt's
+  `chezscheme` and `cmark-gfm` alone. Here `make check-site` took `deps`, which clones
+  every submodule and builds chez-libuv's shim; in `ubuntu:24.04` with that job's
+  packages it stopped at "pkg-config: not found", "cc not found", "cmake not found".
+  chez-libuv's own `deps` vendors chez-srfi and nothing else.
+- **`make srfi`** clones chez-srfi alone and links SRFI-64; `deps` runs it after the
+  shim, and `make check-site` takes it in place of `deps`. In the same container,
+  with Ubuntu's Chez 9.5.8, `make check-site` then passed and `make site` wrote
+  seventeen pages.
+- **CI's `site` job** runs those steps on every pull request, so a release tag's
+  deploy does not fail first.
+- **The repository's settings** match the siblings': Pages from the workflow, `main`
+  and `v*` admitted, the homepage set.
 
 ## Consequences
 

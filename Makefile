@@ -79,7 +79,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock check-akku check-guix check-docker
+.PHONY: help check-help submodules deps srfi build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock check-akku check-guix check-docker
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -148,6 +148,13 @@ check-close-ownership: build ## Check handle-close! is the one uv-close! use in 
 
 deps: submodules ## Build the chez-libuv shim and link SRFI-64 onto the path
 	$(MAKE) -C $(LIBUV_DIR) build
+	@$(MAKE) --no-print-directory srfi
+
+# SRFI-64 without the shim, for the docs site's suites on a machine with Chez
+# and nothing to build C with.  deps runs it after `submodules`, not beside it,
+# so two git submodule updates never race under make -j.
+srfi: ## Clone chez-srfi alone and link it (plus %3a-decoded names) into build/scheme-libs
+	git submodule update --init $(SRFI_DIR)
 	@mkdir -p $(SRFI_LIBS)/srfi
 	@src=$(abspath $(SRFI_DIR)); dst=$(abspath $(SRFI_LIBS))/srfi; \
 	for f in $$src/*; do \
@@ -244,11 +251,11 @@ site: site-deps ## Render docs/ into build/site/ (open build/site/index.html); S
 	@cp site/style.css $(BUILD_DIR)/site/style.css
 	@echo "site: $(BUILD_DIR)/site ready (open $(BUILD_DIR)/site/index.html)"
 
-# The generator's own suites (SRFI-64, so `deps` too), then the real site,
+# The generator's own suites (SRFI-64, so `srfi` too), then the real site,
 # rendered in memory and checked.  site-unit runs with no chez-cmark-gfm on its
 # path, so a site library it tests that starts importing (cmark gfm) fails
 # there at import.
-check-site: site-deps deps ## Test the site generator, then render docs/ in memory: nav, links, anchors (GitHub's too), no .md leak, no <pre> reflow
+check-site: site-deps srfi ## Test the site generator, then render docs/ in memory: nav, links, anchors (GitHub's too), no .md leak, no <pre> reflow
 	@CHEZSCHEMELIBDIRS=.:tests:$(SRFI_LIBS) $(CHEZ) --program tests/site-unit.sps
 	@CHEZSCHEMELIBDIRS=$(SITE_LIBDIRS):tests:$(SRFI_LIBS) $(CHEZ) --program tests/site-render-unit.sps
 	@CHEZSCHEMELIBDIRS=$(SITE_LIBDIRS) SITE_REF="$(SITE_REF)" $(CHEZ) --program tests/site-check.sps

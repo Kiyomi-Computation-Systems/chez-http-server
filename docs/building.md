@@ -171,6 +171,13 @@ installs the server's dependencies and builds chez-libuv's shim;
 in `docs/` and in `site/pages.sls`, the nav's order; `make check-site` fails
 until both name it.
 
+Each release tag publishes the site to
+[GitHub Pages](https://kiyomi-computation-systems.github.io/chez-http-server/),
+through `.github/workflows/pages.yml`, after `make check-site` passes; it also
+runs by hand from the Actions tab. That job has only Chez and cmark-gfm:
+`make check-site` clones chez-srfi alone and builds no shim, and CI's `site`
+job builds the site the same way on every pull request.
+
 ## The Akku package
 
 `Akku.manifest` also makes the server an [Akku](https://akkuscm.org)

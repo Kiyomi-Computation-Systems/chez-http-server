@@ -3,10 +3,10 @@ name: CI
 # Linux only, deliberately (AGENTS.md: do NOT set up macOS runners). macOS is
 # the development platform and is exercised by `make test` on the laptop; a
 # hosted macOS runner bills at ~10x the Linux rate for coverage that is never
-# in doubt here. The one job builds the shim against system libuv, resolves all
-# four pinned dependencies onto one library path, builds vtest2 for the
+# in doubt here. The linux job builds the shim against system libuv, resolves
+# all four pinned dependencies onto one library path, builds vtest2 for the
 # black-box lane, fetches oha for the load smoke, runs the suite, and checks
-# the docs site.
+# the docs site. The site job builds the site as the Pages workflow does.
 
 on:
   push:
@@ -188,3 +188,27 @@ jobs:
 
       - name: Check help is complete
         run: make check-help
+
+  # The Pages workflow's build, on every pull request, so a release tag's
+  # deploy does not fail first: apt's Chez and cmark-gfm alone, no compiler
+  # and no libuv, and of the submodules only chez-srfi.
+  site:
+    name: site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Chez and cmark-gfm
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends chezscheme cmark-gfm
+
+      - name: Get chez-cmark-gfm as Akku.lock pins it
+        run: make site-deps
+
+      - name: Gate the site
+        run: make check-site CHEZ=chezscheme
+
+      - name: Build the site
+        run: make site CHEZ=chezscheme

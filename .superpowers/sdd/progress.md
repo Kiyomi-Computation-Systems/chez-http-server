@@ -357,3 +357,17 @@ MERGED to main on 2026-10-23, on the owner's "Let's go ahead and do the closing 
 - **Branches.** Both deleted, remote and local. The shared checkout fast-forwarded to 710e0fe. It is Guix-built: `make clean` before the next `scripts/docker-env make test`.
 
 NEXT: the next release carries CHANGELOG.md's Unreleased (the examples, the Markdown docs, the docs site, the Guix container and the Docker one, the pins and the Akku package), with v0.7.0's entries moved to `v0.7.0-progress.md`, and publishes the package to the Akku index from its tag. Open: the `make deps` space-in-path bug, when the owner asks for it.
+
+**THE DOCS SITE ON GITHUB PAGES, on `ci/pages` (2026-10-23),** decision 0028's amendment of this date. The owner, while #206 and #207's runs went: "we need to setup the Pages properly". Pages was not on: the API answered 404, the homepage was empty, and no workflow deployed.
+- **The siblings.** chez-libuv, chez-httparse, uriparse, byte-machine and chez-cmark-gfm each deploy through `pages.yml` (build type `workflow`, `github-pages` admitting branch `main` and tag `v*`, homepage the site), each with green runs on a tag and by hand. chez-libuv's is this repository's model: `make site-deps` from `Akku.lock`, `actions/checkout@v7`, `upload-pages-artifact@v5`, `deploy-pages@v5`.
+- **The trap, reproduced before the fix.** In `ubuntu:24.04` with the job's packages (`chezscheme`, `cmark-gfm`) and what the runner image carries (git, make, curl, xz), chez-libuv's steps on 844cfe4 stopped in `deps`: it cloned every submodule, then chez-libuv's `make build` found no pkg-config, cc or cmake (exit 2). chez-libuv's `deps` vendors chez-srfi alone; this one also builds the shim.
+- **Built.**
+  - `make srfi`: chez-srfi alone, linked into `build/scheme-libs`. `deps` runs it from its recipe after `submodules`, so the two `git submodule update`s never run at once under `make -j`. `make check-site` takes it in place of `deps`.
+  - `.github/workflows/pages.yml`, chez-libuv's with this repository's comments.
+  - CI's `site` job: the same steps on every pull request, no deploy.
+  - README.org links the site, docs/building.md says how it publishes, CHANGELOG.md has an Added entry.
+- **Settings, done by API on the owner's word:** Pages enabled (`build_type` workflow, HTTPS enforced); the `github-pages` environment GitHub made admitted `main` alone, so tag `v*` was added; the homepage set to https://kiyomi-computation-systems.github.io/chez-http-server/.
+- **Checked.** In the same container on the fixed tree: Ubuntu's Chez 9.5.8, site-unit 59, site-render-unit 17, `check-site` all green, `make site` seventeen pages, chez-srfi the only submodule cloned. In the Guix container: `check-help`, `make build`, `make -j4 build`, `check-site`, and the examples suite (25). actionlint 1.7.7 (Docker) is clean on both workflows.
+- **Untested:** a deploy. The workflow runs on a tag or by hand; nothing has deployed yet.
+
+NEXT: the PR, and its closing ritual when the owner asks; then, on the owner's word, the first deploy by hand from main, so the homepage link answers before the next release. The next release carries CHANGELOG.md's Unreleased (the examples, the Markdown docs, the docs site and its Pages workflow, the Guix container and the Docker one, the pins and the Akku package), with v0.7.0's entries moved to `v0.7.0-progress.md`; its tag deploys the site and publishes the package to the Akku index. Open: the `make deps` space-in-path bug, when the owner asks for it.
