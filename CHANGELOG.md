@@ -88,6 +88,17 @@ All notable changes to chez-http-server are recorded here. The format follows
   second with oha, the file server beside `python3 -m http.server`, and
   both beside Racket's `web-server` and Node's `http`.
 
+### Fixed
+
+- **A checkout whose path holds a space builds and passes every suite.** The
+  step that links SRFI-64 into `build/scheme-libs` split such a path, so no
+  suite could load its test framework. Worse, the link loop then ran over the
+  root directory, trying to replace `/lib` and its neighbours with links to
+  themselves: denied for a user, but under `sudo` it would break the system.
+  Its paths are now quoted, and it stops unless both directories exist.
+  `tests/srfi-links.sh`, in `make check-site-deps`, runs it in a checkout
+  under a folder named `with space`.
+
 ## [0.7.0] - 2026-10-16
 
 The eighth release. The test fake's door, which a taker's own tests load, now acts as
