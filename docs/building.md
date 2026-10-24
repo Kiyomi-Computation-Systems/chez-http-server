@@ -209,3 +209,5 @@ answers on Akku's library path alone.
 - **Comments describe the code as it is**, not how it came to be.
 
 CI runs `make test` and `make check-site` on Linux for every pull request.
+[CONTRIBUTING.md](../CONTRIBUTING.md) has the rest of what a pull request
+needs.

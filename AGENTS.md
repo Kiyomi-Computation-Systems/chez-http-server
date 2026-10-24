@@ -47,6 +47,9 @@
 * `/docs` is for user facing documentation only.
 * Documentation should be very concise, focused, to the point, ELI5 style.
 * `Makefile` should have a `help` command which lists all of its commands
+* `CONTRIBUTING.md` and `.github/PULL_REQUEST_TEMPLATE.md` restate these
+  rules for people; change them with the rules. `make check-help` fails
+  when either quotes a `make` target the Makefile lacks.
 * Libraries are R6RS `.sls`; libraries and programs contain their own code —
   no shared include bodies. R6RS forbids assigning an exported variable —
   reach mutable state through procedures.
