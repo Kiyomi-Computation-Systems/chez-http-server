@@ -132,6 +132,9 @@ jobs:
       - name: Check NOTICE names every submodule and test corpus
         run: make check-notice
 
+      - name: Check make submodules after a pin move
+        run: make check-submodules
+
       # vtest2, the black-box lane's client, is built from its
       # pin and cached as Chez is, keyed on the gitlink read off the tree, the
       # OS release and the arch, so a pin or an image change misses. Its

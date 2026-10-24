@@ -50,6 +50,10 @@ cp "$manifest" "$scratch/made/Akku.manifest"
 if ! (cd "$scratch/made" && "$akku" lock) > "$scratch/made.log" 2>&1 \
    || [ ! -f "$scratch/made/Akku.lock" ]; then
   sed 's/^/  /' "$scratch/made.log" >&2
+  # akku warns of each package its local index lacks; an index older than
+  # the package's release is the usual cause, and `akku update` the cure.
+  unknown=$(sed -n 's/.*Unknown package: "\([^"]*\)".*/\1/p' "$scratch/made.log" | tr '\n' ' ' | sed 's/ $//')
+  [ -n "$unknown" ] && fail "akku's index does not know $unknown: run akku update to refresh it, then run this again"
   fail "$akku lock could not lock $manifest"
 fi
 

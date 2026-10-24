@@ -15,7 +15,8 @@ fail() { echo "FAIL: $1" >&2; fails=$((fails + 1)); }
 
 # The fake akku. `lock` in a directory whose manifest names "probe" obeys
 # FAKE_PROBE (ok, fail, nolock); any other manifest's lock is FAKE_LOCK's
-# file, or a failure when FAKE_LOCK is "fail".
+# file, a failure when FAKE_LOCK is "fail", or, when it is "unknown", the
+# failure of an akku whose index predates two of the manifest's packages.
 mkdir -p "$scratch/bin"
 cat > "$scratch/bin/akku" <<'EOF'
 #!/bin/sh
@@ -29,6 +30,11 @@ if grep -q '"probe"' Akku.manifest; then
   exit 0
 fi
 [ "${FAKE_LOCK:-fail}" = fail ] && { echo "fake akku: no solution" >&2; exit 1; }
+if [ "$FAKE_LOCK" = unknown ]; then
+  printf '[warning] Unknown package: "chez-libuv"\n[warning] Unknown package: "chez-uri"\n' >&2
+  echo '&message: "No acceptable solution - dependency hell"' >&2
+  exit 1
+fi
 cp "$FAKE_LOCK" Akku.lock
 EOF
 chmod +x "$scratch/bin/akku"
@@ -145,11 +151,21 @@ else
   fail "a lock that differs only in the order of its projects passes"; cat "$scratch/out" >&2
 fi
 
-# 11. A working akku that cannot lock the manifest: fails, not skipped.
-if ! run ok fail && grep -q 'FAIL: .*could not lock' "$scratch/out"; then
+# 11. A working akku that cannot lock the manifest: fails, not skipped, and
+# does not blame the index when akku named no package it does not know.
+if ! run ok fail && grep -q 'FAIL: .*could not lock' "$scratch/out" \
+   && ! grep -q 'akku update' "$scratch/out"; then
   pass "a working akku that cannot lock the manifest fails"
 else
   fail "a working akku that cannot lock the manifest fails"; cat "$scratch/out" >&2
+fi
+
+# 12. An akku whose index does not know a package: fails, naming each one
+# and the command that refreshes the index.
+if ! run ok unknown && grep -q 'FAIL: .*chez-libuv chez-uri.*akku update' "$scratch/out"; then
+  pass "an index that does not know a package fails, naming it and akku update"
+else
+  fail "an index that does not know a package fails, naming it and akku update"; cat "$scratch/out" >&2
 fi
 
 if [ "$fails" -eq 0 ]; then

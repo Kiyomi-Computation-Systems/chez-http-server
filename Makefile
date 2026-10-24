@@ -79,7 +79,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps srfi build vtest oha dev run test check-pins check-notice check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock check-akku check-guix check-docker
+.PHONY: help check-help submodules check-submodules deps srfi build vtest oha dev run test check-pins check-notice check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock check-akku check-guix check-docker
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -93,9 +93,17 @@ check-help: ## Fail if any .PHONY target is undocumented in `make help`
 	done; \
 	exit $$missing
 
+# The last line moves an inner submodule someone already checked out (as
+# `git clone --recursive` does uriparse's byte-machine) to the commit its
+# parent's pin records, so a pin move leaves no inner checkout behind for
+# check-pins to call an edit.  Without --init it clones nothing new.
 submodules: ## Init the pinned dependency submodules (top-level + byte-machine)
 	git submodule update --init $(LIBUV_DIR) $(URIPARSE_DIR) $(SRFI_DIR) $(VTEST_DIR)
 	git submodule update --init --recursive $(HTTPARSE_DIR)
+	git submodule update --recursive $(LIBUV_DIR) $(URIPARSE_DIR) $(SRFI_DIR) $(VTEST_DIR)
+
+check-submodules: ## Test make submodules offline: an inner checkout follows its parent's pin, and none is cloned that was not
+	@sh tests/submodules-follow.sh
 
 # Every read asks for the checkout's own .git first: in a submodule that was
 # never cloned, `git -C` climbs to the repository around it and answers for
@@ -126,14 +134,25 @@ check-pins: ## Verify each submodule sits at its pinned commit, and Akku.manifes
 	@command -v $(CHEZ) >/dev/null 2>&1 || { echo "check-pins: no '$(CHEZ)' on PATH to read Akku.manifest with; name your Chez, as in make check-pins CHEZ=scheme" >&2; exit 2; }
 	@$(CHEZ) -q --script scripts/check-akku-manifest.ss $(AKKU_VENDORED)
 
-# NOTICE names every submodule and every corpus under test/vendor/, each as a
-# whole path, so one added without its license noted fails here.
-check-notice: ## Check NOTICE names every submodule and every corpus under test/vendor/
+# NOTICE names every submodule and every entry under test/vendor/, each as a
+# whole path, and carries each corpus's own NOTICE file line for line, as the
+# Apache License asks of a redistribution.  Whether the license NOTICE states
+# for each is right is a reviewer's to check; this catches one left out, and a
+# corpus refresh that changes the text NOTICE must repeat.
+check-notice: ## Check NOTICE names every submodule and test/vendor/ entry, and repeats each corpus's NOTICE text
 	@fail=0; \
 	for p in $$(git config -f .gitmodules --get-regexp '\.path$$' | cut -d' ' -f2) $(BYTE_MACHINE_DIR) \
-	         $$(cd test/vendor && ls -d */ | sed 's:/$$::; s:^:test/vendor/:'); do \
-	  if grep -Eq "(^|[ ,])$$p([ ,]|$$)" NOTICE; then echo "notice ok: $$p"; \
+	         $$(ls test/vendor | sed 's:^:test/vendor/:'); do \
+	  if grep -Eq "(^|[ ,(])$$p([ ,.):;]|$$)" NOTICE; then echo "notice ok: $$p"; \
 	  else echo "NOTICE MISSING: $$p is a submodule or a test corpus, and NOTICE does not name it" >&2; fail=1; fi; \
+	done; \
+	for n in test/vendor/*/NOTICE; do \
+	  [ -f "$$n" ] || continue; miss=0; \
+	  while IFS= read -r line || [ -n "$$line" ]; do \
+	    [ -n "$$line" ] || continue; \
+	    grep -qxF "    $$line" NOTICE || { echo "NOTICE MISSING: $$n's line \"$$line\", which NOTICE must repeat" >&2; miss=1; fail=1; }; \
+	  done < "$$n"; \
+	  [ $$miss = 1 ] || echo "notice ok: $$n repeated"; \
 	done; \
 	exit $$fail
 

@@ -20,8 +20,10 @@ bad() { echo "FAIL: $*" >&2; fail=$((fail + 1)); }
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/srfi-links.XXXXXX") || exit 2
 trap 'rm -rf "$tmp"' EXIT
 
+# The scratch commits sign nothing, whatever the user's git config says.
 g() {
   git -c user.name=srfi-links -c user.email=srfi-links@example.invalid \
+      -c commit.gpgsign=false -c tag.gpgsign=false \
       -c init.defaultBranch=main -c protocol.file.allow=always "$@"
 }
 
@@ -33,8 +35,11 @@ printf 'not a library\n' > "$src/README"
 { g -C "$src" init -q && g -C "$src" add -A && g -C "$src" commit -q -m srfi; } \
   || { echo "srfi-links: cannot make the submodule's repository" >&2; exit 2; }
 
+# make's $(CURDIR) is the physical path, so the links name it, not a TMPDIR
+# reached through a symlink (macOS's /var is /private/var).
 repo="$tmp/with space/checkout"
 mkdir -p "$repo"
+repo=$(cd "$repo" && pwd -P)
 { g -C "$repo" init -q && g -C "$repo" submodule add -q "$src" vendor/chez-srfi \
     && g -C "$repo" commit -q -m checkout; } \
   || { echo "srfi-links: cannot make the checkout" >&2; exit 2; }
