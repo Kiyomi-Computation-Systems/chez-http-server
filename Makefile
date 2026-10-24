@@ -167,8 +167,9 @@ deps: submodules ## Build the chez-libuv shim and link SRFI-64 onto the path
 srfi: ## Clone chez-srfi alone and link it (plus %3a-decoded names) into build/scheme-libs
 	git submodule update --init $(SRFI_DIR)
 	@mkdir -p $(SRFI_LIBS)/srfi
-	@src=$(abspath $(SRFI_DIR)); dst=$(abspath $(SRFI_LIBS))/srfi; \
-	for f in $$src/*; do \
+	@src="$(CURDIR)/$(SRFI_DIR)"; dst="$(CURDIR)/$(SRFI_LIBS)/srfi"; \
+	[ -d "$$src" ] && [ -d "$$dst" ] || { echo "srfi: $$src or $$dst is not a directory" >&2; exit 1; }; \
+	for f in "$$src"/*; do \
 	  b=$$(basename "$$f"); \
 	  ln -sfn "$$f" "$$dst/$$b"; \
 	  d=$$(printf '%s' "$$b" | sed 's/%3a/:/g'); \
@@ -271,7 +272,8 @@ check-site: site-deps srfi ## Test the site generator, then render docs/ in memo
 	@CHEZSCHEMELIBDIRS=$(SITE_LIBDIRS):tests:$(SRFI_LIBS) $(CHEZ) --program tests/site-render-unit.sps
 	@CHEZSCHEMELIBDIRS=$(SITE_LIBDIRS) SITE_REF="$(SITE_REF)" $(CHEZ) --program tests/site-check.sps
 
-check-site-deps: ## Test the Akku scripts offline: fetch-akku-lock with a local archive, check-akku-lock with a fake akku, check-akku-manifest on trees of its own
+check-site-deps: ## Test the site's and the Akku scripts offline: fetch-akku-lock, check-akku-lock and check-akku-manifest on fakes, make srfi in a path with a space
+	@sh tests/srfi-links.sh
 	@sh tests/fetch-akku-lock.sh
 	@sh tests/check-akku-lock.sh
 	@CHEZ="$(CHEZ)" sh tests/check-akku-manifest.sh
