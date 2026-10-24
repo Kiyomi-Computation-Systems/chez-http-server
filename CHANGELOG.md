@@ -8,8 +8,9 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [0.8.0] - 2026-10-23
 
-The ninth release, and the first public one: the repository, its docs site
-and its Akku package are open to everyone. The server's code is v0.7.0's;
+The ninth release, and the first public one: the repository and its docs
+site are open to everyone, and the server is an Akku package. The server's
+code is v0.7.0's;
 only its comments changed. What is new is around it: five examples, the
 guides as seventeen Markdown pages published on GitHub Pages, an Akku
 package, SECURITY.md and NOTICE, and development containers for Guix and
@@ -47,10 +48,12 @@ ranges admit no older one, so the release is 0.8.0. chez-libuv v0.11.0 is
   builds with Chez and cmark-gfm alone; CI's `site` job checks that it does.
 - **SECURITY.md and NOTICE.** SECURITY.md asks for vulnerabilities to be
   reported privately, through GitHub's "Report a vulnerability". NOTICE
-  lists the third-party software the repository builds with or tests with,
-  and each one's license: the submodules under `vendor/` and the test
-  corpora under `test/vendor/`. `make check-notice`, in CI, fails when NOTICE
-  leaves one out.
+  lists the third-party software the repository holds, builds with,
+  downloads or tests with, and each one's license: the submodules under
+  `vendor/`, the test corpora under `test/vendor/`, chez-cmark-gfm and oha,
+  what the build needs but does not bundle, and the docs site's palette.
+  `make check-notice`, in CI, fails when NOTICE leaves out a submodule or a
+  corpus, or no longer repeats a corpus's own NOTICE text.
 - **An Akku package.** `Akku.manifest` describes the server for the
   [Akku](https://akkuscm.org) index: the libraries under `src/`, depending on
   chez-libuv `^0.11.0`, chez-httparse `^0.5.0`, chez-uri `^0.8.0` and
@@ -90,8 +93,9 @@ ranges admit no older one, so the release is 0.8.0. chez-libuv v0.11.0 is
   six lines, so a digit of `Content-Length`, a chunk size or a status code no
   longer allocates a bignum; its URL parser and uriparse's scanner are
   byte-identical. uriparse adds `(uri easy)` and `(uri query)`, which the
-  server does not use; every library it does use is unchanged. Every suite
-  passes as many checks as before.
+  server does not use; of the libraries it does use, only the text of one
+  assertion's message in `(uri charset)` changes. Every suite passes as many
+  checks as before.
 - **The guides in `docs/` are Markdown, rewritten as seventeen pages** for a
   static site, home first (`docs/README.md`): installing, a quickstart, the
   examples, handlers, bodies and streaming, waiting, upgrades, requests,
@@ -112,6 +116,16 @@ ranges admit no older one, so the release is 0.8.0. chez-libuv v0.11.0 is
   Its paths are now quoted, and it stops unless both directories exist.
   `tests/srfi-links.sh`, in `make check-site-deps`, runs it in a checkout
   under a folder named `with space`.
+- **`make submodules` brings an inner checkout along when a pin moves.** A
+  clone made with `git clone --recursive` holds uriparse's own byte-machine;
+  when uriparse's pin moved, that copy stayed at the old commit and
+  `make check-pins` called it a local edit. `make submodules` now moves an
+  inner submodule already checked out to the commit its parent records, and
+  still clones none. `make check-submodules`, in CI, checks both.
+- **`make check-akku-lock` says when akku's index is out of date.** An index
+  older than a dependency's release made `akku lock` fail with "dependency
+  hell"; the check now names each package akku does not know and says to run
+  `akku update`.
 
 ## [0.7.0] - 2026-10-16
 

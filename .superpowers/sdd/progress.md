@@ -23,7 +23,7 @@ A closed milestone's entries live in its own `mN-progress.md`, beside its `mN-mu
 
 ## Tagged releases
 
-A tagged release's entries, from the tag before it to its own, live in its own `vX.Y.Z-progress.md`: its work, its release, and its merge and tag. They move there verbatim at the next release, on the owner's form of 2026-10-09; v0.2.0's to v0.4.0's moved at v0.4.1's, v0.4.1's at v0.5.0's, v0.5.0's at v0.6.0's, and v0.6.0's at v0.7.0's. This file keeps the entries since the last release archived.
+A tagged release's entries, from the tag before it to its own, live in its own `vX.Y.Z-progress.md`: its work, its release, and its merge and tag. They move there verbatim at the next release, on the owner's form of 2026-10-09; v0.2.0's to v0.4.0's moved at v0.4.1's, v0.4.1's at v0.5.0's, v0.5.0's at v0.6.0's, v0.6.0's at v0.7.0's, and v0.7.0's at v0.8.0's. This file keeps the entries since the last release archived.
 
 | Release | PRs | Tagged on | `make test` on main at the tag | Archive |
 |---|---|---|---|---|
@@ -258,4 +258,21 @@ MERGED to main on 2026-10-23, on the owner's "do closing ritual": **#209, #210 a
 - **The review.** A read-only adversarial review on Opus of the three, launched once the PRs were open, was still running at the merge; its findings go in before the tag.
 - **The checkout** is on main at 44a0aca, clean. No PR is open.
 
-NEXT: the review's findings, each reproduced, fixed on a PR of their own where needed. Then, each asked for first: the owner's Mac runs (`make test`, `make check-akku` with Akku 1.1.1); the signed tag `v0.8.0` on main's head (its push redeploys the site with links pinned to the tag); a GitHub Release from CHANGELOG.md's `[0.8.0]`; `akku publish` from the tag with the owner's GPG key, and once the index lists it, docs/installing.md drops its "needs a release" line in a PR of its own. Then chez-websocket's pin to v0.8.0, there. The owner's: the read-token secret and its PAT, and secret scanning.
+**THE RELEASE'S FOLLOW-UPS, on `fix/release-followups` (2026-10-23),** before the tag: the review's findings and two traps from the owner's Mac runs.
+- **The review:** Opus, read-only, 194,813 tokens, 78 tool uses, about 13 min. Eleven findings, none high-severity in the server; each reproduced here before its fix:
+  1. `tests/srfi-links.sh` failed where TMPDIR runs through a symlink, as macOS's `/var` does: the links name make's physical `$(CURDIR)`. A symlinked TMPDIR gave 2 passed, 5 failed. Now the scratch checkout's path is taken with `pwd -P`.
+  2. It inherited the user's commit signing; with `commit.gpgsign` on and a signer that fails, it exited 2 before checking anything. Its commits now sign nothing.
+  3. `make check-notice` claimed more than it checked. It now takes every entry under `test/vendor/`, files too, allows `.`, `)`, `:` or `;` after a path, and asks NOTICE to repeat each corpus's own NOTICE file line for line, as Apache-2.0 asks; its comment and AGENTS.md say it does not check the licenses. Seven mutants: the four of #209 and a dropped httpd NOTICE line and a single-file corpus each failed it by name; a correct path followed by a full stop passed.
+  4. NOTICE left out what its scope names: chez-cmark-gfm and oha (downloaded, now a section), and Chez Scheme, libuv and cmark-gfm (not bundled, now a section, as chez-libuv's has).
+  5. chez-srfi's license was given for all of it; NOTICE now names the files others wrote, in chez-libuv's words, at the same chez-srfi commit (7879b52), each copyright line checked.
+  6. VTest2's four BSD-3 files are named.
+  7. CHANGELOG.md's intro called the Akku package open to everyone before it is on the index (0 matches); it now says the server is an Akku package.
+  8. The tagged releases' note lacked v0.7.0's move, and v0.7.0-progress.md's header said "last section" for three; both corrected.
+  9. "every library it does use is unchanged": `(uri charset)`'s one assertion message changed between the pins (a form-by-form read of the five libraries the server imports named only it). The entry now says so.
+  10. `site/style.css`'s Flexoki palette (MIT, Steph Ango, 2023) and the Kestrel C# lines quoted in `tests/strictness-lane.sls` are now in NOTICE.
+  11. Not this repository's: private vulnerability reporting is off on chez-libuv, chez-httparse and uriparse, whose SECURITY.md (chez-libuv's) points at it. For the owner.
+- **The owner's Mac (Darwin).** `make check-akku` first failed: akku's local index predated the three packages ("Unknown package", "dependency hell"); after `akku update` it passed (5 projects, 25 libraries, the hook's shim, `hello.sps` answered), the first run on macOS and on Akku 1.1.1. `make test` stopped at `PIN DIRTY: vendor/uriparse`: reproduced in a clone checked out at f833fb5 with uriparse's byte-machine initialized, then moved to main: uriparse at 9416299, its byte-machine left at c338a57 where v0.8.0 records c1f7791, ` M vendor/byte-machine`. `git submodule update --recursive vendor/uriparse` cleared it and cloned nothing uninitialized.
+- **Fixed from those:** `make submodules` ends with `git submodule update --recursive` on the four it updates without it, so a pin move carries an inner checkout already made and clones none; `tests/submodules-follow.sh` (`make check-submodules`, a CI step) builds a checkout of five local submodules at the Makefile's paths and failed on the old recipe (` M vendor/byte-machine`, 3 passed, 2 failed), passed after (5); `--init` on the new line failed its "never checked out" check. `scripts/check-akku-lock` names each package akku does not know and says `akku update`; `tests/check-akku-lock.sh`'s row 12 failed before, passes after, and row 11 asserts a plain failure does not say it.
+- CHANGELOG.md's `[0.8.0]` gains two Fixed entries; the SECURITY.md and NOTICE entry and the pins entry are corrected.
+
+NEXT: this PR, and its closing ritual when the owner asks. The owner's Mac `make test` again after `git submodule update --recursive vendor/uriparse`. Then, each asked for first: the signed tag `v0.8.0` on main's head, a GitHub Release from `[0.8.0]`, `akku publish` with the owner's GPG key and the installing.md line after it; chez-websocket's pin to v0.8.0 there. The owner's: the read-token secret and its PAT, secret scanning, and the siblings' vulnerability reporting.
