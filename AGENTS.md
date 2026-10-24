@@ -23,6 +23,9 @@
   `make check-pins` holds a pin, its range and `Akku.lock` together, so
   move all three on one commit (`akku lock` writes the lock). Verify the
   package with `make check-akku` where akku is installed.
+* NOTICE names every submodule and every corpus under `test/vendor/`,
+  with its license; `make check-notice`, in CI, fails until a new one
+  is added there.
 
 ### Layout, process & libraries
 

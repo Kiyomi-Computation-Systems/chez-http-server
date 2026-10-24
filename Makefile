@@ -79,7 +79,7 @@ TESTS := $(wildcard tests/test-*.sps)
 TIMEOUT_BIN := $(shell command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)
 SUITE_TIMEOUT ?= 120
 
-.PHONY: help check-help submodules deps srfi build vtest oha dev run test check-pins check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock check-akku check-guix check-docker
+.PHONY: help check-help submodules deps srfi build vtest oha dev run test check-pins check-notice check-imports check-close-ownership prod clean corpus-refresh site-deps site check-site check-site-deps check-akku-lock check-akku check-guix check-docker
 .DEFAULT_GOAL := help
 
 help: ## Show this help message
@@ -125,6 +125,17 @@ check-pins: ## Verify each submodule sits at its pinned commit, and Akku.manifes
 	exit $$fail
 	@command -v $(CHEZ) >/dev/null 2>&1 || { echo "check-pins: no '$(CHEZ)' on PATH to read Akku.manifest with; name your Chez, as in make check-pins CHEZ=scheme" >&2; exit 2; }
 	@$(CHEZ) -q --script scripts/check-akku-manifest.ss $(AKKU_VENDORED)
+
+# NOTICE names every submodule and every corpus under test/vendor/, each as a
+# whole path, so one added without its license noted fails here.
+check-notice: ## Check NOTICE names every submodule and every corpus under test/vendor/
+	@fail=0; \
+	for p in $$(git config -f .gitmodules --get-regexp '\.path$$' | cut -d' ' -f2) $(BYTE_MACHINE_DIR) \
+	         $$(cd test/vendor && ls -d */ | sed 's:/$$::; s:^:test/vendor/:'); do \
+	  if grep -Eq "(^|[ ,])$$p([ ,]|$$)" NOTICE; then echo "notice ok: $$p"; \
+	  else echo "NOTICE MISSING: $$p is a submodule or a test corpus, and NOTICE does not name it" >&2; fail=1; fi; \
+	done; \
+	exit $$fail
 
 # What each library under src/ may import: (libuv ...) and (chezscheme) only
 # under src/http-server/private/, the facade reaching them through it; no test
