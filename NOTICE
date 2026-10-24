@@ -1,0 +1,114 @@
+chez-http-server
+Copyright (c) 2026, Kiyomi Computation Systems LLC
+
+This product is licensed under the BSD 3-Clause License; see LICENSE.
+
+Apart from the git submodules under vendor/ and the test corpora under
+test/vendor/, this repository contains no third-party code. The components
+below are the third-party software it builds with, links against, or tests
+with. Each keeps its own license, and the full texts are in the files named.
+
+
+Runtime dependencies
+====================
+
+chez-libuv, chez-httparse, uriparse and byte-machine
+----------------------------------------------------
+https://github.com/Kiyomi-Computation-Systems/chez-libuv
+https://github.com/Kiyomi-Computation-Systems/chez-httparse
+https://github.com/Kiyomi-Computation-Systems/uriparse
+https://github.com/Kiyomi-Computation-Systems/byte-machine
+Location: vendor/chez-libuv, vendor/chez-httparse, vendor/uriparse and
+vendor/chez-httparse/vendor/byte-machine (git submodules, pinned)
+Used: the server's libraries import them, and the Akku package depends on
+them. Same copyright holder as this project; each is licensed under the BSD
+3-Clause License, in its own LICENSE.
+
+Each carries a NOTICE of its own for the third-party software in it.
+chez-libuv's names libuv, which its build compiles when it finds no system
+libuv 1.48 or newer; a distribution that ships that library ships libuv,
+and must carry its notices. chez-httparse's names llhttp, whose HTTP/1
+parser it ports.
+
+
+Test dependencies
+=================
+
+chez-srfi
+---------
+https://github.com/arcfide/chez-srfi
+Location: vendor/chez-srfi (git submodule, pinned)
+Used: SRFI 64, the test suites' framework. The server's libraries do not
+import it.
+
+  Copyright (c) 2008-2010 Derick Eddington, and the authors each file names.
+  Licensed under the MIT-style license in vendor/chez-srfi/LICENSE.
+
+VTest2
+------
+https://github.com/vtest/VTest2
+Location: vendor/vtest2 (git submodule, pinned)
+Used: built by `make vtest` as a client for the black-box test lane. It is
+not part of the server.
+
+  Copyright (c) 2018, Vtest project.
+  Licensed under the BSD 2-Clause License (vendor/vtest2/LICENSE).
+
+
+Test corpora
+============
+
+Each corpus under test/vendor/ is upstream's files, unmodified, beside
+upstream's license and a PROVENANCE file naming the upstream commit and
+each file's sha256. Only the test suites read them; the Akku package leaves
+them out.
+
+AWS http-desync-guardian
+------------------------
+https://github.com/aws/http-desync-guardian
+Location: test/vendor/http-desync-guardian
+
+  Licensed under the Apache License 2.0
+  (test/vendor/http-desync-guardian/LICENSE). Its NOTICE
+  (test/vendor/http-desync-guardian/NOTICE) reads:
+
+    Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+Apache HTTP Server Test Framework
+---------------------------------
+https://github.com/apache/httpd-tests
+Location: test/vendor/httpd-tests
+
+  Licensed under the Apache License 2.0 (test/vendor/httpd-tests/LICENSE).
+  Its NOTICE (test/vendor/httpd-tests/NOTICE) reads:
+
+    Apache HTTP Server Test Framework
+    Copyright 2026 The Apache Software Foundation.
+
+    This product includes software developed at
+    The Apache Software Foundation (http://www.apache.org/).
+
+ASP.NET Core Kestrel
+--------------------
+https://github.com/dotnet/aspnetcore
+Location: test/vendor/kestrel
+
+  Copyright (c) .NET Foundation and Contributors.
+  Licensed under the MIT License (test/vendor/kestrel/LICENSE.txt).
+
+libhtp
+------
+https://github.com/OISF/libhtp
+Location: test/vendor/libhtp
+
+  Copyright (c) 2009-2010 Open Information Security Foundation.
+  Copyright (c) 2010-2013 Qualys, Inc.
+  Licensed under the BSD 3-Clause License (test/vendor/libhtp/LICENSE).
+
+lighttpd
+--------
+https://github.com/lighttpd/lighttpd1.4
+Location: test/vendor/lighttpd
+
+  Copyright (c) 2004, Jan Kneschke, incremental.
+  Licensed under the BSD 3-Clause License (test/vendor/lighttpd/COPYING).

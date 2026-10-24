@@ -31,6 +31,12 @@ All notable changes to chez-http-server are recorded here. The format follows
   release tag or by hand, after `make check-site` passes. `make check-site`
   now clones chez-srfi alone (`make srfi`) and builds no shim, so the site
   builds with Chez and cmark-gfm alone; CI's `site` job checks that it does.
+- **SECURITY.md and NOTICE.** SECURITY.md asks for vulnerabilities to be
+  reported privately, through GitHub's "Report a vulnerability". NOTICE
+  lists the third-party software the repository builds with or tests with,
+  and each one's license: the submodules under `vendor/` and the test
+  corpora under `test/vendor/`. `make check-notice`, in CI, fails when NOTICE
+  leaves one out.
 - **An Akku package.** `Akku.manifest` describes the server for the
   [Akku](https://akkuscm.org) index: the libraries under `src/`, depending on
   chez-libuv `^0.11.0`, chez-httparse `^0.5.0`, chez-uri `^0.8.0` and
