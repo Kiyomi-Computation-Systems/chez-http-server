@@ -6,20 +6,19 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-10-23
+## [0.8.0] - 2026-10-24
 
 The ninth release, and the first public one: the repository and its docs
 site are open to everyone, and the server is an Akku package. The server's
-code is v0.7.0's;
-only its comments changed. What is new is around it: five examples, the
-guides as seventeen Markdown pages published on GitHub Pages, an Akku
-package, SECURITY.md and NOTICE, and development containers for Guix and
-Docker. A checkout whose path holds a space now builds. chez-httparse moves
-to v0.5.0 and uriparse to v0.8.0, both with byte-machine v0.8.0, the
-versions on the Akku index. Nothing the server calls behaves differently,
-but code that uses them itself meets their changes, and the package's
-ranges admit no older one, so the release is 0.8.0. chez-libuv v0.11.0 is
-0.7.0's.
+code is v0.7.0's; only its comments changed. What is new is around it: five
+examples, the guides as seventeen Markdown pages published on GitHub Pages,
+an Akku package, SECURITY.md, NOTICE and CONTRIBUTING.md, and development
+containers for Guix and Docker. A checkout whose path holds a space now
+builds. chez-httparse moves to v0.5.0 and uriparse to v0.8.0, both with
+byte-machine v0.8.0, the versions on the Akku index. Nothing the server
+calls behaves differently, but code that uses them itself meets their
+changes, and the package's ranges admit no older one, so the release is
+0.8.0. chez-libuv v0.11.0 is 0.7.0's.
 
 ### Added
 
@@ -54,6 +53,14 @@ ranges admit no older one, so the release is 0.8.0. chez-libuv v0.11.0 is
   what the build needs but does not bundle, and the docs site's palette.
   `make check-notice`, in CI, fails when NOTICE leaves out a submodule or a
   corpus, or no longer repeats a corpus's own NOTICE text.
+- **CONTRIBUTING.md, and templates for pull requests and issues.**
+  CONTRIBUTING.md says how to set up, which checks CI runs, what to do when
+  changing a pin, NOTICE, the Makefile, the docs or the containers, and the
+  house rules for code, tests and pull requests. The pull-request template
+  asks for where the change was tested and has a checklist; the bug report
+  asks for the platform, the versions and a request that shows it.
+  `make check-help` now also fails when CONTRIBUTING.md or the pull-request
+  template quotes a `make` target the Makefile lacks.
 - **An Akku package.** `Akku.manifest` describes the server for the
   [Akku](https://akkuscm.org) index: the libraries under `src/`, depending on
   chez-libuv `^0.11.0`, chez-httparse `^0.5.0`, chez-uri `^0.8.0` and

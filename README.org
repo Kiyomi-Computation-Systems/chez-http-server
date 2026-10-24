@@ -109,6 +109,11 @@ The guides are in [[file:docs/README.md][docs/]]: [[file:docs/installing.md][ins
 and the [[file:docs/reference.md][API reference]]. Each release publishes them as a
 website: [[https://kiyomi-computation-systems.github.io/chez-http-server/]].
 
+** Contributing
+
+[[file:CONTRIBUTING.md][CONTRIBUTING.md]] says how to set up, which checks a pull request must pass,
+and the house rules.
+
 ** Security
 
 Report a vulnerability privately; [[file:SECURITY.md][SECURITY.md]] says how.

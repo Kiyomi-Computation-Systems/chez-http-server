@@ -85,11 +85,22 @@ SUITE_TIMEOUT ?= 120
 help: ## Show this help message
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_.-]+:.*?## / { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-check-help: ## Fail if any .PHONY target is undocumented in `make help`
+# The contributor's guide and the PR template tell people which targets to
+# run, so each `make TARGET` they quote, in backticks, must be one of these.
+check-help: ## Fail if any .PHONY target is undocumented in `make help`, or CONTRIBUTING.md or the PR template quotes one that is not a target
 	@missing=0; \
 	targets=$$(awk '/^\.PHONY:/ { $$1=""; print }' Makefile); \
 	for t in $$targets; do \
 	  grep -qE "^$$t:.*## " Makefile || { echo "check-help: '$$t' has no '## ' description" >&2; missing=1; }; \
+	done; \
+	for f in CONTRIBUTING.md .github/PULL_REQUEST_TEMPLATE.md; do \
+	  [ -f "$$f" ] || { echo "check-help: $$f is missing" >&2; missing=1; continue; }; \
+	  for t in $$(grep -oE '`[^`]*`' "$$f" | grep -oE '(^|[` ])make [a-z][a-z0-9-]*' | awk '{ print $$2 }' | sort -u); do \
+	    case " $$targets " in \
+	      *" $$t "*) ;; \
+	      *) echo "check-help: $$f quotes 'make $$t', and $$t is not a target" >&2; missing=1 ;; \
+	    esac; \
+	  done; \
 	done; \
 	exit $$missing
 
