@@ -1752,7 +1752,7 @@
                (wait-for (lambda () (eq? (client-end cl) 'eof))))
       (set! watching-stream #f)
       (test-equal "a 200, chunked, whose body is the MiB, every piece in order, the bound kept as it read"
-                  (list 200 "chunked" (sized-body stream-pieces stream-piece-size) 'complete 65 #t)
+                  (list 200 "chunked" (sized-text stream-pieces stream-piece-size) 'complete 65 #t)
                   (let ((r (read-response (client-bytes cl) #f #t)))
                     (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4)
                           (stream-calls) (<= stream-most (+ 262144 16392)))))
@@ -1795,7 +1795,7 @@
                (wait-for (lambda () (eq? (client-end cl) 'eof))))
       (set! watching-stream #f)
       (test-equal "a 200, chunked, every row in order, never more than 64 writes outstanding as it read"
-                  (list 200 "chunked" (sized-body rows row-size) 'complete (+ rows 1) #t)
+                  (list 200 "chunked" (sized-text rows row-size) 'complete (+ rows 1) #t)
                   (let ((r (read-response (client-bytes cl) #f #t)))
                     (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4)
                           (rows-calls) (<= stream-most-writes 64))))
@@ -1809,7 +1809,7 @@
       (test-eq "a client reads rows streamed from one bytevector refilled at each call, and the stream's end" 'satisfied
                (wait-for (lambda () (eq? (client-end cl) 'eof))))
       (test-equal "a 200, chunked, each row as it was when handed over, in order"
-                  (list 200 "chunked" (sized-body rows row-size) 'complete)
+                  (list 200 "chunked" (sized-text rows row-size) 'complete)
                   (let ((r (read-response (client-bytes cl) #f #t)))
                     (list (status r) (field r "Transfer-Encoding") (body r) (list-ref r 4))))
       (client-close! cl))
