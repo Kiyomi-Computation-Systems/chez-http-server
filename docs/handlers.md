@@ -119,7 +119,7 @@ it once, when the response is done, with how it ended:
 | `proc` gets | When |
 |:--|:--|
 | `written` | every write of your response completed |
-| `client-closed` | the client closed or reset the connection first, or a write to it failed |
+| `client-closed` | the client closed or reset the connection before your response was written, or a write to it failed |
 | `failed` | the server ended it: your code raised (a `500`, or a stream cut short), the server sent its own status instead of yours (a body too big or too slow), or a write timed out |
 
 ```scheme
@@ -141,10 +141,16 @@ it once, when the response is done, with how it ended:
 - The server calls them in place, the moment the response ends. Like a
   handler, a procedure must be quick, and it cannot wait. On a kept-alive
   connection they run before the next request's handler.
+- If your code is still running when the response ends, such as a reader or
+  producer that waits ([Waiting](waiting.md)), the server calls them once
+  that code stops, so nothing they close is still in use.
+- A client that only half-closes its connection still reads, so its response
+  is written, and `proc` gets `written`.
 - If one raises, the server logs `on-done-failed`, still calls the others,
   and carries on.
-- One registered after the response is done is called at once, so each is
-  called exactly once.
+- One registered after the response is done is called at once, inside the
+  code that registers it, so each is called exactly once. If it raises, that
+  code raises.
 - A request the server refuses before your handler runs, such as one with a
   malformed head, never reaches your code, so nothing hears about it.
 

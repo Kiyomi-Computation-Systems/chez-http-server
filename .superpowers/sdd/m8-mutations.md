@@ -3134,3 +3134,63 @@ D12 C1, C2, C3; D9, D10 C4, C6; D13 C7; D14 R1, F2, F3; D15 R2, R3, C5, C6; D16 
 C1, C8, C10 (its first half C10 alone). S1 C1, C8, S1; S2 C1, C8, R6, S1; S3 C1, S2,
 R6; S4 R1, S2, S3, S4; S5 S2, C8, S1; S6 S2, S3, S4; Spre T1; S7 C6, C8, S1; S8 C5, C6,
 S1. E1 E1. #220's reference check, for this export, DN-D1.
+
+### The stack's review, on the owner's "fix them" (2026-10-25)
+
+An xhigh review of #224-#226 found nine things; the fixes add checks D17 (the fake: a
+reader of a waiting handler, inside a piece as its 413 is written) and, in the shell
+suite, S9 (a close the core did not ask for under a producer that waits), S10 (a log that
+raises before the procedures in the drain), S11 (D17 over loopback, on a shell capped at
+5 bytes), S12 (a switch: told before its take-over) and S13 (a connection the run loop
+drops); D13 and D15 change with the procedures put off while a call runs. Each new check
+folds its progress waits into its compared value, inside the check, so a raise fails the
+check, not the suite: under DN-R6 the first cut, with the waits outside, ended the shell
+suite at a harness error (exit 2) before its last checks.
+
+**Red before the fixes** (Darwin arm64), each by value: D17 `((start "abc") (done failed)
+(end "abc") (start "de"))`; S9 `((busy failed) (woke))`; S10 `(iterations-exhausted ())`;
+S11 `((start "abc") (reader failed) (end "abc") (start "de") (end "de"))`; S13 `((sleeps
+client-closed))`, told only by the dead handle's write failure. S12 was green: the core
+already tells before the hand-off, and DN-C15 holds it.
+
+**39 rows over 54 suites** (prediction 29757dc7…, hashed before the run), each root with a
+`build` of its own, so the examples suite's `build/examples-root` is no longer shared. The
+shell suite ran again for every row once its new checks held their waits inside.
+
+| Row | Mutant | Red, by name, beyond the table above |
+|---|---|---|
+| DN-S2 | the shell's one trap for every procedure (re-cut) | S3, S4, S5, S6 |
+| DN-S3 | the shell's trap logs nothing (re-cut) | S4, S6 |
+| DN-S4 | the shell tells each on a coroutine (re-cut) | S4, S6, S8, S11, S12, S13 |
+| DN-S5 | the shell never puts the endings off | S9, S11 |
+| DN-S6 | a reader let go is handed its queued pieces | S11 |
+| DN-S7 | an abandoned drain drops its endings | S10 |
+| DN-S8 | a reconciled connection is not told it closed | S13 |
+| DN-S9 | a reconciled connection is not marked closing | S13 (`logged`: its answer written to the handle gone) |
+| DN-F4 | the fake never puts the endings off | D13, D15, D17 |
+| DN-F5 | the fake hands a reader let go its queued pieces | D17 |
+| DN-C15 | the ending told after the hand-off | D3, S12 |
+
+The earlier rows ran again; the new checks joined their sets: DN-R6 D17, S9-S13 (and S5 and
+the end's three leak checks, as before); DN-C1 D17, S11, S12; DN-C2 and DN-C3 D17, S11;
+DN-C5 and DN-C6 S10; DN-C7 S9, S13; DN-C8 D17, S9-S13; DN-F1 D17; DN-S1 S9, S11, S12, S13
+(not S10: the rescue tells through `call-done!`, not the action's arm); DN-E1 also the
+examples suite, whose file server no longer loads, and #220's "names none it does not
+export"; DN-T1 S10, which reuses the never-answering route.
+
+**Mismatches, read by their values or rerun alone.** DN-S4's S11 and S13: each procedure,
+on a coroutine, ran after the check that caused it, so `(door written)` landed in S13's
+list and `(sleeps failed)` in S11's. DN-0, DN-C1, DN-C10 and DN-C11, the first four rows,
+started at once, reddened the serve suite's two child-process checks; each ran green
+alone. DN-S6 and DN-S8 reddened three four-MiB transfer checks under four shell suites at
+once; alone, each matched its prediction. DN-C13's S8 stayed green as the first run
+showed (the client resets, so no end comes); its set was stale.
+
+**The trap.** Measured on Darwin arm64 at depths 0, 50 and 200: a `guard` 332, 934 and
+2,733 B a call; a handler with a one-shot escape 209 B at each.
+
+**Each new or changed check has a killer by value:** D13 F4, C7, C8, F1; D15 F4, R2, R3,
+C5, C6, C8, F1; D17 F4, F5, C1, C2, C3, C8, F1, R6; S9 S5, C7, C8, S1, R6; S10 S7, C5, C6,
+C8, R6, T1; S11 S5, S6, S4, C1, C2, C3, C8, S1, R6; S12 C15, S4, C1, C8, S1, R6; S13 S8,
+S9, S4, C7, C8, S1, R6. Not checked: the file server's port closing, which a client cannot
+see; DN-E1 shows the example loads only with the export.

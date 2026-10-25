@@ -393,6 +393,17 @@
 (define done-at-second 'not-called)
 (define leave-calls 0)
 (define leave-piece (make-bytevector 65536 120))
+;; Whether /done-busy's producer and /done-sleeps's thunk have begun to
+;; wait, and what /done-door's take-over found told when it was called.
+(define busy-started #f)
+(define sleeps-started #f)
+(define done-at-take-over 'not-called)
+
+;; piece-text : Bytevector Nat Nat -> String — bv[from, to) as text.
+(define (piece-text bv from to)
+  (let ((o (make-bytevector (- to from))))
+    (bytevector-copy! bv from o 0 (- to from))
+    (utf8->string o)))
 
 (define mixed-pieces
   (list (make-string 100 #\a) (make-string 5000 #\b) (make-string 100 #\c) (make-string 5000 #\d)))
@@ -607,6 +618,37 @@
            (set! leave-calls 0)
            (request-on-done! req (done-hearing 'leave))
            (make-response 200 #f '() (lambda () (set! leave-calls (+ leave-calls 1)) leave-piece)))
+          ((bytevector=? target (b "/done-busy"))
+           (set! busy-started #f)
+           (request-on-done! req (done-hearing 'busy))
+           (awaiting
+            (lambda ()
+              (make-response 200 #f '()
+                             (lambda ()
+                               (set! busy-started #t)
+                               (sleep-ms 20)
+                               (set! done-heard (append done-heard '((woke))))
+                               (eof-object))))))
+          ((bytevector=? target (b "/done-reader"))
+           (request-on-done! req (done-hearing 'reader))
+           (awaiting
+            (lambda ()
+              (read-body (lambda (bv from to)
+                           (let ((text (piece-text bv from to)))
+                             (set! done-heard (append done-heard (list (list 'start text))))
+                             (sleep-ms 20)
+                             (set! done-heard (append done-heard (list (list 'end text))))))
+                         (lambda () (make-response 200 #f '() #f))))))
+          ((bytevector=? target (b "/done-door"))
+           (set! done-at-take-over 'not-called)
+           (request-on-done! req (done-hearing 'door))
+           (switching (lambda (t retained)
+                        (set! done-at-take-over done-heard)
+                        (transport-close! t))))
+          ((bytevector=? target (b "/done-sleeps"))
+           (set! sleeps-started #f)
+           (request-on-done! req (done-hearing 'sleeps))
+           (awaiting (lambda () (set! sleeps-started #t) (sleep-ms 30) (make-response 200 #f '() #f))))
           ((bytevector=? target (b "/pieces"))
            (make-response 200 #f '() (producer-of '("one " "two " "three"))))
           ((bytevector=? target (b "/mixed"))
@@ -2082,6 +2124,80 @@
         (test-equal "client-closed, and its producer called no more after"
                     (list '((leave client-closed)) calls)
                     (list done-heard leave-calls))))
+    ;; The same with the shell's log raising as it logs the read error:
+    ;; that log comes before the request's procedures in the drain, and its
+    ;; raise abandons the drain, yet they are still told.
+    (set! done-heard '())
+    (let ((cl (open-client! (b "GET /done-leave HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a raise that abandons the drain before the procedures run still has them told"
+                  '(satisfied satisfied ((leave client-closed)))
+                  (let ((head (wait-for (lambda () (> (bytevector-length (client-bytes cl)) 0)))))
+                    (set! log-fails 'read-error)
+                    (client-close! cl)
+                    (list head (run-shell-until loop shell (lambda () (pair? done-heard)) cap) done-heard)))
+      (set! log-fails #f))
+    ;; A close the core did not ask for, while the request's producer waits
+    ;; on a coroutine: the procedure is told failed once that call ends.
+    (set! done-heard '())
+    (let* ((before (newest))
+           (cl (open-client! (b "GET /done-busy HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a connection closed under a producer that waits: told failed, once the producer's call has ended"
+                  '(satisfied satisfied ((woke) (busy failed)))
+                  (let* ((started (wait-for (lambda () busy-started)))
+                         (c (adopted-since before)))
+                    (when c (connection-close! c))
+                    (let ((told (wait-for (lambda () (= 2 (length done-heard))))))
+                      (list started told done-heard))))
+      (client-close! cl))
+    ;; A switch: the request is told written before its take-over is called.
+    (set! done-heard '())
+    (let ((cl (open-client! (door-handshake "/done-door"))))
+      (test-equal "a switch: its request told written before its take-over is called"
+                  '(satisfied ((door written)))
+                  (let ((called (wait-for (lambda () (not (eq? done-at-take-over 'not-called))))))
+                    (list called done-at-take-over)))
+      (client-close! cl))
+    ;; A connection the run loop drops, its handle closed behind the shell,
+    ;; while its handler waits: told failed, once the handler's call ends,
+    ;; and what that call answers is dropped, not written to the handle
+    ;; gone.
+    (set! done-heard '())
+    (let* ((before (newest))
+           (cl (open-client! (b "GET /done-sleeps HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a connection the run loop drops tells its request failed, and writes nothing for it after"
+                  '(satisfied satisfied ((sleeps failed)) quiet)
+                  (let* ((started (wait-for (lambda () sleeps-started)))
+                         (c (adopted-since before)))
+                    (when c (uv-close! (connection-tcp c)))
+                    (wait-for (lambda () (and c (eq? (uv-handle-state (connection-tcp c)) 'closed))))
+                    (set! logged '())
+                    (raise-in-callback (make-message-condition "a bug in a callback"))
+                    (let ((told (wait-for (lambda () (pair? done-heard)))))
+                      (list started told done-heard (if (assq 'read-error logged) 'logged 'quiet)))))
+      (client-close! cl))
+    ;; A reader of a handler that waits, on a shell whose bodies are capped
+    ;; at 5 bytes: a chunked body passes the cap at its second piece, so the
+    ;; reader is handed "abc" and the prefix "de", and the 413 is written
+    ;; while it still waits inside "abc".  The procedure is told once that
+    ;; call has ended, and the reader, let go as the connection lingers, is
+    ;; handed nothing more.
+    (set! done-heard '())
+    (let* ((capped (make-shell loop handler (with 'max-body-bytes 5) clock log! trace!))
+           (to (shell-listen! capped "127.0.0.1" 0))
+           (listening (shell-listener capped))
+           (cl (open-client-to! to (b (string-append "POST /done-reader HTTP/1.1\r\nHost: x\r\n"
+                                                     "Transfer-Encoding: chunked\r\n\r\n"
+                                                     "3\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n")))))
+      (test-equal "a reader still waiting inside a piece as its 413 is written: told failed once that piece's call ends, and handed nothing after"
+                  '(satisfied (413) ((start "abc") (end "abc") (reader failed)))
+                  (let ((told (wait-for (lambda () (and (= 1 (length (responses (client-bytes cl))))
+                                                         (assq 'reader done-heard))))))
+                    (run-loop-until loop (lambda () #f) 50)
+                    (list told (map status (responses (client-bytes cl))) done-heard)))
+      (client-close! cl)
+      (wait-for (lambda () (null? (shell-connections capped))))
+      (shell-shutdown! capped)
+      (wait-for (lambda () (eq? (uv-handle-state listening) 'closed))))
 
     ;; A write outstanding keeps nothing of its response.
     (test-equal "the instrument sees a held object held" 'held
