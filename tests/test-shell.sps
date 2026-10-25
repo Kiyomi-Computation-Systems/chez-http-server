@@ -378,6 +378,15 @@
 (define rows-calls (lambda () 0))
 ;; /mixed's pieces: a write of 5,000 bytes or more goes out alone, after the
 ;; smaller ones held before it.
+;; What the procedures registered with request-on-done! were told, in the
+;; order told, as (name how); what /done-2's handler found told when it was
+;; called; and how many times /done-leave's producer was called.
+(define done-heard '())
+(define (done-hearing name) (lambda (how) (set! done-heard (append done-heard (list (list name how))))))
+(define done-at-second 'not-called)
+(define leave-calls 0)
+(define leave-piece (make-bytevector 65536 120))
+
 (define mixed-pieces
   (list (make-string 100 #\a) (make-string 5000 #\b) (make-string 100 #\c) (make-string 5000 #\d)))
 (define head-first-requests 0)
@@ -566,6 +575,26 @@
                               (when (eq? head-first-seen 'not-called)
                                 (set! head-first-seen (- (live-count 'write-req) head-first-requests)))
                               (p)))))
+          ((bytevector=? target (b "/done-1"))
+           (request-on-done! req (done-hearing 'done-1))
+           (make-response 200 #f '() (b "one")))
+          ((bytevector=? target (b "/done-2"))
+           (set! done-at-second done-heard)
+           (request-on-done! req (done-hearing 'done-2))
+           (make-response 200 #f '() (b "two")))
+          ((bytevector=? target (b "/done-raise"))
+           (request-on-done! req (done-hearing 'first))
+           (request-on-done! req (lambda (how) (raise (make-message-condition "the done procedure failed"))))
+           (request-on-done! req (done-hearing 'third))
+           (make-response 200 #f '() (b "raise")))
+          ((bytevector=? target (b "/done-wait"))
+           (request-on-done! req (done-hearing 'after))
+           (request-on-done! req (lambda (how) (sleep-ms 1) (set! done-heard (append done-heard '((slept))))))
+           (make-response 200 #f '() (b "wait")))
+          ((bytevector=? target (b "/done-leave"))
+           (set! leave-calls 0)
+           (request-on-done! req (done-hearing 'leave))
+           (make-response 200 #f '() (lambda () (set! leave-calls (+ leave-calls 1)) leave-piece)))
           ((bytevector=? target (b "/pieces"))
            (make-response 200 #f '() (producer-of '("one " "two " "three"))))
           ((bytevector=? target (b "/mixed"))
@@ -1920,6 +1949,71 @@
                         (list 'handler-failed (condition-message (cadr entry)))
                         (list 'not-logged logged))))
       (client-close! cl))
+
+    ;; --- how a response ended, told to what the request's code registered ---
+    ;; Kept alive: the first request's procedure is told before the second's
+    ;; handler is called.
+    (set! done-heard '())
+    (set! done-at-second 'not-called)
+    (let ((cl (open-client! (b "GET /done-1 HTTP/1.1\r\nHost: x\r\n\r\nGET /done-2 HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "a client reads two responses on one connection, each request told" 'satisfied
+               (wait-for (lambda () (and (= 2 (length (responses (client-bytes cl))))
+                                         (= 2 (length done-heard))))))
+      (test-equal "kept alive: each told written, once, the first before the second's handler is called"
+                  '(((done-1 written)) ((done-1 written) (done-2 written)))
+                  (list done-at-second done-heard))
+      (client-close! cl))
+    ;; A procedure that raises is logged, the others still told, and the
+    ;; connection goes on: the request behind it is answered.
+    (set! done-heard '())
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /done-raise HTTP/1.1\r\nHost: x\r\n\r\nGET /done-1 HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "a client reads both responses past a procedure that raises" 'satisfied
+               (wait-for (lambda () (and (= 2 (length (responses (client-bytes cl))))
+                                         (= 3 (length done-heard))))))
+      (test-equal "the others told, newest first, the raise logged on-done-failed, and the next request answered"
+                  '(((third written) (first written) (done-1 written))
+                    (on-done-failed "the done procedure failed")
+                    (200 200))
+                  (list done-heard
+                        (let ((entry (assq 'on-done-failed logged)))
+                          (if (and entry (pair? (cdr entry)) (message-condition? (cadr entry)))
+                              (list 'on-done-failed (condition-message (cadr entry)))
+                              (list 'not-logged logged)))
+                        (map status (responses (client-bytes cl)))))
+      (client-close! cl))
+    ;; A procedure is called in place, on no coroutine, so its wait is
+    ;; refused, logged as its raise.
+    (set! done-heard '())
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /done-wait HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "a client reads the response whose procedure waits" 'satisfied
+               (wait-for (lambda () (and (= 1 (length (responses (client-bytes cl))))
+                                         (pair? done-heard)))))
+      (test-equal "a wait in a procedure is refused, logged on-done-failed, and the one before it still told"
+                  '(((after written)) refused)
+                  (list done-heard
+                        (let ((entry (assq 'on-done-failed logged)))
+                          (if (and entry (pair? (cdr entry)) (scheduler-invariant? (cadr entry)))
+                              'refused
+                              (list 'not-refused logged)))))
+      (client-close! cl))
+    ;; A client that leaves while a body streams: once its close reaches
+    ;; the server's writes, the request is told client-closed, and its
+    ;; producer is called no more.  A port the producer reads is closed
+    ;; there.
+    (set! done-heard '())
+    (let ((cl (open-client! (b "GET /done-leave HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of an endless stream reads its head" 'satisfied
+               (wait-for (lambda () (> (bytevector-length (client-bytes cl)) 0))))
+      (client-close! cl)
+      (test-eq "the client gone, the request is told" 'satisfied
+               (wait-for (lambda () (pair? done-heard))))
+      (let ((calls leave-calls))
+        (run-loop-until loop (lambda () #f) 50)
+        (test-equal "client-closed, and its producer called no more after"
+                    (list '((leave client-closed)) calls)
+                    (list done-heard leave-calls))))
 
     ;; A write outstanding keeps nothing of its response.
     (test-equal "the instrument sees a held object held" 'held

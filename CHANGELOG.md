@@ -22,6 +22,19 @@ All notable changes to chez-http-server are recorded here. The format follows
   there as well still works. A program that imports all of `(http-server)`
   and defines either name itself no longer loads: rename its own, or import
   `(except (http-server) request-http-major request-http-minor)`.
+- **`(request-on-done! request proc)`: a handler hears when its response is
+  done, and how it ended.** The server calls `proc` once, with `written` when
+  every write of the response completed, `client-closed` when the client
+  closed or reset the connection first (a failed write included), or `failed`
+  when the server ended it: a `500` or a stream cut short because the code
+  raised, a status of its own in place of the handler's, or the write
+  deadline. Any code that holds the request may register, as often as it
+  likes; the procedures are called in place, newest first, before the next
+  request on a kept-alive connection. A raise from one is logged
+  `on-done-failed` and changes nothing, and one registered once the response
+  is done is called at once. A producer can now close the port it reads
+  when its client leaves mid-stream (docs/bodies.md). A request with nothing
+  registered costs nothing more.
 
 ## [0.8.0] - 2026-10-24
 

@@ -98,6 +98,17 @@ headers, body. See [Responses](responses.md).
 
 `Any -> Boolean`.
 
+### request-on-done!
+
+```text
+request-on-done! : Request (Symbol -> Any) -> Void
+```
+
+Registers a procedure that the server calls once, in place, when the
+request's response is done. It gets `written`, `client-closed` or `failed`.
+Procedures run newest first; one registered after the response is done runs
+at once. See [Handlers](handlers.md#when-the-response-is-done).
+
 ## Waiting
 
 See [Waiting](waiting.md). The waits below work only inside a thunk given to

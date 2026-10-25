@@ -103,6 +103,44 @@ and what it refuses to send, is in [Responses](responses.md). If your handler
 raises, the client gets `500 Internal Server Error` and the server logs
 `handler-failed`.
 
+## When the response is done
+
+Returning a response doesn't tell you it reached the client. To find out,
+register a procedure with `(request-on-done! request proc)`. The server calls
+it once, when the response is done, with how it ended:
+
+| `proc` gets | When |
+|:--|:--|
+| `written` | every write of your response completed |
+| `client-closed` | the client closed or reset the connection first, or a write to it failed |
+| `failed` | the server ended it: your code raised (a `500`, or a stream cut short), the server sent its own status instead of yours (a body too big or too slow), or a write timed out |
+
+```scheme
+;; log each request's path, how it ended, and how long it took
+(lambda (request)
+  (let ((start (real-time)))
+    (request-on-done! request
+                      (lambda (how)
+                        (display (list (request-path request) how (- (real-time) start)))
+                        (newline)))
+    (make-response 200 #f '() (string->utf8 "hello\n"))))
+```
+
+`real-time` is Chez's, from `(chezscheme)`.
+
+- Any code that holds the request may register: the handler, its reader, its
+  producer, a thunk it waits in. Register as many as you like: the newest is
+  called first, so a middleware that registers first hears last.
+- The server calls them in place, the moment the response ends. Like a
+  handler, a procedure must be quick, and it cannot wait. On a kept-alive
+  connection they run before the next request's handler.
+- If one raises, the server logs `on-done-failed`, still calls the others,
+  and carries on.
+- One registered after the response is done is called at once, so each is
+  called exactly once.
+- A request the server refuses before your handler runs, such as one with a
+  malformed head, never reaches your code, so nothing hears about it.
+
 ## Keep it quick
 
 Your handler runs on the server's event loop. While it runs, no other

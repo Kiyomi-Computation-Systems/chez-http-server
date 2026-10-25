@@ -68,6 +68,12 @@
 ;;;   hand-off        the switch's take-over called with the stream, as a
 ;;;                   transport, and a copy of the bytes handed over (THE
 ;;;                   DOOR, below)
+;;;   response-done   each procedure the request's code registered told how
+;;;                   its response ended, in place, in the order the core
+;;;                   hands them, newest first: what each returns is dropped,
+;;;                   and one that raises is logged `on-done-failed`, the rest
+;;;                   still told; a wait in one is refused, as anywhere no
+;;;                   coroutine runs
 ;;; A shell made on credit answers with each handler's answer and `credit`,
 ;;; and a streaming reader's credit reaches the core through
 ;;; connection-body-credit!, which no action asks for.  The server never makes
@@ -810,7 +816,19 @@
       ((disarm-deadline) (disarm! c))
       ((hand-off) (hand-off! c (cadr a) (caddr a) (cadddr a)))
       ((client-closed) (notice-close! (request-notice c)))
+      ((response-done) (call-done! c (cadr a) (caddr a)))
       (else (values))))
+
+  ;; call-done! : Connection Symbol (Listof (Symbol -> Any)) -> Void
+  ;; Each procedure told `how`, in order, in place, on no coroutine, so it
+  ;; cannot wait.  What one raises is logged `on-done-failed` and changes
+  ;; nothing: the rest are still told, and the drain goes on.
+  (define (call-done! c how procs)
+    (let ((sh (connection-shell c)))
+      (for-each (lambda (p)
+                  (guard (e (#t (log-quietly! sh 'on-done-failed (list e))))
+                    (p how)))
+                procs)))
 
   ;; request-notice : Connection -> Notice
   ;; The notice of the request in flight, which tells its code the client has
