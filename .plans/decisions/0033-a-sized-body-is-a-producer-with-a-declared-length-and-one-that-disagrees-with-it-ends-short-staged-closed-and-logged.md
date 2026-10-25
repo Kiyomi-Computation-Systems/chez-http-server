@@ -100,6 +100,10 @@ Settled here by precedent, and shown to the owner with the slice:
   a bare close, logged `handler-failed`.
 - `n` is checked to be a fixnum, not just an exact integer: `response-framing` takes a
   fixnum, and 2^60 - 1 bytes is past any body.
+- An end short of `n` once the client has closed, its request's code told (close-after
+  `client-closed`), is not logged: the client's close is its doing, as a told close's
+  raise let out logs nothing. A piece past `n` is still logged then, since that is the
+  producer's. Decided by the owner's word on the review ("decide quiet by precedent").
 
 The alternatives weighed, by form:
 - for a piece past `n`: writing it up to `n`, then closing (the issue's wording; the
@@ -114,7 +118,7 @@ The alternatives weighed, by form:
 ## Consequences
 
 - A file streams with its length: the client sees its size, a HEAD announces it, and an
-  HTTP/1.0 client keeps the connection.
+  HTTP/1.0 client that asked to keep the connection keeps it.
 - A producer whose bytes disagree with `n` can never desynchronize the connection: no
   byte past `n` is written, and a body short of it ends with the connection.
 - The serializer writes pieces in `content-length` mode, unframed; the core's state keeps
@@ -125,9 +129,10 @@ The alternatives weighed, by form:
 Every new check was red before the code it holds: the records suite stopped at load
 (`sized-body-length` unbound), the serializer's 30 checks red, the stream suite's 10, and
 the shell's 6 and curl's 4 against the old core (`connection.sls` at main's, the rest
-new). Then 32 mutants, measured on the tree rebased onto 77ace4e (Darwin arm64, Chez
-10.4.1), each with its red set predicted before the run (sha256 b15a1de5 of the specs),
-every suite run for each, three at a time; and a row with no mutation, green.
+new). Then 33 mutants: 32 run by a script on the tree rebased onto 77ace4e (Darwin arm64,
+Chez 10.4.1), each with its red set predicted before the run (sha256 b15a1de5 of the
+specs), every suite run for each, three at a time, beside a row with no mutation, green;
+and D1, by hand.
 
 | Mutant | What it breaks | Red |
 |---|---|---|
@@ -175,3 +180,33 @@ Not watched by a mutant: that `sized-body?` answers no for a producer and a byte
 and that `make-response` keeps a sized body, which `define-record-type` and the response
 record make so; they were red at load before the record existed. file-server.sps's
 closing of its port after the last byte is not read by any check.
+
+## The review
+
+A `/code-review` (xhigh) of the three PRs found eight things, each fixed on the owner's
+word ("Fix all eight findings on the stack ... decide quiet by precedent"):
+1. A producer told its client has closed, which then stopped short, logged a mismatch.
+   A short end on a connection closing for `client-closed` is now quiet (the rule above);
+   a piece past the length still logs. The stream suite checks both.
+2. The mutant count: 33, D1 by hand among them, where the records said 32.
+3. "An HTTP/1.0 client keeps its connection": only one that asked to keep it does.
+4. The raise check's name promised a shell log it does not read; it now names what it
+   reads.
+5. The stream suite's `letters` gave way to `(producers)`'s `sized-text`.
+6. Its `list-head-4` gave way to Chez's `list-head`.
+7. `on-body-chunk` binds the piece's length and what is left after it once.
+8. A piece past the length was checked in the fake shell alone; `/sized-long` checks it
+   through libuv.
+
+Re-run after the fixes on the stack's top, the prediction's sha256 691010e6: 36 mutants
+and the unmutated row, the core's rows re-cut for the rewritten `on-body-chunk` and
+`mismatch`, and four new ones: Q1, a short end after the client's close logged; Q2, a
+piece past the length after it quiet too; Q3, nothing ever logged; Q4, a short end taken
+as a long one. Q1, Q2 and Q4 reddened the new client-closed check alone; Q3 that check,
+five more of the stream suite's, two of the shell's and curl's log check. Every row
+matched its prediction but two:
+- **C13** also reddened the serve suite's SIGTERM-timing check; alone, twice, it was
+  green: three runs at once, a load red.
+- **C19**'s cut was stale: it called `mismatch` with two arguments, so its reds were the
+  arity error's, in the exports and reference suites too. Re-cut as C19b, `(mismatch s
+  'short 0)`, it reddened the raise check alone, as predicted.

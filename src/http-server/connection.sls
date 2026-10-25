@@ -315,9 +315,12 @@
 ;;; bytes given counting the piece not written, and the connection closes
 ;;; after the writes already made, staged, as after any response, for the
 ;;; reason `body-length-mismatch` unless it closes for one of its own: a
-;;; client reads the body short, and knows it incomplete (RFC 9112 §8).  No
-;;; body is written to a HEAD, a 204 or a 304, nor where the length is 0, so
-;;; their producer is never called.
+;;; client reads the body short, and knows it incomplete (RFC 9112 §8).  An
+;;; end short of the length once the client has closed, and been told, is
+;;; the client's doing, and is not logged, as a told close's raise let out
+;;; is not; a piece past the length is the producer's, and is.  No body is
+;;; written to a HEAD, a 204 or a 304, nor where the length is 0, so their
+;;; producer is never called.
 ;;;
 ;;; EXPECT: 100-CONTINUE IS ANSWERED WHEN THE HANDLER PULLS THE BODY.  A
 ;;; client that sends `Expect: 100-continue` with a head that announces a
@@ -1098,22 +1101,24 @@
       ((responding)
        (unless (conn-asked? s)
          (assertion-violation 'conn-step "a piece the core did not ask for" fields))
-       (let ((bv (car fields)) (start (cadr fields)) (end (caddr fields)) (left (conn-left s)))
+       (let ((bv (car fields)) (start (cadr fields)) (end (caddr fields)))
          (unless (and (fixnum? start) (fixnum? end) (fx<? start end))
            (assertion-violation 'conn-step "a piece of no bytes" fields))
-         (if (and left (fx>? (fx- end start) left))
-             (mismatch s (fx+ (fx- (conn-declared s) left) (fx- end start)))
-             (let-values (((segments bytes) (serialize-piece (conn-pieces s) bv start end)))
-               (let ((w (count-write! s segments bytes)))
-                 (conn-deadline-set! s 'write)
-                 (when left (conn-left-set! s (fx- left (fx- end start))))
-                 (cond ((eqv? (conn-left s) 0)
-                        (end-stream! s)
-                        (values s (cons w '((arm-deadline write)))))
-                       ((below-high-water? s)
-                        (values s (cons w '((arm-deadline write) (notify-producer)))))
-                       (else (conn-asked?-set! s #f)
-                             (values s (cons w '((arm-deadline write)))))))))))
+         ;; rest: what a sized body has left to write after this piece, or #f.
+         (let* ((n (fx- end start)) (left (conn-left s)) (rest (and left (fx- left n))))
+           (if (and rest (fx<? rest 0))
+               (mismatch s 'long (fx+ (fx- (conn-declared s) left) n))
+               (let-values (((segments bytes) (serialize-piece (conn-pieces s) bv start end)))
+                 (let ((w (count-write! s segments bytes)))
+                   (conn-deadline-set! s 'write)
+                   (when rest (conn-left-set! s rest))
+                   (cond ((eqv? rest 0)
+                          (end-stream! s)
+                          (values s (cons w '((arm-deadline write)))))
+                         ((below-high-water? s)
+                          (values s (cons w '((arm-deadline write) (notify-producer)))))
+                         (else (conn-asked?-set! s #f)
+                               (values s (cons w '((arm-deadline write))))))))))))
       (else (values s '()))))
 
   ;; responding, handler-body-end: the producer's body has ended, and the
@@ -1130,7 +1135,7 @@
        (unless (conn-asked? s)
          (assertion-violation 'conn-step "an end the core did not ask for" (conn-producer s)))
        (if (conn-left s)
-           (mismatch s (fx- (conn-declared s) (conn-left s)))
+           (mismatch s 'short (fx- (conn-declared s) (conn-left s)))
            (let ((framing (conn-pieces s)))
              (end-stream! s)
              (let-values (((segments bytes) (serialize-end framing)))
@@ -1143,22 +1148,24 @@
                 (else (response-written s)))))))
       (else (values s '()))))
 
-  ;; mismatch : ConnState Nat -> (values ConnState (Listof Action))
+  ;; mismatch : ConnState (U 'long 'short) Nat -> (values ConnState (Listof Action))
   ;; responding, a sized body's producer has given `given` bytes where its
-  ;; length is another count: the body ends short, the producer let go, and
-  ;; the connection closes after the response, for `body-length-mismatch`
-  ;; unless it closes for a reason of its own already, logged with the
-  ;; length and the bytes given.  With a write outstanding, its completion
-  ;; writes the response, as for a close-delimited body's end; with none, it
-  ;; is written now, and the staged close begins.
-  (define (mismatch s given)
-    (let ((logged (list 'log 'body-length-mismatch (conn-declared s) given)))
+  ;; length is another count, past it (`long`) or short of it at its end
+  ;; (`short`): the body ends short, the producer let go, and the connection
+  ;; closes after the response, for `body-length-mismatch` unless it closes
+  ;; for a reason of its own already, logged with the length and the bytes
+  ;; given.  A short end once the client has closed, and its request's code
+  ;; been told (close-after `client-closed`), is the client's doing, and is
+  ;; not logged.  With a write outstanding, its completion writes the
+  ;; response, as for a close-delimited body's end; with none, it is
+  ;; written now, and the staged close begins.
+  (define (mismatch s how given)
+    (let ((logged (and (not (and (eq? how 'short) (eq? (conn-close-after s) 'client-closed)))
+                       (list 'log 'body-length-mismatch (conn-declared s) given))))
       (end-stream! s)
       (unless (conn-close-after s) (conn-close-after-set! s 'body-length-mismatch))
-      (if (> (conn-outstanding s) 0)
-          (values s (list logged))
-          (let-values (((s actions) (response-written s)))
-            (values s (cons logged actions))))))
+      (let-values (((s actions) (if (> (conn-outstanding s) 0) (values s '()) (response-written s))))
+        (values s (if logged (cons logged actions) actions)))))
 
   ;; count-write! : ConnState (Listof Segment) Nat -> Action
   ;; `(write segments bytes)`, outstanding, with its bytes, until the shell

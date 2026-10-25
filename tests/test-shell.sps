@@ -41,7 +41,8 @@
 ;;;     after a piece closes the connection with the body cut short, logged;
 ;;;     a sized body is sent with its Content-Length and the connection kept,
 ;;;     its producer on a coroutine for a handler that waits, and one whose
-;;;     producer ends short is closed after the bytes given, logged;
+;;;     producer ends short, or gives a piece past its length, is closed
+;;;     after the bytes written, logged;
 ;;;   - writes: one outstanding keeps nothing of its response (chez-libuv
 ;;;     copies the segments at the call); one that fails, at its completion or
 ;;;     when it is issued, closes the connection as a read error, and is
@@ -285,7 +286,7 @@
 ;; write requests chez-libuv holds than when the handler was called
 ;; (`head-first-requests`); and `/stream-raise` a piece, then raises; and
 ;; `/sized` three texts as a body of their 13 bytes, `/sized-short` two, 8
-;; bytes, as a body of 20.  And where a handler is called, and handlers that
+;; bytes, as a body of 20, and `/sized-long` the three as a body of 10.  And where a handler is called, and handlers that
 ;; wait:
 ;; `/phase` answers the scheduler's phase it was called in and whether a
 ;; coroutine ran it; `/await` waits, its thunk parked in `parked` until the
@@ -585,6 +586,8 @@
            (make-response 200 #f '() (sized-body 13 (producer-of '("one " "two " "three")))))
           ((bytevector=? target (b "/sized-short"))
            (make-response 200 #f '() (sized-body 20 (producer-of '("one " "two ")))))
+          ((bytevector=? target (b "/sized-long"))
+           (make-response 200 #f '() (sized-body 10 (producer-of '("one " "two " "three")))))
           ((bytevector=? target (b "/stream-raise"))
            (make-response 200 #f '()
                           (producer-of '("one piece")
@@ -1965,6 +1968,21 @@
                (wait-for (lambda () (not (eq? (client-end cl) 'open)))))
       (test-equal "its length, the bytes given, then the end: short of the length, logged with both counts"
                   '((200 "20" "one two " error) eof ((body-length-mismatch 20 8)))
+                  (let ((r (read-response (client-bytes cl) #f #t)))
+                    (list (list (status r) (field r "Content-Length") (body r) (list-ref r 4))
+                          (client-end cl)
+                          (filter (lambda (entry) (eq? (car entry) 'body-length-mismatch)) logged))))
+      (client-close! cl))
+    ;; A sized body whose producer gives a piece past its length: none of the
+    ;; piece is written, so the client reads the stream's end short of the
+    ;; length, and the shell logs the length and the bytes given, the piece
+    ;; among them.
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /sized-long HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of a sized body whose producer gives too much reads the stream's end" 'satisfied
+               (wait-for (lambda () (not (eq? (client-end cl) 'open)))))
+      (test-equal "its length, the pieces before the one past it, then the end: short of the length, logged with both counts"
+                  '((200 "10" "one two " error) eof ((body-length-mismatch 10 13)))
                   (let ((r (read-response (client-bytes cl) #f #t)))
                     (list (list (status r) (field r "Content-Length") (body r) (list-ref r 4))
                           (client-end cl)

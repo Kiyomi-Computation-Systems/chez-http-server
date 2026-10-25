@@ -21,7 +21,9 @@
 ;;; producer is asked no more.  A piece that would take the body past it is
 ;;; not written, none of it, and an end short of it ends the response short:
 ;;; either is logged with the length and the bytes given, and the connection
-;;; closes after the bytes written, staged, as after any response.
+;;; closes after the bytes written, staged, as after any response.  An end
+;;; short of the length once the client has closed is the client's doing, and
+;;; is not logged.
 ;;;
 ;;; What a connection wrote is read back as a client reads it, by
 ;;; chez-httparse's strict response parser (response-reader), which is not
@@ -39,7 +41,7 @@
 ;;; status line 17, the Date 37, and `Transfer-Encoding: chunked` CRLF CRLF
 ;;; 30.  A sized body's piece is written as itself, a 16 KiB piece in 16,384
 ;;; bytes.
-(import (rnrs) (srfi :64) (testing)
+(import (rnrs) (srfi :64) (testing) (only (chezscheme) list-head)
         (http-server connection) (http-server response) (http-server limits) (http-server body)
         (fake-shell) (response-reader) (producers))
 
@@ -73,9 +75,6 @@
 ;; A handler answering every request with a 200 of `n` bytes from `producer`.
 (define (answering-sized n producer)
   (lambda (request) (make-response 200 #f '() (sized-body n producer))))
-
-;; letters : Nat Nat -> String — `size` bytes of the k-th letter from `a`.
-(define (letters k size) (make-string size (integer->char (+ 97 k))))
 
 ;; --- a connection --------------------------------------------------------------
 
@@ -166,9 +165,6 @@
 ;; ran? : FakeShell Symbol -> (U Symbol 'none) — whether an action of `kind` ran.
 (define (ran? sh kind)
   (if (exists (lambda (a) (eq? (car a) kind)) (fake-shell-actions sh)) kind 'none))
-
-;; list-head-4 : (Listof Any) -> (Listof Any) — its first four.
-(define (list-head-4 ls) (list (car ls) (cadr ls) (caddr ls) (cadddr ls)))
 
 ;; classify : Bytevector -> Symbol — a write as a head, a piece, or the last chunk.
 (define (classify w)
@@ -408,13 +404,13 @@
     ;; outstanding.  Its end, short, then closes at once, staged: the linger
     ;; armed in its step, after the log.
     (test-equal "a producer that ends short with no write outstanding: logged, then at once the half-close and the linger"
-                `((200 "OK" (,epoch-date ("Content-Length" . "2000")) ,(string-append (letters 0 600) (letters 1 600)) error)
+                `((200 "OK" (,epoch-date ("Content-Length" . "2000")) ,(sized-text 2 600) error)
                   ((log body-length-mismatch 2000 1200) (shutdown) (read-start) (arm-deadline linger))
                   (lingering body-length-mismatch))
                 (let ((sh (serve (waters 1000 300) (answering-sized 2000 (sized-producer 2 600)) get11)))
                   (list (read-back sh #f #t)
                         (let ((as (memp (lambda (a) (eq? (car a) 'log)) (fake-shell-actions sh))))
-                          (if (and as (>= (length as) 4)) (list-head-4 as) as))
+                          (if (and as (>= (length as) 4)) (list-head as 4) as))
                         (ended sh))))
     ;; A connection that closes after this response already, a POST
     ;; answered without reading its body, keeps its own reason.
@@ -435,8 +431,25 @@
                                         (make-response 200 #f '() (producer-of '("c")))))
                                   two-gets)))
                   (list (map classify (fake-shell-writes sh)) (logged sh) (ended sh))))
-    ;; A sized producer fails as any producer does.
-    (test-equal "a sized producer that raises after a piece: a bare close, logged by the shell, not as a mismatch"
+    ;; A client that closes while its body is written is told, through its
+    ;; request's notice, and a producer that then stops short is the client's
+    ;; doing: nothing is logged, as nothing is for a told close's raise let
+    ;; out.  One that gives more than the length is the producer's, and is
+    ;; logged whoever listens.  Under a high water of 10 the head waits for
+    ;; its completion before the producer is asked, so the client's end comes
+    ;; first.
+    (test-equal "once its client has closed, a producer that ends short closes quietly, nothing logged; one past the length is still logged"
+                '((() closed (close client-closed))
+                  (((log body-length-mismatch 12 13)) closed (close client-closed)))
+                (map (lambda (texts)
+                       (let ((sh (begun (waters 10 5) (answering-sized 12 (producer-of texts)) get11)))
+                         (fake-shell-deliver! sh '(eof))
+                         (fake-shell-settle! sh)
+                         (list (logged sh) (conn-phase (fake-shell-conn-state sh)) (car (last-actions sh 1)))))
+                     '(("hello") ("hello, world!"))))
+    ;; A sized producer fails as any producer does: the shell logs its raise,
+    ;; and the core no mismatch.
+    (test-equal "a sized producer that raises after a piece: a bare close, as any producer's, the core logging no mismatch"
                 `((200 "OK" (,epoch-date ("Content-Length" . "12")) "hello" need-input)
                   closed ((disarm-deadline) (close handler-failed)) () none)
                 (let ((sh (serve default-limits
