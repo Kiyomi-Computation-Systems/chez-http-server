@@ -33,7 +33,7 @@
 (define root "build/examples-root")
 
 ;; big-size : Nat — over the 1 MiB file-server.sps reads whole, so a file this
-;; long is streamed.
+;; long is streamed, with its length.
 (define big-size 1100000)
 
 ;; big-byte : Nat -> Nat — the byte at `i` in the big file.
@@ -291,9 +291,12 @@
           (let ((r (fetch loop port "DELETE /hello.txt HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" #f)))
             (test-equal "file-server: any other method is 501" 501 (status-of r)))
           (let ((r (get loop port "/big.bin")))
-            (test-equal "file-server: a file over 1 MiB is streamed, chunked, byte for byte"
-                        '(200 "chunked" #f same)
+            (test-equal "file-server: a file over 1 MiB is streamed with its length, not chunked, byte for byte"
+                        '(200 #f "1100000" same)
                         (list (status-of r) (and (pair? r) (header r "transfer-encoding"))
                               (and (pair? r) (header r "content-length"))
-                              (big-body-ok? (body-of r))))))))
+                              (big-body-ok? (body-of r)))))
+          (let ((r (fetch loop port "HEAD /big.bin HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" #t)))
+            (test-equal "file-server: HEAD of a file over 1 MiB gets its length too, and no body"
+                        '(200 "1100000" "") (list (status-of r) (and (pair? r) (header r "content-length")) (body-of r)))))))
     (remove-tree! root)))

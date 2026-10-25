@@ -33,7 +33,7 @@
     (let* ((wire (b "GET /p HTTP/1.1\r\nHost: x\r\n\r\n"))
            (target (make-span wire 4 6))
            (hs (list (cons (make-span wire 17 21) (make-span wire 23 24))))
-           (req (make-request 'GET target 1 1 hs 'the-body)))
+           (req (make-request 'GET target 1 1 hs #t)))
       (test-eq    "method reads back"  'GET      (request-method req))
       (test-eq    "target reads back"  target    (request-target req))
       (test-equal "the target is /p"   (b "/p")  (span->bytevector (request-target req)))
@@ -43,7 +43,9 @@
       (test-equal "the header is Host: x" (list (b "Host") (b "x"))
                   (let ((h (car (request-headers req))))
                     (list (span->bytevector (car h)) (span->bytevector (cdr h)))))
-      (test-eq    "body reads back"    'the-body (request-body req))
+      (test-eq    "a body announced reads back" #t (request-has-body? req))
+      (test-eq    "and none announced"  'no
+                  (if (request-has-body? (make-request 'GET target 1 1 hs #f)) 'yes 'no))
       (test-eq    "request? accepts"   'yes (if (request? req) 'yes 'no))
       (test-eq    "request? rejects a fixnum" 'no (if (request? 42) 'yes 'no)))
 
@@ -87,6 +89,26 @@
     ;; a present reason phrase is kept verbatim
     (let ((res (make-response 404 (b "Not Found") '() #f)))
       (test-equal "present reason kept" (b "Not Found") (response-reason res)))
+
+    ;; --- a sized body: a producer with its length declared ---
+    (let* ((p (lambda () (eof-object)))
+           (sb (sized-body 5 p)))
+      (test-equal "a sized body's length and producer read back" (list 5 p)
+                  (list (sized-body-length sb) (sized-body-producer sb)))
+      (test-equal "sized-body? accepts one, and neither a producer nor a bytevector" '(yes no no)
+                  (map (lambda (x) (if (sized-body? x) 'yes 'no)) (list sb p (b "hello"))))
+      (test-eq "a response takes one as its body" sb (response-body (make-response 200 #f '() sb)))
+      ;; Its length is a count of bytes, a fixnum, as the framing decision
+      ;; takes one, 0 among them; its producer a procedure.
+      (test-equal "a length that is no fixnum count of bytes, or a producer that is no procedure, is refused; 0 bytes is a length"
+                  '(refused refused refused refused refused refused accepted)
+                  (list (refused (lambda () (sized-body -1 p)))
+                        (refused (lambda () (sized-body 5.0 p)))
+                        (refused (lambda () (sized-body 5/2 p)))
+                        (refused (lambda () (sized-body (+ (greatest-fixnum) 1) p)))
+                        (refused (lambda () (sized-body "5" p)))
+                        (refused (lambda () (sized-body 5 (b "hello"))))
+                        (refused (lambda () (sized-body 0 p))))))
 
     ;; --- the switch a handler answers to take an upgrade ---
     (let* ((take-over (lambda (transport retained) 'taken))

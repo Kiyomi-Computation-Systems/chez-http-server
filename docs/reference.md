@@ -12,7 +12,7 @@ Shared types:
 
 ```text
 Headers  = (Listof (Pair Bytevector Bytevector))
-Body     = (U Bytevector #f Producer)
+Body     = (U Bytevector #f Producer SizedBody)
 Producer = (-> (U Bytevector Eof))
 Answer   = (U Response BodyReader Awaiting)
 ```
@@ -60,6 +60,7 @@ of the request (Latin-1), and is made when called. See
 | `request-host` | `Request -> String` | the host the request is for, `""` if none |
 | `request-http-major` | `Request -> Nat` | the first number of the version the request names, always `1` |
 | `request-http-minor` | `Request -> Nat` | its second: `2` for `HTTP/1.2`, which is answered as HTTP/1.1 |
+| `request-has-body?` | `Request -> Boolean` | whether a body follows the head: chunked, or a `Content-Length` above 0 |
 
 ## Reading a body
 
@@ -97,6 +98,15 @@ headers, body. See [Responses](responses.md).
 ### response?
 
 `Any -> Boolean`.
+
+### sized-body
+
+```text
+sized-body : Nat Producer -> SizedBody
+```
+
+A body of that many bytes, made by the producer as it is sent, with its
+`Content-Length`. See [Bodies and streaming](bodies.md#streaming-with-a-length).
 
 ## Waiting
 

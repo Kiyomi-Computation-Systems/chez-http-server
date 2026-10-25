@@ -47,9 +47,9 @@ What it does:
 - A file's `Content-Type` comes from its extension: `.html` is `text/html`,
   `.png` is `image/png`, and so on. Unknown ones are
   `application/octet-stream`.
-- A file up to 1 MiB is read whole and sent with its `Content-Length`. A
-  bigger one is streamed in 64 KiB pieces, so a huge file never sits in
-  memory.
+- Every file is sent with its `Content-Length`. One up to 1 MiB is read
+  whole; a bigger one is streamed in 64 KiB pieces as a sized body, so a
+  huge file never sits in memory.
 - `.` and `..` in a path are dropped, as Python drops them, so no request
   reaches outside the folder.
 
