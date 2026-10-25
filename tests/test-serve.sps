@@ -71,7 +71,8 @@
 
 ;; The handler reads the request through the facade's names alone, and
 ;; answers with what it read: the method, the path, the query, the host and
-;; the X-Probe header, "-" for one that is not there.  At `/door` it takes
+;; the X-Probe header, "-" for one that is not there, and the version, as
+;; major.minor.  At `/door` it takes
 ;; the upgrade to `echo`, with the facade's names alone: its taker writes
 ;; back what it is handed and what it reads, and closes at the client's end.
 (define (handler r)
@@ -397,7 +398,7 @@
                   (exchange loop sh port (b "GET /p HTTP/1.0\r\nHost: h\r\n\r\n")))
       ;; The server answers it as HTTP/1.1 (tests/test-connection-head.sps);
       ;; the handler reads the version the client sent.
-      (test-equal "and HTTP/1.2 is 1.2, not the 1.1 it is answered in"
+      (test-equal "and HTTP/1.2 is 1.2, the version it names"
                   '(200 "GET /p - h - 1.2" complete)
                   (exchange loop sh port (b "GET /p HTTP/1.2\r\nHost: h\r\nConnection: close\r\n\r\n")))
       (test-equal "its limits are the environment's: a target over CHEZ_HTTP_MAX_TARGET_BYTES gets 414"

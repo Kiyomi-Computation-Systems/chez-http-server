@@ -58,7 +58,7 @@ For `GET /a/b?x=1 HTTP/1.1` with `Host: example.com`:
 - With an empty `Host:`, or none (HTTP/1.0), the host is `""`.
 - The version is the one the request names: `HTTP/1.2` reads `1` and `2`,
   though the server answers it as HTTP/1.1. The first number is always `1`:
-  any other version gets `505` before your handler runs
+  the server refuses any other version before your handler runs
   ([Connections](connections.md#versions)).
 
 Each call makes its string when you ask, so a handler pays only for what it
