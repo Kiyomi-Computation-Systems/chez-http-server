@@ -306,6 +306,17 @@
                 (every-size post-then-get default-limits
                             (noting (lambda (request) (read-whole-body (lambda (body) ok))))
                             (lambda (sh probe) (list (probe) (outcome sh)))))
+    ;; An upgrade frames its body as any request does, so one with a
+    ;; Content-Length above 0 has a body: answered at once, the connection
+    ;; closes after the response, and the GET behind is not served.
+    (test-equal "request-has-body?, an upgrade with a Content-Length of 1, every delivery size: #t, and the response closes"
+                '(((#t) ((call-handler (GET "/chat")) (write 200)) lingering))
+                (every-size (b (string-append "GET /chat HTTP/1.1\r\nHost: x\r\nConnection: upgrade\r\n"
+                                              "Upgrade: websocket\r\nContent-Length: 1\r\n\r\nx" get-b))
+                            default-limits (noting (lambda (request) ok))
+                            (lambda (sh probe)
+                              (list (probe) (decisive (fake-shell-actions sh))
+                                    (conn-phase (fake-shell-conn-state sh))))))
 
     ;; --- caps ----------------------------------------------------------------------
     ;; The limits' max-body-bytes caps every body: a declared length past it

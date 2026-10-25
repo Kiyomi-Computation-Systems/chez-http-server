@@ -43,7 +43,7 @@
       (test-equal "the header is Host: x" (list (b "Host") (b "x"))
                   (let ((h (car (request-headers req))))
                     (list (span->bytevector (car h)) (span->bytevector (cdr h)))))
-      (test-eq    "a body announced reads back" 'yes (if (eq? (request-has-body? req) #t) 'yes 'no))
+      (test-eq    "a body announced reads back" #t (request-has-body? req))
       (test-eq    "and none announced"  'no
                   (if (request-has-body? (make-request 'GET target 1 1 hs #f)) 'yes 'no))
       (test-eq    "request? accepts"   'yes (if (request? req) 'yes 'no))

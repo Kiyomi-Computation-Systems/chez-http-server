@@ -682,11 +682,10 @@
                                          out at (span-length sp))
                        (loop (cdr spans) (fx+ at (span-length sp)))))))))))
 
-  ;; The request body being read: how its framing announced it, the bytes
-  ;; of it met, the handler's answer, and what is kept for that answer.  One
-  ;; per connection, rolled with the head.
-  ;;   framed?   whether the framing announced a body: chunked, or a
-  ;;             Content-Length above 0
+  ;; The request body being read: the length its framing declared, the
+  ;; bytes of it met, the handler's answer, and what is kept for that answer.
+  ;; Whether the framing announced one is the request's own
+  ;; (`request-has-body?`).  One per connection, rolled with the head.
   ;;   declared  the Content-Length, or #f when chunked
   ;;   count     the body bytes the parser has met
   ;;   answer    #f, the handler not yet asked; call, to be asked once the
@@ -712,8 +711,7 @@
   ;;             to be written
   ;;   extensions the bytes of the chunk extensions' names and values met
   (define-record-type (body-state make-body-state body-state?)
-    (fields (mutable framed?   body-framed?   body-framed?-set!)
-            (mutable declared  body-declared  body-declared-set!)
+    (fields (mutable declared  body-declared  body-declared-set!)
             (mutable count     body-count     body-count-set!)
             (mutable answer    body-answer    body-answer-set!)
             (mutable held      body-held      body-held-set!)
@@ -726,11 +724,10 @@
             (mutable owed      body-owed      body-owed-set!)
             (mutable continue? body-continue? body-continue?-set!)
             (mutable extensions body-extensions body-extensions-set!))
-    (protocol (lambda (new) (lambda () (new #f #f 0 #f '() #f #f #f #f 0 #f 0 #f 0)))))
+    (protocol (lambda (new) (lambda () (new #f 0 #f '() #f #f #f #f 0 #f 0 #f 0)))))
 
   ;; body-roll! : Body -> Void — nothing read, and nothing kept.
   (define (body-roll! bd)
-    (body-framed?-set! bd #f)
     (body-declared-set! bd #f)
     (body-count-set! bd 0)
     (body-answer-set! bd #f)
@@ -1769,7 +1766,6 @@
                    ((eqv? upgrade 1)
                     (conn-close-after-set! s 'upgrade)))
              (body-roll! bd)
-             (body-framed?-set! bd framed?)
              (body-declared-set! bd declared)
              (cond
               ((and framed? (over? (limits-max-body-bytes (conn-limits s)) declared))
@@ -2026,7 +2022,7 @@
            ((asked)
             (cond ((body-reader? answer) (accept-reader s answer (pair? rest)))
                   ((switch? answer) (switch-with s answer))
-                  ((body-framed? bd)
+                  ((request-has-body? (conn-request s))
                    (unless (conn-close-after s) (conn-close-after-set! s 'unread-body))
                    (respond-with s answer))
                   (else (respond-with s answer))))
@@ -2175,7 +2171,7 @@
            (eq? (conn-close-after s) 'upgrade)
            (http/1.1? (request-http-major r) (request-http-minor r))
            (not (eq? (request-method r) 'CONNECT))
-           (not (body-framed? (conn-body s))))))
+           (not (request-has-body? r)))))
 
   ;; write-action : ConnState Response Serializer -> Action
   ;;   Serializer = serialize-response, or serialize-checked-response for a

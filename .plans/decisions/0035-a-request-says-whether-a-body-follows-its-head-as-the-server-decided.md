@@ -16,8 +16,10 @@ Plan: none; the issue is the design
   answers `awaiting` for every request, and its thunk wants to answer a reader only when
   a body follows. It copies the rule from the headers, and the copy drifts: the server
   reads `Content-Length: 00` as no body, as it does `0`, and a copy that tests the string
-  `"0"` takes it for one. The two lookups also allocate, 64 B a request by the issue's
-  count, each name turned into bytes.
+  `"0"` takes it for one. The two lookups also allocate, each name turned into bytes:
+  64 B a request with neither field, `request-header` on `transfer-encoding` and
+  `request-header-values` on `content-length` over 100,000 calls (measured on Darwin
+  arm64, Chez 10.4.1, 2026-10-25).
 - The request record's sixth field, Body, was built `#f` for every request: a handler
   reads a body through the reader it answers with. The facade did not export
   `request-body`.
@@ -39,7 +41,11 @@ Plan: none; the issue is the design
    `IHttpRequestBodyDetectionFeature.CanHaveBody` sits beside the body stream; it would
    cost 16 B a request once #224's slot lands.
 3. **The core decides it once**, as it builds the request, so asking reads a field and
-   allocates nothing.
+   allocates nothing. The core reads the same field itself: the close after a response
+   given to a request with a body, and the door's refusal of an upgrade with one, ask
+   `request-has-body?`. The body state, which kept a copy of the decision as `framed?`,
+   keeps none, so the answer a handler reads is the one the close follows by
+   construction.
 4. **The name** is the issue's.
 
 ## Consequences
@@ -51,6 +57,6 @@ Plan: none; the issue is the design
 - `(http-server request)` loses `request-body`, which no doc covered and which was `#f`
   for every request. A program that imports all of `(http-server)` and defines
   `request-has-body?` itself no longer loads; CHANGELOG.md names the `except` import.
-- An upgrade request with a Content-Length above 0 answers `#t`, as the server frames it.
-  ASP.NET Core's `CanHaveBody` answers false for any upgrade; the server's own rule is
-  the one a handler needs, since it is the one the close follows.
+- An upgrade request with a Content-Length above 0 answers `#t`, as the server frames it,
+  and a check holds it. ASP.NET Core's `CanHaveBody` answers false for any upgrade; the
+  server's own rule is the one a handler needs, since it is the one the close follows.
