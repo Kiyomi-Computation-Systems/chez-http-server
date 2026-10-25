@@ -49,6 +49,19 @@ All notable changes to chez-http-server are recorded here. The format follows
   itself no longer loads: rename its own, or import
   `(except (http-server) request-has-body?)`.
 
+### Fixed
+
+- **`docs/waiting.md` gives today's costs.** It said `guard` costs about
+  3.7 KB inside a handler that waits, a figure from before waits parked on a
+  full continuation. It costs about 0.4 KB, and about 1.2 KB when it catches
+  an `error`; `with-exception-handler` costs about 0.15 KB, not next to
+  nothing. The page now warns that an escape by `call/1cc` costs 3.4 KB or
+  more once the code inside it waits or raises with `error`.
+- **`docs/waiting.md` says what a wait does to `dynamic-wind`.** A wait runs
+  the after thunk of each `dynamic-wind` around it, and the resume its before
+  thunk, so a resource released in an after thunk is released at every wait,
+  and Chez's `critical-section` and `with-mutex` do not hold across one.
+
 ## [0.8.0] - 2026-10-24
 
 The ninth release, and the first public one: the repository and its docs
