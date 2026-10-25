@@ -8,7 +8,7 @@
 ;;;
 ;;; PURE apart from each producer's own count of what it has handed out.
 (library (producers)
-  (export producer-of sized-producer refilled-producer sized-body counted)
+  (export producer-of sized-producer refilled-producer sized-text counted)
   (import (rnrs))
 
   ;; producer-of : (Listof String) [(-> Any)] -> (-> Any)
@@ -51,9 +51,9 @@
                    (set! made (+ made 1))
                    piece)))))
 
-  ;; sized-body : Nat Nat -> String — the body sized-producer's pieces make,
+  ;; sized-text : Nat Nat -> String — the body sized-producer's pieces make,
   ;; and refilled-producer's.
-  (define (sized-body count size)
+  (define (sized-text count size)
     (let loop ((k 0) (acc '()))
       (if (= k count)
           (apply string-append (reverse acc))

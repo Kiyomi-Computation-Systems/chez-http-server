@@ -9,7 +9,8 @@
 ;;; the parser meets it, then its end; a whole one (`read-whole-body`) is
 ;;; handed the body as one piece at the end.  A response given instead is
 ;;; sent at once, and the connection closes after it.  A body past a cap is
-;;; answered 413.
+;;; answered 413.  `request-has-body?` reads the core's own answer to
+;;; whether the framing announces a body, so it agrees with that close.
 ;;;
 ;;; Each row runs at every delivery size, from a byte at a time to the
 ;;; whole input in one delivery, so one expected answer is also the
@@ -22,6 +23,7 @@
 ;;; §15.6.1); the staged close (RFC 9112 §9.6).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits) (http-server body)
+        (only (http-server request) request-has-body?)
         (fake-shell) (decisive))
 
 (define (b s) (string->utf8 s))
@@ -178,6 +180,15 @@
           (for-all (lambda (n) (and (number? n) (<= 1 n size))) credits)
           (fake-shell-violations sh))))
 
+;; noting : (Request -> Any) -> (-> (values (Request -> Any) (-> (Listof Boolean))))
+;; A handler that answers every request with `answer`'s answer, and what
+;; `request-has-body?` read for each, in order.
+(define (noting answer)
+  (lambda ()
+    (let ((seen '()))
+      (values (lambda (request) (set! seen (cons (request-has-body? request) seen)) (answer request))
+              (lambda () (reverse seen))))))
+
 ;; --- the inputs --------------------------------------------------------------
 
 (define post-a "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789")
@@ -259,6 +270,53 @@
                                                            (map (lambda (seg) (if (bytevector? seg) (utf8->string seg) ""))
                                                                 (cadr w)))
                                                     "Connection: close\r\n"))))))
+
+    ;; --- whether a request has a body ----------------------------------------------
+    ;; The framing announces one when it is chunked, or when its
+    ;; Content-Length is above 0, `00` none, and with neither field there is
+    ;; none (RFC 9112 §6.3); a chunked body announces one even when its first
+    ;; chunk is its last.  Answered with a response at once, a request with a
+    ;; body closes the connection after it, unread-body, and one with none
+    ;; keeps it, the GET behind served.
+    (for-each
+     (lambda (row)
+       (let ((framing (car row)) (has? (cadr row)))
+         (test-equal (string-append "request-has-body?, " (caddr row) ", every delivery size: "
+                                    (if has? "#t, and the response closes, unread-body"
+                                        "#f, and the connection kept, the GET behind served"))
+                     (list (if has?
+                               '((#t) (((call-handler (POST "/a")) (write 200)) lingering unread-body))
+                               '((#f #f) (((call-handler (POST "/a")) (write 200)
+                                           (call-handler (GET "/b")) (write 200))
+                                          idle #f))))
+                     (every-size (b (string-append "POST /a HTTP/1.1\r\nHost: x\r\n" framing get-b))
+                                 default-limits (noting (lambda (request) ok))
+                                 (lambda (sh probe) (list (probe) (outcome sh)))))))
+     '(("Content-Length: 0\r\n\r\n" #f "Content-Length: 0")
+       ("Content-Length: 00\r\n\r\n" #f "Content-Length: 00")
+       ("Content-Length: 1\r\n\r\nx" #t "Content-Length: 1")
+       ("Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n" #t "chunked, its first chunk its last")
+       ("\r\n" #f "no Content-Length or Transfer-Encoding")))
+    ;; Each request is asked of its own head: the GET behind a body read
+    ;; whole has none.
+    (test-equal "request-has-body?, a body read whole and a GET behind, every delivery size: #t, then #f"
+                '(((#t #f) (((call-handler (POST "/a")) (body "0123456789") (end) (write 200)
+                             (call-handler (GET "/b")) (end) (write 200))
+                            idle #f)))
+                (every-size post-then-get default-limits
+                            (noting (lambda (request) (read-whole-body (lambda (body) ok))))
+                            (lambda (sh probe) (list (probe) (outcome sh)))))
+    ;; An upgrade frames its body as any request does, so one with a
+    ;; Content-Length above 0 has a body: answered at once, the connection
+    ;; closes after the response, and the GET behind is not served.
+    (test-equal "request-has-body?, an upgrade with a Content-Length of 1, every delivery size: #t, and the response closes"
+                '(((#t) ((call-handler (GET "/chat")) (write 200)) lingering))
+                (every-size (b (string-append "GET /chat HTTP/1.1\r\nHost: x\r\nConnection: upgrade\r\n"
+                                              "Upgrade: websocket\r\nContent-Length: 1\r\n\r\nx" get-b))
+                            default-limits (noting (lambda (request) ok))
+                            (lambda (sh probe)
+                              (list (probe) (decisive (fake-shell-actions sh))
+                                    (conn-phase (fake-shell-conn-state sh))))))
 
     ;; --- caps ----------------------------------------------------------------------
     ;; The limits' max-body-bytes caps every body: a declared length past it
