@@ -39,6 +39,12 @@ client that leaves forgotten.
   client gets `500`, and the server logs `handler-failed`.
 - While a handler waits, the next request on its connection waits too. Other
   connections go on.
+- A wait leaves every `dynamic-wind` around it and comes back in: each one's
+  after thunk runs as the wait starts, and its before thunk as the code
+  resumes. So don't release a resource in an after thunk, or it is released
+  at every wait: release it when your code returns, or in an exception
+  handler. Chez's `critical-section` and `with-mutex` are `dynamic-wind`s
+  too, so neither holds across a wait.
 - A waiting handler holds about 0.7 KB until its wait ends, and about 16 B
   more for each call deep it waits (1.7 KB 64 calls deep). Once it has
   answered, its connection holds no more than any other.
@@ -108,5 +114,9 @@ If the client closes or resets the connection while your handler waits:
 
 ## Costs to know
 
-Inside a handler that waits, `guard` costs about 3.7 KB each time it runs.
-`with-exception-handler` costs next to nothing.
+Inside a handler that waits, `guard` costs about 0.4 KB each time it runs,
+and about 1.2 KB when it catches an `error`. `with-exception-handler`
+costs about 0.15 KB, or 0.3 KB once the code inside it waits. Don't escape
+from a raise by `call/1cc`: once the code inside it waits, or raises with
+`error`, the escape costs 3.4 KB or more. One by `call/cc` costs a little
+less than `guard`.
