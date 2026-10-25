@@ -238,6 +238,30 @@
                     '(() ((outside failed)))
                     (list before (heard!)))))
 
+    ;; A sized body whose producer disagrees with its length is cut short:
+    ;; its fault, failed, past the length or short of it; but short of it
+    ;; once the client has closed, the client's doing, client-closed.
+    (let ((sh (make-fake-connection default-limits
+                                    (registering 'long (make-response 200 #f '()
+                                                                      (sized-body 2 (lambda () (b "abc"))))))))
+      (deliver sh (get-bytes "/"))
+      (fake-shell-settle! sh)
+      (test-equal "a sized body's producer past its length: failed" '((long failed)) (heard!)))
+    (let ((sh (make-fake-connection default-limits
+                                    (registering 'short (make-response 200 #f '()
+                                                                       (sized-body 5 (lambda () (eof-object))))))))
+      (deliver sh (get-bytes "/"))
+      (fake-shell-settle! sh)
+      (test-equal "a sized body's producer short of its length: failed" '((short failed)) (heard!)))
+    (let ((sh (make-fake-connection (limits-with default-limits '((write-high-water . 1) (write-low-water . 1)))
+                                    (registering 'left (make-response 200 #f '()
+                                                                      (sized-body 5 (lambda () (eof-object))))))))
+      (deliver sh (get-bytes "/"))
+      (fake-shell-deliver! sh '(eof))
+      (fake-shell-settle! sh)
+      (test-equal "a sized body's producer short of its length once the client has closed: client-closed"
+                  '((left client-closed)) (heard!)))
+
     ;; --- while the request's code still runs -------------------------------
     ;; A reader of a handler that waits takes each piece on a coroutine.  A
     ;; chunked body passes the cap of 5 at its second piece, so the reader is

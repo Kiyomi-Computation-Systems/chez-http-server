@@ -160,7 +160,9 @@
 ;;; the core as a read error; `failed` at any other close, and at `closed`
 ;;; for a close the core did not ask for.  Once the core answers a status of
 ;;; its own in place of the handler's response, a 500 or a refused body's,
-;;; the ending is `failed`, however that response then ends.  Marking the
+;;; or a sized body's producer disagrees with its length, the ending is
+;;; `failed`, however that response then ends, or `client-closed` for a short
+;;; end once the client has closed.  Marking the
 ;;; request hands back what its code registered, `request-on-done!`'s
 ;;; procedures, newest first, and only when there are any does the core emit
 ;;; `(response-done how procs)`, before the actions that follow the end: the
@@ -550,8 +552,8 @@
   ;; handler's answer, as a request with no body is, so it owes the request
   ;; an ending.  And whether the client's end has come while its requests
   ;; were answered; and the ending the request in flight is owed: #f, none,
-  ;; its handler not asked or its ending told; `owed`; or `failed`, once the
-  ;; core has answered a status of its own in place of the handler's.
+  ;; its handler not asked or its ending told; `owed`; or `failed` or
+  ;; `client-closed`, decided before the response ended (cut-short!).
   (define-record-type (conn-state make-conn-state conn-state?)
     (fields (mutable phase       conn-phase       conn-phase-set!)
             (mutable deadline    conn-deadline    conn-deadline-set!)
@@ -1186,9 +1188,13 @@
   ;; not logged.  With a write outstanding, its completion writes the
   ;; response, as for a close-delimited body's end; with none, it is
   ;; written now, and the staged close begins.
+  ;; The request's ending is `failed`, or `client-closed` for that short end
+  ;; (cut-short), however the response then ends.
   (define (mismatch s how given)
-    (let ((logged (and (not (and (eq? how 'short) (eq? (conn-close-after s) 'client-closed)))
-                       (list 'log 'body-length-mismatch (conn-declared s) given))))
+    (let* ((clients? (and (eq? how 'short) (eq? (conn-close-after s) 'client-closed)))
+           (logged (and (not clients?)
+                        (list 'log 'body-length-mismatch (conn-declared s) given))))
+      (cut-short! s (if clients? 'client-closed 'failed))
       (end-stream! s)
       (unless (conn-close-after s) (conn-close-after-set! s 'body-length-mismatch))
       (let-values (((s actions) (if (> (conn-outstanding s) 0) (values s '()) (response-written s))))
@@ -2070,17 +2076,24 @@
     (list 'call-handler (conn-request s)))
 
   ;; told : ConnState Symbol -> (Listof Action)
-  ;; The request in flight's ending, paid once: `how`, or `failed` once the
-  ;; core has answered for the handler, marked on the request, and
-  ;; `(response-done how procs)` for what its code registered, if anything;
-  ;; '() when nothing is owed, or nothing was registered.
+  ;; The request in flight's ending, paid once: `how`, or the ending already
+  ;; decided (cut-short), marked on the request, and `(response-done how
+  ;; procs)` for what its code registered, if anything; '() when nothing is
+  ;; owed, or nothing was registered.
   (define (told s how)
     (let ((ending (conn-ending s)) (r (conn-request s)))
       (if (not ending)
           '()
-          (let* ((how (if (eq? ending 'failed) 'failed how))
+          (let* ((how (if (eq? ending 'owed) how ending))
                  (procs (begin (conn-ending-set! s #f) (if r (request-done! r how) '()))))
             (if (null? procs) '() (list (list 'response-done how procs)))))))
+
+  ;; cut-short! : ConnState Symbol -> Void
+  ;; The request in flight's ending decided, `failed` or `client-closed`,
+  ;; however its response then ends, if it is owed and nothing decided it
+  ;; first.
+  (define (cut-short! s how)
+    (when (eq? (conn-ending s) 'owed) (conn-ending-set! s how)))
 
   ;; close-ending : Symbol -> Symbol
   ;; How a close for `reason` ends the response it cuts short: `client-closed`
@@ -2470,9 +2483,9 @@
   ;; Location; the serializer writes its phrase, and its framing and
   ;; `Connection: close`.  The core's own response is
   ;; read for faults as any caller's is.  Answered in place of a handler's
-  ;; response, it makes the request's ending `failed`.
+  ;; response, it makes the request's ending `failed` (cut-short).
   (define (respond s status reason headers)
-    (when (conn-ending s) (conn-ending-set! s 'failed))
+    (cut-short! s 'failed)
     (let ((reading? (memq (conn-phase s) '(head body))))
       (conn-phase-set! s 'responding)
       (conn-deadline-set! s 'write)
