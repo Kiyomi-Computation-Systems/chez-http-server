@@ -25,6 +25,9 @@
 ;;;   - Every field of a name, in the order they came, each as
 ;;;     `request-header` reads the first; RFC 9110 §5.3 lets a list run over
 ;;;     several field lines.
+;;;   - Every field line of the head, in the order it came, its name as
+;;;     sent: names are case-insensitive (RFC 9110 §5.1), so the reader folds
+;;;     case, and the order of lines of the same name is significant (§5.3).
 (import (rnrs) (srfi :64) (testing) (fake-shell)
         (http-server limits) (http-server response) (http-server view))
 
@@ -122,4 +125,20 @@
     (test-equal "a value is a character per byte, whatever the byte"
                 '(99 97 102 233)
                 (seen (bytes (list "GET / HTTP/1.1\r\nHost: h\r\nX-Name: caf" #xE9 "\r\n\r\n"))
-                      (lambda (r) (map char->integer (string->list (request-header r "x-name"))))))))
+                      (lambda (r) (map char->integer (string->list (request-header r "x-name"))))))
+
+    ;; --- every field line ---
+    (test-equal "every field line, in the order it came: its name as sent, in its own case, and its value without the whitespace around it; a name on several lines comes as several pairs"
+                '(("Host" . "h") ("X-Again" . "first") ("accept" . "*/*")
+                  ("x-AGAIN" . "second, third") ("X-Empty" . "") ("X-Again" . "fourth"))
+                (seen (b "GET / HTTP/1.1\r\nHost: h\r\nX-Again: first\r\naccept:*/*\r\nx-AGAIN:  second, third \t\r\nX-Empty:\r\nX-Again: fourth\r\n\r\n")
+                      request-header-list))
+    (test-equal "a head with no field lines lists none"
+                '()
+                (seen (b "GET / HTTP/1.0\r\n\r\n") request-header-list))
+    (test-equal "a listed value is a character per byte, whatever the byte"
+                '(("Host" 104) ("X-Name" 99 97 102 233))
+                (seen (bytes (list "GET / HTTP/1.1\r\nHost: h\r\nX-Name: caf" #xE9 "\r\n\r\n"))
+                      (lambda (r)
+                        (map (lambda (field) (cons (car field) (map char->integer (string->list (cdr field)))))
+                             (request-header-list r)))))))

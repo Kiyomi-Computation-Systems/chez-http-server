@@ -2,10 +2,10 @@
 ;;; (http-server view) — what a handler sees of a request (pure).
 ;;;
 ;;; A handler reads the request through accessors that copy what it asks for.
-;;; The path, the query, a header's value and the host are strings, each made
-;;; when it is asked for, a character per byte: the byte n reads as the
-;;; character whose code point is n, as Latin-1 reads it, so every byte comes
-;;; back as the byte it was.  The method is the request's own, the symbol
+;;; The path, the query, a header's name and value, and the host are strings,
+;;; each made when it is asked for, a character per byte: the byte n reads as
+;;; the character whose code point is n, as Latin-1 reads it, so every byte
+;;; comes back as the byte it was.  The method is the request's own, the symbol
 ;;; llhttp names.  A handler that asks for nothing costs nothing: the request
 ;;; holds spans of the delivery it arrived in, and a handler that keeps the
 ;;; request, or a span of it, keeps that delivery too.
@@ -16,6 +16,8 @@
 ;;; value and keeps what comes after.  `request-header` reads a name's first
 ;;; field, and `request-header-values` every field of it, in the order they
 ;;; came, since a list may run over several lines (RFC 9110 §5.3).
+;;; `request-header-list` reads every field line, each name as sent: names
+;;; are case-insensitive (RFC 9110 §5.1), so a caller folds case itself.
 ;;;
 ;;; THE QUERY is what follows the target's first "?", in every form.  A "?"
 ;;; can be in neither an authority nor a path (RFC 3986 §3.2 and §3.3), and
@@ -43,7 +45,8 @@
 ;;; PURE: imports (rnrs), (rnrs mutable-strings) to fill the strings it makes,
 ;;; (uri ...) and this project's own libraries.
 (library (http-server view)
-  (export request-path request-query request-header request-header-values request-host)
+  (export request-path request-query request-header request-header-values request-header-list
+          request-host)
   (import (rnrs) (rnrs mutable-strings)
           (http-server request)
           (http-server span)
@@ -92,6 +95,17 @@
   ;; over several field lines (RFC 9110 §5.3).
   (define (request-header-values r name)
     (map field-value (headers-ref-all (request-headers r) (string->utf8 name))))
+
+  ;; request-header-list : Request -> (Listof (Pair String String))
+  ;; Every field line, in the order they came: its name as sent, in its own
+  ;; case, and its value as request-header reads it.  A name on several
+  ;; lines comes as several pairs.
+  (define (request-header-list r)
+    (map (lambda (field)
+           (let ((name (car field)))
+             (cons (latin-1 (span-bytevector name) (span-start name) (span-end name))
+                   (field-value (cdr field)))))
+         (request-headers r)))
 
   ;; request-host : Request -> String
   ;; An absolute-form target's authority, whatever the Host field says (RFC

@@ -345,7 +345,8 @@
                 '(&client-closed &deadline-passed &http-server-config-error &http-server-error &resolve-error
                   await awaiting client-closed? deadline-passed? http-server-config-error? http-server-error?
                   make-response
-                  make-transport read-body read-whole-body request-header request-header-values request-host request-method
+                  make-transport read-body read-whole-body request-header request-header-list request-header-values
+                  request-host request-method
                   request-path request-query request? resolve resolve-error-reason resolve-error?
                   response? serve sleep-ms switch-protocols transport-abort! transport-close! transport-deadline!
                   transport-on-close! transport-on-drain! transport-read-start! transport-read-stop!
