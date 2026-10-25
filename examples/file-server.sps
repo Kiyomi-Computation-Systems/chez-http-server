@@ -18,8 +18,8 @@
 (import (rnrs) (http-server)
         (only (chezscheme) getenv directory-list file-directory? file-regular? port-length))
 
-;; whole-limit : Nat — a file up to this long is read whole and sent with
-;; its Content-Length; a longer one is streamed, a piece at a time.
+;; whole-limit : Nat — a file up to this long is read whole; a longer one is
+;; streamed, a piece at a time.  Either is sent with its Content-Length.
 (define whole-limit (* 1024 1024))
 
 ;; latin-1 : Transcoder — a request's strings hold one byte per character.
@@ -147,9 +147,10 @@
             #f)))
 
 ;; serve-file : Request String -> Response
-;; The file's bytes, whole up to whole-limit, else streamed.  The stream's
-;; port opens on the producer's first call, so a HEAD, whose producer is
-;; never called, opens none.
+;; The file's bytes, whole up to whole-limit, else streamed as a sized body,
+;; its length the file's size now.  The stream's port opens on the
+;; producer's first call, so a HEAD, whose producer is never called, opens
+;; none.
 (define (serve-file request path)
   (let* ((port (open-file-input-port path))
          (size (port-length port))
@@ -160,15 +161,22 @@
           (answer request 200 type (if (eof-object? bytes) (make-bytevector 0) bytes)))
         (begin
           (close-port port)
-          (answer request 200 type (file-producer path))))))
+          (answer request 200 type (sized-body size (file-producer path size)))))))
 
-;; file-producer : String -> (-> (U Bytevector Eof)) — the file, 64 KiB a piece.
-(define (file-producer path)
-  (let ((port #f))
+;; file-producer : String Nat -> (-> (U Bytevector Eof))
+;; The file's first `size` bytes, 64 KiB a piece.  The server asks for no
+;; more once they are sent, so the port closes after the last of them, or
+;; at the file's end if it has shrunk since.
+(define (file-producer path size)
+  (let ((port #f) (left size))
     (lambda ()
       (unless port (set! port (open-file-input-port path)))
-      (let ((piece (get-bytevector-n port 65536)))
-        (when (eof-object? piece) (close-port port))
+      (let ((piece (get-bytevector-n port (min 65536 left))))
+        (if (eof-object? piece)
+            (close-port port)
+            (begin
+              (set! left (- left (bytevector-length piece)))
+              (when (= left 0) (close-port port))))
         piece))))
 
 ;; serve-listing : Request String (Listof String) -> Response

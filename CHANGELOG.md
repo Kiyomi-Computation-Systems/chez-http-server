@@ -22,6 +22,21 @@ All notable changes to chez-http-server are recorded here. The format follows
   there as well still works. A program that imports all of `(http-server)`
   and defines either name itself no longer loads: rename its own, or import
   `(except (http-server) request-http-major request-http-minor)`.
+- **A sized body: a producer with its length declared.** `(sized-body n
+  producer)`, from `(http-server)` and `(http-server response)`, is a body
+  `make-response` takes beside a bytevector, a producer and `#f`. It is sent
+  with `Content-Length: n`, a HEAD's answer too, its pieces unframed, so a
+  file streams with its size and an HTTP/1.0 client that asked to keep its
+  connection keeps it. The producer is called as any producer is, and asked
+  for no more once `n` bytes are written. A piece that would go past `n` is
+  not written, and an end short of it ends the body there: either is logged
+  `body-length-mismatch n given`, and the connection closes after the bytes
+  written, staged, so the client reads the body short; an end short of `n`
+  once the client has closed is its doing, and is not logged. A length of 0
+  is an empty body, its producer never called (decision 0033). A program
+  that imports all of `(http-server)` and defines `sized-body` itself no
+  longer loads: rename its own, or import `(except (http-server)
+  sized-body)`.
 - **A handler can ask whether a request has a body.** `(request-has-body? r)`,
   `Request -> Boolean`, gives the server's own answer: `#t` when the head
   announces a body, chunked or with a `Content-Length` above 0, so `00` is

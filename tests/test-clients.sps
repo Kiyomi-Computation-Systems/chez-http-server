@@ -27,6 +27,11 @@
 ;;;   - RFC 9112 §7.1 and §6.3 rule 8: a streamed body is chunked to
 ;;;     HTTP/1.1, so the connection persists after it, and close-delimited to
 ;;;     1.0, so it does not;
+;;;   - RFC 9110 §8.6 and RFC 9112 §6.3 rule 6: a sized body announces its
+;;;     length, a HEAD's answer too, so an HTTP/1.0 connection kept alive
+;;;     persists after it; and §8: one whose producer ends short of it is
+;;;     closed short, which curl reports, exiting 18 (its manual's "Partial
+;;;     file");
 ;;;   - chez-libuv's live handles, and the counters of its dev build: with
 ;;;     every client gone, the listener is the one handle left but the timer
 ;;;     the shell keeps for its next deadline, and after the shutdown none is;
@@ -74,15 +79,21 @@
 ;; The handler answers with the path and the query it read, "-" for none,
 ;; reading a POST's body first: a response given instead of a reader to a
 ;; request whose head announces a body closes the connection.  `/stream` is
-;; answered with a producer of three pieces (tests/producers.sls), and
-;; `/sixteen` moves 16 MiB each way (below).
+;; answered with a producer of three pieces (tests/producers.sls), `/sized`
+;; with them as a sized body of their 13 bytes, and `/sized-short` with two,
+;; 8 bytes, as one of 20; and `/sixteen` moves 16 MiB each way (below).
 (define (handler r)
   (if (string=? (request-path r) "/sixteen")
       (sixteen r)
       (let ((answer (make-response 200 #f '()
-                                   (if (string=? (request-path r) "/stream")
-                                       (producer-of '("one " "two " "three"))
-                                       (b (string-append (request-path r) " " (or (request-query r) "-") "\n"))))))
+                                   (cond ((string=? (request-path r) "/stream")
+                                          (producer-of '("one " "two " "three")))
+                                         ((string=? (request-path r) "/sized")
+                                          (sized-body 13 (producer-of '("one " "two " "three"))))
+                                         ((string=? (request-path r) "/sized-short")
+                                          (sized-body 20 (producer-of '("one " "two "))))
+                                         (else
+                                          (b (string-append (request-path r) " " (or (request-query r) "-") "\n")))))))
         (if (eq? (request-method r) 'POST)
             (read-body (lambda (bv start end) #t) (lambda () answer))
             answer))))
@@ -584,6 +595,28 @@
                   (run loop sh "curl" (list "-sS" "--http1.0" "-H" "Connection: keep-alive" "-w" curl-out
                                             (url "/stream") (url "/b"))))
 
+      ;; A sized body is sent with its length: a HEAD's answer announces it,
+      ;; and the length, not the close, ends the body, so an HTTP/1.0 client
+      ;; that asked to keep the connection reuses it.
+      (test-equal "curl: a sized body, its Content-Length, then a GET on its connection"
+                  (list 'satisfied '(0 #f)
+                        (list (string-append "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\none two three200 1 13\n"
+                                             "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\n/b -\n200 0 5\n")
+                              2))
+                  (let ((r (run loop sh "curl" (list "-sS" "-D" "-" "-w" curl-out (url "/sized") (url "/b")))))
+                    (list (car r) (cadr r) (undated (caddr r)))))
+      (test-equal "curl: a HEAD of a sized body announces its length, and no content"
+                  (list 'satisfied '(0 #f) (list "HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\n200 1 0\n" 1))
+                  (let ((r (run loop sh "curl" (list "-sS" "-I" "-w" curl-out (url "/sized")))))
+                    (list (car r) (cadr r) (undated (caddr r)))))
+      (test-equal "curl: a sized body to HTTP/1.0 kept alive, ended by its length, then a GET on its connection"
+                  (list 'satisfied '(0 #f) "one two three200 1 13\n/b -\n200 0 5\n")
+                  (run loop sh "curl" (list "-sS" "--http1.0" "-H" "Connection: keep-alive" "-w" curl-out
+                                            (url "/sized") (url "/b"))))
+      (test-equal "curl: a sized body that ends short, read to the close, reported short: exit 18"
+                  (list 'satisfied '(18 #f) "one two 200 1 8\n")
+                  (run loop sh "curl" (list "-sS" "-w" curl-out (url "/sized-short"))))
+
       ;; --- curl's own ways with a server it does not know ---
       ;; `--http2` asks an http:// URL to upgrade to h2c (curl's manual): the
       ;; upgrade is served over HTTP/1.1, then the connection closed, so the
@@ -736,7 +769,9 @@
                     (list (and (memq (shell-listener sh) live) #t)
                           (and timer (memq timer live) #t)
                           (length live))))
-      (test-equal "the server logged nothing but where it listens" '(listening) (map car logged))
+      (test-equal "the server logged nothing but where it listens, and the sized body that ended short, with its length and the bytes given"
+                  '(listening (body-length-mismatch 20 8))
+                  (map (lambda (e) (if (eq? (car e) 'listening) 'listening e)) logged))
       (shell-shutdown! sh)
       (run-until-drained loop cap)
       (test-equal "shut down, nothing is left on the loop" '() (uv-loop-live-handles loop))

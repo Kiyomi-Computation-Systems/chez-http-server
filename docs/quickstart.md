@@ -108,7 +108,9 @@ the server calls for each next piece, until it returns the eof object.
 ```
 
 The server sends it chunked, and asks for more only as fast as the client
-reads.
+reads. If you know the length, wrap the producer in `sized-body` and the
+server sends `Content-Length` instead
+([Streaming with a length](bodies.md#streaming-with-a-length)).
 
 ## 5. Change where it listens
 

@@ -93,7 +93,8 @@ strings you read, not the request: a request you keep keeps its bytes too.
 - `reason`: a bytevector, such as `(string->utf8 "OK")`, or `#f` for the
   usual one;
 - `headers`: a list of `(name . value)` pairs of bytevectors;
-- `body`: a bytevector, `#f` for none, or a producer that streams it
+- `body`: a bytevector, `#f` for none, a producer that streams it, or a
+  `sized-body` that streams it with its length
   ([Bodies and streaming](bodies.md)).
 
 A handler can answer with three other things instead of a response:

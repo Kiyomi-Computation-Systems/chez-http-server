@@ -22,7 +22,9 @@
 ;;; And a body of unknown length, a producer, whose head writes no body, and
 ;;; whose pieces and end are each the segments of one write of their own,
 ;;; chunked (RFC 9112 §7.1) or close-delimited (§6.3 rule 8), read back whole
-;;; by the same parser.
+;;; by the same parser; and a sized body, a producer with its length declared,
+;;; whose head announces that length (RFC 9110 §8.6) and whose pieces follow
+;;; unframed.
 ;;; And the 101 a switch is written as, its status line and its fields with
 ;;; `Connection: upgrade` (RFC 9110 §7.8), no Date and no framing (§6.6.1,
 ;;; §15.2), read back by the same parser; and what a switch may not carry,
@@ -63,6 +65,9 @@
 
 ;; A body of unknown length: a producer, which the serializer never calls.
 (define (producer) (eof-object))
+
+;; A body of 12 bytes, made by the producer: a sized body.
+(define sized (sized-body 12 producer))
 
 ;; The slot's place in a row's expected wire.
 (define D date-text)
@@ -143,6 +148,29 @@
              (string-append "HTTP/1.1 200 OK\r\n" D "\r\n")
              3 #t #f
              `(200 "OK" (,read-date) "" complete))
+   ;; A sized body's head announces its length (RFC 9110 §8.6), and its
+   ;; pieces follow (serialize-piece, below), so the head writes no body: a
+   ;; client waits for the 12 bytes.
+   (make-row "a sized body's head announces its length, and writes no body"
+             (response 200 '() sized) 'content-length #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 12\r\n\r\n")
+             3 #f #f
+             `(200 "OK" (,read-date ("Content-Length" . "12")) "" need-input))
+   (make-row "a HEAD's answer with a sized body announces its length"
+             (response 200 '() sized) 'content-length-only #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 12\r\n\r\n")
+             3 #t #f
+             `(200 "OK" (,read-date ("Content-Length" . "12")) "" complete))
+   (make-row "a sized body of no bytes is Content-Length: 0"
+             (response 200 '() (sized-body 0 producer)) 'content-length #f
+             (string-append "HTTP/1.1 200 OK\r\n" D "Content-Length: 0\r\n\r\n")
+             3 #f #f
+             `(200 "OK" (,read-date ("Content-Length" . "0")) "" complete))
+   (make-row "a sized body where none may go announces no length"
+             (response 204 '() sized) 'no-body #f
+             (string-append "HTTP/1.1 204 No Content\r\n" D "\r\n")
+             3 #f #f
+             `(204 "No Content" (,read-date) "" complete))
    ;; RFC 9112 §6.3 rule 8: a response with neither is delimited by the close.
    (make-row "close-delimited: no length, then the body, ended by the close"
              (response 200 '() (b "hello")) 'close-delimited 'close
@@ -291,6 +319,7 @@
    (list "a body that is a string" (response 200 '() "hi") 'invalid-body)
    ;; A body of unknown length is a producer.
    (list "a body that is a procedure is a producer" (response 200 '() producer) #f)
+   (list "a sized body is a body" (response 200 '() sized) #f)
    ;; And what is not a fault.
    (list "a handler's Connection: Close" (with-header (b "Connection") (b "Close")) #f)
    (list "a handler's Connection: close, with spaces" (with-header (b "connection") (b " close ")) #f)
@@ -322,7 +351,9 @@
          (string-append "1000\r\n" (make-string 4096 #\a) "\r\n") 3)
    (list "a chunk of a span of its bytevector" 'chunked delivery 2 7 "5\r\nhello\r\n" 3)
    (list "close-delimited: the piece alone" 'close-delimited (b "hello") 0 5 "hello" 1)
-   (list "close-delimited, a span" 'close-delimited delivery 2 7 "hello" 1)))
+   (list "close-delimited, a span" 'close-delimited delivery 2 7 "hello" 1)
+   (list "a sized body's: the piece alone, its length announced" 'content-length (b "hello") 0 5 "hello" 1)
+   (list "a sized body's, a span" 'content-length delivery 2 7 "hello" 1)))
 
 ;; piece-write : Symbol Bytevector Nat Nat -> (U (List (Listof Segment) Nat) 'refused)
 (define (piece-write mode bv start end)
@@ -334,12 +365,17 @@
   (guard (e ((assertion-violation? e) 'refused))
     (call-with-values (lambda () (serialize-end mode)) list)))
 
-;; streamed : Symbol Connection (Listof String) -> String
-;; A producer's whole response on the wire: its head, each piece's write,
-;; then the end's.
-(define (streamed mode connection texts)
+;; streamed : Symbol Connection (Listof String) [Body] -> String
+;; A producer's whole response on the wire, or a sized body's: its head,
+;; each piece's write, then the end's.
+(define streamed
+  (case-lambda
+    ((mode connection texts) (streamed mode connection texts producer))
+    ((mode connection texts body) (streamed-body mode connection texts body))))
+
+(define (streamed-body mode connection texts body)
   (apply string-append
-         (call-with-values (lambda () (serialize-response (response 200 '() producer) mode connection))
+         (call-with-values (lambda () (serialize-response (response 200 '() body) mode connection))
                            (lambda (segments bytes) (wire segments)))
          (append (map (lambda (t)
                         (let ((bv (b t)))
@@ -527,6 +563,8 @@
                   (if (pair? w) (list (wire (car w)) (length (car w)) (cadr w)) w)))
     (test-equal "a close-delimited body's end writes nothing: the close ends it"
                 '(() 0) (end-write 'close-delimited))
+    (test-equal "a sized body's end writes nothing: its length ends it"
+                '(() 0) (end-write 'content-length))
     (test-equal "a producer's response reads back whole: chunked, to its last chunk"
                 `(200 "OK" (,read-date ("Transfer-Encoding" . "chunked")) "hello, world" complete)
                 (read-response (text->bytes (streamed 'chunked #f '("hello" ", " "world"))) #f #f))
@@ -534,6 +572,10 @@
                 `(200 "OK" (,read-date ("Connection" . "close")) "hello, world" complete)
                 (read-response (text->bytes (streamed 'close-delimited 'close '("hello" ", " "world")))
                                #f #t))
+    (test-equal "and a sized body's, to its length, the connection kept"
+                `(200 "OK" (,read-date ("Content-Length" . "12")) "hello, world" complete)
+                (read-response (text->bytes (streamed 'content-length #f '("hello" ", " "world") sized))
+                               #f #f))
     ;; A chunk of no bytes is the last chunk, so an empty piece would end the
     ;; body early: the core never asks for one.  A mode that writes no
     ;; pieces, a span outside its bytevector, and a body of unknown length
@@ -541,21 +583,29 @@
     (test-equal "an empty piece, a piece where no body is written, or one outside its bytevector is refused"
                 '(refused refused refused refused refused refused refused)
                 (list (piece-write 'chunked (b "hello") 2 2)
-                      (piece-write 'close-delimited (b "hello") 5 5)
-                      (piece-write 'content-length (b "hello") 0 5)
+                      (piece-write 'content-length (b "hello") 5 5)
+                      (piece-write 'content-length-only (b "hello") 0 5)
                       (piece-write 'no-body (b "hello") 0 5)
                       (piece-write 'chunked (b "hello") 3 2)
                       (piece-write 'chunked (b "hello") 0 6)
                       (piece-write 'chunked "hello" 0 5)))
     (test-equal "the end of a mode that writes no pieces is refused"
-                '(refused refused refused)
-                (map end-write '(content-length content-length-only no-body)))
+                '(refused refused)
+                (map end-write '(content-length-only no-body)))
     (test-equal "a producer given a Content-Length is refused"
                 '(refused refused)
                 (map (lambda (mode)
                        (assertion-raised?
                         (lambda () (serialize-response (response 200 '() producer) mode #f))))
                      '(content-length content-length-only)))
+    ;; A sized body's length frames it: the core never writes one chunked
+    ;; or close-delimited, which a length of its own would contradict.
+    (test-equal "a sized body framed but by its length is refused"
+                '(refused refused)
+                (map (lambda (mode)
+                       (assertion-raised?
+                        (lambda () (serialize-response (response 200 '() sized) mode 'close))))
+                     '(chunked close-delimited)))
 
     ;; The reader, the oracle of these rows and of the core's.  One
     ;; that never saw bytes after a message would pass every row whose body
