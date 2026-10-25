@@ -33,14 +33,23 @@ For `GET /a/b?x=1` with `Host: example.com`:
 | `(request-query r)` | what follows the first `?`, or `#f` with no `?` | `"x=1"` |
 | `(request-header r "host")` | the first header with that name, or `#f` | `"example.com"` |
 | `(request-header-values r "host")` | every header with that name, in order; `'()` with none | `("example.com")` |
+| `(request-header-list r)` | every header, in order, as `(name . value)` | `(("Host" . "example.com"))` |
 | `(request-host r)` | the site the request is for | `"example.com"` |
 
 - The method is one of the 36 the parser knows, in capitals: `GET`, `POST`,
   `PUT`, the WebDAV methods and the rest. Any other, such as `get` or `FOO`,
   gets `400 Bad Request` before your handler runs.
 - Header names match in any case: `"content-type"` finds `Content-Type`.
+  `request-header-list` gives each name as it was sent, so fold its case
+  before you compare it.
 - A list such as `Connection` may come on several lines. `request-header`
-  reads the first; `request-header-values` reads them all.
+  reads the first; `request-header-values` reads them all, and
+  `request-header-list` gives each line as its own pair.
+- `request-header-list` gives every header as the client sent it, the ones
+  about this connection only among them, such as `Connection` and
+  `Transfer-Encoding` (RFC 9110 §7.6.1). A proxy removes those before it
+  passes the rest on, and gives the body it sends its own `Content-Length`
+  or `Transfer-Encoding`.
 - The spaces around a header's value are not part of it.
 - Nothing is decoded: `/a%20b` reads `"/a%20b"`. Decode it yourself if you
   need to ([Requests](requests.md)).

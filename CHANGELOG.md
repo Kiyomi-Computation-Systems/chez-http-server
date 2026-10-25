@@ -6,6 +6,14 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A handler can list every header.** `(request-header-list r)` gives each field line
+  of the head, in the order they came, as a pair: its name as sent, in its own case, and
+  its value as `request-header` gives it. A name on several lines comes as several
+  pairs. A handler that logs a request, proxies it or hands its headers on can see a
+  field it does not know by name (decision 0032).
+
 ## [0.8.0] - 2026-10-24
 
 The ninth release, and the first public one: the repository and its docs

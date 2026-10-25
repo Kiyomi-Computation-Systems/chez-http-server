@@ -52,6 +52,7 @@
 ;;;     request-query : Request -> (U String #f)
 ;;;     request-header : Request String -> (U String #f)
 ;;;     request-header-values : Request String -> (Listof String)
+;;;     request-header-list : Request -> (Listof (Pair String String))
 ;;;   (http-server body)
 ;;;     read-body : (Bytevector Nat Nat -> Any) (-> Response) -> BodyReader
 ;;;     read-whole-body : (Bytevector -> Response) [(U Nat #f)] -> BodyReader
@@ -93,7 +94,8 @@
     ;; the server
     serve
     ;; what a handler reads
-    request? request-method request-path request-query request-header request-header-values request-host
+    request? request-method request-path request-query request-header request-header-values
+    request-header-list request-host
     read-body read-whole-body
     ;; what it answers
     make-response response? awaiting switch-protocols
@@ -108,7 +110,8 @@
     &http-server-error http-server-error?
     &http-server-config-error http-server-config-error?)
   (import (only (http-server request) request? request-method)
-          (only (http-server view) request-path request-query request-header request-header-values request-host)
+          (only (http-server view) request-path request-query request-header request-header-values
+                request-header-list request-host)
           (only (http-server body) read-body read-whole-body)
           (only (http-server response) make-response response?)
           (only (http-server switch) switch-protocols)
