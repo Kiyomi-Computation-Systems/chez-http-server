@@ -36,7 +36,8 @@ response:
   through: a 16 MiB upload added under 100 KB to the server's memory.
 - A piece shares memory with the read it arrived in. Copy what you keep.
 - A request with no body gets its end at once, so a handler can answer every
-  request with a reader.
+  request with a reader. To answer one only when there is a body, ask
+  `(request-has-body? request)`.
 - Answer with a response instead, and the server sends it at once, without
   reading the body, and closes the connection after it.
 - A client can send `Expect: 100-continue` and wait to be asked for a big

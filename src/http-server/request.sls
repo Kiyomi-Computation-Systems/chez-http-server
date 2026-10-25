@@ -12,25 +12,24 @@
   (export make-request request?
           request-method request-target
           request-http-major request-http-minor
-          request-headers request-body)
+          request-headers request-has-body?)
   (import (rnrs))
 
-  ;; make-request : Symbol Span Nat Nat Headers Body -> Request
+  ;; make-request : Symbol Span Nat Nat Headers Boolean -> Request
   ;;   Symbol  = the method, as llhttp names it: GET, POST, M-SEARCH, ...
   ;;   Span    = the request-target, as it arrived
   ;;   Nat Nat = the HTTP major and minor version
   ;;   Headers = (Listof (Pair Span Span))      ; name . value, wire order
-  ;;   Body    = Any                            ; #f: a handler reads a body through
-  ;;                                            ; the reader it answers with, and
-  ;;                                            ; the core builds every request
-  ;;                                            ; with #f here
+  ;;   Boolean = whether the framing announces a body, as the core decides
+  ;;             it: chunked, or a Content-Length above 0 (RFC 9112 §6.3).
+  ;;             A handler reads the body through the reader it answers with.
   ;; request? : Any -> Boolean
   ;; request-method : Request -> Symbol
   ;; request-target : Request -> Span
   ;; request-http-major : Request -> Nat
   ;; request-http-minor : Request -> Nat
   ;; request-headers : Request -> Headers
-  ;; request-body : Request -> Body
+  ;; request-has-body? : Request -> Boolean
   (define-record-type request
     (fields
       (immutable method      request-method)
@@ -38,4 +37,4 @@
       (immutable http-major  request-http-major)
       (immutable http-minor  request-http-minor)
       (immutable headers     request-headers)
-      (immutable body        request-body))))
+      (immutable has-body?   request-has-body?))))

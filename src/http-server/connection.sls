@@ -1723,9 +1723,10 @@
   ;; parser frames the body by a final chunked, another coding beside it is
   ;; refused as 'unsupported-transfer-coding, answered 501.
   ;; A request accepted on all five moves head -> body: the request is built
-  ;; from the head, and the header deadline gives way to the body's.  The
-  ;; connection is marked to close after the response unless the message
-  ;; keeps it alive, or, when it does, if the parser says it upgrades.  A
+  ;; from the head, holding whether a body follows, and the header deadline
+  ;; gives way to the body's.  The connection is marked to close after the
+  ;; response unless the message keeps it alive, or, when it does, if the
+  ;; parser says it upgrades.  A
   ;; body it announces is noted, for the handler to be asked once the feed
   ;; has returned, and a declared length past the limits' max-body-bytes is
   ;; refused as 'body-too-large, answered 413, before any of the body is
@@ -1757,16 +1758,16 @@
           ((unsupported-transfer-coding? (head-fields h) flags)
            (refuse s 'unsupported-transfer-coding))
           (else
-           (conn-request-set! s (make-request name target http-major http-minor
-                                              (reverse (head-fields h)) #f))
-           (cond ((not (should-keep-alive? http-major http-minor 'request 0 flags))
-                  (conn-close-after-set! s 'not-keep-alive))
-                 ((eqv? upgrade 1)
-                  (conn-close-after-set! s 'upgrade)))
            (let* ((chunked? (not (fxzero? (fxand flags F-CHUNKED))))
                   (declared (and (not chunked?) content-length))
                   (framed? (or chunked? (> content-length 0)))
                   (bd (conn-body s)))
+             (conn-request-set! s (make-request name target http-major http-minor
+                                                (reverse (head-fields h)) framed?))
+             (cond ((not (should-keep-alive? http-major http-minor 'request 0 flags))
+                    (conn-close-after-set! s 'not-keep-alive))
+                   ((eqv? upgrade 1)
+                    (conn-close-after-set! s 'upgrade)))
              (body-roll! bd)
              (body-framed?-set! bd framed?)
              (body-declared-set! bd declared)

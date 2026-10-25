@@ -22,6 +22,17 @@ All notable changes to chez-http-server are recorded here. The format follows
   there as well still works. A program that imports all of `(http-server)`
   and defines either name itself no longer loads: rename its own, or import
   `(except (http-server) request-http-major request-http-minor)`.
+- **A handler can ask whether a request has a body.** `(request-has-body? r)`,
+  `Request -> Boolean`, gives the server's own answer: `#t` when the head
+  announces a body, chunked or with a `Content-Length` above 0, so `00` is
+  none, and `#f` otherwise. A handler that answers a reader only when a body
+  follows no longer copies the rule from the headers, and asking allocates
+  nothing: the request holds the answer, made once with it. It takes the
+  place of `(http-server request)`'s `request-body`, which was `#f` for
+  every request, so `make-request`'s last argument is now this Boolean. A
+  program that imports all of `(http-server)` and defines `request-has-body?`
+  itself no longer loads: rename its own, or import
+  `(except (http-server) request-has-body?)`.
 
 ## [0.8.0] - 2026-10-24
 

@@ -15,8 +15,9 @@
 ;;; accessors that copy what it asks for, as strings, the method as the
 ;;; symbol llhttp names (see (http-server view)), and the version as the two
 ;;; numbers the request names: HTTP/1.2 reads 1 and 2, though the server
-;;; answers it as HTTP/1.1.  A request whose head
-;;; announces a body reaches the handler once its head is in, and the
+;;; answers it as HTTP/1.1.  A request whose head announces a body, chunked
+;;; or with a Content-Length above 0, which `request-has-body?` says without
+;;; reading a header, reaches the handler once its head is in, and the
 ;;; handler reads the body by answering with a reader, `read-body` or
 ;;; `read-whole-body`; a response given instead is sent at once, and the
 ;;; connection closes after it (see (http-server body)).  The response is
@@ -51,6 +52,7 @@
 ;;;     request? : Any -> Boolean
 ;;;     request-method : Request -> Symbol
 ;;;     request-http-major, request-http-minor : Request -> Nat
+;;;     request-has-body? : Request -> Boolean
 ;;;     request-path, request-host : Request -> String
 ;;;     request-query : Request -> (U String #f)
 ;;;     request-header : Request String -> (U String #f)
@@ -98,7 +100,7 @@
     serve
     ;; what a handler reads
     request? request-method request-path request-query request-header request-header-values
-    request-header-list request-host request-http-major request-http-minor
+    request-header-list request-host request-http-major request-http-minor request-has-body?
     read-body read-whole-body
     ;; what it answers
     make-response response? awaiting switch-protocols
@@ -112,7 +114,8 @@
     ;; what a start raises
     &http-server-error http-server-error?
     &http-server-config-error http-server-config-error?)
-  (import (only (http-server request) request? request-method request-http-major request-http-minor)
+  (import (only (http-server request) request? request-method request-http-major request-http-minor
+                request-has-body?)
           (only (http-server view) request-path request-query request-header request-header-values
                 request-header-list request-host)
           (only (http-server body) read-body read-whole-body)

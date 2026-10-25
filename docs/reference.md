@@ -60,6 +60,7 @@ of the request (Latin-1), and is made when called. See
 | `request-host` | `Request -> String` | the host the request is for, `""` if none |
 | `request-http-major` | `Request -> Nat` | the first number of the version the request names, always `1` |
 | `request-http-minor` | `Request -> Nat` | its second: `2` for `HTTP/1.2`, which is answered as HTTP/1.1 |
+| `request-has-body?` | `Request -> Boolean` | whether a body follows the head: chunked, or a `Content-Length` above 0 |
 
 ## Reading a body
 
