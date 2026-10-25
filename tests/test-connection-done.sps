@@ -19,10 +19,12 @@
 ;;;     told and the connection going on;
 ;;;   - one registered once the response is done is called at once, with how
 ;;;     it ended, whether or not anything was registered before;
+;;;   - while the request's code still runs on a coroutine, the procedures
+;;;     wait for that call to end, and a reader let go is handed no more;
 ;;;   - with nothing registered, the core asks for nothing.
 ;;;
-;;; Oracles: decision 0034's endings; the requests' own bytes; RFC 9110
-;;; §15.5.14 (413) and §15.5.9 (408), statuses the core already answers.
+;;; Oracles: the requests' own bytes; RFC 9110 §15.5.14 (413) and §15.5.9
+;;; (408), statuses the core already answers.
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server span) (http-server limits) (http-server body) (http-server switch)
@@ -53,6 +55,12 @@
   (let ((o (make-bytevector (fold-left + 0 (map bytevector-length bvs)))))
     (fold-left (lambda (at bv) (bytevector-copy! bv 0 o at (bytevector-length bv)) (+ at (bytevector-length bv)))
                0 bvs)
+    o))
+
+;; sub : Bytevector Nat Nat -> Bytevector — a copy of bv[from, to).
+(define (sub bv from to)
+  (let ((o (make-bytevector (- to from))))
+    (bytevector-copy! bv from o 0 (- to from))
     o))
 
 ;; deliver : FakeShell Bytevector -> Void — one delivery of all of `bv`.
@@ -223,7 +231,43 @@
                                       (awaiting (lambda () (sleep-ms 10) resp))))))
       (deliver sh (get-bytes "/"))
       (fake-shell-deliver! sh '(closed))
-      (test-equal "a close the core did not ask for, while the handler waits: failed" '((outside failed)) (heard!)))
+      (let ((before (heard!)))
+        (fake-shell-advance! sh 10)
+        (fake-shell-fire-waits! sh)
+        (test-equal "a close the core did not ask for, while the handler waits: failed, once the handler's call ends"
+                    '(() ((outside failed)))
+                    (list before (heard!)))))
+
+    ;; --- while the request's code still runs -------------------------------
+    ;; A reader of a handler that waits takes each piece on a coroutine.  A
+    ;; chunked body passes the cap of 5 at its second piece, so the reader is
+    ;; handed "abc" and the prefix "de", and the 413 is written while it
+    ;; still waits inside "abc".  The procedure is told once that call has
+    ;; ended, and the reader, let go as the connection lingers, is handed
+    ;; nothing more.
+    (let* ((seen '())
+           (note (lambda (x) (set! seen (append seen (list x)))))
+           (sh (make-fake-connection
+                (limits-with default-limits '((max-body-bytes . 5)))
+                (lambda (r)
+                  (request-on-done! r (lambda (how) (note (list 'done how))))
+                  (awaiting
+                   (lambda ()
+                     (read-body (lambda (bv from to)
+                                  (let ((text (utf8->string (sub bv from to))))
+                                    (note (list 'start text))
+                                    (sleep-ms 10)
+                                    (note (list 'end text))))
+                                (lambda () resp))))))))
+      (deliver sh (join (b "POST /p HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n")
+                        (b "3\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n")))
+      (fake-shell-settle! sh)
+      (fake-shell-advance! sh 10)
+      (fake-shell-fire-waits! sh)
+      (fake-shell-settle! sh)
+      (test-equal "a reader still waiting inside a piece as its 413 is written: told failed once that piece's call ends, and handed nothing after"
+                  '(((start "abc") (end "abc") (done failed)) (413))
+                  (list seen (statuses sh))))
 
     ;; --- a procedure that raises -------------------------------------------
     (let ((sh (make-fake-connection
@@ -253,8 +297,8 @@
       (deliver sh (get-bytes "/"))
       (fake-shell-deliver! sh '(read-error ECONNRESET))
       (fake-shell-settle! sh)
-      (test-equal "registered once the client has reset, by the handler's code told of it: called at once, client-closed"
-                  '((early client-closed) (late client-closed)) (heard!)))
+      (test-equal "registered once the client has reset, by the handler's code told of it: called at once, client-closed, newest first, the one before it told once the handler's call ends"
+                  '((late client-closed) (early client-closed)) (heard!)))
 
     (let* ((kept #f)
            (sh (make-fake-connection default-limits (lambda (r) (set! kept r) resp))))

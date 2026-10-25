@@ -96,7 +96,9 @@
 ;;;                   (THE DOOR, below)
 ;;;   response-done   each procedure told how the response ended, in place,
 ;;;                   in order; one that raises is recorded
-;;;                   (fake-shell-done-failures), the rest still told
+;;;                   (fake-shell-done-failures), the rest still told; while
+;;;                   a call into the request's code runs on a coroutine, once
+;;;                   the connection's calls have ended
 ;;;
 ;;; and records the rest (logs) without acting on them.  A fake connection made
 ;;; on credit answers with each handler's answer and `credit`,
@@ -261,11 +263,12 @@
             (mutable notice)                  ; the request's notice of its client's close, or #f
             (mutable held?)                   ; whether its scheduler waits to be drained (fake-shell-hold!)
             (mutable taker-failures-rev)      ; what a waiting taker's thunks raised, newest first
-            (mutable done-failures-rev))      ; what the procedures told a response's end raised, newest first
+            (mutable done-failures-rev)       ; what the procedures told a response's end raised, newest first
+            (mutable done-later))             ; endings to tell once its calls end, oldest first
     (protocol (lambda (new)
                 (define (make step state0 now0 perform trace)
                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
-                       #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f '() '()))
+                       #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f '() '() '()))
                 (case-lambda
                   ((step state0 now0) (make step state0 now0 #f #f))
                   ((step state0 now0 perform) (make step state0 now0 perform #f))
@@ -585,7 +588,10 @@
              (bv (cadr a)) (start (caddr a)) (end (cadddr a)))
          (when r
            (if (fake-shell-waits? s)
-               (call-waiting! s (lambda () ((body-reader-on-piece r) bv start end) #t)
+               (call-waiting! s (lambda ()
+                                  (when (eq? (conn-body-reader (fake-shell-conn-state s)) r)
+                                    ((body-reader-on-piece r) bv start end))
+                                  #t)
                               (lambda (v) (and (not (body-reader-whole? r))
                                                (list 'body-credit (- end start)))))
                (guard (e (#t (fake-shell-deliver! s (list 'handler-failed e))))
@@ -618,9 +624,25 @@
       (else (values))))
 
   ;; call-done! : FakeShell Symbol (Listof (Symbol -> Any)) -> Void
+  ;; Each procedure told `how` (tell-done!): at once, or, while a call into
+  ;; the request's code runs on a coroutine, once the connection's calls
+  ;; have ended (next-call!).
+  (define (call-done! s how procs)
+    (if (fake-shell-calling? s)
+        (fake-shell-done-later-set! s (append (fake-shell-done-later s) (list (cons how procs))))
+        (tell-done! s how procs)))
+
+  ;; told-later! : FakeShell -> Void — the endings put off while a call ran.
+  (define (told-later! s)
+    (let ((later (fake-shell-done-later s)))
+      (unless (null? later)
+        (fake-shell-done-later-set! s '())
+        (for-each (lambda (d) (tell-done! s (car d) (cdr d))) later))))
+
+  ;; tell-done! : FakeShell Symbol (Listof (Symbol -> Any)) -> Void
   ;; Each procedure told `how`, in order, in place; what one raises is
   ;; recorded, and the rest are still told.
-  (define (call-done! s how procs)
+  (define (tell-done! s how procs)
     (for-each (lambda (p)
                 (guard (e (#t (fake-shell-done-failures-rev-set! s (cons e (fake-shell-done-failures-rev s)))))
                   (p how)))
@@ -1012,7 +1034,8 @@
       (cond
        ((or (null? calls) (fake-shell-closing? s))
         (fake-shell-waiting-set! s '())
-        (fake-shell-calling?-set! s #f))
+        (fake-shell-calling?-set! s #f)
+        (told-later! s))
        (else
         (let ((call (car calls)))
           (fake-shell-waiting-set! s (cdr calls))
