@@ -105,7 +105,7 @@ sized-body : Nat Producer -> SizedBody
 ```
 
 A body of that many bytes, made by the producer as it is sent, with its
-`Content-Length`. See [Bodies and streaming](bodies.md).
+`Content-Length`. See [Bodies and streaming](bodies.md#streaming-with-a-length).
 
 ## Waiting
 

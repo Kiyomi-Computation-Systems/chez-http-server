@@ -18,7 +18,7 @@ what to expect, not as a benchmark to win.
 | Small responses, 50 connections kept alive | 26,800–30,700 requests a second |
 | Small responses, one connection kept alive | 10,600–10,900 requests a second, 0.09 ms each |
 | Small responses, a new connection for each | about 6,400 requests a second |
-| Downloading a 512 MiB file | 0.83–0.93 GB/s, memory flat |
+| Downloading a 512 MiB file | 0.86–0.91 GB/s, memory flat |
 | Uploading 512 MiB through `read-body` | 0.93–1.51 GB/s |
 | An idle keep-alive connection | about 17 KiB |
 | A handler that is waiting | about 0.7 KB |
@@ -167,11 +167,13 @@ http.createServer((req, res) => {
 
 ## Big bodies
 
-A 512 MiB file, downloaded with curl over one connection, three times:
+A 512 MiB file, downloaded with curl over one connection:
 
-- **Download**, through file-server.sps's 64 KiB pieces: 0.83–0.93 GB/s.
-  The server's resident memory did not grow at all during the downloads:
-  a streamed body is asked for its next piece only while the client keeps up
+- **Download**, through file-server.sps's 64 KiB pieces, sent with the file's
+  length: 0.86–0.91 GB/s over six downloads. Sent chunked instead, taking
+  turns with it, 0.85–0.90 GB/s. Either way the server's resident memory grew
+  by at most 1.2 MB over three downloads: a streamed body is asked for its
+  next piece only while the client keeps up
   ([Bodies and streaming](bodies.md)).
 - **Upload**, counted by a handler that reads with `read-body`:
   0.93–1.51 GB/s. `read-body` never holds the body whole.

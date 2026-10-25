@@ -52,7 +52,8 @@ response:
 ## Streaming a response
 
 When you do not know the body's length before you start, give a *producer*
-as the body: a procedure of no arguments that returns the next piece, a
+as the body (if you do know it, see
+[Streaming with a length](#streaming-with-a-length)): a procedure of no arguments that returns the next piece, a
 bytevector, and the eof object when there is no more.
 
 ```scheme
@@ -110,9 +111,51 @@ bytevector, and the eof object when there is no more.
   Chez collects it, which can be long after.
 - A reader's response can be streamed too.
 
+## Streaming with a length
+
+When you know the body's length but don't want it all in memory, as with a
+file, give the length and a producer to `sized-body`:
+
+```scheme
+;; a 1 MiB file, 64 KiB a piece: its port opens on the first call and
+;; closes after its last byte
+(serve
+ (lambda (request)
+   (let ((port #f) (left 1048576))
+     (make-response 200 #f '()
+                    (sized-body 1048576
+                                (lambda ()
+                                  (unless port (set! port (open-file-input-port "big.bin")))
+                                  (let ((piece (get-bytevector-n port 65536)))
+                                    (unless (eof-object? piece)
+                                      (set! left (- left (bytevector-length piece))))
+                                    (when (or (eof-object? piece) (= left 0))
+                                      (close-port port))
+                                    piece)))))))
+```
+
+[file-server.sps](../examples/file-server.sps) takes the length from the file.
+
+- The server sends `Content-Length` instead of chunks. The client sees the
+  size, a `HEAD` gets the length too, and an HTTP/1.0 client that asked to
+  keep its connection keeps it.
+- The producer is called just as above: as fast as the client reads, and on
+  a coroutine under `awaiting`.
+- Once the length is sent, the server stops calling the producer. It never
+  asks for the eof object, so close a port when you have read its last byte.
+- If the producer gives more than the length, the piece that would go past it
+  is not sent. If it ends early, the body ends there. Either way the client
+  sees the body cut short, and the server logs `body-length-mismatch`, then
+  the length and the bytes the producer gave, and closes the connection after
+  what it sent. A producer that stops early because its client has closed is
+  not logged.
+- A length of 0 is an empty body, and the producer is never called. A `HEAD`,
+  a `204` or a `304` never calls it either.
+
 ## Sending a file
 
-Small files are simplest read whole: the server then sends their
-`Content-Length`, which lets a browser show progress. For big files, stream
-them with a producer that opens the file on its first call.
-[file-server.sps](../examples/file-server.sps) does both, switching at 1 MiB.
+Small files are simplest read whole. For big files, use a sized body: the
+file's size and a producer that opens the file on its first call. Either
+way the client gets the `Content-Length`, which lets a browser show
+progress. [file-server.sps](../examples/file-server.sps) reads files up to
+1 MiB whole and streams the rest.
