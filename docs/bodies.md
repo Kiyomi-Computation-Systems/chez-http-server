@@ -137,8 +137,8 @@ file, give the length and a producer to `sized-body`:
 [file-server.sps](../examples/file-server.sps) takes the length from the file.
 
 - The server sends `Content-Length` instead of chunks. The client sees the
-  size, a `HEAD` gets the length too, and an HTTP/1.0 client keeps its
-  connection.
+  size, a `HEAD` gets the length too, and an HTTP/1.0 client that asked to
+  keep its connection keeps it.
 - The producer is called just as above: as fast as the client reads, and on
   a coroutine under `awaiting`.
 - Once the length is sent, the server stops calling the producer. It never
@@ -147,7 +147,8 @@ file, give the length and a producer to `sized-body`:
   is not sent. If it ends early, the body ends there. Either way the client
   sees the body cut short, and the server logs `body-length-mismatch`, then
   the length and the bytes the producer gave, and closes the connection after
-  what it sent.
+  what it sent. A producer that stops early because its client has closed is
+  not logged.
 - A length of 0 is an empty body, and the producer is never called. A `HEAD`,
   a `204` or a `304` never calls it either.
 
