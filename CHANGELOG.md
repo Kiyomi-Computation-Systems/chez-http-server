@@ -6,6 +6,15 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The request's HTTP version, from `(http-server)`.** `request-http-major`
+  and `request-http-minor`, each `Request -> Nat`, give the version the
+  request names: `HTTP/1.2` reads 1 and 2, though the server answers it as
+  HTTP/1.1. A handler that logs requests, or a layer that hands the version
+  on, no longer imports `(http-server request)`, which the docs do not
+  cover. They are that library's own accessors, so nothing else changes.
+
 ## [0.8.0] - 2026-10-24
 
 The ninth release, and the first public one: the repository and its docs
