@@ -3194,3 +3194,21 @@ C5, C6, C8, F1; D17 F4, F5, C1, C2, C3, C8, F1, R6; S9 S5, C7, C8, S1, R6; S10 S
 C8, R6, T1; S11 S5, S6, S4, C1, C2, C3, C8, S1, R6; S12 C15, S4, C1, C8, S1, R6; S13 S8,
 S9, S4, C7, C8, S1, R6. Not checked: the file server's port closing, which a client cannot
 see; DN-E1 shows the example loads only with the export.
+
+**Re-run on the merged tree** (main at f4edc36 merged in: the sized body #221-#223 and
+`request-has-body?` #232; the sized body's mismatch wired to the ending): 41 rows over 54
+suites, three at a time, prediction 0284800a… hashed before the run, every cut preflighted
+against the merged tree. Two rows re-cut against code the merge moved: DN-C2 (the decided
+ending ignored, `(if (eq? ending 'owed) how ending)` to `how`) and DN-C3 (`respond`'s
+`cut-short!` dropped). Two new: DN-C16 (the mismatch decides nothing: the done suite's
+three sized-body checks, each reading `written`) and DN-C17 (always `failed`: the
+client-closed one). Every row as predicted, beyond DN-C10's existing full-action checks
+(deadlines 2, done 1, linger 4, originated 6, stream 2, switch 1, table 10, message loop
+1) and DN-E1's example that no longer loads. The sized-body checks' killers: long and
+short C16, C2, C1, C8, F1, R6; the client-closed one C16, C17, C2, C1, C8, F1, R6.
+
+**The trap, in its own context:** tell-done! runs on no coroutine, from the drain or a
+libuv callback. In a scheduler's drain, before any coroutine has waited and after one has
+waited and been woken, Darwin arm64: `guard` 351 and 354 B, the handler with a one-shot
+escape 211 and 208 B. #233's 3.4 KB for a `call/1cc` escape is inside a coroutine after
+its own wait, where tell-done! never runs.
