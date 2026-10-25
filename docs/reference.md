@@ -12,7 +12,7 @@ Shared types:
 
 ```text
 Headers  = (Listof (Pair Bytevector Bytevector))
-Body     = (U Bytevector #f Producer)
+Body     = (U Bytevector #f Producer SizedBody)
 Producer = (-> (U Bytevector Eof))
 Answer   = (U Response BodyReader Awaiting)
 ```
@@ -97,6 +97,15 @@ headers, body. See [Responses](responses.md).
 ### response?
 
 `Any -> Boolean`.
+
+### sized-body
+
+```text
+sized-body : Nat Producer -> SizedBody
+```
+
+A body of that many bytes, made by the producer as it is sent, with its
+`Content-Length`. See [Bodies and streaming](bodies.md).
 
 ## Waiting
 

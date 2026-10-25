@@ -39,6 +39,10 @@
 ;;;     small writes as one write request of chez-libuv's; a stream's head is
 ;;;     sent before its producer is first called; a producer that raises
 ;;;     after a piece closes the connection with the body cut short, logged;
+;;;     a sized body is sent with its Content-Length and the connection kept,
+;;;     its producer on a coroutine for a handler that waits, and one whose
+;;;     producer ends short, or gives a piece past its length, is closed
+;;;     after the bytes written, logged;
 ;;;   - writes: one outstanding keeps nothing of its response (chez-libuv
 ;;;     copies the segments at the call); one that fails, at its completion or
 ;;;     when it is issued, closes the connection as a read error, and is
@@ -280,8 +284,10 @@
 ;; turn; `/pieces` streams three texts; `/head-first` two, its
 ;; producer keeping in `head-first-seen`, at its first call, how many more
 ;; write requests chez-libuv holds than when the handler was called
-;; (`head-first-requests`); and `/stream-raise` a piece, then raises.  And
-;; where a handler is called, and handlers that wait:
+;; (`head-first-requests`); and `/stream-raise` a piece, then raises; and
+;; `/sized` three texts as a body of their 13 bytes, `/sized-short` two, 8
+;; bytes, as a body of 20, and `/sized-long` the three as a body of 10.  And where a handler is called, and handlers that
+;; wait:
 ;; `/phase` answers the scheduler's phase it was called in and whether a
 ;; coroutine ran it; `/await` waits, its thunk parked in `parked` until the
 ;; suite wakes it, then answers what it was woken with, the phase and
@@ -289,7 +295,8 @@
 ;; `/await-read` waits and reads the body, yielding before it keeps each
 ;; piece, and answers the pieces joined; `/await-held` waits and reads the
 ;; body, its first piece parked in `parked` until the suite wakes it; and
-;; `/await-stream` waits and streams three texts, yielding before each; and
+;; `/await-stream` waits and streams three texts, yielding before each, and
+;; `/await-sized` does as a body of their 13 bytes; and
 ;; `/read-phase` reads the body with an ordinary reader, and answers whether
 ;; a coroutine ran any of its pieces; and `/counted` counts its calls in
 ;; `counted-calls`.  And handlers that wait with the verbs: `/await-wake`
@@ -518,6 +525,11 @@
             (lambda ()
               (let ((p (producer-of '("one " "two " "three"))))
                 (make-response 200 #f '() (lambda () (coroutine-yield!) (p)))))))
+          ((bytevector=? target (b "/await-sized"))
+           (awaiting
+            (lambda ()
+              (let ((p (producer-of '("one " "two " "three"))))
+                (make-response 200 #f '() (sized-body 13 (lambda () (coroutine-yield!) (p))))))))
           ((bytevector=? target (b "/counted"))
            (set! counted-calls (+ counted-calls 1))
            (make-response 200 #f '() target))
@@ -570,6 +582,12 @@
            (make-response 200 #f '() (producer-of '("one " "two " "three"))))
           ((bytevector=? target (b "/mixed"))
            (make-response 200 #f '() (producer-of mixed-pieces)))
+          ((bytevector=? target (b "/sized"))
+           (make-response 200 #f '() (sized-body 13 (producer-of '("one " "two " "three")))))
+          ((bytevector=? target (b "/sized-short"))
+           (make-response 200 #f '() (sized-body 20 (producer-of '("one " "two ")))))
+          ((bytevector=? target (b "/sized-long"))
+           (make-response 200 #f '() (sized-body 10 (producer-of '("one " "two " "three")))))
           ((bytevector=? target (b "/stream-raise"))
            (make-response 200 #f '()
                           (producer-of '("one piece")
@@ -1539,6 +1557,14 @@
                   '((200 "one two three"))
                   (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl))))
       (client-close! cl))
+    (let ((cl (open-client! (b "GET /await-sized HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of a handler that waits and answers a sized body reads its response" 'satisfied
+               (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))
+      (test-equal "its sized body's producer is called on a coroutine too, yielding before each piece: its length, the pieces in order"
+                  '((200 "13" "one two three"))
+                  (map (lambda (r) (list (status r) (field r "Content-Length") (body r)))
+                       (responses (client-bytes cl))))
+      (client-close! cl))
 
     ;; Three requests in one write, the depth counter, and the clock.
     (set! clock-reads 0)
@@ -1919,6 +1945,48 @@
                     (if (and entry (pair? (cdr entry)) (message-condition? (cadr entry)))
                         (list 'handler-failed (condition-message (cadr entry)))
                         (list 'not-logged logged))))
+      (client-close! cl))
+    ;; A sized body: its length announced, its pieces unframed, and the
+    ;; connection kept, nothing logged.
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /sized HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of a sized body reads its response" 'satisfied
+               (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))
+      (test-equal "a 200 with its Content-Length, the pieces in order, the connection kept, nothing logged"
+                  '((200 "13" absent "one two three" complete) open ())
+                  (let ((r (read-response (client-bytes cl) #f #f)))
+                    (list (list (status r) (field r "Content-Length") (field r "Transfer-Encoding")
+                                (body r) (list-ref r 4))
+                          (client-end cl) logged)))
+      (client-close! cl))
+    ;; A sized body whose producer ends short: the bytes given, then the
+    ;; staged close, so the client reads the stream's end short of the
+    ;; length, and the shell logs the length and the bytes given.
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /sized-short HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of a sized body that ends short reads the stream's end" 'satisfied
+               (wait-for (lambda () (not (eq? (client-end cl) 'open)))))
+      (test-equal "its length, the bytes given, then the end: short of the length, logged with both counts"
+                  '((200 "20" "one two " error) eof ((body-length-mismatch 20 8)))
+                  (let ((r (read-response (client-bytes cl) #f #t)))
+                    (list (list (status r) (field r "Content-Length") (body r) (list-ref r 4))
+                          (client-end cl)
+                          (filter (lambda (entry) (eq? (car entry) 'body-length-mismatch)) logged))))
+      (client-close! cl))
+    ;; A sized body whose producer gives a piece past its length: none of the
+    ;; piece is written, so the client reads the stream's end short of the
+    ;; length, and the shell logs the length and the bytes given, the piece
+    ;; among them.
+    (set! logged '())
+    (let ((cl (open-client! (b "GET /sized-long HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "the client of a sized body whose producer gives too much reads the stream's end" 'satisfied
+               (wait-for (lambda () (not (eq? (client-end cl) 'open)))))
+      (test-equal "its length, the pieces before the one past it, then the end: short of the length, logged with both counts"
+                  '((200 "10" "one two " error) eof ((body-length-mismatch 10 13)))
+                  (let ((r (read-response (client-bytes cl) #f #t)))
+                    (list (list (status r) (field r "Content-Length") (body r) (list-ref r 4))
+                          (client-end cl)
+                          (filter (lambda (entry) (eq? (car entry) 'body-length-mismatch)) logged))))
       (client-close! cl))
 
     ;; A write outstanding keeps nothing of its response.
