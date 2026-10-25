@@ -8,6 +8,11 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ### Added
 
+- **A handler can list every header.** `(request-header-list r)` gives each field line
+  of the head, in the order they came, as a pair: its name as sent, in its own case, and
+  its value as `request-header` gives it. A name on several lines comes as several
+  pairs. A handler that logs a request, proxies it or hands its headers on can see a
+  field it does not know by name (decision 0032).
 - **The request's HTTP version, from `(http-server)`.** `request-http-major`
   and `request-http-minor`, each `Request -> Nat`, give the version the
   request names: `HTTP/1.2` reads 1 and 2, though the server answers it as
