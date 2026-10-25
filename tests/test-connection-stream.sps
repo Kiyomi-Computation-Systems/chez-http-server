@@ -194,7 +194,7 @@
     ;; write, 16,392 bytes, where a producer asked regardless would have the
     ;; whole body outstanding at once: the slow reader's memory bound.
     (test-equal "the write water marks: 1 MiB in 16 KiB pieces, read back whole; the bytes outstanding never past the high water by more than a piece's write"
-                (list (list 200 (sized-body 64 16384) 'complete) #t 65 '(idle #f))
+                (list (list 200 (sized-text 64 16384) 'complete) #t 65 '(idle #f))
                 (let-values (((p calls) (counted (sized-producer 64 16384))))
                   (let* ((w (watching)) (sh (serve default-limits (answering p) get11 w)))
                     (list (status+body (read-back sh #f #f))
@@ -205,7 +205,7 @@
     ;; head, then after each piece; past it, it waits, and is asked again only
     ;; once a completion brings the bytes outstanding to the low water.
     (test-equal "past the high water the producer waits, and is told to go on at the low water: every ask at or below the high water, every one after a completion at or below the low water"
-                (list '() '() 'waited (list 200 (sized-body 30 100) 'complete) 31)
+                (list '() '() 'waited (list 200 (sized-text 30 100) 'complete) 31)
                 (let-values (((p calls) (counted (sized-producer 30 100))))
                   (let* ((w (watching)) (sh (serve (waters 1000 300) (answering p) get11 w))
                          (asks (reverse (watch-asks w))))
@@ -222,7 +222,7 @@
     ;; for all 1,000, 106,000 bytes; the writes let it ask for 63 after the
     ;; head, and each later turn for 48.
     (test-equal "small pieces: at most 64 writes outstanding, every ask after a completion at 16 writes or fewer, read back whole"
-                (list 64 '() (list 200 (sized-body 1000 100) 'complete) 1001)
+                (list 64 '() (list 200 (sized-text 1000 100) 'complete) 1001)
                 (let-values (((p calls) (counted (sized-producer 1000 100))))
                   (let* ((w (watching)) (sh (serve default-limits (answering p) get11 w))
                          (asks (reverse (watch-asks w))))
