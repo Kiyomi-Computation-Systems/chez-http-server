@@ -20,7 +20,9 @@
 ;;; handler reads the body by answering with a reader, `read-body` or
 ;;; `read-whole-body`; a response given instead is sent at once, and the
 ;;; connection closes after it (see (http-server body)).  The response is
-;;; (http-server response)'s record, which the server frames.  A handler
+;;; (http-server response)'s record, which the server frames; a body made as
+;;; it is written is a producer, or, with its length declared, a sized body,
+;;; sent with that Content-Length.  A handler
 ;;; that waits answers `(awaiting thunk)`: the server runs `thunk` on a
 ;;; coroutine of its own, and what it returns is the answer.  There it may
 ;;; wait with `await`, which hands a one-shot `resume` to whatever ends the
@@ -61,9 +63,11 @@
 ;;;     read-whole-body : (Bytevector -> Response) [(U Nat #f)] -> BodyReader
 ;;;   (http-server response)
 ;;;     make-response : Nat (U Bytevector #f) Headers Body -> Response
-;;;       Headers = (Listof (Pair Bytevector Bytevector))
-;;;       Body    = (U Bytevector #f (-> (U Bytevector Eof)))
+;;;       Headers  = (Listof (Pair Bytevector Bytevector))
+;;;       Body     = (U Bytevector #f Producer SizedBody)
+;;;       Producer = (-> (U Bytevector Eof))
 ;;;     response? : Any -> Boolean
+;;;     sized-body : Nat Producer -> SizedBody
 ;;;   (http-server awaiting)
 ;;;     awaiting : (-> Answer) -> Awaiting
 ;;;       Answer = (U Response BodyReader Awaiting)
@@ -101,7 +105,7 @@
     request-header-list request-host request-http-major request-http-minor
     read-body read-whole-body
     ;; what it answers
-    make-response response? awaiting switch-protocols
+    make-response response? sized-body awaiting switch-protocols
     ;; the stream a handler that takes an upgrade is handed
     make-transport transport? transport-write! transport-read-start! transport-read-stop!
     transport-close! transport-abort! transport-deadline! transport-on-drain! transport-on-close!
@@ -116,7 +120,7 @@
           (only (http-server view) request-path request-query request-header request-header-values
                 request-header-list request-host)
           (only (http-server body) read-body read-whole-body)
-          (only (http-server response) make-response response?)
+          (only (http-server response) make-response response? sized-body)
           (only (http-server switch) switch-protocols)
           (http-server transport)
           (only (http-server awaiting) awaiting &deadline-passed deadline-passed?
