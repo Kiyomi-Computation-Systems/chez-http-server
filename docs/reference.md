@@ -58,6 +58,8 @@ of the request (Latin-1), and is made when called. See
 | `request-header-values` | `Request String -> (Listof String)` | every field of that name, in order |
 | `request-header-list` | `Request -> (Listof (Pair String String))` | every field, its name as sent, in order |
 | `request-host` | `Request -> String` | the host the request is for, `""` if none |
+| `request-http-major` | `Request -> Nat` | the first number of the version the request names, always `1` |
+| `request-http-minor` | `Request -> Nat` | its second: `2` for `HTTP/1.2`, which is answered as HTTP/1.1 |
 
 ## Reading a body
 

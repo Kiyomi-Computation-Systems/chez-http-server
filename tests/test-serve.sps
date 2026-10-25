@@ -71,7 +71,8 @@
 
 ;; The handler reads the request through the facade's names alone, and
 ;; answers with what it read: the method, the path, the query, the host and
-;; the X-Probe header, "-" for one that is not there.  At `/door` it takes
+;; the X-Probe header, "-" for one that is not there, and the version, as
+;; major.minor.  At `/door` it takes
 ;; the upgrade to `echo`, with the facade's names alone: its taker writes
 ;; back what it is handed and what it reads, and closes at the client's end.
 (define (handler r)
@@ -87,7 +88,9 @@
                                        " " (request-path r)
                                        " " (or (request-query r) "-")
                                        " " (request-host r)
-                                       " " (or (request-header r "x-probe") "-"))))))
+                                       " " (or (request-header r "x-probe") "-")
+                                       " " (number->string (request-http-major r))
+                                       "." (number->string (request-http-minor r)))))))
 
 ;; refused : (-> Any) String -> (U (List Boolean Boolean Boolean Boolean) 'started)
 ;; How `start` fails: whether its raise is an &http-server-config-error, an
@@ -346,7 +349,7 @@
                   await awaiting client-closed? deadline-passed? http-server-config-error? http-server-error?
                   make-response
                   make-transport read-body read-whole-body request-header request-header-list request-header-values
-                  request-host request-method
+                  request-host request-http-major request-http-minor request-method
                   request-path request-query request? resolve resolve-error-reason resolve-error?
                   response? serve sleep-ms switch-protocols transport-abort! transport-close! transport-deadline!
                   transport-on-close! transport-on-drain! transport-read-start! transport-read-stop!
@@ -387,9 +390,17 @@
                     (uv-loop-teardown! rloop)
                     seen))
       (test-equal "a request reaches the handler, read through the facade's names, and its answer the client"
-                  '(200 "GET /p q=1 example.test:81 v" complete)
+                  '(200 "GET /p q=1 example.test:81 v 1.1" complete)
                   (exchange loop sh port
                             (b "GET http://example.test:81/p?q=1 HTTP/1.1\r\nHost: other.test\r\nX-Probe: v\r\nConnection: close\r\n\r\n")))
+      (test-equal "the version reads as the request names it: HTTP/1.0 is 1.0"
+                  '(200 "GET /p - h - 1.0" complete)
+                  (exchange loop sh port (b "GET /p HTTP/1.0\r\nHost: h\r\n\r\n")))
+      ;; The server answers it as HTTP/1.1 (tests/test-connection-head.sps);
+      ;; the handler reads the version the client sent.
+      (test-equal "and HTTP/1.2 is 1.2, the version it names"
+                  '(200 "GET /p - h - 1.2" complete)
+                  (exchange loop sh port (b "GET /p HTTP/1.2\r\nHost: h\r\nConnection: close\r\n\r\n")))
       (test-equal "its limits are the environment's: a target over CHEZ_HTTP_MAX_TARGET_BYTES gets 414"
                   '(414 "" complete)
                   (exchange loop sh port

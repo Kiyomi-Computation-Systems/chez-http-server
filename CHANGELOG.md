@@ -13,6 +13,15 @@ All notable changes to chez-http-server are recorded here. The format follows
   its value as `request-header` gives it. A name on several lines comes as several
   pairs. A handler that logs a request, proxies it or hands its headers on can see a
   field it does not know by name (decision 0032).
+- **The request's HTTP version, from `(http-server)`.** `request-http-major`
+  and `request-http-minor`, each `Request -> Nat`, give the version the
+  request names: `HTTP/1.2` reads 1 and 2, though the server answers it as
+  HTTP/1.1. A handler that logs requests, or a layer that hands the version
+  on, no longer needs `(http-server request)`, which the docs do not cover.
+  They are that library's own accessors, so code that imports them from
+  there as well still works. A program that imports all of `(http-server)`
+  and defines either name itself no longer loads: rename its own, or import
+  `(except (http-server) request-http-major request-http-minor)`.
 
 ## [0.8.0] - 2026-10-24
 

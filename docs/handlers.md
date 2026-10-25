@@ -24,7 +24,7 @@ ends Chez too.
 
 ## Reading the request
 
-For `GET /a/b?x=1` with `Host: example.com`:
+For `GET /a/b?x=1 HTTP/1.1` with `Host: example.com`:
 
 | Call | Gives | Here |
 |:--|:--|:--|
@@ -35,6 +35,8 @@ For `GET /a/b?x=1` with `Host: example.com`:
 | `(request-header-values r "host")` | every header with that name, in order; `'()` with none | `("example.com")` |
 | `(request-header-list r)` | every header, in order, as `(name . value)` | `(("Host" . "example.com"))` |
 | `(request-host r)` | the site the request is for | `"example.com"` |
+| `(request-http-major r)` | the version's first number | `1` |
+| `(request-http-minor r)` | the version's second number | `1` |
 
 - The method is one of the 36 the parser knows, in capitals: `GET`, `POST`,
   `PUT`, the WebDAV methods and the rest. Any other, such as `get` or `FOO`,
@@ -63,6 +65,10 @@ For `GET /a/b?x=1` with `Host: example.com`:
 - `OPTIONS *` has the path `"*"`, and `CONNECT example.com:443` the path
   `""`.
 - With an empty `Host:`, or none (HTTP/1.0), the host is `""`.
+- The version is the one the request names: `HTTP/1.2` reads `1` and `2`,
+  though the server answers it as HTTP/1.1. The first number is always `1`:
+  the server refuses any other version before your handler runs
+  ([Connections](connections.md#versions)).
 
 Each call makes its string when you ask, so a handler pays only for what it
 reads.

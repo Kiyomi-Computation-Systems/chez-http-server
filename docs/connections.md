@@ -33,7 +33,8 @@ and closes. Anything the client sent after that request is ignored.
   `Transfer-Encoding` gets `400 Bad Request`, and the connection closes:
   HTTP/1.0 has no `Transfer-Encoding`, so where such a body ends cannot be
   trusted.
-- **A later 1.x**, such as `HTTP/1.2`, is served as HTTP/1.1.
+- **A later 1.x**, such as `HTTP/1.2`, is served as HTTP/1.1. Your handler
+  still reads the version the client sent: `request-http-minor` gives `2`.
 - **HTTP/2's opening line** (`PRI * HTTP/2.0`) gets `505 HTTP Version Not
   Supported`, and so does any version that is not 1.x: HTTP/0.9 (a request
   line with no version, such as `GET /`), `HTTP/2.0` or `HTTP/3.0`. The
