@@ -94,6 +94,9 @@
 ;;;   hand-off        the switch's take-over called with a transport over the
 ;;;                   fake connection and the bytes handed over, copied
 ;;;                   (THE DOOR, below)
+;;;   response-done   each procedure told how the response ended, in place,
+;;;                   in order; one that raises is recorded
+;;;                   (fake-shell-done-failures), the rest still told
 ;;;
 ;;; and records the rest (logs) without acting on them.  A fake connection made
 ;;; on credit answers with each handler's answer and `credit`,
@@ -200,7 +203,8 @@
           fake-shell-writes fake-shell-date-writes! written-status write-wire
           fake-shell-fire-waits! fake-shell-answer-lookup! fake-shell-drain! fake-shell-armed
           event->door-read door-read->event
-          fake-shell-shut? fake-shell-hold! fake-shell-schedule! fake-shell-taker-failures)
+          fake-shell-shut? fake-shell-hold! fake-shell-schedule! fake-shell-taker-failures
+          fake-shell-done-failures)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
@@ -256,11 +260,12 @@
             (mutable draining?)               ; whether the shell has drained
             (mutable notice)                  ; the request's notice of its client's close, or #f
             (mutable held?)                   ; whether its scheduler waits to be drained (fake-shell-hold!)
-            (mutable taker-failures-rev))     ; what a waiting taker's thunks raised, newest first
+            (mutable taker-failures-rev)      ; what a waiting taker's thunks raised, newest first
+            (mutable done-failures-rev))      ; what the procedures told a response's end raised, newest first
     (protocol (lambda (new)
                 (define (make step state0 now0 perform trace)
                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
-                       #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f '()))
+                       #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f '() '()))
                 (case-lambda
                   ((step state0 now0) (make step state0 now0 #f #f))
                   ((step state0 now0 perform) (make step state0 now0 perform #f))
@@ -287,6 +292,11 @@
   ;; What a waiting taker's thunks raised, in order, the close their notice
   ;; told not among them: the libuv shell logs each as `taker-failed`.
   (define (fake-shell-taker-failures s) (reverse (fake-shell-taker-failures-rev s)))
+
+  ;; fake-shell-done-failures : FakeShell -> (Listof Any)
+  ;; What the procedures told how a response ended raised, in order: the
+  ;; libuv shell logs each as `on-done-failed`.
+  (define (fake-shell-done-failures s) (reverse (fake-shell-done-failures-rev s)))
 
   ;; fake-shell-advance! : FakeShell Nat -> Nat
   ;; Move the injected clock forward by `dt` and return the new now; it never
@@ -604,7 +614,17 @@
       ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
       ((hand-off) (hand-off! s (cadr a) (caddr a) (cadddr a) limits))
       ((client-closed) (notice-close! (request-notice s)))
+      ((response-done) (call-done! s (cadr a) (caddr a)))
       (else (values))))
+
+  ;; call-done! : FakeShell Symbol (Listof (Symbol -> Any)) -> Void
+  ;; Each procedure told `how`, in order, in place; what one raises is
+  ;; recorded, and the rest are still told.
+  (define (call-done! s how procs)
+    (for-each (lambda (p)
+                (guard (e (#t (fake-shell-done-failures-rev-set! s (cons e (fake-shell-done-failures-rev s)))))
+                  (p how)))
+              procs))
 
   ;; request-notice : FakeShell -> Notice
   ;; The notice of the request in flight, as the libuv
