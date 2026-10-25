@@ -43,9 +43,10 @@
 ;;;   - and its disposability (IX): a process shuts down gracefully when sent
 ;;;     SIGTERM, and SIGINT too.
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) library-exports with-output-to-string putenv getenv)
+        (only (chezscheme) library-exports with-output-to-string putenv getenv statistics sstats-bytes)
         (libuv) (uv-testing) (shell-testing) (response-reader)
         (http-server)
+        (only (http-server request) make-request)
         (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-scheduler shell-signals)
         (only (http-server private scheduler) scheduler-call!)
         (only (http-server private serve) start-server run-until-stopped! log-line))
@@ -71,8 +72,9 @@
 
 ;; The handler reads the request through the facade's names alone, and
 ;; answers with what it read: the method, the path, the query, the host and
-;; the X-Probe header, "-" for one that is not there, and the version, as
-;; major.minor.  At `/door` it takes
+;; the X-Probe header, "-" for one that is not there, the version, as
+;; major.minor, and "body" when the request has one, "-" when not.  It
+;; answers at once, reading no body.  At `/door` it takes
 ;; the upgrade to `echo`, with the facade's names alone: its taker writes
 ;; back what it is handed and what it reads, and closes at the client's end.
 (define (handler r)
@@ -90,7 +92,8 @@
                                        " " (request-host r)
                                        " " (or (request-header r "x-probe") "-")
                                        " " (number->string (request-http-major r))
-                                       "." (number->string (request-http-minor r)))))))
+                                       "." (number->string (request-http-minor r))
+                                       " " (if (request-has-body? r) "body" "-"))))))
 
 ;; refused : (-> Any) String -> (U (List Boolean Boolean Boolean Boolean) 'started)
 ;; How `start` fails: whether its raise is an &http-server-config-error, an
@@ -116,6 +119,17 @@
     (run-shell-until loop sh (lambda () (null? (shell-connections sh))) cap)
     (let ((r (read-response (client-bytes cl) #f #t)))
       (list (car r) (cadddr r) (list-ref r 4)))))
+
+;; per-call : (Request -> Any) Request -> (Pair Nat Nat)
+;; What `ask` allocates a call on `r`, over 10,000 calls, by Chez's
+;; cumulative counter, and how many of the calls answered true, so that
+;; none is dropped.
+(define (per-call ask r)
+  (let ((reps 10000) (before (sstats-bytes (statistics))))
+    (let loop ((i 0) (yes 0))
+      (if (fx<? i reps)
+          (loop (fx+ i 1) (if (ask r) (fx+ yes 1) yes))
+          (cons (div (- (sstats-bytes (statistics)) before) reps) yes)))))
 
 ;; dones-at-stop : Nat Boolean -> (List (Listof (List Nat Any)) (Listof (List Nat Any)) Boolean)
 ;; A server whose handler takes an upgrade, and whose taker, once its stream
@@ -348,14 +362,26 @@
                 '(&client-closed &deadline-passed &http-server-config-error &http-server-error &resolve-error
                   await awaiting client-closed? deadline-passed? http-server-config-error? http-server-error?
                   make-response
-                  make-transport read-body read-whole-body request-header request-header-list request-header-values
-                  request-host request-http-major request-http-minor request-method
+                  make-transport read-body read-whole-body request-has-body? request-header request-header-list
+                  request-header-values request-host request-http-major request-http-minor request-method
                   request-path request-query request? resolve resolve-error-reason resolve-error?
                   response? serve sized-body sleep-ms switch-protocols transport-abort! transport-close! transport-deadline!
                   transport-on-close! transport-on-drain! transport-read-start! transport-read-stop!
                   transport-write! transport? with-deadline)
                 (list-sort (lambda (x y) (string<? (symbol->string x) (symbol->string y)))
                            (library-exports '(http-server))))
+
+    ;; --- what asking whether a request has a body costs ---
+    ;; The answer is made once, with the request, so asking reads it and
+    ;; allocates nothing.  The counter sees a header's lookup allocate, its
+    ;; name made into bytes, so the zero is not the counter's.
+    (let ((with-body (make-request 'POST (b "/") 1 1 '() #t)))
+      (test-equal "asking whether a request has a body allocates nothing, and answers each time"
+                  '(0 . 10000)
+                  (per-call request-has-body? with-body))
+      (test-eq "the counter sees a header's lookup allocate" 'seen
+               (let ((c (per-call (lambda (r) (request-header r "content-length")) with-body)))
+                 (if (and (> (car c) 0) (= (cdr c) 0)) 'seen c))))
 
     ;; --- a server started through an environment, serving ---
     (let* ((loop (make-uv-loop))
@@ -390,17 +416,31 @@
                     (uv-loop-teardown! rloop)
                     seen))
       (test-equal "a request reaches the handler, read through the facade's names, and its answer the client"
-                  '(200 "GET /p q=1 example.test:81 v 1.1" complete)
+                  '(200 "GET /p q=1 example.test:81 v 1.1 -" complete)
                   (exchange loop sh port
                             (b "GET http://example.test:81/p?q=1 HTTP/1.1\r\nHost: other.test\r\nX-Probe: v\r\nConnection: close\r\n\r\n")))
       (test-equal "the version reads as the request names it: HTTP/1.0 is 1.0"
-                  '(200 "GET /p - h - 1.0" complete)
+                  '(200 "GET /p - h - 1.0 -" complete)
                   (exchange loop sh port (b "GET /p HTTP/1.0\r\nHost: h\r\n\r\n")))
       ;; The server answers it as HTTP/1.1 (tests/test-connection-head.sps);
       ;; the handler reads the version the client sent.
       (test-equal "and HTTP/1.2 is 1.2, the version it names"
-                  '(200 "GET /p - h - 1.2" complete)
+                  '(200 "GET /p - h - 1.2 -" complete)
                   (exchange loop sh port (b "GET /p HTTP/1.2\r\nHost: h\r\nConnection: close\r\n\r\n")))
+      ;; The handler answers at once: one with a body closes the connection
+      ;; after it, and each closes here anyway, at the client's word.
+      (test-equal "a Content-Length of 00 is no body, as the server decides"
+                  '(200 "POST /p - h - 1.1 -" complete)
+                  (exchange loop sh port
+                            (b "POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 00\r\nConnection: close\r\n\r\n")))
+      (test-equal "a Content-Length of 1 is a body"
+                  '(200 "POST /p - h - 1.1 body" complete)
+                  (exchange loop sh port
+                            (b "POST /p HTTP/1.1\r\nHost: h\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx")))
+      (test-equal "and so is a chunked one"
+                  '(200 "POST /p - h - 1.1 body" complete)
+                  (exchange loop sh port
+                            (b "POST /p HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n")))
       (test-equal "its limits are the environment's: a target over CHEZ_HTTP_MAX_TARGET_BYTES gets 414"
                   '(414 "" complete)
                   (exchange loop sh port

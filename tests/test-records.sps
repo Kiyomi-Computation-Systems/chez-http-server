@@ -33,7 +33,7 @@
     (let* ((wire (b "GET /p HTTP/1.1\r\nHost: x\r\n\r\n"))
            (target (make-span wire 4 6))
            (hs (list (cons (make-span wire 17 21) (make-span wire 23 24))))
-           (req (make-request 'GET target 1 1 hs 'the-body)))
+           (req (make-request 'GET target 1 1 hs #t)))
       (test-eq    "method reads back"  'GET      (request-method req))
       (test-eq    "target reads back"  target    (request-target req))
       (test-equal "the target is /p"   (b "/p")  (span->bytevector (request-target req)))
@@ -43,7 +43,9 @@
       (test-equal "the header is Host: x" (list (b "Host") (b "x"))
                   (let ((h (car (request-headers req))))
                     (list (span->bytevector (car h)) (span->bytevector (cdr h)))))
-      (test-eq    "body reads back"    'the-body (request-body req))
+      (test-eq    "a body announced reads back" #t (request-has-body? req))
+      (test-eq    "and none announced"  'no
+                  (if (request-has-body? (make-request 'GET target 1 1 hs #f)) 'yes 'no))
       (test-eq    "request? accepts"   'yes (if (request? req) 'yes 'no))
       (test-eq    "request? rejects a fixnum" 'no (if (request? 42) 'yes 'no)))
 

@@ -37,6 +37,7 @@ For `GET /a/b?x=1 HTTP/1.1` with `Host: example.com`:
 | `(request-host r)` | the site the request is for | `"example.com"` |
 | `(request-http-major r)` | the version's first number | `1` |
 | `(request-http-minor r)` | the version's second number | `1` |
+| `(request-has-body? r)` | whether a body follows the head | `#f` |
 
 - The method is one of the 36 the parser knows, in capitals: `GET`, `POST`,
   `PUT`, the WebDAV methods and the rest. Any other, such as `get` or `FOO`,
@@ -69,9 +70,14 @@ For `GET /a/b?x=1 HTTP/1.1` with `Host: example.com`:
   though the server answers it as HTTP/1.1. The first number is always `1`:
   the server refuses any other version before your handler runs
   ([Connections](connections.md#versions)).
+- A body follows when the request is chunked or has a `Content-Length`
+  above 0. `request-has-body?` is the server's own answer, so
+  `Content-Length: 00` is no body, and a chunked body counts even when it
+  turns out empty. Answer a reader to read it
+  ([Bodies and streaming](bodies.md)).
 
 Each call makes its string when you ask, so a handler pays only for what it
-reads.
+reads. `request-has-body?` makes nothing: the server decides it once.
 
 ### Keep strings, not the request
 
