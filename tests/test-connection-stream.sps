@@ -15,6 +15,16 @@
 ;;; at 16 or fewer.  A producer that fails once the head is on the wire gets
 ;;; a bare close: a status can no longer be written.
 ;;;
+;;; A sized body is a producer with its length declared: its head says
+;;; `Content-Length`, a HEAD's too, and its pieces are written as they come,
+;;; unframed, counted against the length.  Once the length is written the
+;;; producer is asked no more.  A piece that would take the body past it is
+;;; not written, none of it, and an end short of it ends the response short:
+;;; either is logged with the length and the bytes given, and the connection
+;;; closes after the bytes written, staged, as after any response.  An end
+;;; short of the length once the client has closed is the client's doing, and
+;;; is not logged.
+;;;
 ;;; What a connection wrote is read back as a client reads it, by
 ;;; chez-httparse's strict response parser (response-reader), which is not
 ;;; our code.  The fake shell completes each write on a later turn, as libuv
@@ -29,8 +39,9 @@
 ;;; written in 16,392 bytes: its size line, `4000` CRLF, the piece, and CRLF;
 ;;; one of 100 bytes in 106.  The head of a chunked 200 is 84 bytes: the
 ;;; status line 17, the Date 37, and `Transfer-Encoding: chunked` CRLF CRLF
-;;; 30.
-(import (rnrs) (srfi :64) (testing)
+;;; 30.  A sized body's piece is written as itself, a 16 KiB piece in 16,384
+;;; bytes.
+(import (rnrs) (srfi :64) (testing) (only (chezscheme) list-head)
         (http-server connection) (http-server response) (http-server limits) (http-server body)
         (fake-shell) (response-reader) (producers))
 
@@ -59,6 +70,11 @@
 ;; answering : Producer -> (Request -> Response)
 ;; A handler answering every request with a 200 streamed from `producer`.
 (define (answering producer) (lambda (request) (make-response 200 #f '() producer)))
+
+;; answering-sized : Nat Producer -> (Request -> Response)
+;; A handler answering every request with a 200 of `n` bytes from `producer`.
+(define (answering-sized n producer)
+  (lambda (request) (make-response 200 #f '() (sized-body n producer))))
 
 ;; --- a connection --------------------------------------------------------------
 
@@ -143,6 +159,9 @@
   (let ((as (fake-shell-actions sh)))
     (list-tail as (- (length as) n))))
 
+;; logged : FakeShell -> (Listof Action) — every log action run, in order.
+(define (logged sh) (filter (lambda (a) (eq? (car a) 'log)) (fake-shell-actions sh)))
+
 ;; ran? : FakeShell Symbol -> (U Symbol 'none) — whether an action of `kind` ran.
 (define (ran? sh kind)
   (if (exists (lambda (a) (eq? (car a) kind)) (fake-shell-actions sh)) kind 'none))
@@ -194,7 +213,7 @@
     ;; write, 16,392 bytes, where a producer asked regardless would have the
     ;; whole body outstanding at once: the slow reader's memory bound.
     (test-equal "the write water marks: 1 MiB in 16 KiB pieces, read back whole; the bytes outstanding never past the high water by more than a piece's write"
-                (list (list 200 (sized-body 64 16384) 'complete) #t 65 '(idle #f))
+                (list (list 200 (sized-text 64 16384) 'complete) #t 65 '(idle #f))
                 (let-values (((p calls) (counted (sized-producer 64 16384))))
                   (let* ((w (watching)) (sh (serve default-limits (answering p) get11 w)))
                     (list (status+body (read-back sh #f #f))
@@ -205,7 +224,7 @@
     ;; head, then after each piece; past it, it waits, and is asked again only
     ;; once a completion brings the bytes outstanding to the low water.
     (test-equal "past the high water the producer waits, and is told to go on at the low water: every ask at or below the high water, every one after a completion at or below the low water"
-                (list '() '() 'waited (list 200 (sized-body 30 100) 'complete) 31)
+                (list '() '() 'waited (list 200 (sized-text 30 100) 'complete) 31)
                 (let-values (((p calls) (counted (sized-producer 30 100))))
                   (let* ((w (watching)) (sh (serve (waters 1000 300) (answering p) get11 w))
                          (asks (reverse (watch-asks w))))
@@ -222,7 +241,7 @@
     ;; for all 1,000, 106,000 bytes; the writes let it ask for 63 after the
     ;; head, and each later turn for 48.
     (test-equal "small pieces: at most 64 writes outstanding, every ask after a completion at 16 writes or fewer, read back whole"
-                (list 64 '() (list 200 (sized-body 1000 100) 'complete) 1001)
+                (list 64 '() (list 200 (sized-text 1000 100) 'complete) 1001)
                 (let-values (((p calls) (counted (sized-producer 1000 100))))
                   (let* ((w (watching)) (sh (serve default-limits (answering p) get11 w))
                          (asks (reverse (watch-asks w))))
@@ -304,6 +323,140 @@
                                         (make-response 200 #f '() (b "second"))))
                                   two-gets)))
                   (list (map classify (fake-shell-writes sh)) (ended sh))))
+
+    ;; --- a sized body: a producer with its length declared ---
+    ;; RFC 9110 §8.6: the length announced, the pieces unframed.  Once its
+    ;; 12 bytes are written the producer is let go, though it has more to
+    ;; give: it is asked three times, never for a fourth piece or its end.
+    (test-equal "a sized body to HTTP/1.1: Content-Length its length, the pieces read back whole; the producer asked no more once they are written; nothing logged; the connection kept"
+                `((200 "OK" (,epoch-date ("Content-Length" . "12")) "hello, world" complete) 3 () (idle #f) ())
+                (let-values (((p calls) (texts-producer '("hello" ", " "world" "!"))))
+                  (let ((sh (serve default-limits (answering-sized 12 p) get11)))
+                    (list (read-back sh #f #f) (calls) (logged sh) (ended sh) (fake-shell-violations sh)))))
+    ;; An HTTP/1.0 client that asked to keep the connection keeps it: the
+    ;; length, not the close, ends the body (RFC 9112 §6.3 rule 6).
+    (test-equal "to HTTP/1.0: Content-Length and Connection: keep-alive, read back whole before any close; the connection kept"
+                `((200 "OK" (,epoch-date ("Content-Length" . "12") ("Connection" . "keep-alive")) "hello, world" complete)
+                  (idle #f) none)
+                (let-values (((p calls) (texts-producer '("hello" ", " "world"))))
+                  (let ((sh (serve default-limits (answering-sized 12 p) get10)))
+                    (list (read-back sh #f #f) (ended sh) (ran? sh 'shutdown)))))
+    ;; RFC 9110 §9.3.2: a HEAD's answer announces the GET's length, and no
+    ;; body; nor has a sized body of no bytes, nor a 204 (§15.3.5), which
+    ;; announces no length.  None of their producers is called.
+    (test-equal "a HEAD's answer announces the length; a sized body of no bytes is Content-Length: 0; a 204 neither; the producer never called; the connection kept"
+                `(((200 "OK" (,epoch-date ("Content-Length" . "12")) "" complete) 0 (idle #f))
+                  ((200 "OK" (,epoch-date ("Content-Length" . "0")) "" complete) 0 (idle #f))
+                  ((204 "No Content" (,epoch-date) "" complete) 0 (idle #f)))
+                (map (lambda (answer input head?)
+                       (let-values (((p calls) (texts-producer '("never"))))
+                         (let ((sh (serve default-limits (lambda (request) (answer p)) input)))
+                           (list (read-back sh head? #f) (calls) (ended sh)))))
+                     (list (lambda (p) (make-response 200 #f '() (sized-body 12 p)))
+                           (lambda (p) (make-response 200 #f '() (sized-body 0 p)))
+                           (lambda (p) (make-response 204 #f '() (sized-body 12 p))))
+                     (list head11 get11 get11)
+                     '(#t #f #f)))
+    ;; A sized producer is asked as any producer is: 1 MiB in 64 pieces of
+    ;; 16 KiB, under the default marks, never past the high water by more
+    ;; than a piece, 16,384 bytes.
+    (test-equal "a sized body under the write water marks: 1 MiB in 16 KiB pieces, read back whole; the bytes outstanding never past the high water by more than a piece"
+                (list (list 200 (sized-text 64 16384) 'complete) #t 64 '(idle #f))
+                (let-values (((p calls) (counted (sized-producer 64 16384))))
+                  (let* ((w (watching)) (sh (serve default-limits (answering-sized 1048576 p) get11 w)))
+                    (list (status+body (read-back sh #f #f))
+                          (<= (watch-most w) (+ 262144 16384))
+                          (calls) (ended sh)))))
+
+    ;; --- a sized body whose producer disagrees with its length ---
+    ;; RFC 9112 §8: the client must find the body incomplete, so the
+    ;; connection closes after the bytes written, and at the close the
+    ;; client reads the message short: the reader refuses it at the eof.
+    ;; The close is staged, as after any response: the half-close, then the
+    ;; linger.
+    ;; The head and the piece are outstanding when the end comes, so the close
+    ;; waits for their completions, which settle every write.
+    (test-equal "a producer that ends short of its length: its pieces written, logged with the length and the bytes given, then the staged close once they complete; the client reads the body short"
+                `((200 "OK" (,epoch-date ("Content-Length" . "12")) "hello" error)
+                  ((log body-length-mismatch 12 5)) 2 (lingering body-length-mismatch) shutdown 0)
+                (let-values (((p calls) (texts-producer '("hello"))))
+                  (let ((sh (serve default-limits (answering-sized 12 p) get11)))
+                    (list (read-back sh #f #t) (logged sh) (calls) (ended sh) (ran? sh 'shutdown)
+                          (conn-outstanding (fake-shell-conn-state sh))))))
+    ;; Go refuses the write that crosses the length whole, as Kestrel does:
+    ;; none of the piece is written, so the client reads the body short.  The
+    ;; bytes given count the piece: 7 written, then 6, 13 given.
+    (test-equal "a piece that would take the body past its length is not written, none of it: logged with the bytes given, then the staged close; the client reads the body short"
+                `((200 "OK" (,epoch-date ("Content-Length" . "12")) "hello, " error)
+                  ((log body-length-mismatch 12 13)) 3 3 (lingering body-length-mismatch) shutdown)
+                (let-values (((p calls) (texts-producer '("hello" ", " "world!" "?"))))
+                  (let ((sh (serve default-limits (answering-sized 12 p) get11)))
+                    (list (read-back sh #f #t) (logged sh) (calls) (length (fake-shell-writes sh))
+                          (ended sh) (ran? sh 'shutdown)))))
+    (test-equal "past its length at its first piece: the head alone, then the staged close"
+                `((200 "OK" (,epoch-date ("Content-Length" . "12")) "" error)
+                  ((log body-length-mismatch 12 13)) (lingering body-length-mismatch))
+                (let ((sh (serve default-limits (answering-sized 12 (producer-of '("hello, world!"))) get11)))
+                  (list (read-back sh #f #t) (logged sh) (ended sh))))
+    ;; Under a high water of 1,000 and a low of 300, two pieces of 600: the
+    ;; second waits past the high water, and the producer is asked again
+    ;; once both writes and the head's have completed, with none
+    ;; outstanding.  Its end, short, then closes at once, staged: the linger
+    ;; armed in its step, after the log.
+    (test-equal "a producer that ends short with no write outstanding: logged, then at once the half-close and the linger"
+                `((200 "OK" (,epoch-date ("Content-Length" . "2000")) ,(sized-text 2 600) error)
+                  ((log body-length-mismatch 2000 1200) (shutdown) (read-start) (arm-deadline linger))
+                  (lingering body-length-mismatch))
+                (let ((sh (serve (waters 1000 300) (answering-sized 2000 (sized-producer 2 600)) get11)))
+                  (list (read-back sh #f #t)
+                        (let ((as (memp (lambda (a) (eq? (car a) 'log)) (fake-shell-actions sh))))
+                          (if (and as (>= (length as) 4)) (list-head as 4) as))
+                        (ended sh))))
+    ;; A connection that closes after this response already, a POST
+    ;; answered without reading its body, keeps its own reason.
+    (test-equal "a mismatch on a connection that closes after its response already: logged, and its own reason kept"
+                `(((log body-length-mismatch 12 5)) (lingering unread-body))
+                (let ((sh (serve default-limits (answering-sized 12 (producer-of '("hello"))) post11)))
+                  (list (logged sh) (ended sh))))
+    ;; A sized body's count goes with it: the stream behind it on the
+    ;; connection, chunked, is counted against nothing.
+    (test-equal "a sized body, then a streamed one on the connection: each framed its own way, nothing logged"
+                '((head piece piece head piece end) () (idle #f))
+                (let* ((asked 0)
+                       (sh (serve default-limits
+                                  (lambda (request)
+                                    (set! asked (+ asked 1))
+                                    (if (= asked 1)
+                                        (make-response 200 #f '() (sized-body 2 (producer-of '("a" "b"))))
+                                        (make-response 200 #f '() (producer-of '("c")))))
+                                  two-gets)))
+                  (list (map classify (fake-shell-writes sh)) (logged sh) (ended sh))))
+    ;; A client that closes while its body is written is told, through its
+    ;; request's notice, and a producer that then stops short is the client's
+    ;; doing: nothing is logged, as nothing is for a told close's raise let
+    ;; out.  One that gives more than the length is the producer's, and is
+    ;; logged whoever listens.  Under a high water of 10 the head waits for
+    ;; its completion before the producer is asked, so the client's end comes
+    ;; first.
+    (test-equal "once its client has closed, a producer that ends short closes quietly, nothing logged; one past the length is still logged"
+                '((() closed (close client-closed))
+                  (((log body-length-mismatch 12 13)) closed (close client-closed)))
+                (map (lambda (texts)
+                       (let ((sh (begun (waters 10 5) (answering-sized 12 (producer-of texts)) get11)))
+                         (fake-shell-deliver! sh '(eof))
+                         (fake-shell-settle! sh)
+                         (list (logged sh) (conn-phase (fake-shell-conn-state sh)) (car (last-actions sh 1)))))
+                     '(("hello") ("hello, world!"))))
+    ;; A sized producer fails as any producer does: the shell logs its raise,
+    ;; and the core no mismatch.
+    (test-equal "a sized producer that raises after a piece: a bare close, as any producer's, the core logging no mismatch"
+                `((200 "OK" (,epoch-date ("Content-Length" . "12")) "hello" need-input)
+                  closed ((disarm-deadline) (close handler-failed)) () none)
+                (let ((sh (serve default-limits
+                                 (answering-sized 12 (producer-of '("hello") (lambda () (raise 'boom))))
+                                 get11)))
+                  (list (read-back sh #f #f) (conn-phase (fake-shell-conn-state sh))
+                        (last-actions sh 2) (logged sh) (ran? sh 'shutdown))))
 
     ;; --- a stream the connection lets go ---
     ;; Under a high water of 1,000, the first turn asks nine times: the head

@@ -123,8 +123,9 @@
   ;;     names it, or #f when the core has read no request to answer (a
   ;;     refusal before the head was complete), and its version
   ;;   status — the response's
-  ;;   length — its body's: a count, #f for no body, or 'unknown for a body
-  ;;     whose length is not known before it is written (a producer)
+  ;;   length — its body's: a count, a bytevector's or a sized body's
+  ;;     declared length, #f for no body, or 'unknown for a body whose length
+  ;;     is not known before it is written (a producer)
   ;; How the response's body goes on the wire: one of (http-server
   ;; serializer)'s framing modes.  The rules, first match wins:
   ;;   - a 1xx, a 204, a 304 and a 2xx to CONNECT: no-body.  A client ends

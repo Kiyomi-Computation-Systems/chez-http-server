@@ -1,13 +1,14 @@
 # Responses
 
 Your handler returns a response: a status, a reason phrase, headers, and a
-body, which is a bytevector, `#f` for none, or a producer that streams it
-([Bodies and streaming](bodies.md)). The server adds the rest:
+body, which is a bytevector, `#f` for none, a producer that streams it, or a
+sized body, a producer with its length ([Bodies and streaming](bodies.md)).
+The server adds the rest:
 
 - the reason phrase (`OK`, `Not Found`, ...) when you give `#f`;
-- `Content-Length`, counted from your body; for a producer's body,
-  `Transfer-Encoding: chunked` to HTTP/1.1, and no length to HTTP/1.0, whose
-  connection then closes after it;
+- `Content-Length`, counted from your body, or a sized body's length; for a
+  producer's body, `Transfer-Encoding: chunked` to HTTP/1.1, and no length to
+  HTTP/1.0, whose connection then closes after it;
 - `Connection: close` when the connection closes after this response, and
   `Connection: keep-alive` to an HTTP/1.0 client that asked to keep it open;
 - `Date`, unless you set your own.
@@ -26,9 +27,9 @@ you gave one:
 | `304 Not Modified` | no `Content-Length`, no body |
 | a `2xx` to a `CONNECT` | no `Content-Length`, no body |
 
-Give a `HEAD` the body a `GET` would get, and the client learns its length.
-Give it `#f`, or a producer, and no length is sent; a producer is never
-called.
+Give a `HEAD` the body a `GET` would get, a bytevector or a sized body, and
+the client learns its length. Give it `#f`, or a producer, and no length is
+sent. A producer is never called, a sized body's included.
 
 ## What gets 500
 
@@ -43,8 +44,8 @@ connection:
   response in two);
 - a `Content-Length` or `Transfer-Encoding` header: the server writes those;
 - a `Connection` header other than `close`;
-- a body that is not a bytevector, a producer or `#f`, or an answer that is
-  none of a response, a reader, `awaiting` or a switch
+- a body that is not a bytevector, a producer, a sized body or `#f`, or an
+  answer that is none of a response, a reader, `awaiting` or a switch
   ([Handlers](handlers.md)).
 
 ## What the server answers by itself

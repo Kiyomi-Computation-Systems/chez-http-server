@@ -2,7 +2,8 @@
 
 Date: 2026-10-25
 Status: accepted (user decision, 2026-10-25, by form: "Called at once (Recommended)", "In
-place, guarded (Recommended)", "All, newest first (Recommended)", "failed (Recommended)")
+place, guarded (Recommended)", "All, newest first (Recommended)", "failed (Recommended)");
+amended 2026-10-25 on the owner's "Fix the review's findings" (the amendment, below)
 Plan: none; issue #217, filed by the owner for circuit
 Amends: [0002](0002-the-connection-is-a-pure-state-machine-with-an-action-interpreter.md)
 item 2's vocabulary,
@@ -106,11 +107,40 @@ Read from source by a research pass on 2026-10-25 (the shared notes hold the cit
   done, so a lingering connection keeps none.
 - A connection the run loop's reconciliation drops, whose handle the loop no longer has,
   reaches no step of the core and calls nothing: it is a bug's path, logged `reconciled`.
-- A sized body's length mismatch, landing beside this, is the server ending the request
-  short: it marks the ending `failed`.
+- A sized body's length mismatch (#221/#222, landed first) is the producer ending the
+  request short: it marks the ending `failed`, or `client-closed` for a short end once the
+  client has closed, which that slice does not log either, as the client's doing.
 - Weighed and not taken: a field on the response, as the issue says; calling on a
   coroutine, which could wait but would let the next request's handler run first, about
   509 B a procedure; a raise closing the connection, as Undertow's callers do; a late
   registration ignored (Puma, Falcon, Kestrel) or refused (Jetty, Undertow); a fourth
   symbol, `refused`, for a refused body; `written` for a server's own status whose writes
   completed, which a caller could not tell from its own response; one procedure a request.
+
+## Amendment, 2026-10-25: the stack's review
+
+An xhigh review of #224-#226, before any merge, found that item 3's "in place, the moment
+the response ends" let a procedure run while the request's own code still ran on a
+coroutine: a reader of a handler that waits, inside a piece as its 413 was written, or a
+producer parked between pieces when a close the core did not ask for came. A port a
+procedure closed was then used after. Jetty 12 runs its completion listeners only once the
+handler's threads have returned, and Kestrel awaits its request delegate first. On the
+owner's "fix them":
+
+1. **While a call into the request's code runs on a coroutine, the procedures wait for the
+   connection's calls to end**, and are told then, in place, in the order the endings came.
+   With no such call, as on every response written in full, they are told at once, as
+   before, so a kept-alive connection still tells them before the next request is fed. A
+   call that never ends, a wait nothing resumes, never lets them run.
+2. **A reader the core has let go is handed no more**: a piece queued for a reader that
+   waits is skipped once the connection lingers or closes, as the core's rule says, not
+   delivered after.
+3. **A raise that abandons a drain no longer loses an ending**: each `response-done` still
+   queued is told from the scheduler's drain.
+4. **A connection the run loop's reconciliation drops is told it closed**, `closed`, so its
+   request reports `failed`, and it is marked closing, so what its code answers later is
+   dropped, not written to the handle gone. The consequence above that it "calls nothing"
+   no longer holds.
+5. The shell catches a procedure's raise with a handler and a one-shot continuation, not a
+   `guard`: measured on Darwin arm64, 209 B a call at any stack depth, where a guard cost
+   332 B at depth 0, 934 at 50 and 2,733 at 200, and libuv's callbacks run deep.

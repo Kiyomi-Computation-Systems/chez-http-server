@@ -160,7 +160,9 @@
 ;;; the core as a read error; `failed` at any other close, and at `closed`
 ;;; for a close the core did not ask for.  Once the core answers a status of
 ;;; its own in place of the handler's response, a 500 or a refused body's,
-;;; the ending is `failed`, however that response then ends.  Marking the
+;;; or a sized body's producer disagrees with its length, the ending is
+;;; `failed`, however that response then ends, or `client-closed` for a short
+;;; end once the client has closed.  Marking the
 ;;; request hands back what its code registered, `request-on-done!`'s
 ;;; procedures, newest first, and only when there are any does the core emit
 ;;; `(response-done how procs)`, before the actions that follow the end: the
@@ -320,6 +322,25 @@
 ;;; the wire gets a bare close: no status can be written after the head, and
 ;;; the client reads the body cut short.  The shells find the producer to
 ;;; call with `conn-producer`.
+;;;
+;;; A SIZED BODY IS A PRODUCER WITH ITS LENGTH DECLARED, and is written the
+;;; same way, a piece at a time, but framed by its length: its head says
+;;; `Content-Length`, and its pieces go unframed.  The core counts them, and
+;;; once the length is written the producer is let go, asked for no more,
+;;; not even its end, and the response is written once its writes complete.
+;;; The head is on the wire by then, so a producer that disagrees with the
+;;; length can only be cut short: a piece that would take the body past it
+;;; is not written, none of it, and the eof object before it ends the body
+;;; there.  Either is logged, `(log body-length-mismatch length given)`, the
+;;; bytes given counting the piece not written, and the connection closes
+;;; after the writes already made, staged, as after any response, for the
+;;; reason `body-length-mismatch` unless it closes for one of its own: a
+;;; client reads the body short, and knows it incomplete (RFC 9112 §8).  An
+;;; end short of the length once the client has closed, and been told, is
+;;; the client's doing, and is not logged, as a told close's raise let out
+;;; is not; a piece past the length is the producer's, and is.  No body is
+;;; written to a HEAD, a 204 or a 304, nor where the length is 0, so their
+;;; producer is never called.
 ;;;
 ;;; EXPECT: 100-CONTINUE IS ANSWERED WHEN THE HANDLER PULLS THE BODY.  A
 ;;; client that sends `Expect: 100-continue` with a head that announces a
@@ -518,9 +539,10 @@
   ;; The request head being read is kept in the state too, and so are the
   ;; request body being read, the connection's target judge, the last
   ;; delivery it fed the parser, `(bv start end)` or #f, and a streamed
-  ;; response's producer, how its pieces are framed, and whether a piece
-  ;; has been asked for and its answer is to come; only the producer is
-  ;; exported, for the shells.  And where the parser is: the bytes it has
+  ;; response's producer, how its pieces are framed, whether a piece has
+  ;; been asked for and its answer is to come, and a sized body's length and
+  ;; the bytes of it still to write, or #f; only the producer is exported,
+  ;; for the shells.  And where the parser is: the bytes it has
   ;; taken, as its last read's result counts them; the parser's position of
   ;; index 0 of the delivery being fed; and the run of bytes it reads and
   ;; hands no span of that is open, where it began and what it is (see
@@ -530,8 +552,8 @@
   ;; handler's answer, as a request with no body is, so it owes the request
   ;; an ending.  And whether the client's end has come while its requests
   ;; were answered; and the ending the request in flight is owed: #f, none,
-  ;; its handler not asked or its ending told; `owed`; or `failed`, once the
-  ;; core has answered a status of its own in place of the handler's.
+  ;; its handler not asked or its ending told; `owed`; or `failed` or
+  ;; `client-closed`, decided before the response ended (cut-short!).
   (define-record-type (conn-state make-conn-state conn-state?)
     (fields (mutable phase       conn-phase       conn-phase-set!)
             (mutable deadline    conn-deadline    conn-deadline-set!)
@@ -548,6 +570,8 @@
             (mutable producer    conn-producer    conn-producer-set!)
             (mutable pieces      conn-pieces      conn-pieces-set!)
             (mutable asked?      conn-asked?      conn-asked?-set!)
+            (mutable declared    conn-declared    conn-declared-set!)
+            (mutable left        conn-left        conn-left-set!)
             (mutable parsed      conn-parsed      conn-parsed-set!)
             (mutable base        conn-base        conn-base-set!)
             (mutable mark        conn-mark        conn-mark-set!)
@@ -573,7 +597,7 @@
              (body-answer-set! body 'asked)
              (body-complete?-set! body #t))
            (new phase deadline close-after outstanding outstanding-bytes pending request limits
-                (make-head) body (make-target-judge) #f #f #f #f 0 0 0 'lines #f #f
+                (make-head) body (make-target-judge) #f #f #f #f #f #f 0 0 0 'lines #f #f
                 (and (eq? phase 'handling) 'owed)))))))
 
   ;; conn-body-reader : ConnState -> (U #f BodyReader)
@@ -707,11 +731,10 @@
                                          out at (span-length sp))
                        (loop (cdr spans) (fx+ at (span-length sp)))))))))))
 
-  ;; The request body being read: how its framing announced it, the bytes
-  ;; of it met, the handler's answer, and what is kept for that answer.  One
-  ;; per connection, rolled with the head.
-  ;;   framed?   whether the framing announced a body: chunked, or a
-  ;;             Content-Length above 0
+  ;; The request body being read: the length its framing declared, the
+  ;; bytes of it met, the handler's answer, and what is kept for that answer.
+  ;; Whether the framing announced one is the request's own
+  ;; (`request-has-body?`).  One per connection, rolled with the head.
   ;;   declared  the Content-Length, or #f when chunked
   ;;   count     the body bytes the parser has met
   ;;   answer    #f, the handler not yet asked; call, to be asked once the
@@ -737,8 +760,7 @@
   ;;             to be written
   ;;   extensions the bytes of the chunk extensions' names and values met
   (define-record-type (body-state make-body-state body-state?)
-    (fields (mutable framed?   body-framed?   body-framed?-set!)
-            (mutable declared  body-declared  body-declared-set!)
+    (fields (mutable declared  body-declared  body-declared-set!)
             (mutable count     body-count     body-count-set!)
             (mutable answer    body-answer    body-answer-set!)
             (mutable held      body-held      body-held-set!)
@@ -751,11 +773,10 @@
             (mutable owed      body-owed      body-owed-set!)
             (mutable continue? body-continue? body-continue?-set!)
             (mutable extensions body-extensions body-extensions-set!))
-    (protocol (lambda (new) (lambda () (new #f #f 0 #f '() #f #f #f #f 0 #f 0 #f 0)))))
+    (protocol (lambda (new) (lambda () (new #f 0 #f '() #f #f #f #f 0 #f 0 #f 0)))))
 
   ;; body-roll! : Body -> Void — nothing read, and nothing kept.
   (define (body-roll! bd)
-    (body-framed?-set! bd #f)
     (body-declared-set! bd #f)
     (body-count-set! bd 0)
     (body-answer-set! bd #f)
@@ -1096,10 +1117,14 @@
   ;; asked for.  It is written, framed as the head framed the body,
   ;; and the write deadline armed; then the producer is asked for the next
   ;; one while the bytes outstanding are at or below the high water and
-  ;; fewer than 64 writes are, and waits otherwise.  A piece no one asked
-  ;; for, or one of no bytes, which `producer-event` never makes, is the
-  ;; shell's bug: an assertion violation.  In any other state the producer
-  ;; has been let go, and nothing changes.
+  ;; fewer than 64 writes are, and waits otherwise.  A sized body's piece is
+  ;; counted against what is left of its length: the piece that writes the
+  ;; last of it lets the producer go, asked no more, and its completion
+  ;; writes the response; one that would write past it is not written, a
+  ;; mismatch.  A piece no one asked for, or one of no bytes, which
+  ;; `producer-event` never makes, is the shell's bug: an assertion
+  ;; violation.  In any other state the producer has been let go, and
+  ;; nothing changes.
   (define (on-body-chunk s fields)
     (case (conn-phase s)
       ((responding)
@@ -1108,37 +1133,72 @@
        (let ((bv (car fields)) (start (cadr fields)) (end (caddr fields)))
          (unless (and (fixnum? start) (fixnum? end) (fx<? start end))
            (assertion-violation 'conn-step "a piece of no bytes" fields))
-         (let-values (((segments bytes) (serialize-piece (conn-pieces s) bv start end)))
-           (let ((w (count-write! s segments bytes)))
-             (conn-deadline-set! s 'write)
-             (if (below-high-water? s)
-                 (values s (cons w '((arm-deadline write) (notify-producer))))
-                 (begin (conn-asked?-set! s #f)
-                        (values s (cons w '((arm-deadline write))))))))))
+         ;; rest: what a sized body has left to write after this piece, or #f.
+         (let* ((n (fx- end start)) (left (conn-left s)) (rest (and left (fx- left n))))
+           (if (and rest (fx<? rest 0))
+               (mismatch s 'long (fx+ (fx- (conn-declared s) left) n))
+               (let-values (((segments bytes) (serialize-piece (conn-pieces s) bv start end)))
+                 (let ((w (count-write! s segments bytes)))
+                   (conn-deadline-set! s 'write)
+                   (when rest (conn-left-set! s rest))
+                   (cond ((eqv? rest 0)
+                          (end-stream! s)
+                          (values s (cons w '((arm-deadline write)))))
+                         ((below-high-water? s)
+                          (values s (cons w '((arm-deadline write) (notify-producer)))))
+                         (else (conn-asked?-set! s #f)
+                               (values s (cons w '((arm-deadline write))))))))))))
       (else (values s '()))))
 
   ;; responding, handler-body-end: the producer's body has ended, and the
   ;; producer is let go.  A chunked body's last chunk is written, and the
   ;; write deadline armed.  A close-delimited body has nothing more to write,
   ;; since the close ends it: with a write outstanding, its completion writes
-  ;; the response; with none, it is written now.  An end no one asked for is
-  ;; the shell's bug, an assertion violation; in any other state, nothing.
+  ;; the response; with none, it is written now.  A sized body's end is
+  ;; always short of its length, since the producer is asked no more once
+  ;; the length is written: a mismatch.  An end no one asked for is the
+  ;; shell's bug, an assertion violation; in any other state, nothing.
   (define (on-body-end s)
     (case (conn-phase s)
       ((responding)
        (unless (conn-asked? s)
          (assertion-violation 'conn-step "an end the core did not ask for" (conn-producer s)))
-       (let ((framing (conn-pieces s)))
-         (end-stream! s)
-         (let-values (((segments bytes) (serialize-end framing)))
-           (cond
-            ((pair? segments)
-             (let ((w (count-write! s segments bytes)))
-               (conn-deadline-set! s 'write)
-               (values s (cons w '((arm-deadline write))))))
-            ((> (conn-outstanding s) 0) (values s '()))
-            (else (response-written s))))))
+       (if (conn-left s)
+           (mismatch s 'short (fx- (conn-declared s) (conn-left s)))
+           (let ((framing (conn-pieces s)))
+             (end-stream! s)
+             (let-values (((segments bytes) (serialize-end framing)))
+               (cond
+                ((pair? segments)
+                 (let ((w (count-write! s segments bytes)))
+                   (conn-deadline-set! s 'write)
+                   (values s (cons w '((arm-deadline write))))))
+                ((> (conn-outstanding s) 0) (values s '()))
+                (else (response-written s)))))))
       (else (values s '()))))
+
+  ;; mismatch : ConnState (U 'long 'short) Nat -> (values ConnState (Listof Action))
+  ;; responding, a sized body's producer has given `given` bytes where its
+  ;; length is another count, past it (`long`) or short of it at its end
+  ;; (`short`): the body ends short, the producer let go, and the connection
+  ;; closes after the response, for `body-length-mismatch` unless it closes
+  ;; for a reason of its own already, logged with the length and the bytes
+  ;; given.  A short end once the client has closed, and its request's code
+  ;; been told (close-after `client-closed`), is the client's doing, and is
+  ;; not logged.  With a write outstanding, its completion writes the
+  ;; response, as for a close-delimited body's end; with none, it is
+  ;; written now, and the staged close begins.
+  ;; The request's ending is `failed`, or `client-closed` for that short end
+  ;; (cut-short), however the response then ends.
+  (define (mismatch s how given)
+    (let* ((clients? (and (eq? how 'short) (eq? (conn-close-after s) 'client-closed)))
+           (logged (and (not clients?)
+                        (list 'log 'body-length-mismatch (conn-declared s) given))))
+      (cut-short! s (if clients? 'client-closed 'failed))
+      (end-stream! s)
+      (unless (conn-close-after s) (conn-close-after-set! s 'body-length-mismatch))
+      (let-values (((s actions) (if (> (conn-outstanding s) 0) (values s '()) (response-written s))))
+        (values s (if logged (cons logged actions) actions)))))
 
   ;; count-write! : ConnState (Listof Segment) Nat -> Action
   ;; `(write segments bytes)`, outstanding, with its bytes, until the shell
@@ -1172,7 +1232,9 @@
   (define (end-stream! s)
     (conn-producer-set! s #f)
     (conn-pieces-set! s #f)
-    (conn-asked?-set! s #f))
+    (conn-asked?-set! s #f)
+    (conn-declared-set! s #f)
+    (conn-left-set! s #f))
 
   ;; forget-input! : ConnState -> Void
   ;; Drop all the connection holds of the input it has read: the pause's
@@ -1752,9 +1814,10 @@
   ;; parser frames the body by a final chunked, another coding beside it is
   ;; refused as 'unsupported-transfer-coding, answered 501.
   ;; A request accepted on all five moves head -> body: the request is built
-  ;; from the head, and the header deadline gives way to the body's.  The
-  ;; connection is marked to close after the response unless the message
-  ;; keeps it alive, or, when it does, if the parser says it upgrades.  A
+  ;; from the head, holding whether a body follows, and the header deadline
+  ;; gives way to the body's.  The connection is marked to close after the
+  ;; response unless the message keeps it alive, or, when it does, if the
+  ;; parser says it upgrades.  A
   ;; body it announces is noted, for the handler to be asked once the feed
   ;; has returned, and a declared length past the limits' max-body-bytes is
   ;; refused as 'body-too-large, answered 413, before any of the body is
@@ -1786,18 +1849,17 @@
           ((unsupported-transfer-coding? (head-fields h) flags)
            (refuse s 'unsupported-transfer-coding))
           (else
-           (conn-request-set! s (make-request name target http-major http-minor
-                                              (reverse (head-fields h)) #f))
-           (cond ((not (should-keep-alive? http-major http-minor 'request 0 flags))
-                  (conn-close-after-set! s 'not-keep-alive))
-                 ((eqv? upgrade 1)
-                  (conn-close-after-set! s 'upgrade)))
            (let* ((chunked? (not (fxzero? (fxand flags F-CHUNKED))))
                   (declared (and (not chunked?) content-length))
                   (framed? (or chunked? (> content-length 0)))
                   (bd (conn-body s)))
+             (conn-request-set! s (make-request name target http-major http-minor
+                                                (reverse (head-fields h)) framed?))
+             (cond ((not (should-keep-alive? http-major http-minor 'request 0 flags))
+                    (conn-close-after-set! s 'not-keep-alive))
+                   ((eqv? upgrade 1)
+                    (conn-close-after-set! s 'upgrade)))
              (body-roll! bd)
-             (body-framed?-set! bd framed?)
              (body-declared-set! bd declared)
              (cond
               ((and framed? (over? (limits-max-body-bytes (conn-limits s)) declared))
@@ -2014,17 +2076,24 @@
     (list 'call-handler (conn-request s)))
 
   ;; told : ConnState Symbol -> (Listof Action)
-  ;; The request in flight's ending, paid once: `how`, or `failed` once the
-  ;; core has answered for the handler, marked on the request, and
-  ;; `(response-done how procs)` for what its code registered, if anything;
-  ;; '() when nothing is owed, or nothing was registered.
+  ;; The request in flight's ending, paid once: `how`, or the ending already
+  ;; decided (cut-short), marked on the request, and `(response-done how
+  ;; procs)` for what its code registered, if anything; '() when nothing is
+  ;; owed, or nothing was registered.
   (define (told s how)
     (let ((ending (conn-ending s)) (r (conn-request s)))
       (if (not ending)
           '()
-          (let* ((how (if (eq? ending 'failed) 'failed how))
+          (let* ((how (if (eq? ending 'owed) how ending))
                  (procs (begin (conn-ending-set! s #f) (if r (request-done! r how) '()))))
             (if (null? procs) '() (list (list 'response-done how procs)))))))
+
+  ;; cut-short! : ConnState Symbol -> Void
+  ;; The request in flight's ending decided, `failed` or `client-closed`,
+  ;; however its response then ends, if it is owed and nothing decided it
+  ;; first.
+  (define (cut-short! s how)
+    (when (eq? (conn-ending s) 'owed) (conn-ending-set! s how)))
 
   ;; close-ending : Symbol -> Symbol
   ;; How a close for `reason` ends the response it cuts short: `client-closed`
@@ -2081,7 +2150,7 @@
            ((asked)
             (cond ((body-reader? answer) (accept-reader s answer (pair? rest)))
                   ((switch? answer) (switch-with s answer))
-                  ((body-framed? bd)
+                  ((request-has-body? (conn-request s))
                    (unless (conn-close-after s) (conn-close-after-set! s 'unread-body))
                    (respond-with s answer))
                   (else (respond-with s answer))))
@@ -2230,7 +2299,7 @@
            (eq? (conn-close-after s) 'upgrade)
            (http/1.1? (request-http-major r) (request-http-minor r))
            (not (eq? (request-method r) 'CONNECT))
-           (not (body-framed? (conn-body s))))))
+           (not (request-has-body? r)))))
 
   ;; write-action : ConnState Response Serializer -> Action
   ;;   Serializer = serialize-response, or serialize-checked-response for a
@@ -2249,7 +2318,9 @@
   ;; producer's body is of unknown length: where its framing writes a body,
   ;; chunked or close-delimited, the state keeps the producer and the
   ;; framing for its pieces; where none is written, the producer is never
-  ;; called.
+  ;; called.  A sized body's length is known: where its framing writes a
+  ;; body of a byte or more, the state keeps its producer, the framing, and
+  ;; the length, twice, the second counted down as pieces are written.
   (define (write-action s r serialize)
     (let* ((req (conn-request s))
            (major (if req (request-http-major req) 1))
@@ -2258,13 +2329,19 @@
            (mode (response-framing (and req (request-method req)) major minor
                                    (response-status r)
                                    (cond ((bytevector? body) (bytevector-length body))
+                                         ((sized-body? body) (sized-body-length body))
                                          ((procedure? body) 'unknown)
                                          (else #f)))))
       (when (and (eq? mode 'close-delimited) (not (conn-close-after s)))
         (conn-close-after-set! s 'close-delimited))
-      (when (and (procedure? body) (memq mode '(chunked close-delimited)))
-        (conn-producer-set! s body)
-        (conn-pieces-set! s mode))
+      (cond ((and (procedure? body) (memq mode '(chunked close-delimited)))
+             (conn-producer-set! s body)
+             (conn-pieces-set! s mode))
+            ((and (sized-body? body) (eq? mode 'content-length) (fx>? (sized-body-length body) 0))
+             (conn-producer-set! s (sized-body-producer body))
+             (conn-pieces-set! s mode)
+             (conn-declared-set! s (sized-body-length body))
+             (conn-left-set! s (sized-body-length body))))
       (let-values (((segments bytes)
                     (serialize r mode (response-connection (and (conn-close-after s) #t)
                                                            major minor))))
@@ -2406,9 +2483,9 @@
   ;; Location; the serializer writes its phrase, and its framing and
   ;; `Connection: close`.  The core's own response is
   ;; read for faults as any caller's is.  Answered in place of a handler's
-  ;; response, it makes the request's ending `failed`.
+  ;; response, it makes the request's ending `failed` (cut-short).
   (define (respond s status reason headers)
-    (when (conn-ending s) (conn-ending-set! s 'failed))
+    (cut-short! s 'failed)
     (let ((reading? (memq (conn-phase s) '(head body))))
       (conn-phase-set! s 'responding)
       (conn-deadline-set! s 'write)

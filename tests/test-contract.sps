@@ -606,7 +606,7 @@
         ((request? x)
          (list 'request (request-method x) (render (request-target x))
                (request-http-major x) (request-http-minor x)
-               (render (request-headers x)) (render (request-body x))))
+               (render (request-headers x)) (request-has-body? x)))
         ((response? x)
          (list 'response (response-status x) (render (response-reason x))
                (render (response-headers x)) (render (response-body x))))
