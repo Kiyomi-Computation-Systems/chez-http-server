@@ -6,7 +6,11 @@
 ;;; the taker is handed, whose arguments are checked before the verb is
 ;;; called, so a fake and the server's shell are handed the same shapes.  A
 ;;; transport made of seven procedures, without the abort, is still a
-;;; transport, and refuses the abort.
+;;; transport, and refuses the abort.  A connection's addresses are an
+;;; address, a string, and a port, from 0 to 65535 as a TCP port is (RFC
+;;; 9293 §3.1), for each end, or #f where the server cannot say.  A
+;;; request's version is two numbers from 0 to 255, as llhttp reads them
+;;; (its http_major and http_minor are each a byte).
 (import (rnrs) (srfi :64) (testing)
         (http-server request) (http-server response) (http-server span)
         (http-server switch) (http-server transport))
@@ -14,6 +18,15 @@
 ;; refused : (-> Any) -> (U 'refused 'accepted)
 (define (refused thunk)
   (guard (e ((assertion-violation? e) 'refused)) (thunk) 'accepted))
+
+;; refuser : (-> Any) -> (U Symbol 'accepted)
+;; Who refused `thunk`: the who of the assertion violation it raised, so a
+;; refusal by a primitive the procedure happens to call reads as that
+;; primitive's, not the procedure's.
+(define (refuser thunk)
+  (guard (e ((assertion-violation? e) (if (who-condition? e) (condition-who e) 'anonymous)))
+    (thunk)
+    'accepted))
 
 ;; recording : -> (values Transport (-> (Listof Datum)))
 ;; A transport whose every verb is recorded, newest last, as its name and
@@ -39,6 +52,23 @@
       (test-equal "the target is /p"   (b "/p")  (span->bytevector (request-target req)))
       (test-eqv   "major reads back"   1         (request-http-major req))
       (test-eqv   "minor reads back"   1         (request-http-minor req))
+      (test-equal "the version's two numbers read back apart, at their bounds, 0 and 255, too"
+                  '((0 255) (255 0) (1 0) (0 9))
+                  (map (lambda (v)
+                         (let ((r (make-request 'GET target (car v) (cadr v) hs #f)))
+                           (list (request-http-major r) (request-http-minor r))))
+                       '((0 255) (255 0) (1 0) (0 9))))
+      (test-equal "make-request refuses a version number outside 0 to 255, or not an exact integer"
+                  '(make-request make-request make-request make-request)
+                  (map refuser
+                       (list (lambda () (make-request 'GET target 256 1 hs #f))
+                             (lambda () (make-request 'GET target 1 -1 hs #f))
+                             (lambda () (make-request 'GET target 1.0 1 hs #f))
+                             (lambda () (make-request 'GET target 1 'one hs #f)))))
+      (test-equal "the version's accessors refuse something other than a request, each by its own name"
+                  '(request-http-major request-http-minor)
+                  (list (refuser (lambda () (request-http-major 'x)))
+                        (refuser (lambda () (request-http-minor 'x)))))
       (test-equal "headers read back"  hs        (request-headers req))
       (test-equal "the header is Host: x" (list (b "Host") (b "x"))
                   (let ((h (car (request-headers req))))
@@ -47,7 +77,42 @@
       (test-eq    "and none announced"  'no
                   (if (request-has-body? (make-request 'GET target 1 1 hs #f)) 'yes 'no))
       (test-eq    "request? accepts"   'yes (if (request? req) 'yes 'no))
-      (test-eq    "request? rejects a fixnum" 'no (if (request? 42) 'yes 'no)))
+      (test-eq    "request? rejects a fixnum" 'no (if (request? 42) 'yes 'no))
+      (test-eq    "a request made with no addresses holds no-addresses" no-addresses (request-addresses req))
+      (let ((addresses (make-addresses "192.0.2.7" 54321 "198.51.100.1" 8080)))
+        (test-eq "a request made with its connection's addresses holds them"
+                 addresses (request-addresses (make-request 'GET target 1 1 hs #f addresses)))))
+
+    ;; --- the addresses of a connection: each end's address and port ---
+    (let ((a (make-addresses "192.0.2.7" 54321 "::1" 0)))
+      (test-equal "addresses read back: the remote address and port, then the local"
+                  '("192.0.2.7" 54321 "::1" 0)
+                  (list (addresses-remote-address a) (addresses-remote-port a)
+                        (addresses-local-address a) (addresses-local-port a)))
+      (test-eq "addresses? accepts" 'yes (if (addresses? a) 'yes 'no))
+      (test-eq "addresses? rejects a request's span" 'no (if (addresses? (make-span (b "x") 0 1)) 'yes 'no)))
+    (test-equal "no-addresses holds #f for all four"
+                '(#f #f #f #f)
+                (list (addresses-remote-address no-addresses) (addresses-remote-port no-addresses)
+                      (addresses-local-address no-addresses) (addresses-local-port no-addresses)))
+    ;; A port is a port of an address: one given with none is not kept.
+    (test-equal "an end with no address keeps no port; an address with no port keeps the address"
+                '(#f #f "198.51.100.1" #f)
+                (let ((a (make-addresses #f 54321 "198.51.100.1" #f)))
+                  (list (addresses-remote-address a) (addresses-remote-port a)
+                        (addresses-local-address a) (addresses-local-port a))))
+    (test-equal "make-addresses refuses an address that is no string, and a port outside 0 to 65535 or not an exact integer"
+                '(make-addresses make-addresses make-addresses make-addresses make-addresses)
+                (map refuser
+                     (list (lambda () (make-addresses 54321 #f #f #f))
+                           (lambda () (make-addresses #f #f 'here #f))
+                           (lambda () (make-addresses "192.0.2.7" 65536 #f #f))
+                           (lambda () (make-addresses #f #f "::1" -1))
+                           (lambda () (make-addresses "192.0.2.7" 80.0 #f #f)))))
+    (test-equal "and takes either end at its bounds, 0 and 65535"
+                '(0 65535)
+                (let ((a (make-addresses "192.0.2.7" 0 "::1" 65535)))
+                  (list (addresses-remote-port a) (addresses-local-port a))))
 
     ;; --- request: the procedures told how its response ended ---
     ;; Each registered procedure records its name and what it was told.

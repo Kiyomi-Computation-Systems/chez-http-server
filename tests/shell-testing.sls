@@ -4,7 +4,8 @@
 ;;;
 ;;; These suites run their clients on the loop the shell runs on, so one
 ;;; uv-run moves both ends and every wait is capped by an iteration count,
-;;; never wall-clock.  A client connects to 127.0.0.1, collects what it reads
+;;; never wall-clock.  A client connects to 127.0.0.1, or to the address it
+;;; is given, collects what it reads
 ;;; with chez-libuv's own collector (tests/uv-testing.sls), which keeps each
 ;;; delivery rather than a copy, and records how its stream ended.  The socket
 ;;; lane (tests/test-shell.sps) and the contract test (tests/test-contract.sps)
@@ -46,25 +47,31 @@
                     (lambda () (client-end-set! cl 'eof))
                     (lambda (e) (client-end-set! cl (err->symbol e)))))
 
-  ;; open-client : UvLoop Nat (U #f Bytevector) Boolean -> Client
-  ;; A client on `loop` that connects to 127.0.0.1:`port`, then starts
-  ;; reading if `read?`, and writes `request` whole unless it is #f.  A
-  ;; connect that fails at the call is recorded in client-connected as one
-  ;; that fails later is, and the handle closed: macOS refuses a connect to
-  ;; the client's own address with EINVAL, where a closed port gives
+  ;; open-client : UvLoop Nat (U #f Bytevector) Boolean [(U String #f)] -> Client
+  ;; A client on `loop` that connects to 127.0.0.1:`port`, or to `host`'s
+  ;; `port` when given one, an IPv4 or IPv6 literal, then starts reading if
+  ;; `read?`, and writes `request` whole unless it is #f.  A connect that
+  ;; fails at the call is recorded in client-connected as one that fails
+  ;; later is, and the handle closed: macOS refuses a connect to the
+  ;; client's own address with EINVAL, where a closed port gives
   ;; ECONNREFUSED at the completion.
-  (define (open-client loop port request read?)
-    (let* ((tcp (make-uv-tcp loop)) (cl (make-client tcp)))
-      (guard (e ((uv-errno-error? e)
-                 (client-connected-set! cl (uv-errno-error-errno e))
-                 (uv-close! tcp)))
-        (connect-loopback! tcp port
-                           (lambda (err)
-                             (client-connected-set! cl (err->symbol err))
-                             (unless err
-                               (when read? (client-read! cl))
-                               (when request (client-send! cl request))))))
-      cl))
+  (define open-client
+    (case-lambda
+      ((loop port request read?) (open-client loop port request read? #f))
+      ((loop port request read? host)
+       (let* ((tcp (make-uv-tcp loop)) (cl (make-client tcp))
+              (connected (lambda (err)
+                           (client-connected-set! cl (err->symbol err))
+                           (unless err
+                             (when read? (client-read! cl))
+                             (when request (client-send! cl request))))))
+         (guard (e ((uv-errno-error? e)
+                    (client-connected-set! cl (uv-errno-error-errno e))
+                    (uv-close! tcp)))
+           (if host
+               (uv-tcp-connect! tcp host port connected)
+               (connect-loopback! tcp port connected)))
+         cl))))
 
   ;; client-send! : Client Bytevector -> Void — one write, its outcome ignored.
   (define (client-send! cl bytes) (uv-write! (client-tcp cl) bytes (lambda (err) #f)))
