@@ -1149,7 +1149,8 @@
 ;; a streaming reader's on credit, the pull's cap beside the server's, and
 ;; the handler's answer is still to come.  An answer before the body's end is
 ;; sent, and closes the connection after it.  A body that fails while pulled,
-;; a cap passed, the parser's error or the body deadline, is told to the pull,
+;; a cap passed, the parser's error, the body deadline, or a trailer or the
+;; chunk extensions refused (rows F8 and F9), is told to the pull,
 ;; `(deliver-body-failed reason status)`, reading stopped, and the handler
 ;; answers: a response, written, or the pull's raise let out, `&body-failed`,
 ;; answered with the failure's status; either closes the connection after it.
@@ -1714,7 +1715,9 @@
 ;; held to 16 KiB, fixed, as hyper and Node hold theirs.  One past a limit is
 ;; refused as a head's field is, `(reply-parser (fail reason))`, and the
 ;; parser's error that follows is answered with the reason's status: a
-;; trailer's the head's 431, the extensions' 413, as a body past a cap.
+;; trailer's the head's 431, the extensions' 413, as a body past a cap.  A
+;; pulled body's is told to the pull instead, with that status, as a cap
+;; passed is.
 
 ;; tight : Limits — header limits small enough to pass in a row: a name or a
 ;; value of 4 bytes, 10 bytes in all, and 2 fields.
@@ -1863,7 +1866,52 @@
           (conn-step s '(parser-result error 60 60 chunk-extensions-too-large #f))
           (i s `(handler-responded ,streamer)
              `(responding chunk-extensions-too-large
-                          (,(status-write 413 "Content Too Large") (arm-deadline write))))))))
+                          (,(status-write 413 "Content Too Large") (arm-deadline write))))))
+
+   ;; Refused as the pull reads, or in the head's feed after a piece, bv[3,
+   ;; 8), and kept until the body is pulled, as Q11's error is.
+   (row 'F8 "body, a pulled body's trailer past one of the four header limits, the parser's error -> handling, close-after the head's reason: read-stop, disarm, deliver-body-failed 431; refused in the head's feed, the piece, then deliver-body-failed 431 once pulled"
+        (let ((s (pulled 'chunked #f tight)))
+          (conn-step s `(parser-event on-header-field-data ,big 0 5))
+          (i s '(parser-result error 60 60 header-field-too-large #f)
+             '(handling header-field-too-large
+                        ((read-stop) (disarm-deadline) (deliver-body-failed header-field-too-large 431)))))
+        (let ((s (pulled 'chunked #f tight)))
+          (conn-step s `(parser-event on-header-field-data ,big 0 1))
+          (conn-step s '(parser-event on-header-field-complete 0))
+          (conn-step s `(parser-event on-header-value-data ,big 0 5))
+          (i s '(parser-result error 60 60 header-value-too-large #f)
+             '(handling header-value-too-large
+                        ((read-stop) (disarm-deadline) (deliver-body-failed header-value-too-large 431)))))
+        (let ((s (trailer (pulled 'chunked #f tight) 4 4)))
+          (conn-step s `(parser-event on-header-field-data ,big 0 3))
+          (i s '(parser-result error 60 60 headers-too-large #f)
+             '(handling headers-too-large
+                        ((read-stop) (disarm-deadline) (deliver-body-failed headers-too-large 431)))))
+        (let ((s (trailer (trailer (pulled 'chunked #f tight) 1 1) 1 1)))
+          (conn-step s '(parser-event on-header-field-complete 0))
+          (i s '(parser-result error 60 60 too-many-headers #f)
+             '(handling too-many-headers
+                        ((read-stop) (disarm-deadline) (deliver-body-failed too-many-headers 431)))))
+        (let ((s (met (announced 'chunked tight) '((3 8)))))
+          (conn-step s `(parser-event on-header-field-data ,big 0 5))
+          (conn-step s '(parser-result error 60 60 header-field-too-large #f))
+          (i s '(body-pulled #f)
+             `(handling header-field-too-large
+                        ((deliver-body ,bv 3 8) (deliver-body-failed header-field-too-large 431))))))
+
+   (row 'F9 "body, a pulled body's chunk extensions past 16 KiB, the parser's error -> handling, close-after chunk-extensions-too-large: read-stop, disarm, deliver-body-failed 413; refused in the head's feed, the piece, then deliver-body-failed 413 once pulled"
+        (let ((s (pulled 'chunked)))
+          (conn-step s `(parser-event on-chunk-extension-name-data ,big 0 ,(+ max-extensions 1)))
+          (i s '(parser-result error 60 60 chunk-extensions-too-large #f)
+             '(handling chunk-extensions-too-large
+                        ((read-stop) (disarm-deadline) (deliver-body-failed chunk-extensions-too-large 413)))))
+        (let ((s (met (announced 'chunked) '((3 8)))))
+          (conn-step s `(parser-event on-chunk-extension-name-data ,big 0 ,(+ max-extensions 1)))
+          (conn-step s '(parser-result error 60 60 chunk-extensions-too-large #f))
+          (i s '(body-pulled #f)
+             `(handling chunk-extensions-too-large
+                        ((deliver-body ,bv 3 8) (deliver-body-failed chunk-extensions-too-large 413))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; What the parser reads and hands the core no span of is held to limits.
@@ -2609,7 +2657,7 @@
       (test-eqv "all 19 stream rows have a test" 19 streams)
       (test-eqv "all 7 Expect rows have a test" 7 expects)
       (test-eqv "the 100's accounting row has a test" 1 continues)
-      (test-eqv "all 7 trailer and extension rows have a test" 7 framings)
+      (test-eqv "all 9 trailer and extension rows have a test" 9 framings)
       (test-eqv "all 14 padding rows have a test" 14 paddings)
       (test-eqv "all 4 cut-off rows have a test" 4 cut-offs)
       (test-eqv "all 11 close-notice rows have a test" 11 notices)

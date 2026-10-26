@@ -295,14 +295,15 @@
 ;;; handing the pull each piece as `deliver-body` and its end as
 ;;; `deliver-body-end`, and the handler's answer is still to come.  An answer
 ;;; before the body's end is sent at once, and the connection closes after it,
-;;; as 'unread-body.  A body that fails while pulled, past a cap, malformed or
-;;; stalled past the body deadline, is not answered by the core: reading stops,
-;;; the failure is told to the pull, `(deliver-body-failed reason status)`,
-;;; after the pieces met before it, and the handler answers.  A response it
-;;; gives is written; the pull's raise let out, `&body-failed`, is answered
-;;; with the failure's status; any other raise 500.  Either way the connection
-;;; closes after it, for the failure's reason.  The shells find whether the
-;;; body goes to a pull with `conn-body-pulled?`.
+;;; as 'unread-body.  A body that fails while pulled, past a cap, malformed,
+;;; stalled past the body deadline, or with trailers past a header limit, is
+;;; not answered by the core: reading stops, the failure is told to the pull,
+;;; `(deliver-body-failed reason status)`, after the pieces met before it,
+;;; and the handler answers.  A response it gives is written; the pull's raise
+;;; let out, `&body-failed`, is answered with the failure's status; any other
+;;; raise 500.  Either way the connection closes after it, for the failure's
+;;; reason.  The shells find whether the body goes to a pull with
+;;; `conn-body-pulled?`.
 ;;;
 ;;; A HANDLER ANSWERS AFTER THE DRAIN THAT ASKS IT.  The shells call a
 ;;; handler once their drain has ended, the libuv shell after libuv's turn,
