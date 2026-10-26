@@ -134,7 +134,7 @@
               scheduler-phase current-coroutine coroutine-waits coroutine-park! coroutine-wake! coroutine-yield!
               scheduler-invariant? scheduler-invariant-name)
         (only (http-server awaiting) awaiting deadline-passed? client-closed? make-client-closed
-              resolve-error? resolve-error-reason body-failed?)
+              resolve-error? resolve-error-reason body-failed? make-body-failed)
         (only (http-server private waits) await sleep-ms with-deadline resolve
               next-body-piece body-input-port)
         (only (http-server server) server-phase)
@@ -339,8 +339,9 @@
 ;; its length, as text; `/pull-held` takes its first piece, parks in
 ;; `parked` until the suite wakes it, then answers the length; `/pull-port`
 ;; answers the length it read whole through a port; `/pull-small` pulls it
-;; capped at 4 bytes, letting the failure out, and `/pull-caught` the same,
-;; answering `caught`; `/pull-leave` sets `leave-state` to 'waiting as it
+;; capped at 4 bytes, letting the failure out, `/pull-caught` the same,
+;; answering `caught`, and `/pull-own` the same, raising a `&body-failed` of
+;; its own in place of the pull's; `/pull-leave` sets `leave-state` to 'waiting as it
 ;; begins and, once a pull raises &client-closed, to 'told, or 'told-twice
 ;; when the call after it raises too, then lets it out; `/pull-deadline`
 ;; pulls inside a deadline of 20 ms, answering "passed" when it raises;
@@ -610,6 +611,12 @@
                                (b (number->string (if (eof-object? body) 0 (bytevector-length body)))))))))
           ((bytevector=? target (b "/pull-small"))
            (awaiting (lambda () (pulled-joined (lambda () (next-body-piece 4))) (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/pull-own"))
+           (awaiting
+            (lambda ()
+              (guard (e ((body-failed? e) (raise (make-body-failed 'body-too-large 413))))
+                (pulled-joined (lambda () (next-body-piece 4)))
+                (make-response 200 #f '() target)))))
           ((bytevector=? target (b "/pull-caught"))
            (awaiting
             (lambda ()
@@ -1892,6 +1899,14 @@
                   (list (wait-for (lambda () (eq? (client-end cl) 'eof)))
                         (map status (responses (client-bytes cl)))
                         (filter (lambda (e) (eq? (car e) 'handler-failed)) logged)))
+      (client-close! cl))
+    (set! logged '())
+    (let ((cl (open-client! (b "POST /pull-own HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 11\r\n\r\n"))))
+      (test-equal "a &body-failed of the handler's own, raised in place of the pull's: 413, logged handler-failed"
+                  '(satisfied (413) (handler-failed))
+                  (list (wait-for (lambda () (eq? (client-end cl) 'eof)))
+                        (map status (responses (client-bytes cl)))
+                        (map car (filter (lambda (e) (eq? (car e) 'handler-failed)) logged))))
       (client-close! cl))
     (let ((cl (open-client! (b "POST /pull-caught HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"))))
       (test-equal "a chunked body past the pull's cap, the raise caught: the handler's answer, saying Connection: close"

@@ -68,7 +68,8 @@
 ;;; details)`, as `serve` logs `what` and its details on a line: the core's
 ;;; entries, such as `read-error`; `handler-failed` with what the handler,
 ;;; its reader or its producer raised, unless it is the close its client
-;;; made, which the server does not log; `late-resume` with the verb;
+;;; made, or its pulled body's failure, which the server does not log;
+;;; `late-resume` with the verb;
 ;;; `taker-failed` with what a taker raised; and `on-done-failed` with what
 ;;; a procedure `request-on-done!` registered raised.  One raise the server
 ;;; logs is not here: that of a call into the handler's code that ends
@@ -107,6 +108,7 @@
                 make-fake-connection fake-shell-advance! fake-shell-fire! fake-shell-armed
                 fake-shell-deliver! fake-shell-deliver-later! fake-shell-reading? fake-shell-writes
                 fake-shell-taker-failures fake-shell-done-failures fake-shell-calling?
+                fake-shell-pull-failure?
                 fake-waits-puller!))
 
   ;; --- the host ---------------------------------------------------------------
@@ -392,7 +394,8 @@
         ((event)
          (when (eq? (car datum) 'handler-failed)
            (let ((e (cadr datum)))
-             (unless (and (client-closed? e) (test-client-told? c))
+             (unless (or (and (client-closed? e) (test-client-told? c))
+                         (fake-shell-pull-failure? (test-client-shell c) e))
                (log! host 'handler-failed (list e))))))
         ((action)
          (case (car datum)

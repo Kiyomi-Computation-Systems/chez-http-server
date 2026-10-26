@@ -17,7 +17,9 @@
 ;;;   - two requests in one send are answered in order, a malformed one after
 ;;;     them 400, then the connection closes;
 ;;;   - a raise is answered 500 and logged `handler-failed`, a resume after
-;;;     its deadline logged `late-resume await`, and a told close not at all;
+;;;     its deadline logged `late-resume await`, and a told close not at all,
+;;;     nor a pulled body's failure let out, but a `&body-failed` the
+;;;     handler raises in its place is;
 ;;;   - a handler left waiting is reported, and one that answered is not;
 ;;;   - a field reads with its name as sent and its value unpadded;
 ;;;   - with no socket, a request's addresses and ports read #f;
@@ -49,7 +51,9 @@
 ;;;   - examples/long-poll.sps's handler: a wait a send on another
 ;;;     connection wakes, its deadline, and a client that leaves.
 ;;;
-;;; Oracles: docs/waiting.md (what each wait does, and what is logged);
+;;; Oracles: docs/waiting.md (what each wait does, and what is logged: a
+;;; pulled body's failure, let out, is answered with its status, unlogged,
+;;; as the serve suite holds `serve` to);
 ;;; docs/testing.md (what the host leaves out: a socket, so addresses);
 ;;; docs/handlers.md (a raise is a 500, logged `handler-failed`; the
 ;;; procedures `request-on-done!` registers are told newest first, and one
@@ -73,7 +77,8 @@
 ;;; raise is logged `taker-failed`); and examples/README.org and
 ;;; docs/waiting.md for long-poll.sps.
 (import (rnrs) (rnrs eval) (srfi :64) (testing)
-        (http-server) (http-server testing))
+        (http-server) (http-server testing)
+        (only (http-server awaiting) make-body-failed))
 
 (define (b s) (string->utf8 s))
 
@@ -354,6 +359,37 @@
         (test-equal "a resume called after its deadline wakes nothing, and is logged late-resume await"
                     '(() ((504 "")) ((late-resume await)))
                     (list before (seen c) (test-host-log host)))))
+    ;; A chunked body of 10 bytes, past the server's cap of 4, read through a
+    ;; port: the pull's failure let out is answered 413, and `serve` logs
+    ;; nothing for it; one of the handler's own, alike but not the pull's,
+    ;; raised in its place, is answered the same, and logged.
+    (let ((own (make-body-failed 'body-too-large 413)))
+      (for-each
+       (lambda (raised expected)
+         (let* ((host (make-test-host
+                       (lambda (request)
+                         (awaiting
+                          (lambda ()
+                            (guard (e ((and raised (body-failed? e)) (raise raised)))
+                              (get-bytevector-all (body-input-port))
+                              (make-response 200 #f '() #f)))))
+                       (lambda (name) (and (string=? name "CHEZ_HTTP_MAX_BODY_BYTES") "4"))))
+                (c (test-host-connect! host)))
+           (test-client-send! c (b (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                                  "a\r\n0123456789\r\n0\r\n\r\n")))
+           (test-equal (if raised
+                           "a &body-failed of the handler's own, raised in place of the pull's: 413, logged handler-failed with it"
+                           "a pulled body past the server's cap, the raise let out: 413, nothing logged, and the connection closes")
+                       expected
+                       (list (map test-response-status (test-client-responses c))
+                             (map (lambda (entry) (if (and (pair? (cdr entry)) (eq? (cadr entry) own))
+                                                      (list (car entry) 'own)
+                                                      entry))
+                                  (test-host-log host))
+                             (test-client-connection-closed? c)))))
+       (list #f own)
+       '(((413) () #t)
+         ((413) ((handler-failed own)) #t))))
 
     ;; --- a run that ends with a handler waiting -----------------------------------
     (let* ((host (make-test-host

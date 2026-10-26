@@ -218,19 +218,20 @@
           fake-shell-fire-waits! fake-shell-answer-lookup! fake-shell-drain! fake-shell-armed
           event->door-read door-read->event
           fake-shell-shut? fake-shell-hold! fake-shell-schedule! fake-shell-taker-failures
-          fake-shell-done-failures fake-waits-puller!)
+          fake-shell-done-failures fake-waits-puller! fake-shell-pull-failure?)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-body-pulled? conn-producer
                 producer-event)
           (only (http-server request) no-addresses)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole? read-body)
-          (only (http-server awaiting) awaiting? awaiting-thunk client-closed?)
+          (only (http-server awaiting) awaiting? awaiting-thunk client-closed? body-failed?)
           (only (http-server private scheduler)
                 make-scheduler scheduler? scheduler-call! scheduler-spawn! scheduler-drain! current-coroutine)
           (only (http-server private waits) make-waits waits-clock! waits-fire! waits-resolver!
                 make-notice notice-attach! notice-close! notice-closed?
-                notice-puller! notice-closing! waits-puller! pull-piece! pull-end! pull-fail!)
+                notice-puller! notice-closing! notice-body-failure waits-puller! pull-piece! pull-end!
+                pull-fail!)
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server serializer) date-line)
@@ -714,6 +715,14 @@
                 (guard (e (#t (fake-shell-done-failures-rev-set! s (cons e (fake-shell-done-failures-rev s)))))
                   (p how)))
               procs))
+
+  ;; fake-shell-pull-failure? : FakeShell Any -> Boolean
+  ;; `e` is the raise of the request's pulled body's failure, the
+  ;; `&body-failed` its pull raised, which the libuv shell does not log when
+  ;; it is let out.
+  (define (fake-shell-pull-failure? s e)
+    (and (body-failed? e)
+         (let ((n (fake-shell-notice s))) (and n (eq? e (notice-body-failure n))))))
 
   ;; request-notice : FakeShell -> Notice
   ;; The notice of the request in flight, as the libuv
