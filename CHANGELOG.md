@@ -81,7 +81,37 @@ All notable changes to chez-http-server are recorded here. The format follows
   `(http-server)` and defines one of the six new names itself no longer
   loads: rename its own, or import `(except (http-server) ...)`.
 
+- **Test a handler that waits, with no socket: `(http-server testing)`.**
+  `make-test-host` hosts a handler, with settings from an environment
+  procedure as `serve` takes one, and `test-host-connect!` connects clients
+  to it. A client sends bytes as they go on the wire (`test-client-send!`),
+  so a request can be malformed, pipelined or have its body sent in pieces,
+  and it can close or reset while the handler waits. The clock moves only
+  with `test-host-advance!`: each sleep and deadline ends at its own time,
+  and each of the server's timeouts fires at the earliest time it can,
+  where the server fires it up to `CHEZ_HTTP_TICK_MS` later, so a test
+  should not pin one to the millisecond. `test-host-answer!` answers a
+  `resolve`. What the client read comes back as responses, parsed, beside
+  the raw bytes; `test-host-log` holds what the server would log, and
+  `test-client-waiting?` reports a handler still waiting. The package
+  installs it; `docs/testing.md` shows how. It runs over the fake shell the
+  server's own suites use, now `(http-server private fake-shell)`:
+  `tests/fake-shell.sls` re-exports it as `(fake-shell)`, as before, and a
+  connection there may now be given a scheduler to share (decision 0038).
+
+### Changed
+
+- **The fake shell's dispatch cap is each event's.** An event and all it
+  leads to may dispatch 100,000 times before the fake calls it stuck; the
+  count no longer runs over a connection's whole life, so a long test on
+  one connection no longer hits it.
+
 ### Fixed
+
+- **`docs/waiting.md` says a lookup a deadline ends always answers.** It
+  said one not yet begun is cancelled, as if that were the end of it. A
+  cancelled lookup answers too, as cancelled, so the server logs
+  `late-resume resolve` either way.
 
 - **`docs/waiting.md` gives today's costs.** It said `guard` costs about
   3.7 KB inside a handler that waits, a figure from before waits parked on a

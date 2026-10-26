@@ -3212,3 +3212,78 @@ libuv callback. In a scheduler's drain, before any coroutine has waited and afte
 waited and been woken, Darwin arm64: `guard` 351 and 354 B, the handler with a one-shot
 escape 211 and 208 B. #233's 3.4 KB for a `call/1cc` escape is inside a coroutine after
 its own wait, where tell-done! never runs.
+
+## `(http-server testing)`, on `feat/testing-library` (2026-10-25)
+
+Linux amd64, in the Guix container, on base 77ace4e, before the rebase onto cc9faa4. Each
+mutant is a copy of `src/http-server/testing.sls`, or of the moved harness
+`src/http-server/private/fake-shell.sls`, put first on the library path under
+`build/mutants2/<name>/`; the tree was never edited. Unmutated, the suite gives 47 expected
+passes, and `tests/test-fake-shell.sps` 23. A row gives the passes and failures of
+`tests/test-handler-testing.sps`, unless it says otherwise.
+
+| Mutant | Red |
+|---|---|
+| m00, a stub exporting every name, doing nothing (round 1, 32 rows) | 0 / 32 |
+| m01, responses in reverse order | 42 / 5 |
+| m02, a send after the first never read | 42 / 5 |
+| m03, what the read buffer doesn't hold is lost | 46 / 1 |
+| m04, a send read whole, past the read buffer | 46 / 1 |
+| m05, the advance doesn't stop at due instants | 45 / 2 |
+| m05b, the advance does nothing | 25 / 22 |
+| m06, the connections' clocks left behind | 16 / 1, then raised |
+| m07, the advance jumps to its end | 45 / 2 |
+| m08, never waiting | 42 / 5 |
+| m09, the log lost | 40 / 7 |
+| m10, `late-resume` lost | 45 / 2 |
+| m11, the client's own close logged `handler-failed` | 45 / 2 |
+| m12, the connection never closed | 39 / 8 |
+| m13, a half-close not counted as closed | 44 / 3 |
+| m14, a HEAD's response read with a body | 46 / 1 |
+| m15, a 1xx answers a request | 46 / 1 |
+| m17, no end delimits a body | 46 / 1 |
+| m18, every response complete | 46 / 1 |
+| m19, a response's bytes the whole stream | 46 / 1 |
+| m20, a reset read as an end | 45 / 2 |
+| m21, a lookup's reason ignored | 46 / 1 |
+| m22, `busy?` without `scheduler-ready?` | survives, 47: equivalent, as the shared scheduler is drained after every dispatch |
+| m23, bytes read while the server doesn't read | 45 / 2 |
+| m24, limits read without the address | 46 / 1 |
+| m25, an answer to any name accepted | 45 / 2 |
+| m26, a send after the client left accepted | 46 / 1 |
+| m27, values untrimmed | 46 / 1 |
+| n02, a scheduler per connection | 1 / 4, then raised |
+| n03, a cancelled lookup never answered | 46 / 1 |
+| n03b, a cancelled lookup kept in `test-host-lookups` | 45 / 2 |
+| n04a, a reset reads what was written after it | 46 / 1 |
+| n04b, a reset drops what the server hadn't read | 46 / 1 |
+| n06, a call that acts from the host's own code not refused | 46 / 1 |
+| n07, no turn cap | hangs, killed at 150 s (exit 124) |
+| n09, `taker-failed` not logged | 46 / 1 |
+| n10, the newest lookup of a name answered | 46 / 1 |
+| n11, an advance of 0 runs nothing | 46 / 1 |
+| n12, n12b, n12c, a non-procedure handler, a negative advance, a non-bytevector send accepted | 46 / 1 each |
+| h01, the harness's lifetime dispatch cap | 32 / 1, then raised; `test-fake-shell` 21 / 1 |
+| h02, the cap's count not reset after a raise | survives the suite, 47; `test-fake-shell` 22 / 1 |
+| h03, the given scheduler ignored | 1 / 4, then raised |
+| h04, the host's waits replaced by the fake's | 1 / 4, then raised |
+| r0, round 1's library and harness against `test-fake-shell` | 21 / 2, then raised |
+| o1, `on-done-failed` never logged (on 1051ac0, 49 rows) | 47 / 2 |
+| o2, `on-done-failed` logged only at the end of a round | 48 / 1, the order row |
+| o3, the count of those logged never advanced | 47 / 2 |
+
+Round 1's own survivors, each closed before round 2:
+- m25, where an accessor error passed the "refused" check: now `refused` asks for the
+  right `who`.
+- A stop after a 101 and a CONNECT 2xx skip-body, which llhttp and the server's close
+  already ensure: removed.
+- A resume guard no case could reach: removed.
+- No row trimmed a value: the X-Pad row was added, and m27 reddens it.
+
+Audit mutants a1 to a6, in `tests/test-imports.sps`, each fail it: no exemption for the
+testing library, each of the new rules dropped, and the testing library moved. Reference
+mutants r1 to r3, in `tests/test-reference.sps`, each fail it, and r3 exits 3. Rerun here
+before the commit, each red as the builder said, with the controls green:
+- round 1's m00 (0 / 32), m08 (27 / 5) and m22, then no cross-connection wake (31 / 1),
+  against round 1's suite;
+- h01, n02, n03 and n04b against this one.

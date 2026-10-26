@@ -154,6 +154,12 @@ it once, when the response is done, with how it ended:
 - A request the server refuses before your handler runs, such as one with a
   malformed head, never reaches your code, so nothing hears about it.
 
+## Testing a handler
+
+`(http-server testing)` runs your handler on requests your test writes as
+bytes, and reads back what a client would: see
+[Testing handlers](testing.md).
+
 ## Keep it quick
 
 Your handler runs on the server's event loop. While it runs, no other

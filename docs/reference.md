@@ -1,8 +1,9 @@
 # API reference
 
-Everything `(http-server)` exports, one entry each. Types are written as
-Typed Racket writes them: `Nat` is an exact non-negative integer, `[x]` an
-optional argument, `(U a b)` either one.
+Everything `(http-server)` exports, one entry each, and at the end
+everything `(http-server testing)` exports, for testing a handler. Types are
+written as Typed Racket writes them: `Nat` is an exact non-negative integer,
+`[x]` an optional argument, `(U a b)` either one.
 
 ```scheme
 (import (rnrs) (http-server))
@@ -190,3 +191,65 @@ make-transport : write read-start read-stop close deadline on-drain on-close [ab
 A transport of your own, for testing a taker without a server: each argument
 is the procedure the matching call above ends up in. Without `abort`,
 `transport-abort!` on it is refused.
+
+## Testing: `(http-server testing)`
+
+A host that runs a handler for a scripted client, its waits included, with
+no socket and a clock the test moves. Each call that does something, a
+connect, a send, a close, a reset, an advance or an answer, runs all that
+follows from it before it returns. See [Testing handlers](testing.md).
+
+```scheme
+(import (rnrs) (http-server) (http-server testing))
+```
+
+### make-test-host
+
+```text
+make-test-host : (Request -> (U Answer Switch)) [(String -> (U String #f))] -> TestHost
+```
+
+A host for the handler `serve` would get, its clock at 0 ms. The optional
+second argument gives the settings, as `serve`'s does; without it every
+setting is its default. Raises `&http-server-config-error` for a malformed
+setting, as `serve` does before it listens. A `CHEZ_HTTP_HOST` that is not
+an IP address is not refused: only `serve` refuses it, as it listens.
+
+### The host
+
+| Name | Type | Does |
+|:--|:--|:--|
+| `test-host?` | `Any -> Boolean` | whether it is a host |
+| `test-host-connect!` | `TestHost -> TestClient` | a new client, connected now |
+| `test-host-now` | `TestHost -> Nat` | the clock, in milliseconds |
+| `test-host-advance!` | `TestHost Nat -> Void` | moves the clock on, firing each sleep, deadline and timeout as its time comes |
+| `test-host-lookups` | `TestHost -> (Listof String)` | the names `resolve` waits on, oldest first |
+| `test-host-answer!` | `TestHost String (U (Listof String) Symbol) -> Void` | answers the oldest lookup of the name: its addresses, or why it fails, such as `EAI_NONAME` |
+| `test-host-log` | `TestHost -> (Listof (Pair Symbol (Listof Any)))` | what the server logged, in order, each `(what . details)` |
+| `test-host-waiting` | `TestHost -> (Listof TestClient)` | the clients whose handler still waits |
+
+### The client
+
+| Name | Type | Does |
+|:--|:--|:--|
+| `test-client?` | `Any -> Boolean` | whether it is a client |
+| `test-client-send!` | `TestClient Bytevector -> Void` | sends the bytes, as they go on the wire |
+| `test-client-close!` | `TestClient -> Void` | closes the client's side |
+| `test-client-reset!` | `TestClient -> Void` | resets the connection |
+| `test-client-responses` | `TestClient -> (Listof TestResponse)` | the responses it read, in order |
+| `test-client-received` | `TestClient -> Bytevector` | every byte it read |
+| `test-client-connection-closed?` | `TestClient -> Boolean` | whether the server has ended the connection |
+| `test-client-waiting?` | `TestClient -> Boolean` | whether its handler still waits |
+
+### A response read
+
+| Name | Type | Gives |
+|:--|:--|:--|
+| `test-response?` | `Any -> Boolean` | whether it is a response read |
+| `test-response-status` | `TestResponse -> Nat` | the status |
+| `test-response-reason` | `TestResponse -> Bytevector` | the reason phrase |
+| `test-response-headers` | `TestResponse -> Headers` | every field, in order |
+| `test-response-header` | `TestResponse String -> (U Bytevector #f)` | the first field of that name, any case, or `#f` |
+| `test-response-body` | `TestResponse -> Bytevector` | the body, de-chunked |
+| `test-response-bytes` | `TestResponse -> Bytevector` | the response as it was on the wire |
+| `test-response-complete?` | `TestResponse -> Boolean` | whether all of it has arrived |

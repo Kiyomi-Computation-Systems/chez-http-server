@@ -69,7 +69,9 @@ included.
 - **Functional core, imperative shell.** The rules go in the pure libraries
   under `src/http-server/`, which import no libuv. Sockets, timers and other
   effects go in `src/http-server/private/`. `make check-imports`, a suite
-  `make test` also runs, fails when a pure library imports one.
+  `make test` also runs, fails when a pure library imports one. The facade,
+  `src/http-server.sls`, and the testing library,
+  `src/http-server/testing.sls`, sit over both.
 - Each export has a comment giving its type, Typed Racket style:
   `;; awaiting : (-> Answer) -> Awaiting`.
 - R6RS forbids assigning an exported variable, so reach mutable state through
@@ -89,6 +91,9 @@ included.
 - A suite is `tests/test-<name>.sps`, written with SRFI-64, and runs through
   `run-suite` from `(testing)`, which exits with the status `make test` reads.
   `make test TESTS=tests/test-<name>.sps` runs just that suite.
+- To run a handler in a suite, waits and all, use `(http-server testing)`
+  ([docs/testing.md](docs/testing.md)). The core's own suites drive the fake
+  shell under it, `(fake-shell)`, with the core's events.
 - Test what the code does, never what a comment says.
 
 ## Pull requests

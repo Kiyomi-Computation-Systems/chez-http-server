@@ -33,7 +33,7 @@
 (library (http-server private adapter)
   (export make-conn-context conn-context? conn-context-state
           conn-context-step!
-          adapter-bindings make-conn-parser parser-result-event)
+          adapter-bindings request-parser-inits make-conn-parser parser-result-event)
   (import (rnrs)
           (byte-machine runtime) (generated httparse-message) (httparse modes)
           (http-server connection))
@@ -135,13 +135,17 @@
             (and e (parser-error-span e)
                  (cons (parser-error-span e) (parser-error-span-offset e))))))
 
+  ;; request-parser-inits : (Listof (Pair Symbol Any))
+  ;; The settings a request parser is made with: it reads requests, and is
+  ;; strict but for one of llhttp's lenient flags, its version: it reads any
+  ;; HTTP/D.D, and leaves the version to the core, which serves 1.x and
+  ;; refuses every other version 505.
+  (define request-parser-inits
+    (list (cons 'type (httparse-message-type-value 'request))
+          (cons 'lenient-flags (httparse-lenient-flags-value '(version)))))
+
   ;; make-conn-parser : ConnContext -> Parser
   ;; A request parser for one connection, carrying the context to every
-  ;; callback.  It is strict but for one of llhttp's lenient flags, its
-  ;; version: it reads any HTTP/D.D, and leaves the version to the core,
-  ;; which serves 1.x and refuses every other version 505.
-  (define make-conn-parser
-    (let ((inits (list (cons 'type (httparse-message-type-value 'request))
-                       (cons 'lenient-flags (httparse-lenient-flags-value '(version))))))
-      (lambda (ctx)
-        (make-parser httparse-message-machine adapter-bindings ctx inits)))))
+  ;; callback, made with request-parser-inits.
+  (define (make-conn-parser ctx)
+    (make-parser httparse-message-machine adapter-bindings ctx request-parser-inits)))
