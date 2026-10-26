@@ -161,14 +161,17 @@
           (answer request 200 type (if (eof-object? bytes) (make-bytevector 0) bytes)))
         (begin
           (close-port port)
-          (answer request 200 type (sized-body size (file-producer path size)))))))
+          (answer request 200 type (sized-body size (file-producer request path size)))))))
 
-;; file-producer : String Nat -> (-> (U Bytevector Eof))
+;; file-producer : Request String Nat -> (-> (U Bytevector Eof))
 ;; The file's first `size` bytes, 64 KiB a piece.  The server asks for no
 ;; more once they are sent, so the port closes after the last of them, or
-;; at the file's end if it has shrunk since.
-(define (file-producer path size)
+;; at the file's end if it has shrunk since, or once the response is done
+;; however it ended, a client that leaves mid-stream among them, which the
+;; producer never hears of.
+(define (file-producer request path size)
   (let ((port #f) (left size))
+    (request-on-done! request (lambda (how) (when port (close-port port))))
     (lambda ()
       (unless port (set! port (open-file-input-port path)))
       (let ((piece (get-bytevector-n port (min 65536 left))))
