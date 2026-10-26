@@ -8,10 +8,13 @@
 ;;; - No (libuv private ...) in src/: the shell uses chez-libuv's public verbs
 ;;;   only.
 ;;; - Nothing a parser feed runs can reach the scheduler, since a parser
-;;;   callback never waits (R5).  The pure libraries, src/http-server/*.sls,
-;;;   import no (http-server private ...) library, and the adapter neither the
-;;;   scheduler, nor the shell or serve, which turn it, nor the waits, which
-;;;   park on it.
+;;;   callback never waits (R5).  The pure libraries, src/http-server/*.sls
+;;;   but the testing library, import no (http-server private ...) library,
+;;;   nor the facade or the testing library, which import those; and the
+;;;   adapter neither the scheduler, nor the shell, serve or the fake shell,
+;;;   which turn it, nor the waits, which park on it, nor the facade or the
+;;;   testing library.  The testing library, src/http-server/testing.sls, is
+;;;   a second facade: it runs a handler over the fake shell.
 ;;;
 ;;; The check reads each library with Chez's own reader and takes the
 ;;; libraries its import forms name (a text scan is fooled by a comment or a
@@ -90,13 +93,25 @@
   (let ((n (string-length prefix)))
     (and (<= n (string-length s)) (string=? prefix (substring s 0 n)))))
 
-;; pure? : String -> Boolean — a library directly in src/http-server/.
+(define adapter "src/http-server/private/adapter.sls")
+(define testing "src/http-server/testing.sls")
+
+;; pure? : String -> Boolean — a library directly in src/http-server/, but
+;; the testing library: a second facade, which runs a handler over the fake
+;; shell, and so imports the private libraries, as the facade does.
 (define (pure? path)
   (let ((dir "src/http-server/"))
     (and (string-prefix? dir path)
+         (not (string=? path testing))
          (not (memv #\/ (string->list (substring path (string-length dir) (string-length path))))))))
 
-(define adapter "src/http-server/private/adapter.sls")
+;; reaches-private? : LibraryName -> Boolean
+;; One of this project's libraries that is not pure: a private one, or the
+;; facade or the testing library, which import the private ones.
+(define (reaches-private? name)
+  (or (starts? name '(http-server private))
+      (equal? name '(http-server))
+      (equal? name '(http-server testing))))
 
 (define rules
   (list
@@ -111,10 +126,12 @@
               (lambda (path name) (starts? name '(libuv private))))
    (make-rule 'feed "PRIVATE IMPORT in code a parser feed runs, which could reach the scheduler (R5):"
               (lambda (path name)
-                (or (and (pure? path) (starts? name '(http-server private)))
+                (or (and (pure? path) (reaches-private? name))
                     (and (string=? path adapter)
                          (member name '((http-server private scheduler) (http-server private waits)
-                                        (http-server private shell) (http-server private serve)))
+                                        (http-server private shell) (http-server private serve)
+                                        (http-server private fake-shell)
+                                        (http-server) (http-server testing)))
                          #t))))))
 
 ;; forbidden : Rule String (Listof LibraryName) -> (Listof LibraryName)
@@ -243,7 +260,24 @@
      ())
     ("a comment naming the scheduler in the adapter" "src/http-server/private/adapter.sls"
      "(library (http-server private adapter) (export) (import (rnrs) ; (http-server private scheduler)\n (http-server connection)))"
-     ())))
+     ())
+    ;; the testing library, a second facade, reaches the private libraries,
+    ;; so nothing a parser feed runs may import it, or the facade
+    ("the testing library's own imports" "src/http-server/testing.sls"
+     "(library (http-server testing) (export) (import (rnrs) (http-server connection) (only (http-server private scheduler) scheduler-ready?) (only (http-server private waits) make-waits) (only (http-server private serve) &http-server-config-error) (http-server private fake-shell)))"
+     ())
+    ("(chezscheme) in the testing library" "src/http-server/testing.sls"
+     "(library (http-server testing) (export) (import (rnrs) (only (chezscheme) getenv)))"
+     ((impure chezscheme)))
+    ("the testing library in a pure library" "src/http-server/body.sls"
+     "(library (http-server body) (export) (import (rnrs) (only (http-server testing) make-test-host)))"
+     ((feed http-server testing)))
+    ("the facade in a pure library" "src/http-server/view.sls"
+     "(library (http-server view) (export) (import (rnrs) (http-server)))"
+     ((feed http-server)))
+    ("the fake shell, the testing library and the facade in the adapter" "src/http-server/private/adapter.sls"
+     "(library (http-server private adapter) (export) (import (rnrs) (http-server private fake-shell) (prefix (http-server testing) t:) (http-server)))"
+     ((feed http-server private fake-shell) (feed http-server testing) (feed http-server)))))
 
 (run-suite "imports"
   (lambda ()
@@ -251,9 +285,9 @@
                 (test-equal (car fixture) (cadddr fixture) (breaches (cadr fixture) (caddr fixture))))
               fixtures)
     (let* ((tree (map (lambda (path) (cons path (file-imports path))) (libraries "src")))
-           (held (map (lambda (path) (and (assoc path tree) #t)) (list "src/http-server.sls" adapter)))
+           (held (map (lambda (path) (and (assoc path tree) #t)) (list "src/http-server.sls" adapter testing)))
            (unread (map car (filter (lambda (entry) (null? (cdr entry))) tree))))
-      (test-equal "src/ holds the facade and the adapter" '(#t #t) held)
+      (test-equal "src/ holds the facade, the adapter and the testing library" '(#t #t #t) held)
       (test-equal "each library under src/ has its imports read" '() unread)
       (let ((clean
              (map (lambda (rule)
@@ -269,6 +303,6 @@
                       (test-equal (rule-message rule) '() found)
                       (null? found)))
                   rules)))
-        (when (and (equal? held '(#t #t)) (null? unread) (for-all values clean))
-          (display "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, the facade's included; no test library and no chez-libuv private library in src/; no private library in the pure ones, and no scheduler, waits, shell or serve in the adapter")
+        (when (and (equal? held '(#t #t #t)) (null? unread) (for-all values clean))
+          (display "import audit ok: no (libuv)/(chezscheme) outside src/http-server/private/, the facade's and the testing library's included; no test library and no chez-libuv private library in src/; no private library, facade or testing library in the pure ones, and no scheduler, waits, shell, serve, fake shell, facade or testing library in the adapter")
           (newline))))))

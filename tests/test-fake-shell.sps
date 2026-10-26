@@ -1,7 +1,8 @@
 #!r6rs
 ;;; (test-fake-shell) — the fake shell records faithfully, queues in order, and
 ;;; takes its clock by injection.  Its trace sees events and actions in the
-;;; order it handles them, as the libuv shell's does.  Driven against stub
+;;; order it handles them, as the libuv shell's does.  Its dispatch cap is
+;;; each event's, never a shell's whole life's.  Driven against stub
 ;;; steps, so these checks hold whatever core it carries; conn-step runs in it
 ;;; in test-connection-table.sps, and the whole message loop in
 ;;; test-message-loop.sps.
@@ -115,4 +116,27 @@
       (fake-shell-deliver! s 'shut)
       (test-equal "the refused dispatch is abandoned, and the next one runs"
                   '((write () 0) (shutdown) (shutdown)) (fake-shell-actions s))
-      (test-equal "and from the outermost drain" '() (fake-shell-violations s)))))
+      (test-equal "and from the outermost drain" '() (fake-shell-violations s)))
+
+    ;; the dispatch cap, 100,000, is each event's: an event that leads to
+    ;; dispatch after dispatch is stopped there, but a shell's life may hold
+    ;; any number of events, after a raise too.
+    (let ((s (make-fake-shell (lambda (st ev) (values st (list (list 'call ev)))) 'st 0
+                              (lambda (sh action) (fake-shell-deliver! sh (cadr action))))))
+      (test-eq "an event whose every action dispatches another is stopped at the cap" 'stuck
+               (guard (e ((assertion-violation? e) 'stuck))
+                 (fake-shell-deliver! s 'again)
+                 'finished)))
+    (let ((s (make-fake-shell (lambda (st ev) (values (+ st 1) '())) 0 0)))
+      (test-equal "100,001 events, each its own, are no harness error" '(delivered 100001)
+                  (list (guard (e ((assertion-violation? e) 'stuck))
+                          (let loop ((n 0)) (when (< n 100001) (fake-shell-deliver! s 'e) (loop (+ n 1))))
+                          'delivered)
+                        (fake-shell-state s))))
+    (let ((s (make-fake-shell shut-step 'st 0)))
+      (fake-shell-deliver! s 'shut)
+      (guard (e ((assertion-violation? e) 'refused)) (fake-shell-deliver! s 'write))
+      (test-eq "and after an event that raised, the next one's count begins again" 'delivered
+               (guard (e ((assertion-violation? e) 'stuck))
+                 (let loop ((n 0)) (when (< n 100001) (fake-shell-deliver! s 'none) (loop (+ n 1))))
+                 'delivered)))))

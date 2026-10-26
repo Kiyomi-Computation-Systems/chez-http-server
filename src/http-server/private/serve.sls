@@ -35,7 +35,7 @@
 ;;; a line never spells out a connection's state; a string, a symbol, a
 ;;; number, a boolean or a character is displayed; anything else is written.
 (library (http-server private serve)
-  (export serve start-server run-until-stopped! log-line
+  (export serve start-server run-until-stopped! log-line settings
           &http-server-error http-server-error?
           &http-server-config-error http-server-config-error?)
   (import (rnrs)
@@ -114,9 +114,11 @@
            sh)))))
 
   ;; settings : (String -> (U String #f)) -> (values Limits String Nat)
-  ;; The limits and the address `lookup` gives.  What the pure parsers refuse,
-  ;; an assertion violation naming the variable, is raised again as an
-  ;; &http-server-config-error composed with it.
+  ;; The limits and the address `lookup` gives, as the start reads them.
+  ;; What the pure parsers refuse, an assertion violation naming the
+  ;; variable, is raised again as an &http-server-config-error composed with
+  ;; it.  A host that is not an IP literal is the bind's to refuse, not
+  ;; theirs.
   (define (settings lookup)
     (guard (e ((assertion-violation? e)
                (raise (condition (make-http-server-config-error) e))))
