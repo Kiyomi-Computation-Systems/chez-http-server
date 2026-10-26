@@ -23,10 +23,10 @@ down.
 
 The default listens on this machine only, so nothing outside can reach the
 server until you ask. In a container, set `CHEZ_HTTP_HOST=0.0.0.0` (or `::`
-for IPv6). The host must be an IP address: a name such as `localhost` is
-refused. Platforms that set `PORT` (Heroku, Cloud Run, Render, Fly) need it
-passed on: `CHEZ_HTTP_PORT=$PORT`. The server's first log line says where it
-listens, with the port it got: `listening 127.0.0.1 8080`.
+for IPv6 and IPv4 both). The host must be an IP address: a name such as
+`localhost` is refused. Platforms that set `PORT` (Heroku, Cloud Run, Render,
+Fly) need it passed on: `CHEZ_HTTP_PORT=$PORT`. The server's first log line
+says where it listens, with the port it got: `listening 127.0.0.1 8080`.
 
 ## Limits
 

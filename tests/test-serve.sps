@@ -46,7 +46,7 @@
         (only (chezscheme) library-exports with-output-to-string putenv getenv statistics sstats-bytes)
         (libuv) (uv-testing) (shell-testing) (response-reader)
         (http-server)
-        (only (http-server request) make-request)
+        (only (http-server request) make-request make-addresses)
         (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-scheduler shell-signals)
         (only (http-server private scheduler) scheduler-call!)
         (only (http-server private serve) start-server run-until-stopped! log-line))
@@ -74,26 +74,35 @@
 ;; answers with what it read: the method, the path, the query, the host and
 ;; the X-Probe header, "-" for one that is not there, the version, as
 ;; major.minor, and "body" when the request has one, "-" when not.  It
-;; answers at once, reading no body.  At `/door` it takes
-;; the upgrade to `echo`, with the facade's names alone: its taker writes
-;; back what it is handed and what it reads, and closes at the client's end.
+;; answers at once, reading no body.  At `/addresses` it answers the
+;; connection's addresses instead: the remote address and port, then the
+;; local, "#f" for one it cannot say.  At `/door` it takes the upgrade to
+;; `echo`, with the facade's names alone: its taker writes back what it is
+;; handed and what it reads, and closes at the client's end.
 (define (handler r)
-  (if (string=? (request-path r) "/door")
-      (switch-protocols (list (cons (b "Upgrade") (b "echo")))
-                        (lambda (t retained)
-                          (when (> (bytevector-length retained) 0) (transport-write! t retained))
-                          (transport-read-start! t
-                                                 (lambda (bv from to) (transport-write! t bv from to))
-                                                 (lambda (why) (transport-close! t)))))
-      (make-response 200 #f '()
-                     (b (string-append (symbol->string (request-method r))
-                                       " " (request-path r)
-                                       " " (or (request-query r) "-")
-                                       " " (request-host r)
-                                       " " (or (request-header r "x-probe") "-")
-                                       " " (number->string (request-http-major r))
-                                       "." (number->string (request-http-minor r))
-                                       " " (if (request-has-body? r) "body" "-"))))))
+  (cond
+   ((string=? (request-path r) "/door")
+    (switch-protocols (list (cons (b "Upgrade") (b "echo")))
+                      (lambda (t retained)
+                        (when (> (bytevector-length retained) 0) (transport-write! t retained))
+                        (transport-read-start! t
+                                               (lambda (bv from to) (transport-write! t bv from to))
+                                               (lambda (why) (transport-close! t))))))
+   ((string=? (request-path r) "/addresses")
+    (make-response 200 #f '()
+                   (b (spaced (map (lambda (x) (cond ((string? x) x) ((number? x) (number->string x)) (else "#f")))
+                                   (list (request-remote-address r) (request-remote-port r)
+                                         (request-local-address r) (request-local-port r)))))))
+   (else
+    (make-response 200 #f '()
+                   (b (string-append (symbol->string (request-method r))
+                                     " " (request-path r)
+                                     " " (or (request-query r) "-")
+                                     " " (request-host r)
+                                     " " (or (request-header r "x-probe") "-")
+                                     " " (number->string (request-http-major r))
+                                     "." (number->string (request-http-minor r))
+                                     " " (if (request-has-body? r) "body" "-")))))))
 
 ;; refused : (-> Any) String -> (U (List Boolean Boolean Boolean Boolean) 'started)
 ;; How `start` fails: whether its raise is an &http-server-config-error, an
@@ -130,6 +139,18 @@
       (if (fx<? i reps)
           (loop (fx+ i 1) (if (ask r) (fx+ yes 1) yes))
           (cons (div (- (sstats-bytes (statistics)) before) reps) yes)))))
+
+;; made-size : (-> Any) -> Nat
+;; What a call of `make` allocates, over 10,000 calls, each result kept so
+;; none is dropped, by Chez's cumulative counter.
+(define (made-size make)
+  (let* ((reps 10000) (kept (make-vector reps #f)) (before (sstats-bytes (statistics))))
+    (do ((i 0 (fx+ i 1))) ((fx=? i reps)) (vector-set! kept i (make)))
+    (div (- (sstats-bytes (statistics)) before) reps)))
+
+;; eight : a record of eight fields, one mutable so none is made once and
+;; shared: made-size's control.
+(define-record-type eight (fields (mutable a) b c d e f g h))
 
 ;; dones-at-stop : Nat Boolean -> (List (Listof (List Nat Any)) (Listof (List Nat Any)) Boolean)
 ;; A server whose handler takes an upgrade, and whose taker, once its stream
@@ -365,7 +386,8 @@
                   make-response
                   make-transport next-body-piece read-body read-whole-body request-has-body? request-header
                   request-header-list request-header-values request-host request-http-major request-http-minor
-                  request-method request-on-done! request-path request-query request? resolve resolve-error-reason
+                  request-local-address request-local-port request-method request-on-done! request-path
+                  request-query request-remote-address request-remote-port request? resolve resolve-error-reason
                   resolve-error?
                   response? serve sized-body sleep-ms switch-protocols transport-abort! transport-close! transport-deadline!
                   transport-on-close! transport-on-drain! transport-read-start! transport-read-stop!
@@ -384,6 +406,18 @@
       (test-eq "the counter sees a header's lookup allocate" 'seen
                (let ((c (per-call (lambda (r) (request-header r "content-length")) with-body)))
                  (if (and (> (car c) 0) (= (cdr c) 0)) 'seen c))))
+
+    ;; --- what a request costs ---
+    ;; A request is a record of seven fields, 64 B in a 64-bit Chez, its
+    ;; connection's addresses one field and its version another.  A record
+    ;; of eight fields, made the same way, is 80 B, so the 64 is not the
+    ;; counter's.
+    (let ((target (b "/")) (addresses (make-addresses "192.0.2.7" 54321 "198.51.100.1" 8080)))
+      (test-equal "a request is 64 B, given its connection's addresses or not, where a record of eight fields is 80 B"
+                  '(64 64 80)
+                  (list (made-size (lambda () (make-request 'GET target 1 1 '() #f)))
+                        (made-size (lambda () (make-request 'GET target 1 1 '() #f addresses)))
+                        (made-size (lambda () (make-eight target 1 1 '() #f addresses 'GET #t))))))
 
     ;; --- a server started through an environment, serving ---
     (let* ((loop (make-uv-loop))
@@ -443,6 +477,22 @@
                   '(200 "POST /p - h - 1.1 body" complete)
                   (exchange loop sh port
                             (b "POST /p HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n0\r\n\r\n")))
+      ;; The connection's addresses, read through the facade's names, on a
+      ;; connection the server's own listener accepted: the client's address,
+      ;; 127.0.0.1, and its port, as its handle reads it, then where the
+      ;; server listens.
+      (let* ((cl (open-client loop port (b "GET /addresses HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n") #t))
+             (ended (run-shell-until loop sh (lambda () (not (eq? (client-end cl) 'open))) cap))
+             (client-port (guard (e ((uv-errno-error? e) 'unread))
+                            (let-values (((address p) (uv-tcp-sockname-address (client-tcp cl)))) p)))
+             (r (read-response (client-bytes cl) #f #t)))
+        (client-close! cl)
+        (run-shell-until loop sh (lambda () (null? (shell-connections sh))) cap)
+        (test-equal "a request reads the connection's addresses through the facade's names: the client's address and port, its handle's, then where the server listens"
+                    (list 'satisfied 200 (string-append "127.0.0.1 "
+                                                        (if (number? client-port) (number->string client-port) "unread")
+                                                        " 127.0.0.1 " (number->string port)))
+                    (list ended (car r) (cadddr r))))
       (test-equal "its limits are the environment's: a target over CHEZ_HTTP_MAX_TARGET_BYTES gets 414"
                   '(414 "" complete)
                   (exchange loop sh port

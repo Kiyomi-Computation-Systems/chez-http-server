@@ -223,6 +223,7 @@
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-body-pulled? conn-producer
                 producer-event)
+          (only (http-server request) no-addresses)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole? read-body)
           (only (http-server awaiting) awaiting? awaiting-thunk client-closed?)
           (only (http-server private scheduler)
@@ -553,7 +554,8 @@
 
   ;; --- the connection ---------------------------------------------------------
 
-  ;; make-fake-connection : Limits (Request -> Answer) [Trace [Nat [Boolean [Scheduler]]]] -> FakeShell
+  ;; make-fake-connection :
+  ;;   Limits (Request -> Answer) [Trace [Nat [Boolean [(U Scheduler #f) [Addresses]]]]] -> FakeShell
   ;;   Answer = Response | BodyReader | Awaiting
   ;; A connection in idle, reading, the clock at `now` (0 unless given), and
   ;; its idle deadline armed there: (http-server connection)'s core through
@@ -561,7 +563,9 @@
   ;; waits, and `handler` answering every request, traced as make-fake-shell
   ;; traces.  Made `on-credit?`, it answers with each answer and `credit`.
   ;; Given a `scheduler`, it runs its calls and coroutines on that one, and
-  ;; makes no waits (A HANDLER THAT WAITS).
+  ;; makes no waits (A HANDLER THAT WAITS).  Its addresses are the ones
+  ;; given, handed to the core as the libuv shell hands it the ones it
+  ;; reads, or else no-addresses.
   ;; Its state is the adapter's context; fake-shell-conn-state reads the
   ;; core's state from it.
   (define make-fake-connection
@@ -569,18 +573,21 @@
       ((limits handler) (make-fake-connection limits handler #f 0 #f))
       ((limits handler trace) (make-fake-connection limits handler trace 0 #f))
       ((limits handler trace now) (make-fake-connection limits handler trace now #f))
-      ((limits handler trace now on-credit?) (fake-connection limits handler trace now on-credit? #f))
+      ((limits handler trace now on-credit?) (make-fake-connection limits handler trace now on-credit? #f))
       ((limits handler trace now on-credit? scheduler)
-       (unless (scheduler? scheduler)
+       (make-fake-connection limits handler trace now on-credit? scheduler no-addresses))
+      ((limits handler trace now on-credit? scheduler addresses)
+       (unless (or (not scheduler) (scheduler? scheduler))
          (assertion-violation 'make-fake-connection "not a scheduler" scheduler))
-       (fake-connection limits handler trace now on-credit? scheduler))))
+       (fake-connection limits handler trace now on-credit? scheduler addresses))))
 
-  ;; fake-connection : Limits (Request -> Answer) (U Trace #f) Nat Boolean (U Scheduler #f) -> FakeShell
+  ;; fake-connection :
+  ;;   Limits (Request -> Answer) (U Trace #f) Nat Boolean (U Scheduler #f) Addresses -> FakeShell
   ;; make-fake-connection's connection, on `scheduler`, or else on one of its
   ;; own, with waits of its own (fake-waits).
-  (define (fake-connection limits handler trace now on-credit? scheduler)
+  (define (fake-connection limits handler trace now on-credit? scheduler addresses)
        (let* ((cell #f)
-              (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f limits)
+              (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f limits addresses)
                                       (lambda (actions) (enqueue! cell actions))))
               (s (make-fake-shell (lambda (ctx event) (values ctx (conn-context-step! ctx event)))
                                   ctx now

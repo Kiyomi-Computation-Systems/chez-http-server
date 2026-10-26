@@ -459,7 +459,7 @@
           conn-parser-callbacks conn-span-callbacks
           make-conn-state conn-state?
           conn-phase conn-deadline conn-close-after conn-outstanding
-          conn-outstanding-bytes conn-pending conn-request conn-limits conn-body-reader
+          conn-outstanding-bytes conn-pending conn-request conn-limits conn-addresses conn-body-reader
           conn-body-pulled?
           conn-body-buffered conn-producer conn-taker producer-event
           conn-step conn-parser-step conn-headers-complete-step)
@@ -539,7 +539,7 @@
       on-chunk-extension-name-data on-chunk-extension-value-data))
 
   ;; make-conn-state :
-  ;;   Phase Deadline CloseAfter Nat Nat Pending Request Limits -> ConnState
+  ;;   Phase Deadline CloseAfter Nat Nat Pending Request Limits [Addresses] -> ConnState
   ;;   Phase      = one of conn-states (anything else is an assertion violation)
   ;;   Deadline   = (U #f one of conn-deadline-kinds) — the kind armed, if any
   ;;   CloseAfter = (U #f Symbol) — #f keeps the connection after the response;
@@ -552,9 +552,15 @@
   ;;   Request    = (U #f Request) — the request in flight
   ;;   Limits     = the policy the core enforces; anything but a limits
   ;;                record is an assertion violation
+  ;;   Addresses  = the connection's, (http-server request)'s record, which
+  ;;                the shell reads as it adopts the connection, and every
+  ;;                request built holds; no-addresses unless given, and
+  ;;                anything but an addresses record is an assertion
+  ;;                violation
   ;; conn-state? : Any -> Boolean
   ;; conn-phase / -deadline / -close-after / -outstanding / -outstanding-bytes
-  ;;   / -pending / -request / -limits : ConnState -> the corresponding field
+  ;;   / -pending / -request / -limits / -addresses : ConnState -> the
+  ;;   corresponding field
   ;; The request head being read is kept in the state too, and so are the
   ;; request body being read, the connection's target judge, the last
   ;; delivery it fed the parser, `(bv start end)` or #f, and a streamed
@@ -582,6 +588,7 @@
             (mutable pending     conn-pending     conn-pending-set!)
             (mutable request     conn-request     conn-request-set!)
             (immutable limits    conn-limits)
+            (immutable addresses conn-addresses)
             (immutable head      conn-head)
             (immutable body      conn-body)
             (immutable judge     conn-judge)
@@ -600,7 +607,8 @@
             (mutable ending      conn-ending      conn-ending-set!))
     (protocol
      (lambda (new)
-       (lambda (phase deadline close-after outstanding outstanding-bytes pending request limits)
+       (define (make phase deadline close-after outstanding outstanding-bytes pending request limits
+                     addresses)
          (unless (memq phase conn-states)
            (assertion-violation 'make-conn-state "not a connection state" phase))
          (unless (limits? limits)
@@ -611,13 +619,22 @@
            (assertion-violation 'make-conn-state
              "not writes and bytes outstanding, counts that are zero together"
              outstanding outstanding-bytes))
+         (unless (addresses? addresses)
+           (assertion-violation 'make-conn-state "not an addresses record" addresses))
          (let ((body (make-body-state)))
            (when (eq? phase 'handling)
              (body-answer-set! body 'asked)
              (body-complete?-set! body #t))
            (new phase deadline close-after outstanding outstanding-bytes pending request limits
-                (make-head) body (make-target-judge) #f #f #f #f #f #f 0 0 0 'lines #f #f
-                (and (eq? phase 'handling) 'owed)))))))
+                addresses (make-head) body (make-target-judge) #f #f #f #f #f #f 0 0 0 'lines #f #f
+                (and (eq? phase 'handling) 'owed))))
+       (case-lambda
+         ((phase deadline close-after outstanding outstanding-bytes pending request limits)
+          (make phase deadline close-after outstanding outstanding-bytes pending request limits
+                no-addresses))
+         ((phase deadline close-after outstanding outstanding-bytes pending request limits addresses)
+          (make phase deadline close-after outstanding outstanding-bytes pending request limits
+                addresses))))))
 
   ;; conn-body-reader : ConnState -> (U #f BodyReader)
   ;; The reader the handler answered with, while the core hands it the body:
@@ -1851,10 +1868,10 @@
   ;; parser frames the body by a final chunked, another coding beside it is
   ;; refused as 'unsupported-transfer-coding, answered 501.
   ;; A request accepted on all five moves head -> body: the request is built
-  ;; from the head, holding whether a body follows, and the header deadline
-  ;; gives way to the body's.  The connection is marked to close after the
-  ;; response unless the message keeps it alive, or, when it does, if the
-  ;; parser says it upgrades.  A
+  ;; from the head, holding whether a body follows and the connection's
+  ;; addresses, and the header deadline gives way to the body's.  The
+  ;; connection is marked to close after the response unless the message
+  ;; keeps it alive, or, when it does, if the parser says it upgrades.  A
   ;; body it announces is noted, for the handler to be asked once the feed
   ;; has returned, and a declared length past the limits' max-body-bytes is
   ;; refused as 'body-too-large, answered 413, before any of the body is
@@ -1891,7 +1908,8 @@
                   (framed? (or chunked? (> content-length 0)))
                   (bd (conn-body s)))
              (conn-request-set! s (make-request name target http-major http-minor
-                                                (reverse (head-fields h)) framed?))
+                                                (reverse (head-fields h)) framed?
+                                                (conn-addresses s)))
              (cond ((not (should-keep-alive? http-major http-minor 'request 0 flags))
                     (conn-close-after-set! s 'not-keep-alive))
                    ((eqv? upgrade 1)

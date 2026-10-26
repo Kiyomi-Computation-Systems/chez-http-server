@@ -494,4 +494,13 @@
 
     ;; --- the state holds its limits ------------------------------------------------
     (test-eq "a state without a limits record is refused" 'refused
-             (verdict (lambda () (make-conn-state 'idle #f #f 0 0 #f #f #f))))))
+             (verdict (lambda () (make-conn-state 'idle #f #f 0 0 #f #f #f))))
+
+    ;; --- and its connection's addresses ---------------------------------------------
+    (test-equal "a state given something other than an addresses record is refused; given none, it holds no-addresses"
+                (list 'refused 'refused #t)
+                (list (verdict (lambda () (make-conn-state 'idle #f #f 0 0 #f #f minimal #f)))
+                      (verdict (lambda () (make-conn-state 'idle #f #f 0 0 #f #f minimal
+                                                           '("127.0.0.1" 80 "127.0.0.1" 8080))))
+                      (eq? (conn-addresses (make-conn-state 'idle #f #f 0 0 #f #f minimal))
+                           no-addresses)))))

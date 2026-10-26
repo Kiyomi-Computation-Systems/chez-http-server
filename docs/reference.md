@@ -46,8 +46,9 @@ Boolean`.
 ## Reading a request
 
 Every string they give, header names included, has one character per byte
-of the request (Latin-1), and is made when called. See
-[Handlers](handlers.md#reading-the-request).
+of the request (Latin-1), and is made when called. The addresses and ports
+are the connection's, not the request's, each `#f` where the server can't
+say. See [Handlers](handlers.md#reading-the-request).
 
 | Name | Type | Gives |
 |:--|:--|:--|
@@ -62,6 +63,10 @@ of the request (Latin-1), and is made when called. See
 | `request-http-major` | `Request -> Nat` | the first number of the version the request names, always `1` |
 | `request-http-minor` | `Request -> Nat` | its second: `2` for `HTTP/1.2`, which is answered as HTTP/1.1 |
 | `request-has-body?` | `Request -> Boolean` | whether a body follows the head: chunked, or a `Content-Length` above 0 |
+| `request-remote-address` | `Request -> (U String #f)` | the address of the connection's other end, such as `"192.0.2.7"` |
+| `request-remote-port` | `Request -> (U Nat #f)` | that end's port |
+| `request-local-address` | `Request -> (U String #f)` | the address the connection came in on |
+| `request-local-port` | `Request -> (U Nat #f)` | that end's port |
 
 ## Reading a body
 
