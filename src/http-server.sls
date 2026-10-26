@@ -15,11 +15,13 @@
 ;;; accessors that copy what it asks for, as strings, the method as the
 ;;; symbol llhttp names (see (http-server view)), and the version as the two
 ;;; numbers the request names: HTTP/1.2 reads 1 and 2, though the server
-;;; answers it as HTTP/1.1.  A request whose head announces a body, chunked
-;;; or with a Content-Length above 0, which `request-has-body?` says without
-;;; reading a header, reaches the handler once its head is in, and the
-;;; handler reads the body by answering with a reader, `read-body` or
-;;; `read-whole-body`; a response given instead is sent at once, and the
+;;; answers it as HTTP/1.1.  It reads the connection's addresses too, each
+;;; end's address and port, read once as the server accepted the connection,
+;;; and #f where the server cannot say.  A request whose head announces a
+;;; body, chunked or with a Content-Length above 0, which `request-has-body?`
+;;; says without reading a header, reaches the handler once its head is in,
+;;; and the handler reads the body by answering with a reader, `read-body`
+;;; or `read-whole-body`; a response given instead is sent at once, and the
 ;;; connection closes after it (see (http-server body)).  The response is
 ;;; (http-server response)'s record, which the server frames; a body made as
 ;;; it is written is a producer, or, with its length declared, a sized body,
@@ -63,6 +65,8 @@
 ;;;     request-header : Request String -> (U String #f)
 ;;;     request-header-values : Request String -> (Listof String)
 ;;;     request-header-list : Request -> (Listof (Pair String String))
+;;;     request-remote-address, request-local-address : Request -> (U String #f)
+;;;     request-remote-port, request-local-port : Request -> (U Nat #f)
 ;;;     request-on-done! : Request (Symbol -> Any) -> Void
 ;;;   (http-server body)
 ;;;     read-body : (Bytevector Nat Nat -> Any) (-> Response) -> BodyReader
@@ -109,6 +113,7 @@
     ;; what a handler reads
     request? request-method request-path request-query request-header request-header-values
     request-header-list request-host request-http-major request-http-minor request-has-body?
+    request-remote-address request-remote-port request-local-address request-local-port
     read-body read-whole-body
     ;; when its response is done
     request-on-done!
@@ -127,7 +132,8 @@
   (import (only (http-server request) request? request-method request-http-major request-http-minor
                 request-has-body? request-on-done!)
           (only (http-server view) request-path request-query request-header request-header-values
-                request-header-list request-host)
+                request-header-list request-host
+                request-remote-address request-remote-port request-local-address request-local-port)
           (only (http-server body) read-body read-whole-body)
           (only (http-server response) make-response response? sized-body)
           (only (http-server switch) switch-protocols)
