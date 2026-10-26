@@ -106,7 +106,8 @@
           (only (http-server private fake-shell)
                 make-fake-connection fake-shell-advance! fake-shell-fire! fake-shell-armed
                 fake-shell-deliver! fake-shell-deliver-later! fake-shell-reading? fake-shell-writes
-                fake-shell-taker-failures fake-shell-done-failures fake-shell-calling?))
+                fake-shell-taker-failures fake-shell-done-failures fake-shell-calling?
+                fake-waits-puller!))
 
   ;; --- the host ---------------------------------------------------------------
 
@@ -147,8 +148,8 @@
 
   ;; host-waits! : TestHost -> Void
   ;; The host's scheduler, which never polls, and its waits (ONE SCHEDULER
-  ;; AND ONE WAITS).  A lookup a deadline cancels answers at the next turn,
-  ;; as cancelled.
+  ;; AND ONE WAITS), given the fake's puller, so a handler may pull its body.
+  ;; A lookup a deadline cancels answers at the next turn, as cancelled.
   (define (host-waits! host)
     (let* ((s (make-scheduler (lambda (mode) (assertion-violation 'test-host "the host never polls" mode))))
            (w (make-waits s (lambda (what details) (log! host what details)))))
@@ -165,6 +166,7 @@
                          (when (memq l (test-host-asked host))
                            (test-host-asked-set! host (remq l (test-host-asked host)))
                            (test-host-cancelled-set! host (append (test-host-cancelled host) (list l))))))
+      (fake-waits-puller! w)
       (test-host-scheduler-set! host s)
       (test-host-waits-set! host w)))
 
