@@ -42,11 +42,19 @@
 ;;; §4.2.3).  The Host field's value may be empty, and a request with no Host
 ;;; reads empty too.
 ;;;
+;;; THE ADDRESSES are the connection's, not the request's: the remote end's
+;;; address and port, and the local end's, the one the connection came in
+;;; on.  The shell reads them as it adopts the connection, so every request
+;;; on it reads the same, and each is #f where the server cannot say.  An
+;;; address is text, "192.0.2.7" or "::1", copied when it is asked for, as
+;;; every string here is made then: one handler's change to it is no other's.
+;;;
 ;;; PURE: imports (rnrs), (rnrs mutable-strings) to fill the strings it makes,
 ;;; (uri ...) and this project's own libraries.
 (library (http-server view)
   (export request-path request-query request-header request-header-values request-header-list
-          request-host)
+          request-host
+          request-remote-address request-remote-port request-local-address request-local-port)
   (import (rnrs) (rnrs mutable-strings)
           (http-server request)
           (http-server span)
@@ -117,6 +125,31 @@
           (whole (uri-components-authority (absolute-parts t)))
           (let ((value (headers-ref (request-headers r) HOST)))
             (if value (field-value value) (string))))))
+
+  ;; request-remote-address : Request -> (U String #f)
+  ;; The address of the connection's remote end, the peer's, as text, or #f
+  ;; when the server cannot say.
+  (define (request-remote-address r)
+    (copied (addresses-remote-address (request-addresses r))))
+
+  ;; request-remote-port : Request -> (U Nat #f)
+  ;; The port of the connection's remote end, or #f when the server cannot say.
+  (define (request-remote-port r)
+    (addresses-remote-port (request-addresses r)))
+
+  ;; request-local-address : Request -> (U String #f)
+  ;; The address of the connection's local end, the one it came in on, as
+  ;; text, or #f when the server cannot say.
+  (define (request-local-address r)
+    (copied (addresses-local-address (request-addresses r))))
+
+  ;; request-local-port : Request -> (U Nat #f)
+  ;; The port of the connection's local end, or #f when the server cannot say.
+  (define (request-local-port r)
+    (addresses-local-port (request-addresses r)))
+
+  ;; copied : (U String #f) -> (U String #f) — a fresh copy of an address.
+  (define (copied address) (and address (string-copy address)))
 
   ;; absolute-parts : Span -> UriComponents
   ;; uriparse's parts of an absolute-form target, parsed by a collector made

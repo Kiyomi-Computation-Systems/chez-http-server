@@ -280,6 +280,7 @@
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
           (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
+          (only (http-server request) make-addresses)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole?)
           (only (http-server awaiting) awaiting? awaiting-thunk client-closed?)
           (only (http-server limits)
@@ -679,7 +680,8 @@
       (when tcp (handle-close! sh tcp))))
 
   ;; serve! : Shell UvTcp -> Connection
-  ;; Serve an accepted TCP handle: the core in idle, a parser of its own, the
+  ;; Serve an accepted TCP handle: the core in idle, holding the connection's
+  ;; addresses (connection-addresses), a parser of its own, the
   ;; connection in the table, its idle deadline armed at the loop's time
   ;; brought up to date, Nagle's algorithm off, and reading started with the
   ;; limits' buffer.  Nagle's algorithm would hold a response's last partial
@@ -691,7 +693,8 @@
     (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f #f '() #f)))
       (connection-entry-set! c (make-wheel-entry c))
       (connection-ctx-set! c (make-conn-context
-                              (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
+                              (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh)
+                                               (connection-addresses tcp))
                               (lambda (actions) (enqueue! c actions))))
       (connection-parser-set! c (make-conn-parser (connection-ctx c)))
       (connection-on-data-set! c (lambda (bv start end) (dispatch! c (list 'bytes-arrived bv start end))))
@@ -706,6 +709,24 @@
                       (limits-read-buffer-size (shell-limits sh)))
       (connection-reading?-set! c #t)
       c))
+
+  ;; connection-addresses : UvTcp -> Addresses
+  ;; Both ends of an accepted connection, read once, as it is served, which
+  ;; every request on it holds: the peer's, uv-tcp-peer-address's, and this
+  ;; end's, the one it came in on, uv-tcp-sockname-address's.  An end whose
+  ;; read fails is #f, address and port, and the connection is served all
+  ;; the same: a peer that has reset the connection already has no address
+  ;; to read, and reading will report the reset.
+  (define (connection-addresses tcp)
+    (let-values (((remote-address remote-port) (end-of tcp uv-tcp-peer-address))
+                 ((local-address local-port) (end-of tcp uv-tcp-sockname-address)))
+      (make-addresses remote-address remote-port local-address local-port)))
+
+  ;; end-of : UvTcp (UvTcp -> (values (U String #f) Nat)) -> (values (U String #f) (U Nat #f))
+  ;; One end of `tcp` as `read` reads it, or #f twice if the read fails.
+  (define (end-of tcp read)
+    (guard (e ((transport-condition? e) (values #f #f)))
+      (read tcp)))
 
   ;; --- the message loop ---------------------------------------------------------
 

@@ -42,10 +42,12 @@ Things to know:
 
 - **Speak HTTP/1.1 to the server, not h2c.** The server answers HTTP/2's
   opening line with `505`.
-- **The client's address is in a header.** A request does not carry the
-  peer's address; behind a proxy it would be the proxy's anyway. Read
-  `X-Forwarded-For` (Caddy and the nginx block above set it), and trust it
-  only from your own proxy.
+- **The client's address is in a header.** Behind a proxy,
+  `request-remote-address` is the proxy's. Read `X-Forwarded-For` (Caddy and
+  the nginx block above set it) only when `request-remote-address` is your
+  proxy's, and take its last address, the one your proxy added: anyone who
+  can reach the server can send that header, and a client can write the
+  addresses before the last.
 - **The server checks `Host`.** Pass the client's `Host` on (Caddy does by
   default), or the server may refuse what it cannot read as a host.
 - **A proxy reload can close upgraded connections.** Caddy's does, so

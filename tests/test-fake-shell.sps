@@ -5,8 +5,10 @@
 ;;; each event's, never a shell's whole life's.  Driven against stub
 ;;; steps, so these checks hold whatever core it carries; conn-step runs in it
 ;;; in test-connection-table.sps, and the whole message loop in
-;;; test-message-loop.sps.
-(import (rnrs) (srfi :64) (testing) (fake-shell))
+;;; test-message-loop.sps.  A fake connection's scheduler is a scheduler,
+;;; or #f for one of its own, and anything else is refused.
+(import (rnrs) (srfi :64) (testing) (fake-shell)
+        (only (http-server limits) default-limits))
 
 ;; echo-step : count deliveries; each event's action echoes the event.
 (define (echo-step st ev) (values (+ st 1) (list ev)))
@@ -28,6 +30,12 @@
 
 (run-suite "fake-shell"
   (lambda ()
+    (test-equal "make-fake-connection refuses a scheduler that is neither a scheduler nor #f"
+                'make-fake-connection
+                (guard (e ((assertion-violation? e) (if (who-condition? e) (condition-who e) 'anonymous)))
+                  (make-fake-connection default-limits (lambda (request) #f) #f 0 #f 'x)
+                  'accepted))
+
     ;; delivers in order, threads state, records each action in order
     (let ((s (make-fake-shell echo-step 0 0)))
       (fake-shell-run! s '(a b c))
