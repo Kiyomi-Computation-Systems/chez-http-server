@@ -6,6 +6,20 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-26
+
+The tenth release. A handler sees more of its request and of its connection:
+every header line, the HTTP version, whether a body follows, and the address
+and port of each end. A handler that waits can read its body as it arrives,
+piece by piece or through a port. A producer can declare its body's length,
+so a file streams with its size, and any code that holds a request can hear
+when its response is done, and how it ended. `(http-server testing)` is new:
+it tests a handler that waits, with no socket, on a clock the test moves.
+Sixteen names join `(http-server)`, so a program that imports all of it and
+defines one of them itself no longer loads, and `(http-server request)`'s
+`request-body` is gone, so the release is 0.9.0. The dependencies are
+0.8.0's.
+
 ### Added
 
 - **A handler can list every header.** `(request-header-list r)` gives each field line
@@ -92,7 +106,6 @@ All notable changes to chez-http-server are recorded here. The format follows
   `(http-server testing)`'s host as under the server. A program that imports
   all of `(http-server)` and defines one of the six new names itself no
   longer loads: rename its own, or import `(except (http-server) ...)`.
-
 - **Test a handler that waits, with no socket: `(http-server testing)`.**
   `make-test-host` hosts a handler, with settings from an environment
   procedure as `serve` takes one, and `test-host-connect!` connects clients
@@ -666,7 +679,8 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.5.0...v0.6.0
