@@ -132,8 +132,9 @@
         (only (http-server connection) conn-phase conn-addresses)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (http-server body)
-        (only (http-server awaiting) awaiting deadline-passed? client-closed? resolve-error? resolve-error-reason)
-        (only (http-server private waits) sleep-ms with-deadline resolve)
+        (only (http-server awaiting) awaiting deadline-passed? client-closed? resolve-error? resolve-error-reason
+              body-failed?)
+        (only (http-server private waits) sleep-ms with-deadline resolve next-body-piece body-input-port)
         (http-server switch) (http-server transport)
         (fake-shell) (shell-testing) (producers))
 
@@ -165,7 +166,10 @@
 ;; sleep does, and answers the pieces joined; `/stream-sleeps` answers with a
 ;; producer that sleeps 5 ms before each call; and `/read-then-wait`, an
 ;; ordinary handler, reads the body with a reader whose end answers
-;; `awaiting`, its thunk sleeping 5 ms.
+;; `awaiting`, its thunk sleeping 5 ms.  `/pull` pulls the body and answers
+;; it; `/pull-port` reads it whole through a port; `/pull-small` pulls it
+;; capped at 4 bytes, letting the failure out; `/pull-caught` the same,
+;; answering `caught`; `/pull-first` answers after its first piece.
 ;; And it takes an upgrade (THE DOOR): a target door-taker names is answered
 ;; with a switch to `echo`, its take-over the one named.
 ;; Both shells call it, so it keeps nothing between calls: each answer
@@ -236,6 +240,21 @@
             (lambda ()
               (let ((p (producer-of '("one " "two " "three"))))
                 (make-response 200 #f '() (lambda () (slept 5) (p)))))))
+          ((bytevector=? target (b "/pull"))
+           (awaiting (lambda () (make-response 200 #f '() (joined (pulled-all next-body-piece))))))
+          ((bytevector=? target (b "/pull-port"))
+           (awaiting (lambda ()
+                       (let ((body (get-bytevector-all (body-input-port))))
+                         (make-response 200 #f '() (if (eof-object? body) (b "") body))))))
+          ((bytevector=? target (b "/pull-small"))
+           (awaiting (lambda () (pulled-all (lambda () (next-body-piece 4))) (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/pull-caught"))
+           (awaiting (lambda ()
+                       (make-response 200 #f '()
+                                      (guard (e ((body-failed? e) (b "caught")))
+                                        (joined (pulled-all (lambda () (next-body-piece 4)))))))))
+          ((bytevector=? target (b "/pull-first"))
+           (awaiting (lambda () (next-body-piece) (make-response 200 #f '() target))))
           ((bytevector=? target (b "/read-then-wait"))
            (read-body (lambda (bv start end) #t)
                       (lambda () (awaiting (lambda () (slept 5) (make-response 200 #f '() target))))))
@@ -538,7 +557,24 @@
      ("a streamed response whose producer sleeps before each call"
       (send "GET /stream-sleeps HTTP/1.1\r\nHost: x\r\n\r\n"))
      ("an ordinary handler's reader whose end waits"
-      (send "POST /read-then-wait HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")))
+      (send "POST /read-then-wait HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello"))
+     ("a body pulled, in two deliveries"
+      (send "POST /pull HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234") (read) (send "56789"))
+     ("a chunked body pulled, then a GET"
+      (send "POST /pull HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\nGET /after HTTP/1.1\r\nHost: x\r\n\r\n"))
+     ("a body read through a port, in two deliveries"
+      (send "POST /pull-port HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234") (read) (send "56789"))
+     ("a body expecting 100-continue, pulled, sent once the server has read the head"
+      (send "POST /pull HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n")
+      (read) (send "hello"))
+     ("a declared length past the pull's cap: 413, no piece taken"
+      (send "POST /pull-small HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n0123456789"))
+     ("a chunked body past the pull's cap, the raise caught and answered"
+      (send "POST /pull-caught HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n"))
+     ("an answer after the pull's first piece, before the body's end"
+      (send "POST /pull-first HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234"))
+     ("a pulled body whose client ends its stream before the body's end: told, and answered nothing"
+      (send "POST /pull HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\n01234") (end-early)))
    (list lookup-in-a-pipeline)))
 
 (define stalling-scripts
@@ -659,6 +695,13 @@
     (diag (string-append "CONTRACT MISMATCH " script ", " what ": "
                          (call-with-string-output-port (lambda (p) (write result p))))))
   (test-equal (string-append script ": " what) expected result))
+
+;; pulled-all : (-> (U Bytevector Eof)) -> (Listof Bytevector)
+;; Every piece `pull` answers until the eof object.
+(define (pulled-all pull)
+  (let loop ((acc '()))
+    (let ((p (pull)))
+      (if (eof-object? p) (reverse acc) (loop (cons p acc))))))
 
 ;; joined : (Listof Bytevector) -> Bytevector — one after another, through
 ;; chez-libuv's byte collector.

@@ -73,8 +73,7 @@
 ;;; raise is logged `taker-failed`); and examples/README.org and
 ;;; docs/waiting.md for long-poll.sps.
 (import (rnrs) (rnrs eval) (srfi :64) (testing)
-        (http-server) (http-server testing)
-        (only (http-server private waits) body-input-port))
+        (http-server) (http-server testing))
 
 (define (b s) (string->utf8 s))
 

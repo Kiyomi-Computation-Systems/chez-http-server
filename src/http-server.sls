@@ -34,7 +34,10 @@
 ;;; passed; and with `resolve`, which looks a name up, or raises
 ;;; &resolve-error (see (http-server private waits)).  Once its client has
 ;;; closed or reset the connection, the wait it is in, or else its next,
-;;; raises &client-closed, once.  A handler takes a request that asks to
+;;; raises &client-closed, once.  There, before it answers, it may pull its
+;;; body a piece at a time, `next-body-piece`, or read it through a port,
+;;; `body-input-port`; a body that fails while pulled raises &body-failed,
+;;; answered with its status if let out.  A handler takes a request that asks to
 ;;; switch protocols, an HTTP/1.1 upgrade with no body, by answering
 ;;; `(switch-protocols headers take-over)`: the server writes the 101 and
 ;;; then calls `take-over` with the stream, as a transport whose verbs
@@ -81,14 +84,20 @@
 ;;;   (http-server awaiting)
 ;;;     awaiting : (-> Answer) -> Awaiting
 ;;;       Answer = (U Response BodyReader Awaiting)
-;;;     &deadline-passed, &client-closed, &resolve-error, each an &error
-;;;     deadline-passed?, client-closed?, resolve-error? : Any -> Boolean
+;;;     &deadline-passed, &client-closed, &resolve-error, &body-failed, each
+;;;       an &error
+;;;     deadline-passed?, client-closed?, resolve-error?, body-failed? :
+;;;       Any -> Boolean
 ;;;     resolve-error-reason : ResolveError -> Symbol
+;;;     body-failed-reason : BodyFailed -> Symbol
+;;;     body-failed-status : BodyFailed -> Nat
 ;;;   (http-server private waits)
 ;;;     await : ((Any -> Void) -> Any) -> Any
 ;;;     sleep-ms : Nat -> Void
 ;;;     with-deadline : Nat (-> (Values Any ...)) -> (Values Any ...)
 ;;;     resolve : String -> (Listof String)
+;;;     next-body-piece : [(U Nat #f)] -> (U Bytevector Eof)
+;;;     body-input-port : [(U Nat #f)] -> BinaryInputPort
 ;;;   (http-server switch)
 ;;;     switch-protocols : Headers (Transport Bytevector -> Any) -> Switch
 ;;;   (http-server transport)
@@ -126,6 +135,9 @@
     await sleep-ms with-deadline resolve
     &deadline-passed deadline-passed? &client-closed client-closed?
     &resolve-error resolve-error? resolve-error-reason
+    ;; the body pulled by a handler that waits, and what a failed one raises
+    next-body-piece body-input-port
+    &body-failed body-failed? body-failed-reason body-failed-status
     ;; what a start raises
     &http-server-error http-server-error?
     &http-server-config-error http-server-config-error?)
@@ -139,8 +151,10 @@
           (only (http-server switch) switch-protocols)
           (http-server transport)
           (only (http-server awaiting) awaiting &deadline-passed deadline-passed?
-                &client-closed client-closed? &resolve-error resolve-error? resolve-error-reason)
-          (only (http-server private waits) await sleep-ms with-deadline resolve)
+                &client-closed client-closed? &resolve-error resolve-error? resolve-error-reason
+                &body-failed body-failed? body-failed-reason body-failed-status)
+          (only (http-server private waits) await sleep-ms with-deadline resolve
+                next-body-piece body-input-port)
           (only (http-server private serve)
                 serve
                 &http-server-error http-server-error?

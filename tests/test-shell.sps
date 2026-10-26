@@ -134,8 +134,9 @@
               scheduler-phase current-coroutine coroutine-waits coroutine-park! coroutine-wake! coroutine-yield!
               scheduler-invariant? scheduler-invariant-name)
         (only (http-server awaiting) awaiting deadline-passed? client-closed? make-client-closed
-              resolve-error? resolve-error-reason)
-        (only (http-server private waits) await sleep-ms with-deadline resolve)
+              resolve-error? resolve-error-reason body-failed?)
+        (only (http-server private waits) await sleep-ms with-deadline resolve
+              next-body-piece body-input-port)
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
               conn-outstanding conn-outstanding-bytes conn-addresses)
@@ -334,6 +335,19 @@
 ;; two texts, its producer sleeping before each call.  And `/addresses`
 ;; answers the connection's addresses, as addresses-text writes them, and
 ;; keeps in `addresses-seen`, newest first, the record the request holds.
+;; And handlers that pull their body: `/pull` answers it; `/pull-length`
+;; its length, as text; `/pull-held` takes its first piece, parks in
+;; `parked` until the suite wakes it, then answers the length; `/pull-port`
+;; answers the length it read whole through a port; `/pull-small` pulls it
+;; capped at 4 bytes, letting the failure out, and `/pull-caught` the same,
+;; answering `caught`; `/pull-leave` sets `leave-state` to 'waiting as it
+;; begins and, once a pull raises &client-closed, to 'told, or 'told-twice
+;; when the call after it raises too, then lets it out; `/pull-deadline`
+;; pulls inside a deadline of 20 ms, answering "passed" when it raises;
+;; `/pull-late` pulls inside a deadline of 20 ms, sets `leave-state` to
+;; 'sleeping as it then sleeps 100 ms, and answers the rest of the body;
+;; and `/pull-after` waits on `await`, keeping its resume in `waker`, then
+;; sets `leave-state` to what two pulls raised.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -384,6 +398,30 @@
   (guard (e ((resolve-error? e) (symbol->string (resolve-error-reason e))))
     (resolve host)
     "resolved"))
+
+;; pulled-joined : (-> (U Bytevector Eof)) -> Bytevector
+;; Every piece `pull` answers until the eof object, joined.
+(define (pulled-joined pull)
+  (let ((c (make-byte-collector)))
+    (let loop ()
+      (let ((p (pull)))
+        (unless (eof-object? p)
+          (collect-span! c p 0 (bytevector-length p))
+          (loop))))
+    (collector-bytes c)))
+
+;; appended : Bytevector Bytevector -> Bytevector — one after the other.
+(define (appended x y)
+  (let ((o (make-bytevector (+ (bytevector-length x) (bytevector-length y)))))
+    (bytevector-copy! x 0 o 0 (bytevector-length x))
+    (bytevector-copy! y 0 o (bytevector-length x) (bytevector-length y))
+    o))
+
+;; pulled-length : Nat -> Nat — `n` and the bytes of every piece pulled
+;; after it, until the eof object.
+(define (pulled-length n)
+  (let ((p (next-body-piece)))
+    (if (eof-object? p) n (pulled-length (+ n (bytevector-length p))))))
 
 (define counted-calls 0)
 (define credit-pieces '())
@@ -552,6 +590,64 @@
             (lambda ()
               (set! leave-state 'waiting)
               (sleep-ms 50)
+              (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/pull"))
+           (awaiting (lambda () (make-response 200 #f '() (pulled-joined next-body-piece)))))
+          ((bytevector=? target (b "/pull-length"))
+           (awaiting (lambda () (make-response 200 #f '() (b (number->string (pulled-length 0)))))))
+          ((bytevector=? target (b "/pull-held"))
+           (awaiting
+            (lambda ()
+              (let ((first (next-body-piece)))
+                (set! parked (current-coroutine))
+                (coroutine-park!)
+                (make-response 200 #f '() (b (number->string (pulled-length (bytevector-length first)))))))))
+          ((bytevector=? target (b "/pull-port"))
+           (awaiting
+            (lambda ()
+              (let ((body (get-bytevector-all (body-input-port))))
+                (make-response 200 #f '()
+                               (b (number->string (if (eof-object? body) 0 (bytevector-length body)))))))))
+          ((bytevector=? target (b "/pull-small"))
+           (awaiting (lambda () (pulled-joined (lambda () (next-body-piece 4))) (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/pull-caught"))
+           (awaiting
+            (lambda ()
+              (make-response 200 #f '()
+                             (guard (e ((body-failed? e) (b "caught")))
+                               (pulled-joined (lambda () (next-body-piece 4))))))))
+          ((bytevector=? target (b "/pull-leave"))
+           (awaiting
+            (lambda ()
+              (set! leave-state 'waiting)
+              (guard (e ((client-closed? e)
+                         (set! leave-state
+                               (if (guard (again ((client-closed? again) #t)) (next-body-piece) #f)
+                                   'told-twice
+                                   'told))
+                         (raise e)))
+                (pulled-joined next-body-piece))
+              (make-response 200 #f '() target))))
+          ((bytevector=? target (b "/pull-deadline"))
+           (awaiting
+            (lambda ()
+              (make-response 200 #f '()
+                             (guard (e ((deadline-passed? e) (b "passed")))
+                               (with-deadline 20 (lambda () (pulled-joined next-body-piece))))))))
+          ((bytevector=? target (b "/pull-late"))
+           (awaiting
+            (lambda ()
+              (guard (e ((deadline-passed? e) #f))
+                (with-deadline 20 (lambda () (pulled-joined next-body-piece))))
+              (set! leave-state 'sleeping)
+              (sleep-ms 100)
+              (make-response 200 #f '() (pulled-joined next-body-piece)))))
+          ((bytevector=? target (b "/pull-after"))
+           (awaiting
+            (lambda ()
+              (await (lambda (resume) (set! waker resume)))
+              (let ((raised (lambda () (guard (e ((client-closed? e) 'client-closed)) (next-body-piece) 'none))))
+                (set! leave-state (list (raised) (raised))))
               (make-response 200 #f '() target))))
           ((bytevector=? target (b "/await-stream"))
            (awaiting
@@ -1767,6 +1863,121 @@
                   '((200 "13" "one two three"))
                   (map (lambda (r) (list (status r) (field r "Content-Length") (body r)))
                        (responses (client-bytes cl))))
+      (client-close! cl))
+
+    ;; A body pulled by the handler that waits.
+    (let ((cl (open-client! (b (string-append "POST /pull HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world"
+                                              "POST /pull HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                                              "5\r\nhello\r\n1\r\n \r\n5\r\nworld\r\n0\r\n\r\n")))))
+      (test-equal "a body pulled, by its length and chunked: each answered, on the one connection kept"
+                  '(satisfied ((200 "hello world" absent) (200 "hello world" absent)))
+                  (list (wait-for (lambda () (= 2 (length (responses (client-bytes cl))))))
+                        (map (lambda (r) (list (status r) (body r) (field r "Connection")))
+                             (responses (client-bytes cl)))))
+      (client-close! cl))
+    (let* ((cl (open-client! (b "POST /pull HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n")))
+           (got-100 (wait-for (lambda () (>= (bytevector-length (client-bytes cl)) 25))))
+           (before-body (utf8->string (client-bytes cl))))
+      (client-send! cl (b "hello"))
+      (test-equal "a client that waits for the 100 reads it, alone, as the body is pulled, then the answer to the body it sent"
+                  '(satisfied "HTTP/1.1 100 Continue\r\n\r\n" satisfied ((100 "") (200 "hello")))
+                  (list got-100 before-body
+                        (wait-for (lambda () (= 2 (length (responses (client-bytes cl))))))
+                        (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))))
+      (client-close! cl))
+    (set! logged '())
+    (let ((cl (open-client! (b "POST /pull-small HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\nContent-Length: 11\r\n\r\n"))))
+      (test-equal "a declared length past the pull's cap, the raise let out: 413 and no 100, the stream's end, nothing logged"
+                  '(satisfied (413) ())
+                  (list (wait-for (lambda () (eq? (client-end cl) 'eof)))
+                        (map status (responses (client-bytes cl)))
+                        (filter (lambda (e) (eq? (car e) 'handler-failed)) logged)))
+      (client-close! cl))
+    (let ((cl (open-client! (b "POST /pull-caught HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n"))))
+      (test-equal "a chunked body past the pull's cap, the raise caught: the handler's answer, saying Connection: close"
+                  '(satisfied ((200 "caught" "close")))
+                  (list (wait-for (lambda () (eq? (client-end cl) 'eof)))
+                        (map (lambda (r) (list (status r) (body r) (field r "Connection")))
+                             (responses (client-bytes cl)))))
+      (client-close! cl))
+    ;; A pull slow to take its pieces: once it holds one, the connection
+    ;; reads one read more at most, then waits for it.
+    (set! parked #f)
+    (let* ((upload (make-bytevector wide-size 120))
+           (cl (open-client! (appended
+                              (b (string-append "POST /pull-held HTTP/1.1\r\nHost: x\r\nContent-Length: "
+                                                (number->string wide-size) "\r\n\r\n"))
+                              upload))))
+      (test-equal "a pull that holds its first piece: the connection waits for it, reading stopped"
+                  '(satisfied awaiting-credit)
+                  (list (wait-for (lambda () (and parked (connection? (newest))
+                                                  (eq? (phase (newest)) 'awaiting-credit))))
+                        (let ((c (newest))) (if (connection? c) (phase c) 'no-connection))))
+      (when parked (coroutine-wake! parked 'go))
+      (test-equal "woken, it takes the rest: the whole body's length"
+                  (list 'satisfied (list (list 200 (number->string wide-size))))
+                  (list (wait-for (lambda () (= 1 (length (responses (client-bytes cl))))))
+                        (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))))
+      (client-close! cl))
+    (let ((cl (open-client! (appended
+                             (b (string-append "POST /pull-port HTTP/1.1\r\nHost: x\r\nContent-Length: "
+                                               (number->string wide-size) "\r\n\r\n"))
+                             (make-bytevector wide-size 120)))))
+      (test-equal "a MiB read whole through a port over the pull"
+                  (list 'satisfied (list (list 200 (number->string wide-size))))
+                  (list (wait-for (lambda () (= 1 (length (responses (client-bytes cl))))))
+                        (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))))
+      (client-close! cl))
+    ;; The client leaves before the body's end: the pull raises
+    ;; &client-closed, and so does the call after it.
+    (set! logged '())
+    (set! leave-state #f)
+    (let ((cl (open-client! (b "POST /pull-leave HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello"))))
+      (wait-for (lambda () (eq? leave-state 'waiting)))
+      (let ((c (newest)))
+        (run-loop-until loop (lambda () #f) 20)
+        (client-close! cl)
+        (test-equal "a pull whose client closes before the body's end: its call raises &client-closed, and the next; nothing answered or logged, the connection closed"
+                    '(satisfied told-twice () closed)
+                    (list (wait-for (lambda () (and (memq leave-state '(told told-twice)) (connection? c)
+                                                    (not (memq c (shell-connections shell))))))
+                          leave-state
+                          (filter (lambda (e) (memq (car e) '(handler-failed read-error))) logged)
+                          (and (connection? c) (phase c))))))
+    (let ((cl (open-client! (b "POST /pull-deadline HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhel"))))
+      (test-equal "a pull inside a deadline the client outlasts: the call raises &deadline-passed, the answer sent before the body's end, closing"
+                  '(satisfied ((200 "passed" "close")))
+                  (list (wait-for (lambda () (eq? (client-end cl) 'eof)))
+                        (map (lambda (r) (list (status r) (body r) (field r "Connection")))
+                             (responses (client-bytes cl)))))
+      (client-close! cl))
+
+    ;; A wait a deadline ended is let go: the pieces that come while the
+    ;; handler then sleeps wake nothing and are logged as no late resume, and
+    ;; its next pull takes them.
+    (set! logged '())
+    (set! leave-state #f)
+    (let ((cl (open-client! (b "POST /pull-late HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhel"))))
+      (wait-for (lambda () (eq? leave-state 'sleeping)))
+      (client-send! cl (b "lo world"))
+      (test-equal "a pull a deadline ended, the rest sent while its handler sleeps: no late resume, and its next pull takes the rest"
+                  '(satisfied ((200 "lo world")) ())
+                  (list (wait-for (lambda () (= 1 (length (responses (client-bytes cl))))))
+                        (map (lambda (r) (list (status r) (body r))) (responses (client-bytes cl)))
+                        (filter (lambda (e) (eq? (car e) 'late-resume)) logged)))
+      (client-close! cl))
+    ;; A pull begun once the shell has closed the connection, its body whole
+    ;; in the core: &client-closed, and again.
+    (set! waker #f)
+    (set! leave-state #f)
+    (let ((cl (open-client! (b "POST /pull-after HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello"))))
+      (wait-for (lambda () (and waker (connection? (newest)))))
+      (connection-close! (newest))
+      (run-loop-until loop (lambda () #f) 5)
+      (when waker (waker #t))
+      (test-equal "a pull begun once the shell has closed the connection raises &client-closed, and again"
+                  '(satisfied (client-closed client-closed))
+                  (list (wait-for (lambda () (pair? leave-state))) leave-state))
       (client-close! cl))
 
     ;; Three requests in one write, the depth counter, and the clock.
