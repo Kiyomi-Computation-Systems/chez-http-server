@@ -5,7 +5,8 @@ moment to pass, or for a DNS lookup. A plain handler cannot wait, because it
 runs on the event loop and would stop every other connection. Instead it
 answers `(awaiting thunk)`. The server runs `thunk` on a coroutine of its
 own, and what `thunk` returns is the answer: a response or a reader. Inside
-it, the calls below wait without blocking anything else.
+it, the calls below wait without blocking anything else, and it can read its
+own body as it arrives.
 
 ```scheme
 ;; GET /wait waits until a POST arrives, then answers with the POST's body
@@ -117,6 +118,67 @@ If the client closes or resets the connection while your handler waits:
 `(http-server testing)` runs one with no socket, on a clock your test
 moves, and your test answers its lookups: see
 [Testing handlers](testing.md).
+
+## Reading the body: `next-body-piece` and `body-input-port`
+
+A handler that waits can read its own body from its thunk, before it
+answers, by pulling it. So code written to read a port can read the body as
+it arrives:
+
+```scheme
+;; echo the body back, read through a port
+(serve
+ (lambda (request)
+   (awaiting
+    (lambda ()
+      (let ((body (get-bytevector-all (body-input-port))))
+        (make-response 200 #f '() (if (eof-object? body) #f body)))))))
+
+;; count it a piece at a time, capped at 10 MiB
+(awaiting
+ (lambda ()
+   (let loop ((n 0))
+     (let ((piece (next-body-piece 10485760)))
+       (if (eof-object? piece)
+           (make-response 200 #f '() (string->utf8 (number->string n)))
+           (loop (+ n (bytevector-length piece))))))))
+```
+
+- `(next-body-piece)` gives the body's next piece, a bytevector of a byte or
+  more that is yours to keep, or the eof object at the end, and again after
+  it. A request with no body gives the eof object at once.
+- `(body-input-port)` is a binary input port over it, so `get-bytevector-all`,
+  `get-bytevector-n` and `get-u8` work. For text, wrap it:
+  `(transcoded-port (body-input-port) (make-transcoder (utf-8-codec)))`.
+  Making the port reads nothing; its first read does.
+- Only the thunk itself can pull, until it answers, and a thunk it answers
+  `awaiting` with in turn. A reader, a producer or a plain handler cannot.
+- The first pull asks for the body: a client that sent
+  `Expect: 100-continue` gets `100 Continue` then. A handler that never
+  pulls never sends it.
+- The server reads only as fast as you take pieces, so it holds one read at
+  most for you.
+- Give a cap to the first call, `(next-body-piece 65536)` or
+  `(body-input-port 65536)`, below `CHEZ_HTTP_MAX_BODY_BYTES`, which caps
+  every body. A later call that names another cap is an error.
+- If the body fails, because it passes a cap, is malformed, or stalls past
+  the body deadline, the call raises `&body-failed` once it has given you
+  the pieces before it, and so does every call after. `(body-failed-reason
+  e)` says why, such as `body-too-large`, and `(body-failed-status e)` is the
+  status the server answers if you let the raise out: 413, 400 or 408.
+  Catch it to answer yourself. Either way the connection closes after the
+  answer.
+- Answer before the body's end, and the server sends your answer at once,
+  then closes the connection.
+- If the client leaves before the body's end, the call raises
+  `&client-closed`, and so does every call after.
+- A call with a piece or the end ready answers at once. One that must wait
+  for the client is a wait like the others: inside a `with-deadline` that
+  has passed it raises `&deadline-passed`, losing nothing, so you can read
+  on outside it.
+- A pulled body runs on your thunk's one coroutine whatever its size, where
+  a reader the thunk answers with runs one for each piece: at 1 MiB, 1 to
+  67.
 
 ## Costs to know
 

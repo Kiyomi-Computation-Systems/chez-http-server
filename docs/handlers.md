@@ -116,7 +116,7 @@ A handler can answer with three other things instead of a response:
 | Answer | When | Page |
 |:--|:--|:--|
 | a reader, from `read-body` or `read-whole-body` | to read the request's body | [Bodies and streaming](bodies.md) |
-| `(awaiting thunk)` | to wait for something before answering | [Waiting](waiting.md) |
+| `(awaiting thunk)` | to wait for something, or read the body as it comes, before answering | [Waiting](waiting.md) |
 | `(switch-protocols headers take-over)` | to take the connection for another protocol | [Upgrades](upgrades.md) |
 
 What the server adds to your response, such as `Date` and `Content-Length`,

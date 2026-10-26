@@ -1,7 +1,8 @@
 # Testing handlers
 
 A test can't hand your handler a request and wait: `await`, `sleep-ms`,
-`with-deadline` and `resolve` only work where the server runs them.
+`with-deadline`, `resolve` and `next-body-piece` only work where the server
+runs them.
 `(http-server testing)` runs your handler as the server does, with no socket
 and a clock your test moves. You send bytes, and read back what a client
 would.
@@ -63,6 +64,9 @@ Each name is in the [API reference](reference.md#testing-http-server-testing).
   unless it holds another request sent behind this one, or this one's body,
   still to be read.
 - A client that has reset reads nothing written after it.
+- A handler that pulls its body, with `next-body-piece` or `body-input-port`,
+  takes each piece as the server reads it, so a body sent in pieces comes
+  to it in pieces ([Waiting](waiting.md#reading-the-body-next-body-piece-and-body-input-port)).
 
 ## Time
 

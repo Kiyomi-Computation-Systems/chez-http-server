@@ -76,6 +76,22 @@ All notable changes to chez-http-server are recorded here. The format follows
   and log or limit by peer (decision 0037). A program that imports all of
   `(http-server)` and defines one of the four names itself no longer loads:
   rename its own, or import it with `except`.
+- **A handler that waits can read its body by waiting.** In its `awaiting`
+  thunk, before it answers, `(next-body-piece)` gives the body's next piece,
+  a bytevector of its own, or the eof object at the end, and
+  `(body-input-port)` is a binary input port over it, so code that reads a
+  port reads the body as it arrives. The first call sends `100 Continue` to
+  a client that waits for it; the server reads only as the pieces are taken,
+  one read ahead at most; a cap of its own goes to the first call. A body
+  that fails while pulled, past a cap, malformed or stalled, raises
+  `&body-failed`, whose `body-failed-reason` and `body-failed-status` say why
+  and what the server answers if the raise is let out; caught, the handler's
+  own answer is sent. Either way, and for an answer before the body's end,
+  the connection closes after it. A pulled body runs on the thunk's one
+  coroutine whatever its size (decision 0036), and pulls under
+  `(http-server testing)`'s host as under the server. A program that imports
+  all of `(http-server)` and defines one of the six new names itself no
+  longer loads: rename its own, or import `(except (http-server) ...)`.
 
 - **Test a handler that waits, with no socket: `(http-server testing)`.**
   `make-test-host` hosts a handler, with settings from an environment
