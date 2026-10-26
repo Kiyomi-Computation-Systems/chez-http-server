@@ -18,7 +18,9 @@ An HTTP 1.1 Server for Chez Scheme built on libuv.
   [[file:docs/configuration.md][docs/configuration.md]]).
 - *Streaming both ways.* A handler reads a request's body as it arrives and
   can stream its response, so a big upload or download is never held in
-  memory whole.
+  memory whole. It hears when its response is done, and how it ended, so it
+  can log it or close the file it streamed from (see
+  [[file:docs/handlers.md][docs/handlers.md]]).
 - *Handlers that wait.* A handler can wait for another request, a time, a
   deadline, a name's lookup or its own body, read a piece at a time or
   through a port, and is told when its client leaves (see

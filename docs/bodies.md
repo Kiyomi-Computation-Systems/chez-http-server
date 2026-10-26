@@ -111,8 +111,20 @@ bytevector, and the eof object when there is no more.
   called. And the server stops calling it early when the client leaves, a
   write times out, or it fails. So don't count on reaching the eof object to
   close what the producer reads. Open a port inside the producer, on its
-  first call, and a `HEAD` never opens it. A port left open is closed when
-  Chez collects it, which can be long after.
+  first call, so a `HEAD` never opens it, and close it from a procedure
+  registered with `request-on-done!`
+  ([Handlers](handlers.md#when-the-response-is-done)). The server calls that
+  once the response is done, however it ended:
+
+  ```scheme
+  (lambda (request)
+    (let ((port #f))
+      (request-on-done! request (lambda (how) (when port (close-port port))))
+      (make-response 200 #f '()
+                     (lambda ()
+                       (unless port (set! port (open-file-input-port "big.bin")))
+                       (get-bytevector-some port)))))
+  ```
 - A reader's response can be streamed too.
 
 ## Streaming with a length
@@ -146,7 +158,9 @@ file, give the length and a producer to `sized-body`:
 - The producer is called just as above: as fast as the client reads, and on
   a coroutine under `awaiting`.
 - Once the length is sent, the server stops calling the producer. It never
-  asks for the eof object, so close a port when you have read its last byte.
+  asks for the eof object, so close a port when you have read its last byte,
+  and from a `request-on-done!` procedure too, for a client that leaves
+  first, as [file-server.sps](../examples/file-server.sps) does.
 - If the producer gives more than the length, the piece that would go past it
   is not sent. If it ends early, the body ends there. Either way the client
   sees the body cut short, and the server logs `body-length-mismatch`, then
