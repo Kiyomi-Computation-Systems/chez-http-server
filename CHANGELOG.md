@@ -77,9 +77,10 @@ All notable changes to chez-http-server are recorded here. The format follows
   and what the server answers if the raise is let out; caught, the handler's
   own answer is sent. Either way, and for an answer before the body's end,
   the connection closes after it. A pulled body runs on the thunk's one
-  coroutine whatever its size (decision 0036). A program that imports all of
-  `(http-server)` and defines one of the six new names itself no longer
-  loads: rename its own, or import `(except (http-server) ...)`.
+  coroutine whatever its size (decision 0036), and pulls under
+  `(http-server testing)`'s host as under the server. A program that imports
+  all of `(http-server)` and defines one of the six new names itself no
+  longer loads: rename its own, or import `(except (http-server) ...)`.
 
 - **Test a handler that waits, with no socket: `(http-server testing)`.**
   `make-test-host` hosts a handler, with settings from an environment
