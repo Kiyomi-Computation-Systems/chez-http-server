@@ -48,6 +48,23 @@ All notable changes to chez-http-server are recorded here. The format follows
   program that imports all of `(http-server)` and defines `request-has-body?`
   itself no longer loads: rename its own, or import
   `(except (http-server) request-has-body?)`.
+- **`(request-on-done! request proc)`: a handler hears when its response is
+  done, and how it ended.** The server calls `proc` once, with `written` when
+  every write of the response completed, `client-closed` when the client
+  closed or reset the connection before that (a failed write included), or
+  `failed` when the server ended it: a `500` or a stream cut short because
+  the code raised, a status of its own in place of the handler's, the write
+  deadline, or a close of its own. Any code that holds the request may
+  register, as often as it likes; the procedures are called in place, newest
+  first, before the next request on a kept-alive connection, or, while the
+  request's code still waits on a coroutine, once it stops. A raise from one
+  is logged `on-done-failed` and changes nothing, and one registered once the
+  response is done is called at once, in the caller. A producer can now close
+  the port it reads when its client leaves mid-stream (docs/bodies.md), and
+  `examples/file-server.sps` does. A request with nothing registered costs
+  nothing more. A program that imports all of `(http-server)` and defines
+  `request-on-done!` itself no longer loads: rename its own, or import
+  `(except (http-server) request-on-done!)`.
 
 ### Fixed
 

@@ -68,6 +68,15 @@
 ;;;   hand-off        the switch's take-over called with the stream, as a
 ;;;                   transport, and a copy of the bytes handed over (THE
 ;;;                   DOOR, below)
+;;;   response-done   each procedure the request's code registered told how
+;;;                   its response ended, in place, in the order the core
+;;;                   hands them, newest first: what each returns is dropped,
+;;;                   and one that raises is logged `on-done-failed`, the rest
+;;;                   still told; a wait in one is refused, as anywhere no
+;;;                   coroutine runs.  While a call into the request's code
+;;;                   runs on a coroutine (A HANDLER THAT WAITS, below), they
+;;;                   are told once the connection's calls have ended, so
+;;;                   nothing they let go is still in use
 ;;; A shell made on credit answers with each handler's answer and `credit`,
 ;;; and a streaming reader's credit reaches the core through
 ;;; connection-body-credit!, which no action asks for.  The server never makes
@@ -476,6 +485,7 @@
             (mutable calls)                   ; its calls on coroutines to make, in order
             (mutable calling?)                ; whether one of them runs
             (mutable notice)                  ; the request's notice of its client's close, or #f
+            (mutable done-later)              ; endings to tell once its calls end, oldest first
             (mutable taker)))                 ; once handed off, its taker's (THE DOOR)
 
   ;; connection-state : Connection -> ConnState — the core's state.
@@ -678,7 +688,7 @@
   ;; option has already failed, which reading will report.  A start that
   ;; raises goes on to shell-adopt!, which closes the handle.
   (define (serve! sh tcp)
-    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f #f #f)))
+    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f #f '() #f)))
       (connection-entry-set! c (make-wheel-entry c))
       (connection-ctx-set! c (make-conn-context
                               (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
@@ -767,13 +777,21 @@
   ;; A raise abandons the dispatch it came from: the depth is 0 again, the
   ;; scheduler's phase `phase`, the one before the dispatch, which a feed
   ;; the raise came out of left 'in-parser (feed!), and what is still queued
-  ;; or held is dropped.
+  ;; or held is dropped.  But not a request's ending: the core has marked
+  ;; the request done and handed over its procedures, so each
+  ;; `response-done` still queued is told from the scheduler's drain.
   (define (abandon-drain! c phase)
-    (connection-depth-set! c 0)
-    (scheduler-feed-end! phase)
-    (connection-front-set! c '())
-    (connection-back-set! c '())
-    (drop-held! c))
+    (let ((endings (filter (lambda (a) (eq? (car a) 'response-done))
+                           (append (connection-front c) (reverse (connection-back c))))))
+      (connection-depth-set! c 0)
+      (scheduler-feed-end! phase)
+      (connection-front-set! c '())
+      (connection-back-set! c '())
+      (drop-held! c)
+      (for-each (lambda (a)
+                  (scheduler-call! (shell-scheduler (connection-shell c))
+                                   (lambda () (call-done! c (cadr a) (caddr a)))))
+                endings)))
 
   ;; run! : Connection Action -> Void
   ;; Record a violation if the action runs anywhere but the outermost drain,
@@ -810,7 +828,41 @@
       ((disarm-deadline) (disarm! c))
       ((hand-off) (hand-off! c (cadr a) (caddr a) (cadddr a)))
       ((client-closed) (notice-close! (request-notice c)))
+      ((response-done) (call-done! c (cadr a) (caddr a)))
       (else (values))))
+
+  ;; call-done! : Connection Symbol (Listof (Symbol -> Any)) -> Void
+  ;; Each procedure told `how` (tell-done!): at once, or, while a call into
+  ;; the request's code runs on a coroutine, once the connection's calls
+  ;; have ended (next-call!), so that nothing a procedure lets go is still in
+  ;; use by code that waits.
+  (define (call-done! c how procs)
+    (if (connection-calling? c)
+        (connection-done-later-set! c (append (connection-done-later c) (list (cons how procs))))
+        (tell-done! (connection-shell c) how procs)))
+
+  ;; tell-done! : Shell Symbol (Listof (Symbol -> Any)) -> Void
+  ;; Each procedure told `how`, in order, in place, on no coroutine, so it
+  ;; cannot wait.  What one raises is logged `on-done-failed` and changes
+  ;; nothing: the rest are still told.  The raise is caught by a handler
+  ;; that jumps out on a one-shot continuation, which costs less than a
+  ;; `guard` inside libuv's callbacks, where the stack is deep.
+  (define (tell-done! sh how procs)
+    (for-each (lambda (p)
+                (call/1cc
+                 (lambda (k)
+                   (with-exception-handler
+                    (lambda (e) (log-quietly! sh 'on-done-failed (list e)) (k #f))
+                    (lambda () (p how))))))
+              procs))
+
+  ;; told-later! : Connection -> Void
+  ;; The endings put off while a call ran (call-done!), told, oldest first.
+  (define (told-later! c)
+    (let ((later (connection-done-later c)))
+      (unless (null? later)
+        (connection-done-later-set! c '())
+        (for-each (lambda (d) (tell-done! (connection-shell c) (car d) (cdr d))) later))))
 
   ;; request-notice : Connection -> Notice
   ;; The notice of the request in flight, which tells its code the client has
@@ -926,7 +978,8 @@
       (cond
        ((or (null? calls) (connection-closing? c))
         (connection-calls-set! c '())
-        (connection-calling?-set! c #f))
+        (connection-calling?-set! c #f)
+        (told-later! c))
        (else
         (let ((call (car calls)) (sh (connection-shell c)))
           (connection-calls-set! c (cdr calls))
@@ -962,7 +1015,10 @@
     (let ((r (conn-body-reader (connection-state c))))
       (when r
         (if (connection-waits? c)
-            (call-waiting! c (lambda () ((body-reader-on-piece r) bv start end) #t)
+            (call-waiting! c (lambda ()
+                               (when (eq? (conn-body-reader (connection-state c)) r)
+                                 ((body-reader-on-piece r) bv start end))
+                               #t)
                            (lambda (v) (and (not (body-reader-whole? r))
                                             (list 'body-credit (- end start)))))
             (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
@@ -1716,8 +1772,11 @@
            (unless (hashtable-contains? live h)
              (log-quietly! sh 'reconciled (list c))
              (disarm! c)
+             (connection-closing?-set! c #t)
              (hashtable-delete! (shell-table sh) h)
              (guard (e (#t (values)))
-               (server-dispatch! sh (list 'connection-closed (hashtable-size (shell-table sh)))))))
+               (server-dispatch! sh (list 'connection-closed (hashtable-size (shell-table sh)))))
+             (guard (e (#t (values)))
+               (dispatch! c '(closed)))))
          handles connections))
       (release-timer! sh))))
