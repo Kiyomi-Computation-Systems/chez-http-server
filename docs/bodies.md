@@ -38,6 +38,9 @@ response:
 - A request with no body gets its end at once, so a handler can answer every
   request with a reader. To answer one only when there is a body, ask
   `(request-has-body? request)`.
+- A handler that waits can pull the body instead, a piece at a time or
+  through a port, and answer when it likes, even before the body's end
+  ([Waiting](waiting.md#reading-the-body-next-body-piece-and-body-input-port)).
 - Answer with a response instead, and the server sends it at once, without
   reading the body, and closes the connection after it.
 - A client can send `Expect: 100-continue` and wait to be asked for a big

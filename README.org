@@ -20,7 +20,8 @@ An HTTP 1.1 Server for Chez Scheme built on libuv.
   can stream its response, so a big upload or download is never held in
   memory whole.
 - *Handlers that wait.* A handler can wait for another request, a time, a
-  deadline or a name's lookup, and is told when its client leaves (see
+  deadline, a name's lookup or its own body, read a piece at a time or
+  through a port, and is told when its client leaves (see
   [[file:docs/waiting.md][docs/waiting.md]]).
 - *Upgrades.* A handler can take an upgrade, a WebSocket's say, and speak the
   new protocol over the connection itself; its close is as gentle as the
