@@ -219,7 +219,7 @@
     ;; --- pages -----------------------------------------------------------
     (test-equal "the home page comes first, the rest in the home page's Read next order"
       '("README.md" "installing.md" "quickstart.md" "examples.md" "handlers.md"
-        "bodies.md" "waiting.md" "upgrades.md" "requests.md" "responses.md"
+        "bodies.md" "waiting.md" "upgrades.md" "testing.md" "requests.md" "responses.md"
         "connections.md" "configuration.md" "deploying.md" "how-it-works.md"
         "performance.md" "reference.md" "building.md")
       (map car pages))

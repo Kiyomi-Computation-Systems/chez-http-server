@@ -27,6 +27,9 @@ An HTTP 1.1 Server for Chez Scheme built on libuv.
 - *Upgrades.* A handler can take an upgrade, a WebSocket's say, and speak the
   new protocol over the connection itself; its close is as gentle as the
   server's own.
+- *Handlers tested without a socket.* ~(http-server testing)~ runs a handler,
+  waits and all, against a scripted client, on a clock the test moves (see
+  [[file:docs/testing.md][docs/testing.md]]).
 - *Graceful shutdown.* Sent SIGTERM or SIGINT (Ctrl-C), it finishes the
   requests in flight, closes the rest after ~CHEZ_HTTP_DRAIN_TIMEOUT~, and
   ~serve~ returns (see [[file:docs/connections.md][docs/connections.md]]).
@@ -106,7 +109,7 @@ make run PROGRAM=examples/file-server.sps ARGS="8000 --directory ."
 ** Documentation
 
 The guides are in [[file:docs/README.md][docs/]]: [[file:docs/installing.md][installing]], a [[file:docs/quickstart.md][quickstart]], [[file:docs/handlers.md][handlers]],
-[[file:docs/bodies.md][bodies and streaming]], [[file:docs/waiting.md][waiting]], [[file:docs/upgrades.md][upgrades]], [[file:docs/requests.md][requests]], [[file:docs/responses.md][responses]],
+[[file:docs/bodies.md][bodies and streaming]], [[file:docs/waiting.md][waiting]], [[file:docs/upgrades.md][upgrades]], [[file:docs/testing.md][testing handlers]], [[file:docs/requests.md][requests]], [[file:docs/responses.md][responses]],
 [[file:docs/connections.md][connections]], [[file:docs/configuration.md][configuration]], [[file:docs/deploying.md][deploying]], [[file:docs/how-it-works.md][how it works]], [[file:docs/performance.md][performance]],
 and the [[file:docs/reference.md][API reference]]. Each release publishes them as a
 website: [[https://kiyomi-computation-systems.github.io/chez-http-server/]].

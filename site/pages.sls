@@ -17,6 +17,7 @@
       ("bodies.md"         . "Bodies and streaming")
       ("waiting.md"        . "Waiting")
       ("upgrades.md"       . "Upgrades")
+      ("testing.md"        . "Testing handlers")
       ("requests.md"       . "Requests")
       ("responses.md"      . "Responses")
       ("connections.md"    . "Connections")
