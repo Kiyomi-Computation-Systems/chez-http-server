@@ -49,6 +49,35 @@
       (test-eq    "request? accepts"   'yes (if (request? req) 'yes 'no))
       (test-eq    "request? rejects a fixnum" 'no (if (request? 42) 'yes 'no)))
 
+    ;; --- request: the procedures told how its response ended ---
+    ;; Each registered procedure records its name and what it was told.
+    (let* ((heard '())
+           (hears (lambda (name) (lambda (how) (set! heard (cons (list name how) heard)))))
+           (fresh (lambda () (make-request 'GET (make-span (b "/") 0 1) 1 1 '() #f))))
+      (let ((req (fresh)))
+        (request-on-done! req (hears 'first))
+        (request-on-done! req (hears 'second))
+        (test-equal "a registration calls nothing while the response is under way" '() heard)
+        (for-each (lambda (p) (p 'written)) (request-done! req 'written))
+        (test-equal "marked done, the request hands back its procedures, newest first"
+                    '((first written) (second written)) heard)
+        (test-equal "and only once: marked done again, it hands back none" '()
+                    (request-done! req 'failed))
+        (set! heard '())
+        (request-on-done! req (hears 'late))
+        (test-equal "one registered once it is done is called at once, with how it ended"
+                    '((late written)) heard))
+      (let* ((req (fresh))
+             (handed (request-done! req 'client-closed)))
+        (set! heard '())
+        (request-on-done! req (hears 'late))
+        (test-equal "a request with none registered hands back none, and one registered after is called at once, with how it ended"
+                    '(() ((late client-closed))) (list handed heard)))
+      (test-eq "request-on-done! refuses what is not a procedure" 'refused
+               (refused (lambda () (request-on-done! (fresh) 'not-a-procedure))))
+      (test-eq "request-done! refuses an ending that is not written, client-closed or failed" 'refused
+               (refused (lambda () (request-done! (fresh) 'finished)))))
+
     ;; --- response ---
     (let ((res (make-response 200 #f (list (cons (b "Server") (b "chez"))) (b "hi"))))
       (test-eqv   "status reads back"  200       (response-status res))
