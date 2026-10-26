@@ -358,12 +358,14 @@
     (putenv "CHEZ_HTTP_HOST" unbound-host)
 
     ;; --- what the facade exports ---
-    (test-equal "the facade exports the handler's names, the verbs it waits with and what they raise, a switch and the transport's verbs, the server's start, and its errors"
-                '(&client-closed &deadline-passed &http-server-config-error &http-server-error &resolve-error
-                  await awaiting client-closed? deadline-passed? http-server-config-error? http-server-error?
+    (test-equal "the facade exports the handler's names, the verbs it waits with and what they raise, its body's pull and port, a switch and the transport's verbs, the server's start, and its errors"
+                '(&body-failed &client-closed &deadline-passed &http-server-config-error &http-server-error &resolve-error
+                  await awaiting body-failed-reason body-failed-status body-failed? body-input-port
+                  client-closed? deadline-passed? http-server-config-error? http-server-error?
                   make-response
-                  make-transport read-body read-whole-body request-has-body? request-header request-header-list
-                  request-header-values request-host request-http-major request-http-minor request-method
+                  make-transport next-body-piece read-body read-whole-body request-has-body? request-header
+                  request-header-list request-header-values request-host request-http-major request-http-minor
+                  request-method
                   request-path request-query request? resolve resolve-error-reason resolve-error?
                   response? serve sized-body sleep-ms switch-protocols transport-abort! transport-close! transport-deadline!
                   transport-on-close! transport-on-drain! transport-read-start! transport-read-stop!

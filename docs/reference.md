@@ -120,6 +120,8 @@ See [Waiting](waiting.md). The waits below work only inside a thunk given to
 | `sleep-ms` | `Nat -> Void` | waits that many milliseconds |
 | `with-deadline` | `Nat (-> (Values Any ...)) -> (Values Any ...)` | runs the thunk; its waits raise `&deadline-passed` after that many milliseconds |
 | `resolve` | `String -> (Listof String)` | the host's addresses, as strings |
+| `next-body-piece` | `[(U Nat #f)] -> (U Bytevector Eof)` | the body's next piece, or the eof object at its end; the first call's cap holds. Only in the `awaiting` thunk, before it answers |
+| `body-input-port` | `[(U Nat #f)] -> BinaryInputPort` | a port whose reads pull the body, capped as given |
 
 Conditions, each an `&error`:
 
@@ -128,9 +130,15 @@ Conditions, each an `&error`:
 | `&deadline-passed` | a `with-deadline` deadline passed during a wait | `deadline-passed? : Any -> Boolean` |
 | `&client-closed` | the client closed or reset the connection | `client-closed? : Any -> Boolean` |
 | `&resolve-error` | a name did not resolve | `resolve-error? : Any -> Boolean` |
+| `&body-failed` | a body being pulled failed: past a cap, malformed, or stalled | `body-failed? : Any -> Boolean` |
 
 `resolve-error-reason : ResolveError -> Symbol` says why a lookup failed:
 `EAI_NONAME` and the resolver's other codes, or `invalid-name`.
+
+`body-failed-reason : BodyFailed -> Symbol` says why a body failed, such as
+`body-too-large`, `body-timeout` or `invalid-chunk-size`, and
+`body-failed-status : BodyFailed -> Nat` is the status the server answers if
+the raise is let out.
 
 ## Upgrades
 

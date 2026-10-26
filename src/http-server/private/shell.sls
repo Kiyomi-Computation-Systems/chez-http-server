@@ -35,9 +35,11 @@
 ;;;                   below)
 ;;;   deliver-body    the piece to the reader the core is handing the body to
 ;;;                   (conn-body-reader), or, if it raises, `handler-failed`,
-;;;                   logged; with no reader, nothing
+;;;                   logged; to the pull, when the body is pulled
+;;;                   (conn-body-pulled?); with neither, nothing
 ;;;   deliver-body-end  the reader's end: its response as `handler-responded`,
-;;;                   or, if it raises, `handler-failed`, logged
+;;;                   or, if it raises, `handler-failed`, logged; the pull's
+;;;   deliver-body-failed  the pull's failure
 ;;;   notify-producer the producer a streamed response is written from
 ;;;                   (conn-producer), called for its next piece, the
 ;;;                   drain's first call once the writes held have gone out
@@ -239,7 +241,17 @@
 ;;; runs on, is closed, so the wait its code is in, or else its next, raises
 ;;; `&client-closed`, once.  A raise of it that the code lets out is no
 ;;; failure: `handler-failed` is dispatched for the core, which answers
-;;; nothing, and is not logged.
+;;; nothing, and is not logged.  The coroutine the handler's thunk runs on,
+;;; and those of the thunks it answers `awaiting` with in turn, are the
+;;; notice's puller, so the code there may pull the body (the waits library's
+;;; `next-body-piece`): the loop's waits are given the shell's puller, which
+;;; dispatches the pull's begin, `(body-pulled cap)`, and its credit,
+;;; `(body-credit n)`, in place, on the coroutine, unless the connection is
+;;; closing.  The core's pieces, end and failure for a pulled body go to the
+;;; notice's pull, in place.  A pull's failure the code lets out is no
+;;; failure either: the core answers it with the failure's status, and it is
+;;; not logged.  A connection's close tells its request's notice, so a pull
+;;; not ended raises `&client-closed`.
 ;;;
 ;;; THE RUN LOOP.  chez-libuv catches whatever a callback raises, and raises
 ;;; it again from uv-run composed with `&uv-callback-error`; a raise out of
@@ -270,9 +282,10 @@
           (libuv)
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
-          (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
+          (only (http-server connection) make-conn-state conn-body-reader conn-body-pulled? conn-producer
+                producer-event)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole?)
-          (only (http-server awaiting) awaiting? awaiting-thunk client-closed?)
+          (only (http-server awaiting) awaiting? awaiting-thunk client-closed? body-failed?)
           (only (http-server limits)
                 limits-read-buffer-size limits-backlog limits-tick-ms limits-deadline-ms)
           (http-server wheel)
@@ -281,7 +294,9 @@
                 scheduler-phase scheduler-feed-begin! scheduler-feed-end! scheduler-waits)
           (only (http-server private waits)
                 make-waits waits-clock! waits-fire! waits-timed waits-resolver!
-                make-notice notice-attach! notice-close! notice-closed?)
+                make-notice notice-attach! notice-close! notice-closed?
+                notice-puller! notice-closing! notice-body-failure
+                waits-puller! pull-piece! pull-end! pull-fail!)
           (only (http-server server) make-server-state server-step server-phase)
           (only (http-server serializer) date-line)
           (only (http-server transport) make-transport)
@@ -370,7 +385,8 @@
          (unless (scheduler-waits s)
            (let ((w (make-waits s log)))
              (loop-clock! loop w)
-             (loop-resolver! loop w)))
+             (loop-resolver! loop w)
+             (waits-puller! w pull-begun! pull-credited!)))
          s))))
 
   ;; loop-clock! : UvLoop Waits -> Void
@@ -393,6 +409,21 @@
                       (uv-timer-start! (vector-ref kept 0) fire ms 0))
                     (lambda () (let ((timer (vector-ref kept 0)))
                                  (when timer (uv-timer-stop! timer)))))))
+
+  ;; pull-begun! : Connection (U Nat #f) -> Boolean
+  ;; The code of the connection's request pulls its body, with `cap`:
+  ;; `(body-pulled cap)`, dispatched in place, unless the connection is
+  ;; closing.
+  (define (pull-begun! c cap)
+    (and (not (connection-closing? c))
+         (begin (dispatch! c (list 'body-pulled cap)) #t)))
+
+  ;; pull-credited! : Connection Nat -> Void
+  ;; The pull has taken `n` more bytes of what it was handed: `(body-credit
+  ;; n)`, dispatched in place, unless the connection is closing.
+  (define (pull-credited! c n)
+    (unless (connection-closing? c)
+      (dispatch! c (list 'body-credit n))))
 
   ;; loop-resolver! : UvLoop Waits -> Void
   ;; Give the loop's waits the loop's resolver: a lookup through
@@ -476,7 +507,8 @@
             (mutable calls)                   ; its calls on coroutines to make, in order
             (mutable calling?)                ; whether one of them runs
             (mutable notice)                  ; the request's notice of its client's close, or #f
-            (mutable taker)))                 ; once handed off, its taker's (THE DOOR)
+            (mutable taker)                   ; once handed off, its taker's (THE DOOR)
+            (mutable puller)))                ; the handler's thunk to be the notice's puller, or #f
 
   ;; connection-state : Connection -> ConnState — the core's state.
   (define (connection-state c) (conn-context-state (connection-ctx c)))
@@ -678,7 +710,7 @@
   ;; option has already failed, which reading will report.  A start that
   ;; raises goes on to shell-adopt!, which closes the handle.
   (define (serve! sh tcp)
-    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f #f #f)))
+    (let ((c (make-connection sh tcp #f #f '() '() 0 '() #f #f #f #f #f #f '() #f 0 '() #f #f '() #f #f #f #f)))
       (connection-entry-set! c (make-wheel-entry c))
       (connection-ctx-set! c (make-conn-context
                               (make-conn-state 'idle 'idle #f 0 0 #f #f (shell-limits sh))
@@ -793,8 +825,11 @@
        (connection-notice-set! c #f)
        (parser-resume! (connection-parser c)))
       ((call-handler) (call-handler! c (cadr a)))
-      ((deliver-body) (deliver-body! c (cadr a) (caddr a) (cadddr a)))
+      ((deliver-body) (deliver-body! c (cdr a)))
       ((deliver-body-end) (deliver-body-end! c))
+      ((deliver-body-failed)
+       (when (conn-body-pulled? (connection-state c))
+         (pull-fail! (request-notice c) (cadr a) (caddr a))))
       ((notify-producer)
        (unless (connection-producer-called? c)
          (connection-producer-called?-set! c #t)
@@ -819,7 +854,7 @@
   ;; the next request, so an idle connection holds none.
   (define (request-notice c)
     (or (connection-notice c)
-        (let ((n (make-notice)))
+        (let ((n (make-notice c)))
           (connection-notice-set! c n)
           n)))
 
@@ -902,6 +937,7 @@
     (cond
      ((awaiting? a)
       (connection-waits?-set! c #t)
+      (when handler? (connection-puller-set! c (awaiting-thunk a)))
       (call-waiting! c (awaiting-thunk a) (lambda (v) (answered c v handler?)))
       #f)
      ((and handler? (or (connection-waits? c) (shell-on-credit? (connection-shell c))))
@@ -910,10 +946,11 @@
 
   ;; call-waiting! : Connection (-> Any) (Any -> (U Event #f)) -> Void
   ;; Call `thunk` on a coroutine, after the connection's calls before it, the
-  ;; request's notice given to it: once it has ended, the event `->event`
+  ;; request's notice given to it, and naming it the notice's puller if it is
+  ;; the handler's thunk (answered): once it has ended, the event `->event`
   ;; makes of its value is dispatched, from the drain, or `handler-failed`,
   ;; logged, if either raised, unless what it raised is the close the notice
-  ;; told; then the next call starts.  A connection closing makes no more.  A
+  ;; told, or the pull's failure; then the next call starts.  A connection closing makes no more.  A
   ;; raise out of the dispatch goes to the turn's guard (shell-turn!), having
   ;; closed the connection, whose calls then matter no more.
   (define (call-waiting! c thunk ->event)
@@ -928,21 +965,24 @@
         (connection-calls-set! c '())
         (connection-calling?-set! c #f))
        (else
-        (let ((call (car calls)) (sh (connection-shell c)))
+        (let ((call (car calls)) (sh (connection-shell c)) (n (request-notice c)))
           (connection-calls-set! c (cdr calls))
           (connection-calling?-set! c #t)
-          (notice-attach!
-           (scheduler-spawn! (shell-scheduler sh) (car call)
-             (lambda (kind v)
-               (let ((event (guard (e (#t (unless (told-close? c e) (log! sh 'handler-failed (list e)))
-                                          (list 'handler-failed e)))
-                              (if (eq? kind 'raised)
-                                  (raise v)
-                                  ((cdr call) v)))))
-                 (when (and event (not (connection-closing? c)))
-                   (dispatch! c event)))
-               (next-call! c)))
-           (request-notice c)))))))
+          (let ((co (scheduler-spawn! (shell-scheduler sh) (car call)
+                      (lambda (kind v)
+                        (let ((event (guard (e (#t (unless (or (told-close? c e) (told-failure? c e))
+                                                     (log! sh 'handler-failed (list e)))
+                                                   (list 'handler-failed e)))
+                                       (if (eq? kind 'raised)
+                                           (raise v)
+                                           ((cdr call) v)))))
+                          (when (and event (not (connection-closing? c)))
+                            (dispatch! c event)))
+                        (next-call! c)))))
+            (notice-attach! co n)
+            (when (eq? (car call) (connection-puller c))
+              (connection-puller-set! c #f)
+              (notice-puller! n co))))))))
 
   ;; told-close? : Connection Any -> Boolean
   ;; `e` is the raise of the close the request's notice told.
@@ -950,16 +990,26 @@
     (and (client-closed? e)
          (let ((n (connection-notice c))) (and n (notice-closed? n)))))
 
-  ;; deliver-body! : Connection Bytevector Nat Nat -> Void
-  ;; Hand bv[start, end) to the reader the core is handing the body to; if
-  ;; the reader raises, `handler-failed`, logged.  With no reader, nothing:
-  ;; the core let it go after this piece was asked for.  The reader of a
-  ;; handler that waits takes it on a coroutine (call-waiting!), and a
+  ;; told-failure? : Connection Any -> Boolean
+  ;; `e` is the raise of the request's pulled body's failure.
+  (define (told-failure? c e)
+    (and (body-failed? e)
+         (let ((n (connection-notice c))) (and n (eq? e (notice-body-failure n))))))
+
+  ;; deliver-body! : Connection (List Bytevector Nat Nat) -> Void
+  ;; Hand `span`, bv[start, end), to the reader the core is handing the body
+  ;; to; if the reader raises, `handler-failed`, logged.  With no reader,
+  ;; nothing: the core let it go after this piece was asked for.  The reader
+  ;; of a handler that waits takes it on a coroutine (call-waiting!), and a
   ;; streaming one is then credited with it, `(body-credit n)`.  What the
   ;; piece answers is not read, so it may answer no values, as one that
-  ;; ends with a sleep does: the coroutine answers #t after it.
-  (define (deliver-body! c bv start end)
-    (let ((r (conn-body-reader (connection-state c))))
+  ;; ends with a sleep does: the coroutine answers #t after it.  A pulled
+  ;; body's piece goes to the request's pull, in place.
+  (define (deliver-body! c span)
+    (let ((r (conn-body-reader (connection-state c)))
+          (bv (car span)) (start (cadr span)) (end (caddr span)))
+      (if (conn-body-pulled? (connection-state c))
+          (pull-piece! (request-notice c) span)
       (when r
         (if (connection-waits? c)
             (call-waiting! c (lambda () ((body-reader-on-piece r) bv start end) #t)
@@ -967,21 +1017,23 @@
                                             (list 'body-credit (- end start)))))
             (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
                           (dispatch! c (list 'handler-failed e))))
-              ((body-reader-on-piece r) bv start end))))))
+              ((body-reader-on-piece r) bv start end)))))))
 
   ;; deliver-body-end! : Connection -> Void
   ;; The reader's end: its response as `handler-responded` (answered), or,
   ;; if it raises, `handler-failed`, logged; on a coroutine for a handler
-  ;; that waits (call-waiting!).
+  ;; that waits (call-waiting!).  A pulled body's end goes to the pull.
   (define (deliver-body-end! c)
     (let ((r (conn-body-reader (connection-state c))))
+      (if (conn-body-pulled? (connection-state c))
+          (pull-end! (request-notice c))
       (when r
         (if (connection-waits? c)
             (call-waiting! c (body-reader-on-end r) (lambda (v) (answered c v #f)))
             (let ((event (guard (e (#t (log! (connection-shell c) 'handler-failed (list e))
                                        (list 'handler-failed e)))
                            (answered c ((body-reader-on-end r)) #f))))
-              (when event (dispatch! c event)))))))
+              (when event (dispatch! c event))))))))
 
   ;; notify-producer! : Connection -> Void
   ;; The producer the core writes a response's body from, called for its
@@ -1570,7 +1622,8 @@
   ;; close passes the same callback, and what it does follows the handle: a
   ;; connection's handle stops reading at once and leaves the wheel, and its
   ;; close takes the connection out of the table and reports `closed`, whoever
-  ;; asked for it.
+  ;; asked for it.  Its request's notice is told the connection is closing, so
+  ;; a pull not ended raises.
   (define (handle-close! sh h)
     (let ((c (hashtable-ref (shell-table sh) h #f)))
       (when c
@@ -1578,7 +1631,8 @@
           (door-trace! c '(stream-close)))
         (connection-closing?-set! c #t)
         (connection-reading?-set! c #f)
-        (disarm! c)))
+        (disarm! c)
+        (let ((n (connection-notice c))) (when n (notice-closing! n)))))
     (uv-close! h (lambda () (handle-closed! sh h))))
 
   ;; handle-closed! : Shell UvHandle -> Void — a handle's close has completed:
