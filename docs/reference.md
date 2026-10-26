@@ -148,7 +148,7 @@ Conditions, each an `&error`:
 | `&deadline-passed` | a `with-deadline` deadline passed during a wait | `deadline-passed? : Any -> Boolean` |
 | `&client-closed` | the client closed or reset the connection | `client-closed? : Any -> Boolean` |
 | `&resolve-error` | a name did not resolve | `resolve-error? : Any -> Boolean` |
-| `&body-failed` | a body being pulled failed: past a cap, malformed, or stalled | `body-failed? : Any -> Boolean` |
+| `&body-failed` | a body being pulled failed: past a cap, malformed, stalled, or with trailers past a header limit | `body-failed? : Any -> Boolean` |
 
 `resolve-error-reason : ResolveError -> Symbol` says why a lookup failed:
 `EAI_NONAME` and the resolver's other codes, or `invalid-name`.

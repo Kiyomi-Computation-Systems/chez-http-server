@@ -24,8 +24,10 @@
 ;;; joined in the outcome: how the body divides into pieces is the reads'.
 ;;;
 ;;; Oracles: the inputs' own bytes (a 10-byte body; a chunked one of 3 and 2
-;;; bytes); RFC 9110 §10.1.1 and §15.2.1 for the 100; the statuses 400, 408,
-;;; 413 and 500 (RFC 9110 §15.5.1, §15.5.9, §15.5.14, §15.6.1); the body
+;;; bytes; a trailer value of 20 bytes against a limit of 16; chunk
+;;; extensions of 16,385 bytes against their fixed 16 KiB); RFC 9110 §10.1.1
+;;; and §15.2.1 for the 100; the statuses 400, 408, 413 and 500 (RFC 9110
+;;; §15.5.1, §15.5.9, §15.5.14, §15.6.1) and 431 (RFC 6585 §5); the body
 ;;; deadline's 60 s default; the staged close (RFC 9112 §9.6).
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server response) (http-server limits) (http-server body)
@@ -59,12 +61,21 @@
 ;; fresh handler from `make`, which also gives a probe of what that handler
 ;; saw, for `view`.
 (define (every-size input limits make view)
-  (let loop ((size 1) (seen '()))
-    (if (> size (bytevector-length input))
+  (at-sizes (let loop ((n (bytevector-length input)) (sizes '()))
+              (if (zero? n) sizes (loop (- n 1) (cons n sizes))))
+            input limits make view))
+
+;; at-sizes : (Listof Nat) Bytevector Limits (-> (values (Request -> Any) Probe))
+;;            (FakeShell Probe -> Datum) -> (Listof Datum)
+;; The same over the delivery sizes `sizes` only, for an input too long to
+;; run at every size.
+(define (at-sizes sizes input limits make view)
+  (let loop ((sizes sizes) (seen '()))
+    (if (null? sizes)
         (reverse seen)
         (let-values (((handler probe) (make)))
-          (let ((o (view (run input size limits handler) probe)))
-            (loop (+ size 1) (if (member o seen) seen (cons o seen))))))))
+          (let ((o (view (run input (car sizes) limits handler) probe)))
+            (loop (cdr sizes) (if (member o seen) seen (cons o seen))))))))
 
 ;; seen-by : (FakeShell -> Datum) -> (FakeShell Probe -> Datum)
 (define (seen-by view) (lambda (sh probe) (view sh)))
@@ -181,6 +192,16 @@
 (define post-then-get (b (string-append post-a get-b)))
 (define chunked-then-get (b (string-append chunked-a get-b)))
 (define malformed (b (string-append chunked-head "3\r\nabc\r\nzz\r\n")))
+
+;; A chunked body of 3 bytes whose trailer's value is 20 bytes, past
+;; `values-capped`'s 16; and one whose second chunk's extension name is
+;; 16,385 bytes, past the 16 KiB a body's extensions may come to.  Each with
+;; a GET behind it.
+(define trailed
+  (b (string-append chunked-head "3\r\nabc\r\n0\r\nX-T: " (make-string 20 #\v) "\r\n\r\n" get-b)))
+(define values-capped (limits-with default-limits '((max-header-value-bytes . 16))))
+(define extended
+  (b (string-append chunked-head "3\r\nabc\r\n2;" (make-string 16385 #\e) "\r\nde\r\n0\r\n\r\n" get-b)))
 
 (define (capped n) (limits-with default-limits (list (cons 'max-body-bytes n))))
 
@@ -355,6 +376,29 @@
                     lingering parser-error) #t))
                 (every-size malformed default-limits (lambda () (failing #f #t))
                             (seen-by (lambda (sh) (list (outcome sh) (closes? sh))))))
+
+    ;; --- a trailer or the extensions past a limit ------------------------------------
+    ;; Refused as a head's field is, and told to the pull as a cap passed is,
+    ;; with the reason's status: met as it reads, or met in the head's feed
+    ;; and kept for it.
+    (test-equal "a trailer past a header limit, pulled, the raise let out, every delivery size: the body before it, then the failure, 431, then the staged close"
+                '((((call-handler (POST "/a")) (body "abc") (failed header-value-too-large 431) (write 431))
+                   lingering header-value-too-large))
+                (every-size trailed values-capped (lambda () (failing #f #f)) (seen-by outcome)))
+    (test-equal "what it took and raised, every delivery size: abc, then header-value-too-large 431, twice"
+                '((("abc" (header-value-too-large 431) (body-failed header-value-too-large 431))))
+                (every-size trailed values-capped (lambda () (failing #f #f)) probed))
+    (test-equal "the raise caught, every delivery size: the handler's answer, closing"
+                '(((((call-handler (POST "/a")) (body "abc") (failed header-value-too-large 431) (write 200))
+                    lingering header-value-too-large) #t))
+                (every-size trailed values-capped (lambda () (failing #f #t))
+                            (seen-by (lambda (sh) (list (outcome sh) (closes? sh))))))
+    (test-equal "chunk extensions past 16 KiB, pulled, the raise let out, a byte, 2, 3 and 4,096 at a time and whole: abc, then the failure, 413, twice, then the staged close"
+                '(((((call-handler (POST "/a")) (body "abc") (failed chunk-extensions-too-large 413) (write 413))
+                    lingering chunk-extensions-too-large)
+                   (("abc" (chunk-extensions-too-large 413) (body-failed chunk-extensions-too-large 413)))))
+                (at-sizes (list 1 2 3 4096 (bytevector-length extended)) extended default-limits
+                          (lambda () (failing #f #f)) (lambda (sh probe) (list (outcome sh) (probe)))))
 
     ;; --- the body deadline -----------------------------------------------------------
     ;; The client stalls with the body unfinished: past the body deadline the

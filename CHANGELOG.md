@@ -6,6 +6,14 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`docs/waiting.md` names 431 among a pulled body's failures.** A chunked
+  body whose trailers pass one of the four header limits fails the pull too,
+  for the head's reason, such as `header-value-too-large`, and is answered
+  431 if the raise is let out. The page listed 413, 400 and 408 only.
+  `docs/reference.md`'s `&body-failed` row names the trailers too.
+
 ## [0.9.0] - 2026-10-26
 
 The tenth release. A handler sees more of its request and of its connection:

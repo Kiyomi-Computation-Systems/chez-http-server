@@ -161,11 +161,13 @@ it arrives:
 - Give a cap to the first call, `(next-body-piece 65536)` or
   `(body-input-port 65536)`, below `CHEZ_HTTP_MAX_BODY_BYTES`, which caps
   every body. A later call that names another cap is an error.
-- If the body fails, because it passes a cap, is malformed, or stalls past
-  the body deadline, the call raises `&body-failed` once it has given you
-  the pieces before it, and so does every call after. `(body-failed-reason
-  e)` says why, such as `body-too-large`, and `(body-failed-status e)` is the
-  status the server answers if you let the raise out: 413, 400 or 408.
+- If the body fails, because it passes a cap, is malformed, stalls past the
+  body deadline, or has trailers past a header limit, the call raises
+  `&body-failed` once it has given you the pieces before it, and so does
+  every call after. `(body-failed-reason e)` says why, such as
+  `body-too-large`, and `(body-failed-status e)` is the status the server
+  answers if you let the raise out: 413, 400, 408 or 431
+  ([Responses](responses.md#what-the-server-answers-by-itself)).
   Catch it to answer yourself. Either way the connection closes after the
   answer.
 - Answer before the body's end, and the server sends your answer at once,

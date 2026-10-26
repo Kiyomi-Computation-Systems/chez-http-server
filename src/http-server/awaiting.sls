@@ -17,8 +17,9 @@
 ;;; has closed or reset its connection, the wait its code is in, or else the
 ;;; next one, raises `&client-closed`, once.  A body the handler pulls
 ;;; (`next-body-piece`, the private waits library's) that fails, past a cap,
-;;; malformed or stalled past its deadline, raises `&body-failed`, which names
-;;; why and the status the server answers if the raise is let out.
+;;; malformed, stalled past its deadline, or with trailers past a header
+;;; limit, raises `&body-failed`, which names why and the status the server
+;;; answers if the raise is let out.
 ;;;
 ;;; PURE: imports only (rnrs).
 (library (http-server awaiting)
