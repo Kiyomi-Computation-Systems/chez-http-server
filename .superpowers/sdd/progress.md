@@ -639,3 +639,29 @@ NEXT: this PR's merge, when the owner asks. It collides with 229's PR (`feat/con
 - if this lands first, 229's fake-shell edits go to `src/http-server/private/fake-shell.sls`.
 
 #227's `feat/body-pull*` also edits the fake shell. Then circuit moves its tests onto `(http-server testing)`, there.
+
+MERGED to main on 2026-10-25, on the owner's "do closing ritual": **#239, `(http-server testing)`** (the entry above), closing #230.
+- **The merge:** 457eacb squashed as 93d87a1 (tree 6523d35, the tested head's; parent 1051ac0), with `--match-head-commit` on the full SHA. There was no `--delete-branch`, since the shared checkout holds `main`. The squash's body is the move's paragraph, then the library commit's.
+- **CI.** The head's run, 40251569713 (457eacb), passed both jobs:
+  - `ALL SUITES PASSED`, fifty-six suites, 2,377 expected passes, the local count;
+  - the amended import-audit line;
+  - `check-akku-lock`, both NOTICE lines repeated, `srfi-links` and `submodules-follow`;
+  - the site job's eighteen pages, `testing.md` the new one.
+
+  The PR read MERGEABLE/CLEAN, on 1051ac0, before the merge. Main's run on 93d87a1, 40252009170, was in progress at this reflect.
+- **Branches:** `feat/testing-library` was deleted on origin and locally, and so was the worktree's own `worktree-issue-230-testing-library`, which held the pre-rebase WIP commit 1b546dc, its tree carried into the branch. This worktree is detached at 93d87a1. The shared checkout's `main`, at bbb5d8a, is its own session's to fast-forward, so it was not touched from here.
+- **Reflection.**
+  1. **A check and the act it guards go in sequence, never in one batch.** The push went out in the same call as the fetch that would have shown #224 and #225 landing, so it went up on a stale base. A lease replaced it before the PR opened, and nothing read it.
+  2. **With sessions in parallel, a decision number is free only when no pushed branch holds it,** not only main and the open PRs. 0036 was on #227's branches before their PR opened; the 229 session said so, and this record took 0038.
+  3. **A move made by a script survives a moving main.** It reran on three bases in one afternoon. Each run was checked by diff against that base's file, two name lines, and #225's new exports came along untouched. Only the hand edits beside it conflicted, in one line of the record's constructor.
+  4. **A log built from another shell's traces drifts as that shell gains lines.** `on-done-failed` came with #226 the same afternoon and was caught only by reading #226's diff before the push. The contract lane that decision 0038 describes would hold it.
+- **Open:**
+  - #238, connection addresses (229's), rebases onto 93d87a1. Its fake-shell edits go to `src/http-server/private/fake-shell.sls`, and its addresses become `make-fake-connection`'s seventh argument, after the scheduler. The 229 session was told.
+  - #234–#237, #227's body pull, which also edit the fake shell.
+
+NEXT: circuit, there, moves its tests onto `(http-server testing)` once it pins a server with it: 93d87a1, or the next release, whose `[Unreleased]` holds it. Carried from #224–#226's reflect:
+- #227's stack and #238 land on this main;
+- circuit's moves to `request-on-done!`, `sized-body`, `request-has-body?`, `request-header-list` and the version accessors;
+- the Akku listing's install check, and installing.md's "needs a release" line;
+- chez-websocket's pin to v0.8.0;
+- the owner's read-token secret, secret scanning, and the siblings' vulnerability reporting.
