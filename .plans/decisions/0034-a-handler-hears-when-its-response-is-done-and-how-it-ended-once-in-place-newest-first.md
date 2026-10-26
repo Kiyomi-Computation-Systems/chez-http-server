@@ -107,8 +107,9 @@ Read from source by a research pass on 2026-10-25 (the shared notes hold the cit
   done, so a lingering connection keeps none.
 - A connection the run loop's reconciliation drops, whose handle the loop no longer has,
   reaches no step of the core and calls nothing: it is a bug's path, logged `reconciled`.
-- A sized body's length mismatch, landing beside this, is the server ending the request
-  short: it marks the ending `failed`.
+- A sized body's length mismatch (#221/#222, landed first) is the producer ending the
+  request short: it marks the ending `failed`, or `client-closed` for a short end once the
+  client has closed, which that slice does not log either, as the client's doing.
 - Weighed and not taken: a field on the response, as the issue says; calling on a
   coroutine, which could wait but would let the next request's handler run first, about
   509 B a procedure; a raise closing the connection, as Undertow's callers do; a late
