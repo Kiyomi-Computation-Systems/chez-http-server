@@ -5,7 +5,7 @@
 ;;; Every row is driven from a SYNTHETIC state by one synthetic event, with no
 ;;; parser, so a mutation that breaks one row turns that row red and no other.
 ;;;
-;;; Closed sets: ten states, fifteen events, seventeen actions and five
+;;; Closed sets: ten states, sixteen events, eighteen actions and five
 ;;; deadline kinds, each lasting one of the limits (idle 75 s; header, body
 ;;; and write 60 s; linger 30 s).  The rows emit every action and arm every
 ;;; kind; each deadline a row leaves armed has a tick row, and the state
@@ -19,8 +19,9 @@
 ;;;               at each deadline, the writes and bytes outstanding.
 ;;;   U W1-W7     upgrades (RFC 9110 §7.8): served then closed, or a switch's
 ;;;               101 written and the stream handed over.
-;;;   B C E F S   a body read by a reader (credit, `Expect: 100-continue`,
-;;;               RFC 9110 §10.1.1, trailers and extensions held to limits);
+;;;   B C Q E F S a body read by a reader (credit, `Expect: 100-continue`,
+;;;               RFC 9110 §10.1.1, trailers and extensions held to limits), or
+;;;               pulled by the handler that waits;
 ;;;               a streamed response (chunked, RFC 9112 §7.1; close-delimited,
 ;;;               §6.3), paced by the write water marks.
 ;;;   G K N       what the parser reads and hands no span of, or cuts off at
@@ -32,7 +33,7 @@
 (import (rnrs) (srfi :64) (testing)
         (http-server connection) (http-server request) (http-server response)
         (http-server limits) (http-server body) (http-server switch) (fake-shell)
-        (only (http-server awaiting) make-client-closed)
+        (only (http-server awaiting) make-client-closed make-body-failed)
         (only (httparse decisions) F-UPGRADE F-CONNECTION-UPGRADE F-CONNECTION-KEEP-ALIVE
               F-CHUNKED F-CONTENT-LENGTH)
         (only (chezscheme) display-condition))
@@ -1140,6 +1141,173 @@
         (i (asked 10) `(handler-responded ,streamer credit credit) 'refused))))
 
 ;; ---------------------------------------------------------------------------
+;; A body pulled by the handler that waits, fourteen rows.  The last, where
+;; the core ignores the pull, also reads whether the body goes to one.  Its code pulls the
+;; body, `(body-pulled cap)`, before it answers: the core reads it as it reads
+;; a streaming reader's on credit, the pull's cap beside the server's, and
+;; the handler's answer is still to come.  An answer before the body's end is
+;; sent, and closes the connection after it.  A body that fails while pulled,
+;; a cap passed, the parser's error or the body deadline, is told to the pull,
+;; `(deliver-body-failed reason status)`, reading stopped, and the handler
+;; answers: a response, written, or the pull's raise let out, `&body-failed`,
+;; answered with the failure's status; either closes the connection after it.
+
+;; pulled : (U Nat 'chunked) [(U Nat #f) [Limits]] -> ConnState
+;; A POST with no piece met, its handler asked, whose code has pulled the body
+;; with `cap`: in body, reading again.
+(define (pulled framing . more)
+  (let ((s (if (and (pair? more) (pair? (cdr more)))
+               (announced framing (cadr more))
+               (announced framing))))
+    (conn-step s '(parser-result need-input 49 49 #f #f))
+    (conn-step s (list 'body-pulled (if (pair? more) (car more) #f)))
+    s))
+
+;; withheld-pull : (U Nat 'chunked) . Piece -> ConnState
+;; The same, handed `pieces` in one feed, which has returned: waiting for the
+;; pull to take them.
+(define (withheld-pull framing . pieces)
+  (let ((s (met (pulled framing) pieces)))
+    (conn-step s '(parser-result need-input 60 60 #f #f))
+    s))
+
+;; failed-pull : -> ConnState
+;; A chunked POST whose pulled body met the parser's error after a piece: in
+;; handling, the failure told, the handler's answer to come.
+(define (failed-pull)
+  (let ((s (met (pulled 'chunked) '((3 8)))))
+    (conn-step s '(parser-result error 60 60 invalid-chunk-size #f))
+    s))
+
+;; A raise of the pull's, and one of anything else.
+(define pull-raise (make-body-failed 'invalid-chunk-size 400))
+(define other-raise (make-message-condition "the handler failed"))
+
+(define (pull-rows)
+  (list
+   (row 'Q1 "handling, the body still to come, body-pulled -> the pieces kept handed over, then awaiting-credit, reading stopped already; or none kept, body: read-start, arm body; a client that waits for the 100 sent it first"
+        (i (asked 10 '(3 5) '(5 8)) '(body-pulled #f)
+           `(awaiting-credit #f ((deliver-body ,bv 3 5) (deliver-body ,bv 5 8))))
+        (i (asked 10) '(body-pulled #f)
+           '(body #f ((read-start) (arm-deadline body))))
+        (i (expected 10) '(body-pulled #f)
+           `(body #f (,continue-write (read-start) (arm-deadline body)))))
+
+   (row 'Q2 "handling, the message ended in the head's feed, or a request with no body, body-pulled -> handling: the pieces kept, then deliver-body-end"
+        (let ((s (ended 5 '(3 8))))
+          (conn-step s '(parser-result paused 54 54 #f #f))
+          (i s '(body-pulled #f)
+             `(handling #f ((deliver-body ,bv 3 8) (deliver-body-end)))))
+        (i (state 'handling 'request req) '(body-pulled #f)
+           '(handling #f ((deliver-body-end)))))
+
+   (row 'Q3 "body, a pulled body: on-body-data hands the piece over; the feed returning with it untaken -> awaiting-credit: read-stop, disarm"
+        (i (pulled 10) `(parser-event on-body-data ,bv 3 8)
+           `(body #f ((reply-parser continue) (deliver-body ,bv 3 8) (arm-deadline body))))
+        (i (met (pulled 10) '((3 8))) '(parser-result need-input 60 60 #f #f)
+           '(awaiting-credit #f ((read-stop) (disarm-deadline)))))
+
+   (row 'Q4 "awaiting-credit, a pulled body, body-credit for all it was handed -> body: read-start, arm body"
+        (i (withheld-pull 10 '(3 5) '(5 8)) '(body-credit 5)
+           '(body #f ((read-start) (arm-deadline body)))))
+
+   (row 'Q5 "body, on-message-complete, a pulled body -> handling: pause, disarm, deliver-body-end; then the handler's answer, written, the connection kept"
+        (i (pulled 10) '(parser-event on-message-complete 59)
+           '(handling #f ((reply-parser pause) (disarm-deadline) (deliver-body-end))))
+        (let ((s (pulled 10)))
+          (conn-step s '(parser-event on-message-complete 59))
+          (i s `(handler-responded ,resp credit)
+             `(responding #f (,(written "HTTP/1.1 200 OK\r\n" 'date "Content-Length: 6\r\n\r\n" "row H7")
+                              (arm-deadline write))))))
+
+   ;; Reading the body or waiting for the pull to take it, an answer comes:
+   ;; sent at once, the body unread; a reader is no answer once the body is
+   ;; pulled, refused as any answer that is not a response.
+   (row 'Q6 "body or awaiting-credit, a pulled body, handler-responded before its end -> responding, close-after unread-body; a reader refused, 500"
+        (i (pulled 10) `(handler-responded ,resp credit)
+           `(responding unread-body (,answered-closing (read-stop) (arm-deadline write))))
+        (i (withheld-pull 10 '(3 8)) `(handler-responded ,resp credit)
+           `(responding unread-body (,answered-closing (arm-deadline write))))
+        (i (pulled 10) `(handler-responded ,streamer credit)
+           `(responding invalid-response ((log invalid-response not-a-response)
+                                          ,(status-write 500 "Internal Server Error")
+                                          (read-stop) (arm-deadline write)))))
+
+   ;; The pull's cap, passed before it reads: the declared length, so no
+   ;; piece is handed over and no 100 sent; or the pieces met before it,
+   ;; handed over up to the cap, bv[3, 7), the 100 first, as had the body
+   ;; come after the pull.
+   (row 'Q7 "handling, body-pulled with a cap the body passes -> handling, close-after body-too-large: a declared length's, deliver-body-failed alone, no 100; met, the pieces up to the cap, then deliver-body-failed"
+        (i (asked 10) '(body-pulled 5)
+           '(handling body-too-large ((deliver-body-failed body-too-large 413))))
+        (i (expected 10) '(body-pulled 5)
+           '(handling body-too-large ((deliver-body-failed body-too-large 413))))
+        (i (asked 'chunked '(3 8)) '(body-pulled 4)
+           `(handling body-too-large ((deliver-body ,bv 3 7) (deliver-body-failed body-too-large 413))))
+        (i (expected 'chunked '(3 8)) '(body-pulled 4)
+           `(handling body-too-large (,continue-write (deliver-body ,bv 3 7)
+                                      (deliver-body-failed body-too-large 413)))))
+
+   ;; The piece up to the cap, bv[3, 7), is handed over first.
+   (row 'Q8 "body, a pulled body past its cap or the server's -> body: fail body-too-large, the piece up to the cap handed over; the parser's error then -> handling: read-stop, disarm, deliver-body-failed"
+        (i (pulled 'chunked 4) `(parser-event on-body-data ,bv 3 8)
+           `(body #f ((reply-parser (fail body-too-large)) (deliver-body ,bv 3 7))))
+        (i (pulled 'chunked #f (capped 4)) `(parser-event on-body-data ,bv 3 8)
+           `(body #f ((reply-parser (fail body-too-large)) (deliver-body ,bv 3 7))))
+        (let ((s (pulled 'chunked 4)))
+          (conn-step s `(parser-event on-body-data ,bv 3 8))
+          (i s '(parser-result error 60 60 body-too-large #f)
+             '(handling body-too-large ((read-stop) (disarm-deadline)
+                                        (deliver-body-failed body-too-large 413))))))
+
+   (row 'Q9 "body, a pulled body, the parser's error -> handling, close-after parser-error: read-stop, disarm, deliver-body-failed with the error's status"
+        (i (met (pulled 'chunked) '((3 8))) '(parser-result error 60 60 invalid-chunk-size #f)
+           '(handling parser-error ((read-stop) (disarm-deadline)
+                                    (deliver-body-failed invalid-chunk-size 400)))))
+
+   (row 'Q10 "body, a pulled body, past the body deadline -> handling, close-after body-timeout: read-stop, deliver-body-failed"
+        (i (pulled 10) '(tick 0)
+           '(handling body-timeout ((read-stop) (deliver-body-failed body-timeout 408)))))
+
+   ;; What the head's feed met in the body waits for the pull, as for a
+   ;; reader: the pieces before it, then the failure.
+   (row 'Q11 "handling, an error kept, body-pulled -> handling, close-after parser-error: the pieces kept, then deliver-body-failed"
+        (i (erred 'chunked '(3 8)) '(body-pulled #f)
+           `(handling parser-error ((deliver-body ,bv 3 8) (deliver-body-failed invalid-chunk-size 400)))))
+
+   (row 'Q12 "handling, the body failed while pulled: the pull's raise let out -> responding, the failure's status; another raise -> 500"
+        (i (failed-pull) `(handler-failed ,pull-raise)
+           `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write))))
+        (let ((s (pulled 10)))
+          (conn-step s '(tick 0))
+          (i s `(handler-failed ,(make-body-failed 'body-timeout 408))
+             `(responding body-timeout (,(status-write 408 "Request Timeout") (arm-deadline write)))))
+        (i (failed-pull) `(handler-failed ,other-raise)
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)))))
+
+   (row 'Q13 "handling, the body failed while pulled, handler-responded with a response -> responding, close-after the failure's"
+        (i (failed-pull) `(handler-responded ,resp credit)
+           `(responding parser-error (,answered-closing (arm-deadline write)))))))
+
+;; pulled-after : ConnState Event -> (List Phase CloseAfter (Listof Datum) Boolean)
+;; One step's outcome, as asked-by shows it, and whether the body then goes
+;; to a pull: what a body-pulled the core ignores would change.
+(define (pulled-after s ev)
+  (let ((o (asked-by s ev)))
+    (append o (list (conn-body-pulled? s)))))
+
+;; The pull is the handler's, asked once: elsewhere it changes nothing, the
+;; body going where it went.
+(define (ignored-pull-rows)
+  (list
+   (row 'Q14 "body-pulled with no handler asked, a reader reading, or a response under way -> the same: nothing, and no pull"
+        (i (announced 10) '(body-pulled #f) '(body #f () #f))
+        (i (reading 10 streamer) '(body-pulled #f) '(body #f () #f))
+        (let ((s (asked 10)))
+          (conn-step s `(handler-responded ,resp))
+          (i s '(body-pulled #f) '(responding unread-body () #f))))))
+
+;; ---------------------------------------------------------------------------
 ;; A streamed response, nineteen rows.  A response whose body is a producer
 ;; is written as its head, then a piece at a time: `notify-producer` asks the
 ;; shell to call the producer, whose answer comes back as `handler-body-chunk`
@@ -2200,7 +2368,7 @@
         '(shutdown-completed) '(closed) '(tick 0) '(parser-event on-message-begin 0)
         '(parser-result need-input 4 4 #f #f) `(handler-responded ,resp)
         `(handler-body-chunk ,bv 0 4) '(handler-body-end) '(handler-failed boom)
-        '(body-credit 1) '(shutdown-requested)))
+        '(body-credit 1) '(body-pulled #f) '(shutdown-requested)))
 
 ;; verdict : (-> Any) -> (U 'accepted 'refused)
 ;; 'refused if the thunk raises an assertion violation; any other raise
@@ -2216,14 +2384,14 @@
                 '(idle head body awaiting-credit handling responding lingering handed-off
                   closing closed)
                 conn-states)
-    (test-equal "fifteen events"
+    (test-equal "sixteen events"
                 '(bytes-arrived eof read-error write-completed shutdown-completed closed
                   tick parser-event parser-result handler-responded handler-body-chunk
-                  handler-body-end handler-failed body-credit shutdown-requested)
+                  handler-body-end handler-failed body-credit body-pulled shutdown-requested)
                 conn-events)
-    (test-equal "seventeen actions"
+    (test-equal "eighteen actions"
                 '(reply-parser feed-parser resume-parser write read-stop read-start
-                  call-handler deliver-body deliver-body-end notify-producer
+                  call-handler deliver-body deliver-body-end deliver-body-failed notify-producer
                   arm-deadline disarm-deadline shutdown close log hand-off client-closed)
                 conn-actions)
     (test-equal "five deadline kinds: idle, header, body, write and linger"
@@ -2319,6 +2487,8 @@
            (ticks (count-rows "tick" deadline-rows ticked))
            (bodies (count-rows "body" body-rows asked-by))
            (credits (count-rows "credit" credit-rows credited))
+           (pulls (count-rows "pull" pull-rows asked-by))
+           (ignored-pulls (count-rows "ignored-pull" ignored-pull-rows pulled-after))
            (streams (count-rows "stream" stream-rows produced))
            (expects (count-rows "expect" expect-rows asked-by))
            (continues (count-rows "continue-accounting" continue-accounting-rows accounted))
@@ -2337,6 +2507,8 @@
       (test-eqv "all 3 tick rows have a test" 3 ticks)
       (test-eqv "all 19 body rows have a test" 19 bodies)
       (test-eqv "all 11 credit rows have a test" 11 credits)
+      (test-eqv "all 13 pull rows that pull have a test" 13 pulls)
+      (test-eqv "the ignored pull's row has a test" 1 ignored-pulls)
       (test-eqv "all 19 stream rows have a test" 19 streams)
       (test-eqv "all 7 Expect rows have a test" 7 expects)
       (test-eqv "the 100's accounting row has a test" 1 continues)
@@ -2349,7 +2521,7 @@
     ;; uses all of it.
     (test-equal "no row emits an action outside the vocabulary" '()
                 (filter (lambda (k) (not (memq k conn-actions))) emitted))
-    (test-equal "the rows use all seventeen actions" conn-actions
+    (test-equal "the rows use all eighteen actions" conn-actions
                 (filter (lambda (k) (memq k emitted)) conn-actions))
     (test-equal "the rows arm all five deadline kinds, and no other"
                 (list conn-deadline-kinds '())

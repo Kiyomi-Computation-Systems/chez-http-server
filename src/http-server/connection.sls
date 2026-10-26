@@ -26,12 +26,13 @@
 ;;;            (parser-result status offset next code span)
 ;;;            (handler-responded answer [credit])  (handler-body-chunk bv start end)
 ;;;            (handler-body-end)  (handler-failed raised)  (body-credit n)
-;;;            (shutdown-requested)
+;;;            (body-pulled cap)  (shutdown-requested)
 ;;;
 ;;;   actions  (reply-parser continue|pause)  (feed-parser bv start end)
 ;;;            (resume-parser)  (write segments nbytes)  (read-stop)  (read-start)
 ;;;            (call-handler request)  (deliver-body bv start end)
-;;;            (deliver-body-end)  (notify-producer)  (arm-deadline kind)
+;;;            (deliver-body-end)  (deliver-body-failed reason status)
+;;;            (notify-producer)  (arm-deadline kind)
 ;;;            (disarm-deadline)  (shutdown)  (close reason)
 ;;;            (log what . details)  (hand-off take-over retained ended?)
 ;;;            (client-closed)
@@ -267,6 +268,22 @@
 ;;; once.  A whole reader's pieces are the core's to copy, so it never owes
 ;;; credit.
 ;;;
+;;; A BODY MAY BE PULLED instead, by the code of a handler that waits, before
+;;; it answers: `(body-pulled cap)`, the shell's word that its code asks for
+;;; the body, with a cap of its own or #f.  The core then reads the body as it
+;;; reads a streaming reader's on credit, the 100 and the caps as for a reader,
+;;; handing the pull each piece as `deliver-body` and its end as
+;;; `deliver-body-end`, and the handler's answer is still to come.  An answer
+;;; before the body's end is sent at once, and the connection closes after it,
+;;; as 'unread-body.  A body that fails while pulled, past a cap, malformed or
+;;; stalled past the body deadline, is not answered by the core: reading stops,
+;;; the failure is told to the pull, `(deliver-body-failed reason status)`,
+;;; after the pieces met before it, and the handler answers.  A response it
+;;; gives is written; the pull's raise let out, `&body-failed`, is answered
+;;; with the failure's status; any other raise 500.  Either way the connection
+;;; closes after it, for the failure's reason.  The shells find whether the
+;;; body goes to a pull with `conn-body-pulled?`.
+;;;
 ;;; A HANDLER ANSWERS AFTER THE DRAIN THAT ASKS IT.  The shells call a
 ;;; handler once their drain has ended, the libuv shell after libuv's turn,
 ;;; so its answer is a later event, never one of the drain that emitted
@@ -423,6 +440,7 @@
           make-conn-state conn-state?
           conn-phase conn-deadline conn-close-after conn-outstanding
           conn-outstanding-bytes conn-pending conn-request conn-limits conn-body-reader
+          conn-body-pulled?
           conn-body-buffered conn-producer conn-taker producer-event
           conn-step conn-parser-step conn-headers-complete-step)
   (import (rnrs)
@@ -435,7 +453,7 @@
                 serialize-response serialize-checked-response serialize-piece serialize-end
                 serialize-continue serialize-switch response-fault response-closes? switch-fault)
           (only (http-server switch) switch? switch-take-over)
-          (only (http-server awaiting) client-closed?)
+          (only (http-server awaiting) client-closed? body-failed?)
           (only (http-server headers) field-lists?)
           (only (httparse decisions) should-keep-alive? F-CHUNKED)
           (only (httparse methods) httparse-method-numbers))
@@ -452,20 +470,20 @@
       closing closed))
 
   ;; conn-events : (Listof Symbol)
-  ;; The fifteen event kinds: the closed set `conn-step` accepts.
+  ;; The sixteen event kinds: the closed set `conn-step` accepts.
   (define conn-events
     '(bytes-arrived eof read-error write-completed shutdown-completed closed
       tick parser-event parser-result handler-responded handler-body-chunk
-      handler-body-end handler-failed body-credit shutdown-requested))
+      handler-body-end handler-failed body-credit body-pulled shutdown-requested))
 
   ;; conn-actions : (Listof Symbol)
-  ;; The seventeen action kinds, among them `hand-off`, which hands an
-  ;; upgrade's stream to the switch that takes it, and `client-closed`,
-  ;; which tells the request's code its client has closed or reset the
-  ;; connection.
+  ;; The eighteen action kinds, among them `hand-off`, which hands an
+  ;; upgrade's stream to the switch that takes it, `client-closed`, which
+  ;; tells the request's code its client has closed or reset the connection,
+  ;; and `deliver-body-failed`, which tells a pull its body has failed.
   (define conn-actions
     '(reply-parser feed-parser resume-parser write read-stop read-start
-      call-handler deliver-body deliver-body-end notify-producer
+      call-handler deliver-body deliver-body-end deliver-body-failed notify-producer
       arm-deadline disarm-deadline shutdown close log hand-off client-closed))
 
   ;; conn-deadline-kinds : (Listof Symbol)
@@ -578,6 +596,12 @@
   ;; the one each `deliver-body` and `deliver-body-end` goes to, until its
   ;; response comes back, and #f otherwise.
   (define (conn-body-reader s) (body-reader-of (conn-body s)))
+
+  ;; conn-body-pulled? : ConnState -> Boolean
+  ;; Whether the body goes to the pull of the handler's code: each
+  ;; `deliver-body`, `deliver-body-end` and `deliver-body-failed`, from the
+  ;; pull until the body is let go.
+  (define (conn-body-pulled? s) (body-pulled? (conn-body s)))
 
   ;; conn-producer : ConnState -> (U #f (-> Any))
   ;; The producer a streamed response's body is written from, while it is:
@@ -712,8 +736,10 @@
   ;;   count     the body bytes the parser has met
   ;;   answer    #f, the handler not yet asked; call, to be asked once the
   ;;             feed has returned; asked, its answer to come; stream or
-  ;;             whole, a reader reading; ending, the reader's response to
-  ;;             come
+  ;;             whole, a reader reading; pull, the handler's code pulling
+  ;;             it, its answer to come; ending, the reader's response, or
+  ;;             the handler's, to come; failed, the body failed while
+  ;;             pulled, the handler's answer to come
   ;;   held      the pieces met before the answer, as `deliver-body`
   ;;             actions, newest first
   ;;   error     #f, or what the feed that completed the head met in the
@@ -732,6 +758,8 @@
   ;;   continue? whether the client waits for `100 Continue` and it is still
   ;;             to be written
   ;;   extensions the bytes of the chunk extensions' names and values met
+  ;;   cap       the reader's cap, or the pull's, or #f for none of its own
+  ;;   pulled?   whether the body goes to a pull
   (define-record-type (body-state make-body-state body-state?)
     (fields (mutable declared  body-declared  body-declared-set!)
             (mutable count     body-count     body-count-set!)
@@ -745,8 +773,10 @@
             (mutable credit?   body-credit?   body-credit?-set!)
             (mutable owed      body-owed      body-owed-set!)
             (mutable continue? body-continue? body-continue?-set!)
-            (mutable extensions body-extensions body-extensions-set!))
-    (protocol (lambda (new) (lambda () (new #f 0 #f '() #f #f #f #f 0 #f 0 #f 0)))))
+            (mutable extensions body-extensions body-extensions-set!)
+            (mutable cap       body-cap       body-cap-set!)
+            (mutable pulled?   body-pulled?   body-pulled?-set!))
+    (protocol (lambda (new) (lambda () (new #f 0 #f '() #f #f #f #f 0 #f 0 #f 0 #f #f)))))
 
   ;; body-roll! : Body -> Void — nothing read, and nothing kept.
   (define (body-roll! bd)
@@ -762,7 +792,9 @@
     (body-credit?-set! bd #f)
     (body-owed-set! bd 0)
     (body-continue?-set! bd #f)
-    (body-extensions-set! bd 0))
+    (body-extensions-set! bd 0)
+    (body-cap-set! bd #f)
+    (body-pulled?-set! bd #f))
 
   ;; over? : (U Nat #f) (U Nat #f) -> Boolean — whether `n` is past `cap`.
   (define (over? cap n) (and cap n (> n cap)))
@@ -881,6 +913,7 @@
       ((handler-body-end)   (on-body-end s))
       ((handler-failed)     (on-handler-failed s (cadr ev)))
       ((body-credit)        (on-body-credit s (cdr ev)))
+      ((body-pulled)        (on-body-pulled s (cdr ev)))
       ((shutdown-requested) (on-shutdown-requested s))
       ((closed)             (on-closed s))
       ;; The half-close's completion changes nothing: the client's close, not
@@ -1237,6 +1270,8 @@
   ;;   idle past the idle deadline -> closing, with no response;
   ;;   head past the header deadline -> responding 408;
   ;;   body past the body deadline -> responding 408, the request in flight's;
+  ;;     a pulled body's -> handling, the failure told to the pull (fail-pull),
+  ;;     reading stopped, for the handler to answer;
   ;;   responding past the write deadline -> closing, with no response: the
   ;;     client is not reading, so nothing more can be written to it.  The
   ;;     close is logged, with the bytes still outstanding, and names the
@@ -1258,9 +1293,11 @@
              (respond-and-close s 'header-timeout '())
              (values s '())))
         ((body)
-         (if (eq? kind 'body)
-             (respond-and-close s 'body-timeout '())
-             (values s '())))
+         (cond ((not (eq? kind 'body)) (values s '()))
+               ((eq? (body-answer (conn-body s)) 'pull)
+                (let-values (((s failed) (fail-pull s '(refused body-timeout))))
+                  (values s (cons '(read-stop) failed))))
+               (else (respond-and-close s 'body-timeout '()))))
         ((responding)
          (if (eq? kind 'write)
              (close s 'write-timeout
@@ -1457,7 +1494,7 @@
                (body-answer-set! bd 'asked)
                (values s (list '(reply-parser pause) '(disarm-deadline)
                                (list 'call-handler (conn-request s)))))
-              ((stream)
+              ((stream pull)
                (body-answer-set! bd 'ending)
                (values s '((reply-parser pause) (disarm-deadline) (deliver-body-end))))
               ((whole)
@@ -1470,25 +1507,23 @@
   ;; body-piece : ConnState Bytevector Nat Nat -> (values ConnState (Listof Action))
   ;; body, on-body-data -> body: count the piece, and refuse the message as
   ;; 'body-too-large once the body passes the limits' max-body-bytes or the
-  ;; reader's own cap.  The piece up to the cap is handed to a streaming
-  ;; reader first, or kept for the handler's answer, so a reader is handed
-  ;; exactly the cap's bytes, however they were split into reads.  Otherwise
-  ;; re-arm the body deadline, and hand the piece on by the answer: to a
-  ;; streaming reader as `deliver-body`; into a whole reader's buffer; kept
-  ;; for the answer while it has not come.  With no answer to come, it is
-  ;; dropped.
+  ;; reader's own cap, or the pull's.  The piece up to the cap is handed to a
+  ;; streaming reader or the pull first, or kept for the handler's answer, so
+  ;; a reader is handed exactly the cap's bytes, however they were split into
+  ;; reads.  Otherwise re-arm the body deadline, and hand the piece on by the
+  ;; answer: to a streaming reader or the pull as `deliver-body`; into a
+  ;; whole reader's buffer; kept for the answer while it has not come.  With
+  ;; no answer to come, it is dropped.
   (define (body-piece s bv from to)
     (let* ((bd (conn-body s))
            (count (+ (body-count bd) (fx- to from)))
-           (reader (body-reader-of bd))
-           (cap (least-cap (limits-max-body-bytes (conn-limits s))
-                           (and reader (body-reader-max-bytes reader)))))
+           (cap (least-cap (limits-max-body-bytes (conn-limits s)) (body-cap bd))))
       (body-count-set! bd count)
       (cond
        ((over? cap count)
         (head-refusal-set! (conn-head s) 'body-too-large)
         (let ((cut (- to (- count cap))))
-          (if (and (fx>? cut from) (memq (body-answer bd) '(stream call asked)))
+          (if (and (fx>? cut from) (memq (body-answer bd) '(stream pull call asked)))
               (hand-on s bv from cut refused-too-large)
               (values s refused-too-large))))
        (else
@@ -1504,13 +1539,14 @@
   ;;           -> (values ConnState (Listof Action))
   ;; `answer`, the parser's reply and what follows it, once the piece
   ;; bv[from, to) is handed on by the handler's answer: to a streaming
-  ;; reader, as `deliver-body` after the reply; into a whole reader's buffer;
+  ;; reader or the pull, as `deliver-body` after the reply, owed its credit;
+  ;; into a whole reader's buffer;
   ;; kept for the answer while it has not come.  With no reader, the piece is
   ;; dropped.
   (define (hand-on s bv from to answer)
     (let ((bd (conn-body s)))
       (case (body-answer bd)
-        ((stream)
+        ((stream pull)
          (owe! bd (fx- to from))
          (values s (cons (car answer) (cons (list 'deliver-body bv from to) (cdr answer)))))
         ((whole)
@@ -1983,23 +2019,69 @@
   ;; A read that ended in the parser's error, `err` its code, or in a
   ;; refusal of the core's, whose reason the head holds.  When the feed
   ;; that completed a head announcing a body met it, it waits for the
-  ;; handler's answer, in handling, reading stopped; otherwise it is
-  ;; answered with the refusal's status, or the error's, then close.
+  ;; handler's answer, in handling, reading stopped; one that a pull meets
+  ;; is told to the pull, reading stopped, for the handler to answer
+  ;; (fail-pull); otherwise it is answered with the refusal's status, or the
+  ;; error's, then close.
   (define (answer-refusal s err)
-    (cond
-     ((eq? (body-answer (conn-body s)) 'call)
-      (body-error-set! (conn-body s)
-                       (let ((reason (head-refusal (conn-head s))))
-                         (if reason (list 'refused reason) (list 'parser err))))
+    (case (body-answer (conn-body s))
+     ((call)
+      (body-error-set! (conn-body s) (refusal-of s err))
       (conn-phase-set! s 'handling)
       (conn-deadline-set! s #f)
       (let-values (((s asked) (ask-handler s)))
         (values s (cons* '(read-stop) '(disarm-deadline) asked))))
+     ((pull)
+      (let-values (((s failed) (fail-pull s (refusal-of s err))))
+        (values s (cons* '(read-stop) '(disarm-deadline) failed))))
+     (else (answer-refusal-now s err))))
+
+  ;; refusal-of : ConnState (U #f Symbol) -> (List Symbol Any)
+  ;; What a read that ended in a refusal met, as an error kept for the
+  ;; answer: `(refused reason)`, the core's own, or `(parser code)`.
+  (define (refusal-of s err)
+    (let ((reason (head-refusal (conn-head s))))
+      (if reason (list 'refused reason) (list 'parser err))))
+
+  ;; answer-refusal-now : ConnState (U #f Symbol) -> (values ConnState (Listof Action))
+  ;; The refusal, or the parser's error, answered with its status, then close.
+  (define (answer-refusal-now s err)
+    (cond
      ((head-refusal (conn-head s))
       => (lambda (reason)
            (respond-and-close s reason (refusal-headers (conn-head s)))))
      (else
       (respond s (parser-error-status err) 'parser-error '()))))
+
+  ;; fail-pull : ConnState (List Symbol Any) -> (values ConnState (Listof Action))
+  ;; The pulled body has failed, `error` what it met: -> handling, its
+  ;; deadline let go and the error kept, the connection to close after the
+  ;; handler's answer for the error's reason, and the pull told,
+  ;; `(deliver-body-failed reason status)`.  Reading, if it reads, is the
+  ;; caller's to stop.
+  (define (fail-pull s error)
+    (let ((bd (conn-body s)))
+      (body-answer-set! bd 'failed)
+      (body-error-set! bd error)
+      (conn-phase-set! s 'handling)
+      (conn-deadline-set! s #f)
+      (let ((reason (error-reason error)))
+        (unless (conn-close-after s) (conn-close-after-set! s reason))
+        (values s (list (list 'deliver-body-failed (error-name error) (error-status error)))))))
+
+  ;; error-reason : (List Symbol Any) -> Symbol — the reason a connection
+  ;; closes after the answer to an error kept: a refusal's own, or
+  ;; parser-error.
+  ;; error-name : (List Symbol Any) -> Symbol — what a pull is told failed:
+  ;; a refusal's reason, or the parser's error code.
+  ;; error-status : (List Symbol Any) -> Nat — the status the core answers
+  ;; it with (answer-error).
+  (define (error-reason error) (if (eq? (car error) 'refused) (cadr error) 'parser-error))
+  (define (error-name error) (cadr error))
+  (define (error-status error)
+    (if (eq? (car error) 'refused)
+        (reason-status (cadr error))
+        (parser-error-status (cadr error))))
 
   ;; await-credit : ConnState -> (values ConnState (Listof Action))
   ;; body -> awaiting-credit: the reader has been handed pieces it has not
@@ -2070,6 +2152,11 @@
   ;;     and an error kept for the answer is not answered.
   ;;   - Asked about a request with no body, or the reader's response: the
   ;;     response, `respond-with`.
+  ;;   - Its code pulling the body, still to end: sent at once, closing after
+  ;;     it as 'unread-body, unless it closes already; a reader then is no
+  ;;     answer, refused as any that is not a response (respond-with).
+  ;;   - The pulled body ended, or failed: the response, closing after it for
+  ;;     the failure's reason once the body has failed.
   ;; An answer the core did not ask for changes nothing.
   (define (on-handler-responded s answer rest)
     (unless (or (null? rest) (equal? rest '(credit)))
@@ -2078,6 +2165,7 @@
       ((body handling)
        (let ((bd (conn-body s)))
          (case (body-answer bd)
+           ((pull) (answered-early s answer))
            ((asked)
             (cond ((body-reader? answer) (accept-reader s answer (pair? rest)))
                   ((switch? answer) (switch-with s answer))
@@ -2085,9 +2173,20 @@
                    (unless (conn-close-after s) (conn-close-after-set! s 'unread-body))
                    (respond-with s answer))
                   (else (respond-with s answer))))
-           ((ending) (if (switch? answer) (switch-with s answer) (respond-with s answer)))
+           ((ending failed) (if (switch? answer) (switch-with s answer) (respond-with s answer)))
            (else (values s '())))))
+      ((awaiting-credit)
+       (if (eq? (body-answer (conn-body s)) 'pull)
+           (answered-early s answer)
+           (values s '())))
       (else (values s '()))))
+
+  ;; answered-early : ConnState Any -> (values ConnState (Listof Action))
+  ;; The handler has answered before the end of the body its code pulls: the
+  ;; answer at once, the connection closing after it as 'unread-body.
+  (define (answered-early s answer)
+    (unless (conn-close-after s) (conn-close-after-set! s 'unread-body))
+    (if (switch? answer) (switch-with s answer) (respond-with s answer)))
 
   ;; accept-reader : ConnState BodyReader Boolean -> (values ConnState (Listof Action))
   ;; A reader, answered for the request being read, and whether the shell
@@ -2127,6 +2226,7 @@
           (let ((held (reverse (body-held bd))) (error (body-error bd)))
             (body-held-set! bd '())
             (body-reader-set! bd r)
+            (body-cap-set! bd (body-reader-max-bytes r))
             (body-credit?-set! bd credit?)
             (cond
              ((and error (body-reader-whole? r)) (answer-error s error))
@@ -2281,7 +2381,9 @@
   ;; handling or body, handler-failed -> responding 500, then close: the
   ;; handler raised, or its reader did, whether the body was still being read
   ;; or had ended.  The reader is let go at once, so a piece already asked
-  ;; for never reaches a reader that raised.
+  ;; for never reaches a reader that raised.  Once the body it pulls has
+  ;; failed, the pull's raise let out, `&body-failed`, is answered with the
+  ;; failure's status instead (answer-error).
   ;; responding, handler-failed with a piece asked for -> closing: the
   ;; producer raised, or answered what is not a piece, once the head was on
   ;; the wire, so no status can be written: a bare close, at once.  A
@@ -2290,10 +2392,12 @@
   (define (on-handler-failed s raised)
     (case (conn-phase s)
       ((handling body awaiting-credit)
-       (body-roll! (conn-body s))
-       (if (closed-quietly? s raised)
-           (close s 'client-closed '())
-           (respond-and-close s 'handler-failed '())))
+       (let* ((bd (conn-body s))
+              (error (and (eq? (body-answer bd) 'failed) (body-failed? raised) (body-error bd))))
+         (body-roll! bd)
+         (cond ((closed-quietly? s raised) (close s 'client-closed '()))
+               (error (answer-error s error))
+               (else (respond-and-close s 'handler-failed '())))))
       ((responding)
        (if (conn-asked? s)
            (close s (if (closed-quietly? s raised) 'client-closed 'handler-failed) '())
@@ -2334,6 +2438,79 @@
        (credit! (conn-body s) fields)
        (values s '()))
       (else (values s '()))))
+
+  ;; handling, body-pulled cap: the handler's code, asked about a request,
+  ;; pulls its body, with `cap` of its own, or #f, before it answers.
+  ;;   - A declared length past the cap: the failure told to the pull, for the
+  ;;     handler to answer, so a client that waits for `100 Continue` is sent
+  ;;     none (fail-pull).
+  ;;   - Otherwise a client that waits for the 100 is sent it, first, and the
+  ;;     pull reads (pull-with).
+  ;; Anywhere else, the handler not asked, or answered, nothing changes.  A
+  ;; cap that is neither #f nor a count is an assertion violation.
+  (define (on-body-pulled s fields)
+    (let ((cap (and (pair? fields) (null? (cdr fields)) (car fields))))
+      (unless (and (pair? fields) (null? (cdr fields))
+                   (or (not cap) (and (integer? cap) (exact? cap) (>= cap 0))))
+        (assertion-violation 'conn-step "a pull's cap is #f or a count of bytes" fields))
+      (let ((bd (conn-body s)))
+        (cond
+         ((not (and (eq? (conn-phase s) 'handling) (eq? (body-answer bd) 'asked))) (values s '()))
+         ((over? cap (body-declared bd))
+          (body-pulled?-set! bd #t)
+          (body-release! bd)
+          (fail-pull s '(refused body-too-large)))
+         ((body-continue? bd)
+          (body-continue?-set! bd #f)
+          (let ((w (let-values (((segments bytes) (serialize-continue)))
+                     (count-write! s segments bytes))))
+            (let-values (((s actions) (pull-with s cap)))
+              (values s (cons w actions)))))
+         (else (pull-with s cap))))))
+
+  ;; pull-with : ConnState (U Nat #f) -> (values ConnState (Listof Action))
+  ;; The pull accepted reads, on credit, as read-with reads a streaming
+  ;; reader's: the pieces kept, each as `deliver-body`, owed their credit;
+  ;; then an error kept, told to the pull; or the body's end, the handler's
+  ;; answer to come; or the wait for the pull to take what it was handed, or
+  ;; else reading again (read-on).  A body met so far past the cap is handed
+  ;; over up to it, then told to the pull as past it, as it would have been
+  ;; had it come after the pull.
+  (define (pull-with s cap)
+    (let* ((bd (conn-body s)) (held (reverse (body-held bd))) (error (body-error bd)))
+      (body-held-set! bd '())
+      (body-pulled?-set! bd #t)
+      (body-cap-set! bd cap)
+      (body-credit?-set! bd #t)
+      (cond
+       ((over? cap (body-count bd))
+        (let-values (((s failed) (fail-pull s '(refused body-too-large))))
+          (values s (append (held-within held cap) failed))))
+       (error
+        (let-values (((s failed) (fail-pull s error)))
+          (values s (append held failed))))
+       ((body-complete? bd)
+        (body-answer-set! bd 'ending)
+        (values s (append held '((deliver-body-end)))))
+       (else
+        (body-answer-set! bd 'pull)
+        (for-each (lambda (a) (owe! bd (fx- (cadddr a) (caddr a)))) held)
+        (if (fxzero? (body-owed bd))
+            (read-on s held)
+            (let-values (((s waiting) (await-credit s)))
+              (values s (append held waiting))))))))
+
+  ;; held-within : (Listof Action) Nat -> (Listof Action)
+  ;; The pieces kept, `deliver-body` actions in order, up to `cap` bytes:
+  ;; the one that passes it cut at it.
+  (define (held-within held cap)
+    (let loop ((held held) (n 0) (acc '()))
+      (if (null? held)
+          (reverse acc)
+          (let* ((a (car held)) (from (caddr a)) (len (fx- (cadddr a) from)))
+            (cond ((<= (+ n len) cap) (loop (cdr held) (+ n len) (cons a acc)))
+                  ((> cap n) (reverse (cons (list 'deliver-body (cadr a) from (+ from (- cap n))) acc)))
+                  (else (reverse acc)))))))
 
   ;; credit! : BodyState (Listof Any) -> Void
   ;; `(n)`, a body-credit's fields: `n` bytes of what the reader owes are

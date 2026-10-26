@@ -15,13 +15,17 @@
 ;;; name that does not resolve raises `&resolve-error` (`with-deadline` and
 ;;; `resolve` are the private waits library's).  Once the request's client
 ;;; has closed or reset its connection, the wait its code is in, or else the
-;;; next one, raises `&client-closed`, once.
+;;; next one, raises `&client-closed`, once.  A body the handler pulls
+;;; (`next-body-piece`, the private waits library's) that fails, past a cap,
+;;; malformed or stalled past its deadline, raises `&body-failed`, which names
+;;; why and the status the server answers if the raise is let out.
 ;;;
 ;;; PURE: imports only (rnrs).
 (library (http-server awaiting)
   (export awaiting awaiting? awaiting-thunk
           &deadline-passed make-deadline-passed deadline-passed?
           &client-closed make-client-closed client-closed?
+          &body-failed make-body-failed body-failed? body-failed-reason body-failed-status
           &resolve-error make-resolve-error resolve-error? resolve-error-reason)
   (import (rnrs))
 
@@ -38,6 +42,20 @@
   ;; client-closed? : Any -> Boolean
   (define-condition-type &client-closed &error
     make-client-closed client-closed?)
+
+  ;; &body-failed : what a pull of the request's body raises once the body
+  ;; has failed, an `&error`.  Its reason is the server's for the refusal,
+  ;; such as body-too-large or body-timeout, or the parser's error code for a
+  ;; malformed body, such as invalid-chunk-size; its status is what the
+  ;; server answers for it.
+  ;; make-body-failed : Symbol Nat -> BodyFailed
+  ;; body-failed? : Any -> Boolean
+  ;; body-failed-reason : BodyFailed -> Symbol
+  ;; body-failed-status : BodyFailed -> Nat
+  (define-condition-type &body-failed &error
+    make-body-failed body-failed?
+    (reason body-failed-reason)
+    (status body-failed-status))
 
   ;; &resolve-error : what `resolve` raises when a name does not resolve, an
   ;; `&error`.  Its reason is the resolver's error, such as EAI_NONAME, or
