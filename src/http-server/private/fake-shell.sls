@@ -218,7 +218,7 @@
           fake-shell-fire-waits! fake-shell-answer-lookup! fake-shell-drain! fake-shell-armed
           event->door-read door-read->event
           fake-shell-shut? fake-shell-hold! fake-shell-schedule! fake-shell-taker-failures
-          fake-shell-done-failures)
+          fake-shell-done-failures fake-waits-puller!)
   (import (rnrs)
           (byte-machine runtime)
           (only (http-server connection) make-conn-state conn-body-reader conn-body-pulled? conn-producer
@@ -1040,8 +1040,14 @@
                        (lambda (request)
                          (when (eq? request (fake-shell-lookup s))
                            (fake-shell-lookup-set! s #f))))
-      (waits-puller! w fake-pull! fake-credit!)
+      (fake-waits-puller! w)
       w))
+
+  ;; fake-waits-puller! : Waits -> Void
+  ;; Give `w` the fake's puller, so the code of a connection's request may
+  ;; pull its body on waits a host made for connections that share them: a
+  ;; pull's begin and credit go to the connection its notice was made for.
+  (define (fake-waits-puller! w) (waits-puller! w fake-pull! fake-credit!))
 
   ;; fake-pull! : FakeShell (U Nat #f) -> Boolean
   ;; The handler's code pulls its body, with `cap`: `(body-pulled cap)`,
