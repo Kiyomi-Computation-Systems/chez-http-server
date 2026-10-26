@@ -14,6 +14,13 @@ All notable changes to chez-http-server are recorded here. The format follows
   431 if the raise is let out. The page listed 413, 400 and 408 only.
   `docs/reference.md`'s `&body-failed` row names the trailers too.
 
+- **The test host's log leaves out a pulled body's failure, let out, as
+  `serve`'s does.** A handler whose pulled body failed and that let the
+  `&body-failed` out was answered with its status by both, but
+  `(test-host-log host)` listed `(handler-failed e)`, which `serve` never
+  logs. A `&body-failed` the handler makes and raises itself is still
+  logged, by both. `docs/waiting.md` says the server logs nothing for it.
+
 ## [0.9.0] - 2026-10-26
 
 The tenth release. A handler sees more of its request and of its connection:
