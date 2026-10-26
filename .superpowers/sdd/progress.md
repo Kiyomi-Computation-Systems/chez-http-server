@@ -699,6 +699,24 @@ NEXT: circuit, there, moves its tests onto `(http-server testing)` once it pins 
 
 NEXT: #238's CI on the force-pushed head, then its closing ritual when the owner asks; #227's body pull (#234-#237) meets the request and both shells, and whichever lands second rebases. Then circuit drops its `req-remote-address` workaround, there, once it pins a server with the four. Carried: circuit's other workarounds; the Akku listing's install check and installing.md's "needs a release" line; chez-websocket's pin to v0.8.0; the owner's read-token secret, secret scanning and the siblings' vulnerability reporting.
 
+MERGED to main on 2026-10-25, on the owner's "Do closing ritual": **#238, connection addresses** (the entry above), closing #229.
+- **The merge:** 63a4ce4 squashed as 108220c (tree bd3d011, the tested head's; parent d95b271), with `--match-head-commit` on the full SHA. Its body is the commit's.
+- **CI.** The head's run, 40254428285 (63a4ce4), passed both jobs, and the PR read MERGEABLE/CLEAN on d95b271. Main's run on 108220c, 40255287491, was in progress at this reflect.
+- **Branches:** `feat/connection-addresses` was deleted on origin and locally, after its worktree was detached at 108220c. The worktree, clean, was then removed. The shared checkout's `main` was fast-forwarded from bbb5d8a to 108220c, and its submodules match their pins.
+- **Reflection.**
+  1. **A size in a decision record holds for the record as merged, not as written.** The request was "64 B, as six fields were" on its base, and 80 B once #224's slot landed beside it. Measuring again after the rebase caught it, and test-serve's check now holds the 64 B, so the next field added fails a test, not a review.
+  2. **A refusal test must check who refused, not only that something did.** Chez's `fx` operations raise assertions of their own, so the "not an exact integer" cases passed with `fixnum?` removed. Reading the condition's who closed that gap, in `make-addresses`' test too.
+  3. **The owner's word on landing order made it one rebase, not two.** Waiting for #239, then rebasing onto it, put the fake-shell edits straight into the moved file, and each one was checked once.
+  4. **A decision number is free only when no pushed branch or peer worktree holds it.** 0036 was taken twice over before either PR opened, as #239's reflect also found. Checking each remote branch's `.plans/decisions/` and the other worktrees found both.
+- **Open:** #234-#237, #227's body pull, rebases onto 108220c. The request is now seven fields, its version one number, and `make-request` takes an optional seventh argument, the addresses. test-serve fails if a request grows past 64 B. The fake's addresses are `make-fake-connection`'s seventh argument. That session was told, over Remote Control, which confirms no read.
+
+NEXT: circuit drops its `req-remote-address` workaround, there, once it pins a server with the four: 108220c, or the next release, whose `[Unreleased]` holds it. Carried:
+- #227's stack lands on this main;
+- circuit's moves to `request-on-done!`, `sized-body`, `request-has-body?`, `request-header-list`, the version accessors and `(http-server testing)`;
+- the Akku listing's install check, and installing.md's "needs a release" line;
+- chez-websocket's pin to v0.8.0;
+- the owner's read-token secret, secret scanning, and the siblings' vulnerability reporting.
+
 **A BODY PULLED BY THE HANDLER THAT WAITS, on `claude/gifted-zhukovsky-e99c2d` (2026-10-25),** decision 0036, picking up Kiyomi-Computation-Systems/chez-http-server#227 (the owner's, for circuit, which reads every body whole first, capped at 1 MiB, to hand its apps a port).
 - **Measured first** (a shadow shell with a happy-path pull, under oha): the pull runs on the thunk's one coroutine at any size, where a reader the thunk answers runs on 2 and one a piece (67 at 1 MiB); events dispatched in place save ~730 B a request; copying every piece costs 45% to 76% more at 64 KiB to 1 MiB. Peers read in their sources: Ring on Jetty 12.1.14 (ee9), Rack 3.2.7 and Puma 7.2.1, Node 26.12.1, Go 1.27.3. Tables in decision 0036.
 - **By the owner's form, each the recommended:** the wait and a port, `next-body-piece` and `body-input-port`; a cap of its own on the first call; every failure of a pulled body (a cap, framing, the body deadline) raises `&body-failed` for the handler to answer, let out its status, caught its own answer, closing after either; a piece that is a whole read handed as is, any other copied.
