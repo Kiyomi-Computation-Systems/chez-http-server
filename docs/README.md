@@ -64,6 +64,8 @@ which builds on this server's upgrades.
 - [Bodies and streaming](bodies.md): reading uploads and streaming downloads.
 - [Waiting](waiting.md): handlers that wait for events, times and lookups.
 - [Upgrades](upgrades.md): taking over a connection for another protocol.
+- [Testing handlers](testing.md): running a handler, waits and all, against
+  a scripted client, with no socket and a clock your test moves.
 - [Requests](requests.md): which requests the server accepts, and which it
   refuses before your handler runs.
 - [Responses](responses.md): what the server adds to your response, and

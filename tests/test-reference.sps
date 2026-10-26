@@ -1,10 +1,11 @@
 #!r6rs
 ;;; docs/reference.md names each name (http-server) exports, and no other,
 ;;; as its first line promises: everything the facade exports, one entry
-;;; each.
+;;; each; and, in its last section, the one whose ## heading names
+;;; `(http-server testing)`, each name that library exports, and no other.
 ;;;
-;;; The oracles: the names (http-server) exports, as Chez's own
-;;; `library-exports` lists them, not as the facade's text writes them; and
+;;; The oracles: the names each library exports, as Chez's own
+;;; `library-exports` lists them, not as the library's text writes them; and
 ;;; the page, read by its structure, CommonMark with GitHub's tables, outside
 ;;; its fenced blocks.  A name is one of the page's entries when
 ;;; - a ### heading is it, or is a list of names, comma-separated, that holds
@@ -16,8 +17,8 @@
 ;;; A name given any other way is not one: in prose, in `code` that gives no
 ;;; type (in a table's other cells too), under a ## heading, or in a fenced
 ;;; block.
-;;; The reader is held to that on a page of the suite's own before it reads
-;;; docs/reference.md.
+;;; The reader is held to that, and to where the testing library's section
+;;; begins, on pages of the suite's own before it reads docs/reference.md.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) library-exports environment))
 
@@ -245,6 +246,22 @@
     (list-sort string<?
                (fold-left (lambda (acc n) (if (member n acc) acc (cons n acc))) '() all))))
 
+;; testing-heading? : String -> Boolean
+;; The ## heading of the testing library's section: one that names it, as
+;; `(http-server testing)`.
+(define (testing-heading? line)
+  (and (starts? line "## ") (search line "`(http-server testing)`" 0) #t))
+
+;; split-page : String -> (values String String)
+;; The page's text before the testing library's section, and the section,
+;; to the page's end; "" when it has none.  A heading inside a fenced block
+;; begins nothing.
+(define (split-page text)
+  (let loop ((ls (text-lines text)) (ps (prose text)) (before '()))
+    (cond ((null? ls) (values (joined (reverse before)) ""))
+          ((testing-heading? (car ps)) (values (joined (reverse before)) (joined ls)))
+          (else (loop (cdr ls) (cdr ps) (cons (car ls) before))))))
+
 ;; missing : (Listof String) (Listof String) -> (Listof String) — the names of ns not among ms, in order.
 (define (missing ns ms) (filter (lambda (n) (not (member n ms))) ns))
 
@@ -293,6 +310,25 @@
      "### nu"
      "```")))
 
+;; A page with a testing library's section, after one fenced heading that
+;; begins none, and the names each part must give.
+(define split-fixture
+  (joined
+   '("# A page"
+     ""
+     "### alpha"
+     ""
+     "```text"
+     "## `(http-server testing)`"
+     "### beta"
+     "```"
+     ""
+     "## The tests' own: `(http-server testing)`"
+     ""
+     "### gamma"
+     ""
+     "`delta : Any`")))
+
 (run-suite "reference"
   (lambda ()
     (let ((taken (named fixture)) (entries '("alpha" "beta?" "delta?" "gamma!" "kappa" "xi")))
@@ -301,16 +337,35 @@
         (append (noted "the reader took, from the suite's page, names no entry names:" (missing taken entries))
                 (noted "the reader missed, on the suite's page, entries' names:" (missing entries taken)))))
 
+    (let-values (((before section) (split-page split-fixture)))
+      (test-equal "the testing library's section begins at the ## heading that names it, outside a fenced block"
+        '(("alpha") ("delta" "gamma"))
+        (list (named before) (named section))))
+
     (environment '(http-server))
-    (let ((exported (list-sort string<? (map symbol->string (library-exports '(http-server)))))
-          (page (named (slurp "docs/reference.md"))))
-      (when (or (null? exported) (null? page))
-        (provenance-failure "the facade's exports or docs/reference.md's entries read as none"))
+    (environment '(http-server testing))
+    (let-values (((facade-text testing-text) (split-page (slurp "docs/reference.md"))))
+      (let ((exported (list-sort string<? (map symbol->string (library-exports '(http-server)))))
+            (page (named facade-text))
+            (testing-exported (list-sort string<? (map symbol->string (library-exports '(http-server testing)))))
+            (section (named testing-text)))
+        (when (or (null? exported) (null? page) (null? testing-exported))
+          (provenance-failure "the facade's exports, the testing library's, or docs/reference.md's entries read as none"))
 
-      (test-equal "docs/reference.md names every name (http-server) exports"
-        '()
-        (noted "(http-server) exports, and docs/reference.md has no entry for:" (missing exported page)))
+        (test-equal "docs/reference.md names every name (http-server) exports"
+          '()
+          (noted "(http-server) exports, and docs/reference.md has no entry for:" (missing exported page)))
 
-      (test-equal "and names none it does not export"
-        '()
-        (noted "docs/reference.md has an entry for, and (http-server) does not export:" (missing page exported))))))
+        (test-equal "and names none it does not export"
+          '()
+          (noted "docs/reference.md has an entry for, and (http-server) does not export:" (missing page exported)))
+
+        (test-equal "its testing library's section names every name (http-server testing) exports"
+          '()
+          (noted "(http-server testing) exports, and docs/reference.md's section has no entry for:"
+                 (missing testing-exported section)))
+
+        (test-equal "and names none it does not export"
+          '()
+          (noted "docs/reference.md's testing section has an entry for, and (http-server testing) does not export:"
+                 (missing section testing-exported)))))))

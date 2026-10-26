@@ -201,7 +201,9 @@ answers on Akku's library path alone.
 
 - **Functional core, imperative shell.** Rules go in the pure libraries
   under `src/http-server/`, which import no libuv; effects go in
-  `src/http-server/private/`. `make check-imports` enforces it.
+  `src/http-server/private/`. `make check-imports` enforces it. The facade,
+  `src/http-server.sls`, and the testing library,
+  `src/http-server/testing.sls`, sit over both.
 - **A test is finished when it has been seen to fail.** Break the code it
   guards, watch the check go red, then put the code back.
 - **Every exported procedure has a signature comment**, Typed Racket style:

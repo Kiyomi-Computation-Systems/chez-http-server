@@ -109,8 +109,14 @@ If the client closes or resets the connection while your handler waits:
   `resolve-error?`). `(resolve-error-reason e)` says why: `EAI_NONAME` for a
   name no one knows, or `invalid-name` for one that cannot be asked about:
   empty, too long, or with a NUL in it.
-- A lookup a deadline ends is cancelled if it has not begun. One already
-  under way still answers later, and the server logs `late-resume resolve`.
+- A lookup a deadline ends is cancelled if it has not begun yet. Either
+  way it still answers later, and the server logs `late-resume resolve`.
+
+## Testing a handler that waits
+
+`(http-server testing)` runs one with no socket, on a clock your test
+moves, and your test answers its lookups: see
+[Testing handlers](testing.md).
 
 ## Costs to know
 
