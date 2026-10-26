@@ -106,8 +106,9 @@
 ;;; (A HANDLER THAT WAITS, below): the test then gives the reader's credit,
 ;;; `(body-credit n)`.  Input is delivered only while the connection reads, as
 ;;; libuv delivers it.  An event the core cannot finish within `dispatch-cap`
-;;; dispatches is a harness error, never a hang: loops are capped by iteration
-;;; count, never wall-clock.
+;;; dispatches, counted from the outermost delivery's start, is a harness
+;;; error, never a hang: loops are capped by iteration count, never
+;;; wall-clock.
 ;;;
 ;;; THE DOOR.  Handed off, the connection is the taker's: the fake transport's
 ;;; verbs act on it as the libuv shell's do.  A write's bytes, copied at the
@@ -172,7 +173,9 @@
 ;;;
 ;;; A HANDLER THAT WAITS, as the libuv shell's, so the contract test can hold
 ;;; the two to one behaviour.  A fake connection keeps a scheduler of its own,
-;;; (http-server private scheduler)'s, drained once each outermost dispatch
+;;; (http-server private scheduler)'s, or runs on one it is given, which other
+;;; connections may share, as a loop's connections share the libuv shell's;
+;;; it is drained once each outermost dispatch
 ;;; has ended, as the libuv shell's turn drains its loop's after libuv's run:
 ;;; the handler is called there, and the coroutines run there.  A handler that
 ;;; answers `(awaiting thunk)` has its thunk run on a coroutine, and its
@@ -194,9 +197,11 @@
 ;;; test's, `fake-shell-fire-waits!` firing it at the clock's now; and their
 ;;; resolver is the test's, `fake-shell-answer-lookup!` answering the lookup
 ;;; asked for, one at a time, as the connection's calls are made.  A deadline
-;;; that ends a lookup cancels it, and the lookup is answered no more.
+;;; that ends a lookup cancels it, and the lookup is answered no more.  A
+;;; connection made on a scheduler it is given keeps no waits of its own: the
+;;; scheduler's are its owner's, and so are their timer and their resolver.
 (library (http-server private fake-shell)
-  (export make-fake-shell fake-shell?
+  (export make-fake-shell fake-shell? fake-shell-calling?
           fake-shell-state fake-shell-now
           fake-shell-actions fake-shell-events fake-shell-violations
           fake-shell-advance! fake-shell-deliver! fake-shell-tick! fake-shell-fire! fake-shell-run!
@@ -213,7 +218,7 @@
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole? read-body)
           (only (http-server awaiting) awaiting? awaiting-thunk client-closed?)
           (only (http-server private scheduler)
-                make-scheduler scheduler-call! scheduler-spawn! scheduler-drain!)
+                make-scheduler scheduler? scheduler-call! scheduler-spawn! scheduler-drain!)
           (only (http-server private waits) make-waits waits-clock! waits-fire! waits-resolver!
                 make-notice notice-attach! notice-close! notice-closed?)
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
@@ -235,6 +240,9 @@
   ;;   is read: #t until a read-stop or a close, and again at a read-start
   ;; fake-shell-shut? : FakeShell -> Boolean — whether a shutdown has run, so
   ;;   the write side is shut
+  ;; fake-shell-calling? : FakeShell -> Boolean — whether a call into the
+  ;;   handler's code runs on a coroutine and has not ended (A HANDLER THAT
+  ;;   WAITS): once the scheduler is drained, whether that code waits
   (define-record-type fake-shell
     (fields step (mutable state) (mutable now) (mutable actions-rev) (mutable events-rev)
             perform
@@ -244,7 +252,7 @@
             (mutable later)                   ; events for a later turn, in order
             (mutable parser)
             (mutable reading?)
-            (mutable dispatches)
+            (mutable dispatches)              ; since the outermost delivery began, or #f
             (mutable writes-rev)              ; the bytes of each write, newest first
             (mutable shut?)                   ; whether a shutdown has run
             trace
@@ -267,7 +275,7 @@
             (mutable done-later))             ; endings to tell once its calls end, oldest first
     (protocol (lambda (new)
                 (define (make step state0 now0 perform trace)
-                  (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
+                  (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t #f '() #f trace
                        #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f '() '() '()))
                 (case-lambda
                   ((step state0 now0) (make step state0 now0 #f #f))
@@ -310,7 +318,8 @@
     (fake-shell-now-set! s (+ (fake-shell-now s) dt))
     (fake-shell-now s))
 
-  ;; dispatch-cap : Nat — dispatches one shell may make before it is stuck.
+  ;; dispatch-cap : Nat — dispatches one event may bring, its own among them,
+  ;; before the shell is stuck.
   (define dispatch-cap 100000)
 
   ;; fake-shell-deliver! : FakeShell Event -> (Listof Action)
@@ -321,8 +330,23 @@
   ;; coroutines ready, in order, each answer a dispatch of its own.  Returns
   ;; this event's actions.  Once the stream is taken, a read or an end goes
   ;; to the taker (taker-read!) if the stream reads and nothing is kept, or
-  ;; else is kept behind what is (THE DOOR), and returns none.
+  ;; else is kept behind what is (THE DOOR), and returns none.  The
+  ;; dispatches it brings, its own and those of the events it leads to before
+  ;; it returns, are counted against dispatch-cap; a raise out of it ends
+  ;; the count, and the next delivery begins one of its own.
   (define (fake-shell-deliver! s event)
+    (if (fake-shell-dispatches s)
+        (deliver! s event)
+        (begin
+          (fake-shell-dispatches-set! s 0)
+          (let ((actions (guard (e (#t (fake-shell-dispatches-set! s #f) (raise e)))
+                           (deliver! s event))))
+            (fake-shell-dispatches-set! s #f)
+            actions))))
+
+  ;; deliver! : FakeShell Event -> (Listof Action) — fake-shell-deliver!'s
+  ;; dispatch, counted.
+  (define (deliver! s event)
     (fake-shell-dispatches-set! s (+ (fake-shell-dispatches s) 1))
     (when (> (fake-shell-dispatches s) dispatch-cap)
       (assertion-violation 'fake-shell-deliver! "no progress: the dispatch cap was reached"
@@ -517,13 +541,15 @@
 
   ;; --- the connection ---------------------------------------------------------
 
-  ;; make-fake-connection : Limits (Request -> Answer) [Trace [Nat [Boolean]]] -> FakeShell
+  ;; make-fake-connection : Limits (Request -> Answer) [Trace [Nat [Boolean [Scheduler]]]] -> FakeShell
   ;;   Answer = Response | BodyReader | Awaiting
   ;; A connection in idle, reading, the clock at `now` (0 unless given), and
   ;; its idle deadline armed there: (http-server connection)'s core through
-  ;; the adapter, with a parser of its own, a scheduler of its own, and
-  ;; `handler` answering every request, traced as make-fake-shell traces.
-  ;; Made `on-credit?`, it answers with each answer and `credit`.
+  ;; the adapter, with a parser of its own, a scheduler of its own and its
+  ;; waits, and `handler` answering every request, traced as make-fake-shell
+  ;; traces.  Made `on-credit?`, it answers with each answer and `credit`.
+  ;; Given a `scheduler`, it runs its calls and coroutines on that one, and
+  ;; makes no waits (A HANDLER THAT WAITS).
   ;; Its state is the adapter's context; fake-shell-conn-state reads the
   ;; core's state from it.
   (define make-fake-connection
@@ -531,7 +557,16 @@
       ((limits handler) (make-fake-connection limits handler #f 0 #f))
       ((limits handler trace) (make-fake-connection limits handler trace 0 #f))
       ((limits handler trace now) (make-fake-connection limits handler trace now #f))
-      ((limits handler trace now on-credit?)
+      ((limits handler trace now on-credit?) (fake-connection limits handler trace now on-credit? #f))
+      ((limits handler trace now on-credit? scheduler)
+       (unless (scheduler? scheduler)
+         (assertion-violation 'make-fake-connection "not a scheduler" scheduler))
+       (fake-connection limits handler trace now on-credit? scheduler))))
+
+  ;; fake-connection : Limits (Request -> Answer) (U Trace #f) Nat Boolean (U Scheduler #f) -> FakeShell
+  ;; make-fake-connection's connection, on `scheduler`, or else on one of its
+  ;; own, with waits of its own (fake-waits).
+  (define (fake-connection limits handler trace now on-credit? scheduler)
        (let* ((cell #f)
               (ctx (make-conn-context (make-conn-state 'idle 'idle #f 0 0 #f #f limits)
                                       (lambda (actions) (enqueue! cell actions))))
@@ -541,15 +576,17 @@
                                   trace)))
          (set! cell s)
          (fake-shell-credit?-set! s on-credit?)
-         (fake-shell-scheduler-set!
-          s (make-scheduler
-             (lambda (mode) (assertion-violation 'fake-shell "the fake never polls" mode))))
-         (fake-shell-timed-set! s (fake-waits s))
+         (cond (scheduler (fake-shell-scheduler-set! s scheduler))
+               (else
+                (fake-shell-scheduler-set!
+                 s (make-scheduler
+                    (lambda (mode) (assertion-violation 'fake-shell "the fake never polls" mode))))
+                (fake-shell-timed-set! s (fake-waits s))))
          (fake-shell-parser-set! s (make-conn-parser ctx))
          (fake-shell-wheel-set! s (make-wheel (limits-tick-ms limits)))
          (fake-shell-entry-set! s (make-wheel-entry s))
          (arm! s limits 'idle)
-         s))))
+         s))
 
   ;; drops-body : (Request -> Response) -> (Request -> BodyReader)
   ;; A handler for a fake connection: it reads every request's body,
