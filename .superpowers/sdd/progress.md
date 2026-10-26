@@ -517,3 +517,15 @@ NEXT: once https://akkuscm.org/packages/chez-http-server/ answers 200 and `akku 
 - **The gate, Darwin arm64:** `make test`, fifty-seven suites, 2,518 expected passes (main's 2,507 and these eleven), `ALL SUITES PASSED`; `make check-site` and `make check-help`, all green.
 
 NEXT: this PR's merge when the owner asks. Carried: once https://akkuscm.org/packages/chez-http-server/ answers 200 and `akku update` lists 0.9.0, the install check from the index in a throwaway project, then docs/installing.md's "needs a release" line in a PR of its own; circuit, there, moves to v0.9.0 and drops its workarounds; chez-websocket's pin, to v0.8.0 or v0.9.0, its session's call; the owner's read-token secret, secret scanning, and the siblings' vulnerability reporting.
+
+MERGED to main on 2026-10-26, on the owner's "do closing ritual": **#242, a pulled body's 431** (the entry above), closing #241.
+- **CI.** The head's run, 40377147248 (7468865), passed both jobs: the `Test` step 57 suites, 2,518 expected passes, `ALL SUITES PASSED`, read once with the PR MERGEABLE/CLEAN. Main's run on 26d50b9, 40379681099, passed both jobs: the `Test` step 57 suites, 2,518 expected passes, `ALL SUITES PASSED`.
+- **The merge.** 7468865 squashed as 26d50b9 (tree 12c9cfe, the tested head's; parent 9fe903c) with `--match-head-commit` on the full SHA and `--delete-branch`, which fast-forwarded this checkout's `main` and deleted `docs/body-failed-431`, remote and local. #241 closed with it.
+- **On main at 26d50b9, Darwin arm64:** `make test`, fifty-seven suites, 2,518 expected passes, `ALL SUITES PASSED`.
+- **Reflection.**
+  1. **A list of causes copied into prose goes stale in every copy.** The three causes stood in `docs/waiting.md`, `docs/reference.md` and two comments. Grep the list's own words (here "past a cap") before fixing one copy.
+  2. **A general path tested with a few of its inputs gets documented as those few.** `fail-pull` takes any refusal, but the tests gave it three reasons, and the docs listed those three. When a path takes a class of inputs, give it a row for each kind the class holds.
+  3. **An input too long for `every-size` still needs both sides of the head's feed.** `at-sizes` with a byte, a few bytes, 4,096 and the whole input covers both: a refusal met as the pull reads, and one kept from the head's feed.
+- **Open:** no PR is open.
+
+NEXT: once https://akkuscm.org/packages/chez-http-server/ answers 200 and `akku update` lists 0.9.0, the install check from the index in a throwaway project, then docs/installing.md's "needs a release" line in a PR of its own. circuit, there, moves to v0.9.0 and drops its workarounds; it reads 431 among a pull's failures from main, or the next release. Carried: chez-websocket's pin, to v0.8.0 or v0.9.0, its session's call; the owner's read-token secret, secret scanning, and the siblings' vulnerability reporting.
