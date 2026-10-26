@@ -108,6 +108,18 @@ sized-body : Nat Producer -> SizedBody
 A body of that many bytes, made by the producer as it is sent, with its
 `Content-Length`. See [Bodies and streaming](bodies.md#streaming-with-a-length).
 
+### request-on-done!
+
+```text
+request-on-done! : Request (Symbol -> Any) -> Void
+```
+
+Registers a procedure that the server calls once, in place, when the
+request's response is done, or once the request's code that waits has
+stopped. It gets `written`, `client-closed` or `failed`. Procedures run
+newest first; one registered after the response is done runs at once, in the
+caller. See [Handlers](handlers.md#when-the-response-is-done).
+
 ## Waiting
 
 See [Waiting](waiting.md). The waits below work only inside a thunk given to

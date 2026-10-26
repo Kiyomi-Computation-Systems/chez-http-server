@@ -42,7 +42,10 @@
 ;;; write, read, close, arm a deadline and hear of the drain and the close,
 ;;; and the bytes it read past the request (see (http-server switch) and
 ;;; (http-server transport)).  A taker's tests make a fake with
-;;; `make-transport`.  A malformed setting raises &http-server-config-error
+;;; `make-transport`.  Code that holds a request may register a procedure
+;;; with `request-on-done!`: the server calls it once, in place, when the
+;;; request's response is done, with how it ended, `written`,
+;;; `client-closed` or `failed` (see (http-server request)).  A malformed setting raises &http-server-config-error
 ;;; at startup.
 ;;;
 ;;; Each export's type, by the library that defines and documents it:
@@ -63,6 +66,7 @@
 ;;;     request-header : Request String -> (U String #f)
 ;;;     request-header-values : Request String -> (Listof String)
 ;;;     request-header-list : Request -> (Listof (Pair String String))
+;;;     request-on-done! : Request (Symbol -> Any) -> Void
 ;;;   (http-server body)
 ;;;     read-body : (Bytevector Nat Nat -> Any) (-> Response) -> BodyReader
 ;;;     read-whole-body : (Bytevector -> Response) [(U Nat #f)] -> BodyReader
@@ -115,6 +119,8 @@
     request? request-method request-path request-query request-header request-header-values
     request-header-list request-host request-http-major request-http-minor request-has-body?
     read-body read-whole-body
+    ;; when its response is done
+    request-on-done!
     ;; what it answers
     make-response response? sized-body awaiting switch-protocols
     ;; the stream a handler that takes an upgrade is handed
@@ -131,7 +137,7 @@
     &http-server-error http-server-error?
     &http-server-config-error http-server-config-error?)
   (import (only (http-server request) request? request-method request-http-major request-http-minor
-                request-has-body?)
+                request-has-body? request-on-done!)
           (only (http-server view) request-path request-query request-header request-header-values
                 request-header-list request-host)
           (only (http-server body) read-body read-whole-body)

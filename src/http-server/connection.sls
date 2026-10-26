@@ -35,7 +35,7 @@
 ;;;            (notify-producer)  (arm-deadline kind)
 ;;;            (disarm-deadline)  (shutdown)  (close reason)
 ;;;            (log what . details)  (hand-off take-over retained ended?)
-;;;            (client-closed)
+;;;            (client-closed)  (response-done how procs)
 ;;;
 ;;; A parser-result's `offset` is the parser's own count of the bytes it has
 ;;; taken since it was made (chez-httparse's `parser-result-stream-offset`),
@@ -150,6 +150,26 @@
 ;;; lets that raise out is answered nothing, the connection closing for
 ;;; `client-closed`.  While the body is still being read, reading stops when
 ;;; the reader falls behind, so the client's close waits for the next read.
+;;;
+;;; HOW A RESPONSE ENDED IS TOLD, ONCE.  Once the core asks for a request's
+;;; handler, `call-handler`, it owes the request an ending, and pays it once,
+;;; marking the request done with how its response ended ((http-server
+;;; request)'s `request-done!`): `written` once every write of the handler's
+;;; response has completed (`response-written`), a switch's 101 among them,
+;;; before the hand-off; `client-closed` at a close for the client's end, a
+;;; read error, or the close's raise let out, since a write's failure reaches
+;;; the core as a read error; `failed` at any other close, and at `closed`
+;;; for a close the core did not ask for.  Once the core answers a status of
+;;; its own in place of the handler's response, a 500 or a refused body's,
+;;; or a sized body's producer disagrees with its length, the ending is
+;;; `failed`, however that response then ends, or `client-closed` for a short
+;;; end once the client has closed.  Marking the
+;;; request hands back what its code registered, `request-on-done!`'s
+;;; procedures, newest first, and only when there are any does the core emit
+;;; `(response-done how procs)`, before the actions that follow the end: the
+;;; resume, the staged close or the hand-off.  So the shell calls them before
+;;; the next request is fed, and a request with none registered costs
+;;; nothing.
 ;;;
 ;;; AN UPGRADE IS SERVED, THEN THE CONNECTION CLOSES.  A request that asks
 ;;; to switch protocols, by llhttp's rule a CONNECT or `Connection: upgrade`
@@ -477,14 +497,17 @@
       handler-body-end handler-failed body-credit body-pulled shutdown-requested))
 
   ;; conn-actions : (Listof Symbol)
-  ;; The eighteen action kinds, among them `hand-off`, which hands an
-  ;; upgrade's stream to the switch that takes it, `client-closed`, which
-  ;; tells the request's code its client has closed or reset the connection,
-  ;; and `deliver-body-failed`, which tells a pull its body has failed.
+  ;; The nineteen action kinds, among them `hand-off`, which hands an
+  ;; upgrade's stream to the switch that takes it; `client-closed`, which
+  ;; tells the request's code its client has closed or reset the
+  ;; connection; `response-done`, which hands the shell the procedures to
+  ;; tell how the request's response ended; and `deliver-body-failed`, which
+  ;; tells a pull its body has failed.
   (define conn-actions
     '(reply-parser feed-parser resume-parser write read-stop read-start
       call-handler deliver-body deliver-body-end deliver-body-failed notify-producer
-      arm-deadline disarm-deadline shutdown close log hand-off client-closed))
+      arm-deadline disarm-deadline shutdown close log hand-off client-closed
+      response-done))
 
   ;; conn-deadline-kinds : (Listof Symbol)
   ;; The five kinds of deadline the core arms, `(arm-deadline kind)`: idle,
@@ -545,8 +568,11 @@
   ;; open-run!).  A state is made at a connection's first byte, so the empty
   ;; lines before its first request line are open from there.  A state made
   ;; in `handling` has a message that has ended, and is waiting for its
-  ;; handler's answer, as a request with no body is.  And whether the
-  ;; client's end has come while its requests were answered.
+  ;; handler's answer, as a request with no body is, so it owes the request
+  ;; an ending.  And whether the client's end has come while its requests
+  ;; were answered; and the ending the request in flight is owed: #f, none,
+  ;; its handler not asked or its ending told; `owed`; or `failed` or
+  ;; `client-closed`, decided before the response ended (cut-short!).
   (define-record-type (conn-state make-conn-state conn-state?)
     (fields (mutable phase       conn-phase       conn-phase-set!)
             (mutable deadline    conn-deadline    conn-deadline-set!)
@@ -570,7 +596,8 @@
             (mutable mark        conn-mark        conn-mark-set!)
             (mutable run         conn-run         conn-run-set!)
             (mutable taker       conn-taker       conn-taker-set!)
-            (mutable ended?      conn-ended?      conn-ended?-set!))
+            (mutable ended?      conn-ended?      conn-ended?-set!)
+            (mutable ending      conn-ending      conn-ending-set!))
     (protocol
      (lambda (new)
        (lambda (phase deadline close-after outstanding outstanding-bytes pending request limits)
@@ -589,7 +616,8 @@
              (body-answer-set! body 'asked)
              (body-complete?-set! body #t))
            (new phase deadline close-after outstanding outstanding-bytes pending request limits
-                (make-head) body (make-target-judge) #f #f #f #f #f #f 0 0 0 'lines #f #f))))))
+                (make-head) body (make-target-judge) #f #f #f #f #f #f 0 0 0 'lines #f #f
+                (and (eq? phase 'handling) 'owed)))))))
 
   ;; conn-body-reader : ConnState -> (U #f BodyReader)
   ;; The reader the handler answered with, while the core hands it the body:
@@ -1047,30 +1075,34 @@
   ;; end has come, a close is at once, the end the linger waits for having
   ;; come, and with nothing more held it closes; otherwise what is held is
   ;; fed, and reading never starts again.
+  ;; The request's ending is told first, `written`, before the actions that
+  ;; follow (told).
   (define (response-written s)
-    (cond
-     ((conn-taker s) (hand-off s))
-     ((conn-close-after s)
-      (forget-input! s)
-      (if (conn-ended? s)
-          (close s (conn-close-after s) '())
-          (begin
-            (conn-phase-set! s 'lingering)
-            (conn-deadline-set! s 'linger)
-            (values s '((shutdown) (read-start) (arm-deadline linger))))))
-     ((and (conn-ended? s) (not (conn-pending s)))
-      (close s 'eof '()))
-     (else
-      (let ((pending (conn-pending s)))
-        (conn-phase-set! s 'idle)
-        (conn-deadline-set! s 'idle)
-        (conn-pending-set! s #f)
-        (values s `((resume-parser)
-                    ,@(if pending (list (cons 'feed-parser pending)) '())
-                    ,@(if (conn-ended? s) '() '((read-start)))
-                    (arm-deadline idle)))))))
+    (let ((done (told s 'written)))
+      (cond
+       ((conn-taker s) (hand-off s done))
+       ((conn-close-after s)
+        (forget-input! s)
+        (if (conn-ended? s)
+            (close s (conn-close-after s) done)
+            (begin
+              (conn-phase-set! s 'lingering)
+              (conn-deadline-set! s 'linger)
+              (values s (append done '((shutdown) (read-start) (arm-deadline linger)))))))
+       ((and (conn-ended? s) (not (conn-pending s)))
+        (close s 'eof done))
+       (else
+        (let ((pending (conn-pending s)))
+          (conn-phase-set! s 'idle)
+          (conn-deadline-set! s 'idle)
+          (conn-pending-set! s #f)
+          (values s (append done
+                            `((resume-parser)
+                              ,@(if pending (list (cons 'feed-parser pending)) '())
+                              ,@(if (conn-ended? s) '() '((read-start)))
+                              (arm-deadline idle)))))))))
 
-  ;; hand-off : ConnState -> (values ConnState (Listof Action))
+  ;; hand-off : ConnState (Listof Action) -> (values ConnState (Listof Action))
   ;; responding, the 101's last write completed -> handed-off: the deadline
   ;; disarmed, reading stopped, and the hand-off, with the switch's
   ;; take-over and the bytes read past the request, the pending input the
@@ -1080,14 +1112,15 @@
   ;; read-start it makes stands, and nothing is read for the core, which
   ;; drops what it reads once handed off: what the client sends next waits
   ;; for the taker.  The end is the taker's to hear, and the shell tells it,
-  ;; not the kernel.
-  (define (hand-off s)
+  ;; not the kernel.  `done`, the request's ending told, comes first.
+  (define (hand-off s done)
     (let ((take-over (conn-taker s)) (retained (conn-pending s)) (ended? (conn-ended? s)))
       (conn-taker-set! s #f)
       (forget-input! s)
       (conn-phase-set! s 'handed-off)
       (conn-deadline-set! s #f)
-      (values s (list '(disarm-deadline) '(read-stop) (list 'hand-off take-over retained ended?)))))
+      (values s (append done (list '(disarm-deadline) '(read-stop)
+                                   (list 'hand-off take-over retained ended?))))))
 
   ;; stream-completed : ConnState -> (values ConnState (Listof Action))
   ;; A completion while a streamed body is written.  A producer that waits,
@@ -1189,9 +1222,13 @@
   ;; not logged.  With a write outstanding, its completion writes the
   ;; response, as for a close-delimited body's end; with none, it is
   ;; written now, and the staged close begins.
+  ;; The request's ending is `failed`, or `client-closed` for that short end
+  ;; (cut-short), however the response then ends.
   (define (mismatch s how given)
-    (let ((logged (and (not (and (eq? how 'short) (eq? (conn-close-after s) 'client-closed)))
-                       (list 'log 'body-length-mismatch (conn-declared s) given))))
+    (let* ((clients? (and (eq? how 'short) (eq? (conn-close-after s) 'client-closed)))
+           (logged (and (not clients?)
+                        (list 'log 'body-length-mismatch (conn-declared s) given))))
+      (cut-short! s (if clients? 'client-closed 'failed))
       (end-stream! s)
       (unless (conn-close-after s) (conn-close-after-set! s 'body-length-mismatch))
       (let-values (((s actions) (if (> (conn-outstanding s) 0) (values s '()) (response-written s))))
@@ -1492,8 +1529,7 @@
             (case (body-answer bd)
               ((#f)
                (body-answer-set! bd 'asked)
-               (values s (list '(reply-parser pause) '(disarm-deadline)
-                               (list 'call-handler (conn-request s)))))
+               (values s (list '(reply-parser pause) '(disarm-deadline) (asking s))))
               ((stream pull)
                (body-answer-set! bd 'ending)
                (values s '((reply-parser pause) (disarm-deadline) (deliver-body-end))))
@@ -2110,10 +2146,44 @@
         (body-answer-set! bd 'asked)
         (conn-phase-set! s 'handling)
         (conn-deadline-set! s #f)
-        (values s (list '(read-stop) '(disarm-deadline) (list 'call-handler (conn-request s)))))
+        (values s (list '(read-stop) '(disarm-deadline) (asking s))))
        (else
         (body-answer-set! bd 'asked)
-        (values s (list (list 'call-handler (conn-request s))))))))
+        (values s (list (asking s)))))))
+
+  ;; asking : ConnState -> Action
+  ;; `(call-handler request)`, for the request in flight, which is then owed
+  ;; an ending (told).
+  (define (asking s)
+    (conn-ending-set! s 'owed)
+    (list 'call-handler (conn-request s)))
+
+  ;; told : ConnState Symbol -> (Listof Action)
+  ;; The request in flight's ending, paid once: `how`, or the ending already
+  ;; decided (cut-short), marked on the request, and `(response-done how
+  ;; procs)` for what its code registered, if anything; '() when nothing is
+  ;; owed, or nothing was registered.
+  (define (told s how)
+    (let ((ending (conn-ending s)) (r (conn-request s)))
+      (if (not ending)
+          '()
+          (let* ((how (if (eq? ending 'owed) how ending))
+                 (procs (begin (conn-ending-set! s #f) (if r (request-done! r how) '()))))
+            (if (null? procs) '() (list (list 'response-done how procs)))))))
+
+  ;; cut-short! : ConnState Symbol -> Void
+  ;; The request in flight's ending decided, `failed` or `client-closed`,
+  ;; however its response then ends, if it is owed and nothing decided it
+  ;; first.
+  (define (cut-short! s how)
+    (when (eq? (conn-ending s) 'owed) (conn-ending-set! s how)))
+
+  ;; close-ending : Symbol -> Symbol
+  ;; How a close for `reason` ends the response it cuts short: `client-closed`
+  ;; for the client's end, a read error, which a write's failure is too, or
+  ;; the close's raise let out; `failed` for any other.
+  (define (close-ending reason)
+    (if (memq reason '(eof read-error client-closed)) 'client-closed 'failed))
 
   ;; read-on : ConnState (Listof Action) -> (values ConnState (Listof Action))
   ;; `actions`, and then, for a request that waited on its handler in
@@ -2543,25 +2613,29 @@
       (else (values s '()))))
 
   ;; closing, closed -> closed.  handed-off too: the stream the taker was
-  ;; handed has closed.
+  ;; handed has closed.  In any other state the close is one the core did
+  ;; not ask for, the shell's own: the request in flight's ending, owed, is
+  ;; `failed` (told).
   (define (on-closed s)
     (case (conn-phase s)
       ((closing handed-off) (conn-phase-set! s 'closed) (values s '()))
-      (else (values s '()))))
+      (else (values s (told s 'failed)))))
 
   ;; close : ConnState Symbol (Listof Action) -> (values ConnState (Listof Action))
   ;; Enter `closing`, disarming the deadline, armed or not, before the
   ;; close: the shell's wheel holds a connection until its deadline is
-  ;; disarmed or passes.  `before` precedes both.  A body being read goes,
-  ;; its reader with it, and so does a body being written, its producer
-  ;; with it.
+  ;; disarmed or passes.  `before` precedes both, and then the request in
+  ;; flight's ending, if it is owed, as the reason says (close-ending).  A
+  ;; body being read goes, its reader with it, and so does a body being
+  ;; written, its producer with it.
   (define (close s reason before)
-    (conn-phase-set! s 'closing)
-    (conn-deadline-set! s #f)
-    (body-roll! (conn-body s))
-    (end-stream! s)
-    (conn-taker-set! s #f)
-    (values s (append before (list '(disarm-deadline) (list 'close reason)))))
+    (let ((done (told s (close-ending reason))))
+      (conn-phase-set! s 'closing)
+      (conn-deadline-set! s #f)
+      (body-roll! (conn-body s))
+      (end-stream! s)
+      (conn-taker-set! s #f)
+      (values s (append before done (list '(disarm-deadline) (list 'close reason))))))
 
   ;; respond-and-close :
   ;;   ConnState Symbol Headers -> (values ConnState (Listof Action))
@@ -2586,8 +2660,10 @@
   ;; The response has no body and no headers but `headers`, a redirect's
   ;; Location; the serializer writes its phrase, and its framing and
   ;; `Connection: close`.  The core's own response is
-  ;; read for faults as any caller's is.
+  ;; read for faults as any caller's is.  Answered in place of a handler's
+  ;; response, it makes the request's ending `failed` (cut-short).
   (define (respond s status reason headers)
+    (cut-short! s 'failed)
     (let ((reading? (memq (conn-phase s) '(head body))))
       (conn-phase-set! s 'responding)
       (conn-deadline-set! s 'write)
