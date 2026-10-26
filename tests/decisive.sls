@@ -21,7 +21,8 @@
 
   ;; decisive : (Listof Action) -> (Listof Datum)
   ;; The handlers asked, the pieces handed over joined into one text between
-  ;; two other actions, each reader's end, and the writes by status.
+  ;; two other actions, each reader's end, a pull told its body failed, as
+  ;; `(failed reason status)`, and the writes by status.
   (define (decisive actions)
     (let loop ((as actions) (acc '()))
       (if (null? as)
@@ -36,5 +37,6 @@
                      (loop (cdr as) (cons (list 'body (string-append (cadr (car acc)) piece)) (cdr acc)))
                      (loop (cdr as) (cons (list 'body piece) acc)))))
               ((deliver-body-end) (loop (cdr as) (cons '(end) acc)))
+              ((deliver-body-failed) (loop (cdr as) (cons (cons 'failed (cdr a)) acc)))
               ((write) (loop (cdr as) (cons (list 'write (written-status a)) acc)))
               (else (loop (cdr as) acc))))))))

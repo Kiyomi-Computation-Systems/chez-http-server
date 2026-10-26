@@ -12,7 +12,8 @@
 ;;;   - a client that closes or resets while the handler waits: the wait
 ;;;     raises &client-closed, nothing is answered, and the connection
 ;;;     closes;
-;;;   - a body sent in pieces, some later, reaches the reader piece by piece;
+;;;   - a body sent in pieces, some later, reaches the reader piece by piece,
+;;;     and one its handler pulls is read through a port;
 ;;;   - two requests in one send are answered in order, a malformed one after
 ;;;     them 400, then the connection closes;
 ;;;   - a raise is answered 500 and logged `handler-failed`, a resume after
@@ -72,7 +73,8 @@
 ;;; raise is logged `taker-failed`); and examples/README.org and
 ;;; docs/waiting.md for long-poll.sps.
 (import (rnrs) (rnrs eval) (srfi :64) (testing)
-        (http-server) (http-server testing))
+        (http-server) (http-server testing)
+        (only (http-server private waits) body-input-port))
 
 (define (b s) (string->utf8 s))
 
@@ -292,6 +294,20 @@
         (test-equal "a body sent in two pieces, the second 50 ms later, reaches the reader piece by piece, and is answered at its end"
                     '((("hello") ()) ("hello" "world") ((200 "helloworld")))
                     (list between (reverse pieces) (seen c)))))
+
+    ;; --- a body pulled ------------------------------------------------------------
+    (let* ((host (make-test-host
+                  (lambda (request)
+                    (awaiting
+                     (lambda ()
+                       (make-response 200 #f '() (get-bytevector-all (body-input-port))))))))
+           (c (test-host-connect! host)))
+      (test-client-send! c (b "POST /up HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nhello"))
+      (let ((between (seen c)))
+        (test-client-send! c (b "world"))
+        (test-equal "a body its handler pulls through a port, sent in two pieces: nothing answered until its end, then the body"
+                    '(() ((200 "helloworld")) ())
+                    (list between (seen c) (test-host-log host)))))
 
     ;; --- pipelined, then malformed ------------------------------------------------
     (let* ((host (make-test-host
