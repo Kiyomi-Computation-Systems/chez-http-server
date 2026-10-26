@@ -10,7 +10,7 @@
 ;;; events and dispatches it.  None runs application code but the handler's
 ;;; call, its reader's and its producer's, and none captures a continuation.
 ;;;
-;;; THE MESSAGE LOOP is the fake shell's (tests/fake-shell.sls).  Actions run
+;;; THE MESSAGE LOOP is (http-server private fake-shell)'s.  Actions run
 ;;; after the outermost dispatch, in order, from one queue; a dispatch made
 ;;; while the queue drains, or while the parser feeds, only queues.  Once the
 ;;; queue is empty, the drain sends the writes held (WRITE BATCHING, below),

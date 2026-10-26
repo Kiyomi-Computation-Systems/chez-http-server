@@ -155,6 +155,9 @@ handed out.
 To test your taker without a server, make a transport of your own:
 `make-transport` takes the eight procedures the calls above end up in, in
 that order. Seven, without the abort, still make one, but `transport-abort!`
-on it is refused. `tests/fake-shell.sls` in this repository is a fuller fake:
-it plays a whole server and client around your taker, as chez-websocket's
-tests use it.
+on it is refused.
+
+To test the handler that switches and its taker together, host the handler
+with `(http-server testing)`: what the client sends after the `101` goes to
+your taker, and what it writes is what the client reads
+([Testing handlers](testing.md)).

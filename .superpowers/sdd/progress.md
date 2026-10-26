@@ -473,3 +473,195 @@ NEXT: circuit drops its guess, there, once it pins a server with `request-has-bo
 - **The gate on the merged code** (f4edc36's, before #233, which changes no code or suite): #224 fifty-four suites, 2,268 expected passes; #225 fifty-five, 2,303; #226 fifty-five, 2,317, the whole-server GET 5,144 B; `make check-site`, `make check-help`. The 41-row re-run as predicted (the mutation log).
 
 NEXT: the closing ritual when the owner asks, bottom-up: #224, then #225 retargeted to main, then #226.
+
+MERGED to main on 2026-10-25, on the owner's "do closing ritual": **#224-#226, `request-on-done!`, three stacked PRs** (the entry above), bottom-up, closing #217.
+- **#224:** 83b077f squashed as 69e36d9 (tree 4ec0c91, the tested head's; parent cc9faa4) with `--match-head-commit` on the full SHA and no `--delete-branch`, since the shared checkout holds `main`.
+- **#225:** retargeted to main, and not rebased: its head took #224's squash by a merge built on the tested tree (d787c20, tree 1c026f1, unchanged), pushed as a fast-forward. The decision record, added on both sides relative to cc9faa4, kept this branch's copy, the squash's plus the sized body's mismatch note; `git diff --stat 69e36d9 d787c20` named only the layer's five files first. Squashed as f23c391 (tree 1c026f1; parent 69e36d9).
+- **#226:** the same: 769c521 (tree 0219e67, unchanged), squashed as 1f79fbd (tree 0219e67; parent f23c391). #217 closed with it.
+- **CI.** Each head passed: 40245110683 (83b077f), 40245111755 (153fe76; a duplicate run cancelled) and 40246201490 (f3a52e2), each `ALL SUITES PASSED`; the merged heads' trees are theirs, so their runs were not waited for. Main's runs on 69e36d9 and f23c391 were cancelled by the next; the one on 1f79fbd, 40250916917, was running at this reflect.
+- **On main at 1f79fbd, Darwin arm64:** `make test`, fifty-five suites, 2,317 expected passes, `ALL SUITES PASSED`.
+- **Branches.** The three deleted on origin and locally, with five local backups; this worktree detached at 1f79fbd; the shared checkout fast-forwarded to 1f79fbd.
+- **Reflection.** (1) Under Auto-fix, a stack moves onto main by merges, not rebases: a merge commit whose tree is the tested tree keeps the proof exact and each push a fast-forward. A file one layer adds and a higher layer amends conflicts add/add at each squash, resolved by the higher layer's copy. (2) A merge built on a tree from before main's newest commit undoes that commit while naming it a parent; fetch and build in one step, and read `git diff --stat origin/main <merge>` before the push (memory: merge trees must include their parents). (3) The owner's form chose "in place", but the review found that it let a procedure run under code still waiting; Jetty and Kestrel wait for the app's code, and the amendment does too. Peers' behaviour belongs in a form's options, and so does the case the recommended option leaves open. (4) Mutation runs in parallel need roots that share nothing written (the examples suite's `build/examples-root`), and fewer at once (three) for the suites with child processes and MiB transfers; each lone surprise ran again alone.
+- **Open:** #234-#237 (#227's body pull, which meets this stack in the core and both shells; told by message) and #238 (connection addresses).
+
+NEXT: circuit, there, moves to `request-on-done!`, with `sized-body` and `request-has-body?`, once a release carries them: 1f79fbd, or the next release, whose `[Unreleased]` holds all three. Carried: #227's stack and #238 land on this main; circuit's other workarounds, once it pins a server with `request-header-list` and the version accessors; the Akku listing's install check and installing.md's "needs a release" line; chez-websocket's pin to v0.8.0; the owner's read-token secret, secret scanning and the siblings' vulnerability reporting.
+
+**`(http-server testing)`, on `feat/testing-library` (2026-10-25),** on the owner's "do issue 230": the owner's #230, from circuit, which runs every app on a coroutine and so can test its adapter, its timeout middleware and any app that waits only through a host. Built in this session's worktree, `.claude/worktrees/issue-230-testing-library`, while other work stayed open: the 229 session, the #227 session's `feat/body-pull*`, and #224–#226.
+- **What:** `(http-server testing)`, a second facade at `src/http-server/testing.sls`. It runs a handler against scripted wire bytes over the fake shell, waits included, with no socket and no real time. Decision 0038 records the design and what was weighed; docs/testing.md is the guide, and says where the host differs from the server. Its 25 exports:
+  - `make-test-host`;
+  - `test-host-?`/`-now`/`-advance!`/`-log`/`-lookups`/`-answer!`/`-waiting`/`-connect!`;
+  - `test-client-?`/`-send!`/`-close!`/`-reset!`/`-received`/`-responses`/`-connection-closed?`/`-waiting?`;
+  - `test-response-?`/`-status`/`-reason`/`-headers`/`-header`/`-body`/`-bytes`/`-complete?`.
+- **The move, in its own commit:** the fake shell moves to `src/http-server/private/fake-shell.sls` as `(http-server private fake-shell)`, so the package installs it, and `tests/fake-shell.sls` becomes a shim with the same exports. The script below makes the commit.
+  - Rerun on cc9faa4, it gave the replayed move's tree exactly, 0904f9e. The move commit here is its run on f23c391, over #225's fake shell. The moved file differs from main's in its two name lines, and the shim's exports are main's, #225's among them.
+  - On 77ace4e, `make test`'s count for each suite is the same before and after it: 54 suites, 2,189 expected passes.
+- **Beside the move, in the library's commit:**
+  - the harness exports `fake-shell-calling?` (script B below);
+  - `make-fake-connection` takes an optional sixth argument, a scheduler, so a host's connections share one scheduler and one set of waits, as a loop's connections share the libuv shell's;
+  - the dispatch cap counts per event, as its header said, not over a connection's life;
+  - `serve.sls` exports `settings`, and the adapter `request-parser-inits`;
+  - the import audit treats the testing library as a second facade, which also catches a pure library importing the facade, a case it missed before. `global-constraints.md`'s two audit rules are amended to match.
+- **Built by an agent, Opus, in two rounds:** 496,802 tokens, 187 tool uses, about 46 min; then 662,651 tokens, 82 tool uses, about 29 min.
+- **The review between the rounds:** read-only, Opus, 311,557 tokens, 75 tool uses, about 20 min. Each of its fidelity findings was checked in the code first, and round 2 fixed them:
+  - the lifetime dispatch cap (`fake-shell.sls:305-321`, against its header at `:103-105`);
+  - a scheduler per connection (`:536-538`, against `shell.sls:361-374`);
+  - a lookup a deadline cancels, left unanswered. `waits.sls:106-109` and chez-libuv's docs/dns.md have it answer `EAI_CANCELED`, so production logs `late-resume resolve`. docs/waiting.md said otherwise, and is corrected;
+  - writes after a reset reaching the client;
+  - unread bytes dropped on a reset before a handoff, but kept after one;
+  - settings copied from serve, the copy already drifted;
+  - parser options and `trim-ows` copied;
+  - `test-client-closed?` reading like the facade's `client-closed?`; it is renamed `test-client-connection-closed?`.
+- **Documented, not modelled:**
+  - a request and a reset in one moment;
+  - a write after a reset the server hasn't read;
+  - `handler-failed` after a close;
+  - a slow reader, or a write timeout.
+- **Not done:** a contract lane holding the host to serve over loopback. Decision 0038 says what it would take.
+- **Tests:** `tests/test-handler-testing.sps`, 49 rows, each a real handler, `examples/long-poll.sps`'s among them. Each new row was watched to fail.
+- **Mutants,** in m8-mutations.md: 43 of the library and harness. Each fails a suite, except m22, which is equivalent; h02 fails only `test-fake-shell`. Seven were rerun here before the commit, and the unmutated controls passed.
+- **Three rebases:**
+  - **Onto cc9faa4:** the move replayed cleanly. The library's commit conflicted in CHANGELOG.md alone, both sides adding to `[Unreleased]`. The resolution orders it Added (main's entries, then this one), Changed, then Fixed, where this one's docs/waiting.md entry joins main's.
+  - **Onto f23c391,** once #224 and #225 had landed, #225 changing the fake shell: script A reran there, and the library's commit was cherry-picked over it. It conflicted in one line pair, the record's constructor call. #225's two new fields' `'()`s and the cap's `#f` for `dispatches` both stand.
+  - **Onto 1051ac0,** once #226 had landed: script A reran there, and the library's commit was cherry-picked over it. It conflicted in docs/handlers.md, where both add a section after Answering (main's "When the response is done" first, then "Testing a handler"), and in the two ledger files, where both append.
+  - A push was made on the cc9faa4 base before main's move was seen. It was replaced, with a lease, before the PR opened.
+- **`on-done-failed`, after #226:** the libuv shell now logs a raise from a procedure that `request-on-done!` registered (`shell.sls`'s `tell-done!`). #225's fake shell records each one in `fake-shell-done-failures` without tracing it, and the host's log is built from traces. So the host logs each new one before its next entry, its next trace and the end of each round. Two rows, in the order docs/handlers.md gives:
+  - one procedure raising, and the one registered before it still told `written`;
+  - a pipelined pair, where the first response's `on-done-failed` comes before the second request's `handler-failed`.
+
+  Both rows were watched to fail: 47 passes and 2 failures before the code. Three mutants each fail the suite: never logged (47 / 2), logged only at the end of a round (48 / 1, the order row), and the count never advanced (47 / 2).
+- **The gate, in the Guix container:**
+  - on cc9faa4, `make test`: fifty-five suites, 2,319 expected passes, `ALL SUITES PASSED`. That is main's 2,261 and this branch's 58: 47 in the new suite, and 3, 5 and 3 more in the fake-shell, imports and reference suites;
+  - on f23c391, `make test`: fifty-six suites, `tests/test-connection-done.sps` among them, and 2,361 expected passes, `ALL SUITES PASSED`;
+  - on 1051ac0, with `on-done-failed`: fifty-six suites, 2,377 expected passes, `ALL SUITES PASSED`, the new suite's 49 among them;
+  - `make check-site-deps`, `check-site`, `check-help`, `check-pins` and `check-notice`, each passing.
+
+  `make check-akku` didn't run: neither the container nor the host has akku.
+
+The move script (script A), for a later base. Run it from the repository's root, on a clean tree:
+
+```sh
+#!/bin/sh
+# Move the fake shell from tests/ into src/ as (http-server private fake-shell),
+# so the Akku package installs it, and leave tests/fake-shell.sls as a shim
+# that re-exports it as (fake-shell), with the same exports, so no suite's
+# imports change.  Run from the repository's root, on a clean tree.
+set -eu
+
+old=tests/fake-shell.sls
+new=src/http-server/private/fake-shell.sls
+shell=src/http-server/private/shell.sls
+
+[ -f "$old" ] || { echo "move: no $old" >&2; exit 1; }
+[ ! -e "$new" ] || { echo "move: $new exists already" >&2; exit 1; }
+grep -q '^(library (fake-shell)$' "$old" || { echo "move: $old has no '(library (fake-shell)' line" >&2; exit 1; }
+sed -n '2p' "$old" | grep -q '^;;; (fake-shell) ' || { echo "move: $old's second line does not name (fake-shell)" >&2; exit 1; }
+
+# The export form, verbatim: from its "(export" line to the line before the
+# first "(import" line.  The form must close on that line: its parentheses
+# balance there, and on no line before it.
+exports=$(awk '/^[[:space:]]*\(import/ { exit } /^[[:space:]]*\(export/ { p = 1 } p' "$old")
+[ -n "$exports" ] || { echo "move: no export form before the import form in $old" >&2; exit 1; }
+lines=$(printf '%s\n' "$exports" | wc -l)
+printf '%s\n' "$exports" | awk -v lines="$lines" '
+  { for (i = 1; i <= length($0); i++) { c = substr($0, i, 1); if (c == "(") d++; else if (c == ")") d-- }
+    if (d <= 0 && NR < lines) bad = 1 }
+  END { exit (d != 0 || bad) }' ||
+  { echo "move: the export form in $old does not end on the line before its import form" >&2; exit 1; }
+
+git mv "$old" "$new"
+
+# The library's name, in its form and in the header's first line.
+sed -e 's/^(library (fake-shell)$/(library (http-server private fake-shell)/' \
+    -e '2s/^;;; (fake-shell) /;;; (http-server private fake-shell) /' \
+    "$new" > "$new.tmp"
+mv "$new.tmp" "$new"
+grep -q '^(library (http-server private fake-shell)$' "$new" || { echo "move: the library was not renamed" >&2; exit 1; }
+sed -n '2p' "$new" | grep -q '^;;; (http-server private fake-shell) ' || { echo "move: the header's first line was not renamed" >&2; exit 1; }
+
+{
+  printf '%s\n' \
+    '#!r6rs' \
+    ';;; (fake-shell) — the fake shell, by the name the suites import it by.' \
+    ';;;' \
+    ';;; The harness is (http-server private fake-shell), in' \
+    ';;; src/http-server/private/fake-shell.sls, where the package installs' \
+    ';;; it.  This library re-exports what the suites import, by the name' \
+    ';;; they import it by.' \
+    '(library (fake-shell)'
+  printf '%s\n' "$exports"
+  printf '%s\n' '  (import (http-server private fake-shell)))'
+} > "$old"
+
+# The libuv shell's header names the fake by its path.
+if grep -q "is the fake shell's (tests/fake-shell.sls)\." "$shell"; then
+  sed -e "s|is the fake shell's (tests/fake-shell.sls)\.|is (http-server private fake-shell)'s.|" \
+      "$shell" > "$shell.tmp"
+  mv "$shell.tmp" "$shell"
+else
+  echo "move: $shell no longer names tests/fake-shell.sls as it did; check its header by hand" >&2
+fi
+! grep -n 'tests/fake-shell\.sls' "$shell" || { echo "move: $shell still names tests/fake-shell.sls" >&2; exit 1; }
+
+git add "$old" "$new" "$shell"
+```
+
+Script B, run after it, in the library's commit:
+
+```sh
+#!/bin/sh
+# (http-server private fake-shell) exports an accessor its record already
+# defines, for (http-server testing): whether a call into the handler's code
+# runs on a coroutine.  (fake-shell), the suites' shim, does not export it.
+# Run from the repository's root, after move-fake-shell.sh.
+set -eu
+
+f=src/http-server/private/fake-shell.sls
+grep -q '^  (export make-fake-shell fake-shell?$' "$f" || { echo "expose: $f's export form does not begin as it did" >&2; exit 1; }
+grep -q '^  (define-record-type fake-shell$' "$f" || { echo "expose: $f has no fake-shell record" >&2; exit 1; }
+! grep -q 'fake-shell? fake-shell-calling?' "$f" || { echo "expose: already done" >&2; exit 1; }
+
+awk '
+  /^  \(export make-fake-shell fake-shell\?$/ {
+    print "  (export make-fake-shell fake-shell? fake-shell-calling?"; next }
+  /^  \(define-record-type fake-shell$/ {
+    print "  ;; fake-shell-calling? : FakeShell -> Boolean — whether a call into the"
+    print "  ;;   handler'"'"'s code runs on a coroutine and has not ended (A HANDLER THAT"
+    print "  ;;   WAITS): once the scheduler is drained, whether that code waits"
+  }
+  { print }' "$f" > "$f.tmp"
+mv "$f.tmp" "$f"
+grep -q '^  (export make-fake-shell fake-shell? fake-shell-calling?$' "$f" || { echo "expose: the export was not added" >&2; exit 1; }
+git add "$f"
+```
+
+NEXT: this PR's merge, when the owner asks. It collides with 229's PR (`feat/connection-addresses`, decision 0037), which also gives `make-fake-connection` a sixth optional argument, addresses, and edits `tests/fake-shell.sls` and `shell.sls`. Whichever lands second rebases:
+- if 229 lands first, rerun script A over its fake shell, and the scheduler becomes the seventh argument;
+- if this lands first, 229's fake-shell edits go to `src/http-server/private/fake-shell.sls`.
+
+#227's `feat/body-pull*` also edits the fake shell. Then circuit moves its tests onto `(http-server testing)`, there.
+
+MERGED to main on 2026-10-25, on the owner's "do closing ritual": **#239, `(http-server testing)`** (the entry above), closing #230.
+- **The merge:** 457eacb squashed as 93d87a1 (tree 6523d35, the tested head's; parent 1051ac0), with `--match-head-commit` on the full SHA. There was no `--delete-branch`, since the shared checkout holds `main`. The squash's body is the move's paragraph, then the library commit's.
+- **CI.** The head's run, 40251569713 (457eacb), passed both jobs:
+  - `ALL SUITES PASSED`, fifty-six suites, 2,377 expected passes, the local count;
+  - the amended import-audit line;
+  - `check-akku-lock`, both NOTICE lines repeated, `srfi-links` and `submodules-follow`;
+  - the site job's eighteen pages, `testing.md` the new one.
+
+  The PR read MERGEABLE/CLEAN, on 1051ac0, before the merge. Main's run on 93d87a1, 40252009170, was in progress at this reflect.
+- **Branches:** `feat/testing-library` was deleted on origin and locally, and so was the worktree's own `worktree-issue-230-testing-library`, which held the pre-rebase WIP commit 1b546dc, its tree carried into the branch. This worktree is detached at 93d87a1. The shared checkout's `main`, at bbb5d8a, is its own session's to fast-forward, so it was not touched from here.
+- **Reflection.**
+  1. **A check and the act it guards go in sequence, never in one batch.** The push went out in the same call as the fetch that would have shown #224 and #225 landing, so it went up on a stale base. A lease replaced it before the PR opened, and nothing read it.
+  2. **With sessions in parallel, a decision number is free only when no pushed branch holds it,** not only main and the open PRs. 0036 was on #227's branches before their PR opened; the 229 session said so, and this record took 0038.
+  3. **A move made by a script survives a moving main.** It reran on three bases in one afternoon. Each run was checked by diff against that base's file, two name lines, and #225's new exports came along untouched. Only the hand edits beside it conflicted, in one line of the record's constructor.
+  4. **A log built from another shell's traces drifts as that shell gains lines.** `on-done-failed` came with #226 the same afternoon and was caught only by reading #226's diff before the push. The contract lane that decision 0038 describes would hold it.
+- **Open:**
+  - #238, connection addresses (229's), rebases onto 93d87a1. Its fake-shell edits go to `src/http-server/private/fake-shell.sls`, and its addresses become `make-fake-connection`'s seventh argument, after the scheduler. The 229 session was told.
+  - #234–#237, #227's body pull, which also edit the fake shell.
+
+NEXT: circuit, there, moves its tests onto `(http-server testing)` once it pins a server with it: 93d87a1, or the next release, whose `[Unreleased]` holds it. Carried from #224–#226's reflect:
+- #227's stack and #238 land on this main;
+- circuit's moves to `request-on-done!`, `sized-body`, `request-has-body?`, `request-header-list` and the version accessors;
+- the Akku listing's install check, and installing.md's "needs a release" line;
+- chez-websocket's pin to v0.8.0;
+- the owner's read-token secret, secret scanning, and the siblings' vulnerability reporting.
