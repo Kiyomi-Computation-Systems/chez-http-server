@@ -44,7 +44,7 @@ All notable changes to chez-http-server are recorded here. The format follows
   follows no longer copies the rule from the headers, and asking allocates
   nothing: the request holds the answer, made once with it. It takes the
   place of `(http-server request)`'s `request-body`, which was `#f` for
-  every request, so `make-request`'s last argument is now this Boolean. A
+  every request, so `make-request`'s sixth argument is now this Boolean. A
   program that imports all of `(http-server)` and defines `request-has-body?`
   itself no longer loads: rename its own, or import
   `(except (http-server) request-has-body?)`.
@@ -65,6 +65,17 @@ All notable changes to chez-http-server are recorded here. The format follows
   nothing more. A program that imports all of `(http-server)` and defines
   `request-on-done!` itself no longer loads: rename its own, or import
   `(except (http-server) request-on-done!)`.
+- **A handler can read the addresses of the connection a request came on.**
+  `request-remote-address` and `request-local-address`, each
+  `Request -> (U String #f)`, and `request-remote-port` and
+  `request-local-port`, each `Request -> (U Nat #f)`, give the address and
+  port of the connection's other end and of the end it came in on, `#f`
+  where the server can't say. The server reads them once, as it accepts the
+  connection, so every request on it reads the same. A handler can now
+  trust `X-Forwarded-For` only when the request came from its own proxy,
+  and log or limit by peer (decision 0037). A program that imports all of
+  `(http-server)` and defines one of the four names itself no longer loads:
+  rename its own, or import it with `except`.
 - **A handler that waits can read its body by waiting.** In its `awaiting`
   thunk, before it answers, `(next-body-piece)` gives the body's next piece,
   a bytevector of its own, or the eof object at the end, and

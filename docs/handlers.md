@@ -24,7 +24,8 @@ ends Chez too.
 
 ## Reading the request
 
-For `GET /a/b?x=1 HTTP/1.1` with `Host: example.com`:
+For `GET /a/b?x=1 HTTP/1.1` with `Host: example.com`, sent from
+`192.0.2.7` port `54321` to the server at `198.51.100.1` port `8080`:
 
 | Call | Gives | Here |
 |:--|:--|:--|
@@ -38,6 +39,10 @@ For `GET /a/b?x=1 HTTP/1.1` with `Host: example.com`:
 | `(request-http-major r)` | the version's first number | `1` |
 | `(request-http-minor r)` | the version's second number | `1` |
 | `(request-has-body? r)` | whether a body follows the head | `#f` |
+| `(request-remote-address r)` | the address of the connection's other end, or `#f` | `"192.0.2.7"` |
+| `(request-remote-port r)` | its port, or `#f` | `54321` |
+| `(request-local-address r)` | the address the connection came in on, or `#f` | `"198.51.100.1"` |
+| `(request-local-port r)` | its port, or `#f` | `8080` |
 
 - The method is one of the 36 the parser knows, in capitals: `GET`, `POST`,
   `PUT`, the WebDAV methods and the rest. Any other, such as `get` or `FOO`,
@@ -75,6 +80,15 @@ For `GET /a/b?x=1 HTTP/1.1` with `Host: example.com`:
   `Content-Length: 00` is no body, and a chunked body counts even when it
   turns out empty. Answer a reader to read it
   ([Bodies and streaming](bodies.md)).
+- The addresses belong to the connection, not the request: the server reads
+  them once, when it accepts the connection, so every request on it reads
+  the same. One is `#f` when the server can't say, as when the client reset
+  the connection before the server read its address.
+- An address is text: `"192.0.2.7"`, `"::1"`. A server listening on `::`
+  takes IPv4 clients too, and reads their addresses, and its own end's, as
+  `"::ffff:192.0.2.7"`.
+- Behind a proxy, the other end is the proxy
+  ([Deploying](deploying.md#behind-a-proxy)).
 
 Each call makes its string when you ask, so a handler pays only for what it
 reads. `request-has-body?` makes nothing: the server decides it once.

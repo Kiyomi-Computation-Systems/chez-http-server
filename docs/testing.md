@@ -121,6 +121,8 @@ call that started it raise an assertion violation.
 ## What it leaves out
 
 - No listener, so no connection limit, and no shutdown.
+- No socket, so no addresses: `request-remote-address` and the other three
+  read `#f`.
 - Clients read every byte as soon as it is written, so no slow reader and no
   write timeout. A write after a reset the server hasn't read yet goes
   through; the server learns of the reset when it reads it.

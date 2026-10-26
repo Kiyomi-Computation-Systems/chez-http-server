@@ -28,7 +28,12 @@
 ;;;   - Every field line of the head, in the order it came, its name as
 ;;;     sent: names are case-insensitive (RFC 9110 §5.1), so the reader folds
 ;;;     case, and the order of lines of the same name is significant (§5.3).
-(import (rnrs) (srfi :64) (testing) (fake-shell)
+;;;   - The connection's addresses are the ones its fake was made with, RFC
+;;;     5737's documentation addresses, or #f, each of the four, when it was
+;;;     made with none.  They are the connection's, so each request on it
+;;;     reads the same.
+(import (rnrs) (rnrs mutable-strings) (srfi :64) (testing) (fake-shell)
+        (only (http-server request) make-addresses)
         (http-server limits) (http-server response) (http-server view))
 
 (define (b s) (string->utf8 s))
@@ -53,6 +58,35 @@
 
 ;; path+query : Request -> (List String (U String #f))
 (define (path+query r) (list (request-path r) (request-query r)))
+
+;; seen-each : (U Addresses #f) Bytevector (Request -> Any) -> (Listof Any)
+;; What `look` answers about each request `bv` carries, in order, asked
+;; inside each handler's call, on one fake connection made with `addresses`,
+;; or with none when it is #f.
+(define (seen-each addresses bv look)
+  (let* ((answers '())
+         (handler (lambda (request)
+                    (set! answers (cons (look request) answers))
+                    (make-response 200 #f '() #f)))
+         (sh (if addresses
+                 (make-fake-connection default-limits handler #f 0 #f #f addresses)
+                 (make-fake-connection default-limits handler))))
+    (fake-shell-feed-input! sh bv (bytevector-length bv))
+    (reverse answers)))
+
+;; ends : Request -> (List (U String #f) (U Nat #f) (U String #f) (U Nat #f))
+;; The connection's two ends: the remote address and port, then the local.
+(define (ends r)
+  (list (request-remote-address r) (request-remote-port r)
+        (request-local-address r) (request-local-port r)))
+
+;; documented : -> Addresses
+;; RFC 5737's documentation addresses, a client's port and a server's, each
+;; address a fresh string, as the libuv shell's are.
+(define (documented)
+  (make-addresses (string-copy "192.0.2.7") 54321 (string-copy "198.51.100.1") 8080))
+
+(define two-gets (b "GET /1 HTTP/1.1\r\nHost: h\r\n\r\nGET /2 HTTP/1.1\r\nHost: h\r\n\r\n"))
 
 (run-suite "view"
   (lambda ()
@@ -141,4 +175,25 @@
                 (seen (bytes (list "GET / HTTP/1.1\r\nHost: h\r\nX-Name: caf" #xE9 "\r\n\r\n"))
                       (lambda (r)
                         (map (lambda (field) (cons (car field) (map char->integer (string->list (cdr field)))))
-                             (request-header-list r)))))))
+                             (request-header-list r)))))
+
+    ;; --- the connection's addresses ---
+    (test-equal "a connection made with no addresses: each request reads #f for all four"
+                '((#f #f #f #f) (#f #f #f #f))
+                (seen-each #f two-gets ends))
+    (test-equal "a connection given addresses: each request reads the remote address and port, then the local, the same on each"
+                '(("192.0.2.7" 54321 "198.51.100.1" 8080) ("192.0.2.7" 54321 "198.51.100.1" 8080))
+                (seen-each (documented) two-gets ends))
+    ;; Each address is a string of the handler's own: one handler's change to
+    ;; it is no other's.
+    (test-equal "an address is the handler's own string: a handler that changes it changes nothing the next request reads"
+                '(("X92.0.2.7" "X98.51.100.1") ("192.0.2.7" "198.51.100.1"))
+                (seen-each (documented) two-gets
+                           (lambda (r)
+                             (let ((remote (request-remote-address r)) (local (request-local-address r)))
+                               (let ((seen (list (string-copy remote) (string-copy local))))
+                                 (string-set! remote 0 #\X)
+                                 (string-set! local 0 #\X)
+                                 (if (char=? (string-ref (request-path r) 1) #\1)
+                                     (list remote local)
+                                     seen))))))))
