@@ -73,7 +73,9 @@
 ;;;                   (conn-body-reader), or `handler-failed` if it raises;
 ;;;                   with no reader, nothing
 ;;;   deliver-body-end  the reader's end: its response as `handler-responded`,
-;;;                   or `handler-failed` if it raises
+;;;                   or `handler-failed` if it raises; to a pulled body's
+;;;                   pull, its end (A HANDLER THAT WAITS, below)
+;;;   deliver-body-failed  to a pulled body's pull, its failure
 ;;;   notify-producer the producer a streamed response is written from
 ;;;                   (conn-producer), called for its next piece, its answer
 ;;;                   as `handler-body-chunk` or `handler-body-end`
@@ -177,7 +179,12 @@
 ;;; one at a time, in order, each event its call brings dispatched once it has
 ;;; ended: a streaming reader's piece is credited, `(body-credit n)`, once the
 ;;; reader has taken it, whatever values the piece answers, none included, as
-;;; the libuv shell's.  A call that waits goes on when its connection closes,
+;;; the libuv shell's.  The coroutine its thunk runs on may pull the body, the
+;;; request's notice made for the fake and naming it its puller: a pull's
+;;; begin and its credit are dispatched in place, on the coroutine, which
+;;; drains no scheduler, its own running, and the core's pieces, end and
+;;; failure for it are handed to the notice's pull, as the libuv shell's.  A
+;;; close tells the notice the connection is closing.  A call that waits goes on when its connection closes,
 ;;; but what it answers is dropped, and the connection makes no more calls.
 ;;; The fake drains its scheduler after every dispatch, so no event can close
 ;;; a connection between the dispatch that asks for the handler's call and
@@ -203,13 +210,15 @@
           fake-shell-shut? fake-shell-hold! fake-shell-schedule! fake-shell-taker-failures)
   (import (rnrs)
           (byte-machine runtime)
-          (only (http-server connection) make-conn-state conn-body-reader conn-producer producer-event)
+          (only (http-server connection) make-conn-state conn-body-reader conn-body-pulled? conn-producer
+                producer-event)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole? read-body)
           (only (http-server awaiting) awaiting? awaiting-thunk client-closed?)
           (only (http-server private scheduler)
-                make-scheduler scheduler-call! scheduler-spawn! scheduler-drain!)
+                make-scheduler scheduler-call! scheduler-spawn! scheduler-drain! current-coroutine)
           (only (http-server private waits) make-waits waits-clock! waits-fire! waits-resolver!
-                make-notice notice-attach! notice-close! notice-closed?)
+                make-notice notice-attach! notice-close! notice-closed?
+                notice-puller! notice-closing! waits-puller! pull-piece! pull-end! pull-fail!)
           (only (http-server limits) limits-tick-ms limits-deadline-ms)
           (http-server wheel)
           (only (http-server serializer) date-line)
@@ -256,11 +265,12 @@
             (mutable draining?)               ; whether the shell has drained
             (mutable notice)                  ; the request's notice of its client's close, or #f
             (mutable held?)                   ; whether its scheduler waits to be drained (fake-shell-hold!)
-            (mutable taker-failures-rev))     ; what a waiting taker's thunks raised, newest first
+            (mutable taker-failures-rev)      ; what a waiting taker's thunks raised, newest first
+            (mutable puller))                 ; the handler's thunk to be the notice's puller, or #f
     (protocol (lambda (new)
                 (define (make step state0 now0 perform trace)
                   (new step state0 now0 '() '() perform '() '() 0 '() '() #f #t 0 '() #f trace
-                       #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f '()))
+                       #f #f '() #f #f #f '() #f #f #f #f #f #f #f #f '() #f))
                 (case-lambda
                   ((step state0 now0) (make step state0 now0 #f #f))
                   ((step state0 now0 perform) (make step state0 now0 perform #f))
@@ -305,7 +315,9 @@
   ;; event, queue the actions, and drain the queue unless a drain or a feed is
   ;; under way.  Once the outermost drain has ended, drain the connection's
   ;; scheduler (schedule!): the handler calls the drain queued and the
-  ;; coroutines ready, in order, each answer a dispatch of its own.  Returns
+  ;; coroutines ready, in order, each answer a dispatch of its own.  An event
+  ;; a coroutine dispatches, a pull's, drains none: the drain running it runs
+  ;; what it makes ready.  Returns
   ;; this event's actions.  Once the stream is taken, a read or an end goes
   ;; to the taker (taker-read!) if the stream reads and nothing is kept, or
   ;; else is kept behind what is (THE DOOR), and returns none.
@@ -353,7 +365,7 @@
        (enqueue! s actions)
        (when (= (fake-shell-depth s) 0)
          (drain! s)
-         (unless (fake-shell-held? s) (schedule! s)))
+         (unless (or (fake-shell-held? s) (current-coroutine)) (schedule! s)))
        actions)))
 
   ;; fake-shell-hold! : FakeShell Boolean -> Void
@@ -573,21 +585,28 @@
       ((deliver-body)
        (let ((r (conn-body-reader (fake-shell-conn-state s)))
              (bv (cadr a)) (start (caddr a)) (end (cadddr a)))
+         (if (conn-body-pulled? (fake-shell-conn-state s))
+             (pull-piece! (request-notice s) (cdr a))
          (when r
            (if (fake-shell-waits? s)
                (call-waiting! s (lambda () ((body-reader-on-piece r) bv start end) #t)
                               (lambda (v) (and (not (body-reader-whole? r))
                                                (list 'body-credit (- end start)))))
                (guard (e (#t (fake-shell-deliver! s (list 'handler-failed e))))
-                 ((body-reader-on-piece r) bv start end))))))
+                 ((body-reader-on-piece r) bv start end)))))))
       ((deliver-body-end)
        (let ((r (conn-body-reader (fake-shell-conn-state s))))
+         (if (conn-body-pulled? (fake-shell-conn-state s))
+             (pull-end! (request-notice s))
          (when r
            (if (fake-shell-waits? s)
                (call-waiting! s (body-reader-on-end r) (lambda (v) (answered s v #f)))
                (let ((event (guard (e (#t (list 'handler-failed e)))
                               (answered s ((body-reader-on-end r)) #f))))
-                 (when event (fake-shell-deliver! s event)))))))
+                 (when event (fake-shell-deliver! s event))))))))
+      ((deliver-body-failed)
+       (when (conn-body-pulled? (fake-shell-conn-state s))
+         (pull-fail! (request-notice s) (cadr a) (caddr a))))
       ((notify-producer)
        (let ((p (conn-producer (fake-shell-conn-state s))))
          (when p
@@ -599,7 +618,11 @@
       ((read-stop) (fake-shell-reading?-set! s #f))
       ((read-start) (fake-shell-reading?-set! s #t))
       ((shutdown) (later! s '(shutdown-completed)))
-      ((close) (fake-shell-reading?-set! s #f) (fake-shell-closing?-set! s #t) (later! s '(closed)))
+      ((close)
+       (fake-shell-reading?-set! s #f)
+       (fake-shell-closing?-set! s #t)
+       (let ((n (fake-shell-notice s))) (when n (notice-closing! n)))
+       (later! s '(closed)))
       ((arm-deadline) (arm! s limits (cadr a)))
       ((disarm-deadline) (wheel-disarm! (fake-shell-wheel s) (fake-shell-entry s)))
       ((hand-off) (hand-off! s (cadr a) (caddr a) (cadddr a) limits))
@@ -611,7 +634,7 @@
   ;; shell's: the one its code's coroutines were given, or else a new one.
   (define (request-notice s)
     (or (fake-shell-notice s)
-        (let ((n (make-notice)))
+        (let ((n (make-notice s)))
           (fake-shell-notice-set! s n)
           n)))
 
@@ -938,7 +961,22 @@
                        (lambda (request)
                          (when (eq? request (fake-shell-lookup s))
                            (fake-shell-lookup-set! s #f))))
+      (waits-puller! w fake-pull! fake-credit!)
       w))
+
+  ;; fake-pull! : FakeShell (U Nat #f) -> Boolean
+  ;; The handler's code pulls its body, with `cap`: `(body-pulled cap)`,
+  ;; dispatched in place, unless the connection is closing.
+  (define (fake-pull! s cap)
+    (and (not (fake-shell-closing? s))
+         (begin (fake-shell-deliver! s (list 'body-pulled cap)) #t)))
+
+  ;; fake-credit! : FakeShell Nat -> Void
+  ;; The pull has taken `n` more bytes: `(body-credit n)`, dispatched in
+  ;; place, unless the connection is closing.
+  (define (fake-credit! s n)
+    (unless (fake-shell-closing? s)
+      (fake-shell-deliver! s (list 'body-credit n))))
 
   ;; fake-shell-fire-waits! : FakeShell -> Void
   ;; The timer of a connection's waits fires at the injected now: each sleep
@@ -969,6 +1007,7 @@
     (cond
      ((awaiting? a)
       (fake-shell-waits?-set! s #t)
+      (when handler? (fake-shell-puller-set! s (awaiting-thunk a)))
       (call-waiting! s (awaiting-thunk a) (lambda (v) (answered s v handler?)))
       #f)
      ((and handler? (or (fake-shell-waits? s) (fake-shell-credit? s)))
@@ -981,7 +1020,7 @@
   ;; dispatched, or `handler-failed` if either raised; then the next call
   ;; starts.  A connection closing makes no more, and drops what one that
   ;; ends then answers.  Each coroutine is given the request's notice, as the
-  ;; libuv shell's.
+  ;; libuv shell's, and the one a handler's thunk runs on is its puller.
   (define (call-waiting! s thunk ->event)
     (fake-shell-waiting-set! s (append (fake-shell-waiting s) (list (cons thunk ->event))))
     (unless (fake-shell-calling? s) (next-call! s)))
@@ -994,18 +1033,20 @@
         (fake-shell-waiting-set! s '())
         (fake-shell-calling?-set! s #f))
        (else
-        (let ((call (car calls)))
+        (let ((call (car calls)) (n (request-notice s)))
           (fake-shell-waiting-set! s (cdr calls))
           (fake-shell-calling?-set! s #t)
-          (notice-attach!
-           (scheduler-spawn! (fake-shell-scheduler s) (car call)
-             (lambda (kind v)
-               (let ((event (guard (e (#t (list 'handler-failed e)))
-                              (if (eq? kind 'raised) (raise v) ((cdr call) v)))))
-                 (when (and event (not (fake-shell-closing? s)))
-                   (fake-shell-deliver! s event)))
-               (next-call! s)))
-           (request-notice s)))))))
+          (let ((c (scheduler-spawn! (fake-shell-scheduler s) (car call)
+                     (lambda (kind v)
+                       (let ((event (guard (e (#t (list 'handler-failed e)))
+                                      (if (eq? kind 'raised) (raise v) ((cdr call) v)))))
+                         (when (and event (not (fake-shell-closing? s)))
+                           (fake-shell-deliver! s event)))
+                       (next-call! s)))))
+            (notice-attach! c n)
+            (when (eq? (car call) (fake-shell-puller s))
+              (fake-shell-puller-set! s #f)
+              (notice-puller! n c))))))))
 
   ;; fake-shell-date-writes! : FakeShell (Listof Nat) -> Void
   ;; Date the connection's next writes at `instants`, one each, in order,
