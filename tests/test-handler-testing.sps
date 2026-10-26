@@ -19,6 +19,7 @@
 ;;;     its deadline logged `late-resume await`, and a told close not at all;
 ;;;   - a handler left waiting is reported, and one that answered is not;
 ;;;   - a field reads with its name as sent and its value unpadded;
+;;;   - with no socket, a request's addresses and ports read #f;
 ;;;   - a HEAD's response has its length and no body, a 100 Continue is a
 ;;;     response of its own that answers no request, the server reads at
 ;;;     most its read buffer at a time, a chunked body still arriving is
@@ -48,6 +49,7 @@
 ;;;     connection wakes, its deadline, and a client that leaves.
 ;;;
 ;;; Oracles: docs/waiting.md (what each wait does, and what is logged);
+;;; docs/testing.md (what the host leaves out: a socket, so addresses);
 ;;; docs/handlers.md (a raise is a 500, logged `handler-failed`; the
 ;;; procedures `request-on-done!` registers are told newest first, and one
 ;;; that raises is logged `on-done-failed`, the others still told);
@@ -174,6 +176,18 @@
                                (map (lambda (f) (cons (utf8->string (car f)) (utf8->string (cdr f))))
                                     (filter (lambda (f) (equal? (car f) (b "X-Pad"))) (test-response-headers r))))
                              (test-client-responses c)))))
+
+    (let* ((seen 'not-called)
+           (host (make-test-host
+                  (lambda (request)
+                    (set! seen (list (request-remote-address request) (request-remote-port request)
+                                     (request-local-address request) (request-local-port request)))
+                    (text 200 "ok"))))
+           (c (test-host-connect! host)))
+      (test-client-send! c (get "/"))
+      (test-equal "with no socket, a request's addresses and ports read #f"
+                  '(#f #f #f #f)
+                  seen))
 
     ;; --- with-deadline --------------------------------------------------------
     (let* ((host (make-test-host

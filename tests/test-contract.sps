@@ -31,7 +31,10 @@
 ;;; waiting; and each tick as the fake's own timer firing then.  The events a
 ;;; shell makes itself while it performs an action, a parser's result and a
 ;;; handler's answer, each makes on its own.  Where the libuv shell's handler
-;;; code ended a wait, the fake's wait ends (THE WAITS' MARKS, below).
+;;; code ended a wait, the fake's wait ends (THE WAITS' MARKS, below).  The
+;;; fake is made with the addresses the libuv shell read as it adopted its
+;;; connection, handed to its core as the libuv shell handed them to its
+;;; own, so each request a handler is called with holds the same ones.
 ;;;
 ;;; ONE CLOCK.  The libuv shell keeps two: the wall clock its Date line is
 ;;; made from, and the loop's (uv_now), which its deadlines are armed and
@@ -126,7 +129,7 @@
         (only (chezscheme) current-time time-second time-nanosecond)
         (libuv) (uv-testing)
         (http-server private shell)
-        (only (http-server connection) conn-phase)
+        (only (http-server connection) conn-phase conn-addresses)
         (http-server request) (http-server response) (http-server span) (http-server limits)
         (http-server body)
         (only (http-server awaiting) awaiting deadline-passed? client-closed? resolve-error? resolve-error-reason)
@@ -606,7 +609,8 @@
         ((request? x)
          (list 'request (request-method x) (render (request-target x))
                (request-http-major x) (request-http-minor x)
-               (render (request-headers x)) (request-has-body? x)))
+               (render (request-headers x)) (request-has-body? x)
+               (render (request-addresses x))))
         ((response? x)
          (list 'response (response-status x) (render (response-reason x))
                (render (response-headers x)) (render (response-body x))))
@@ -674,19 +678,22 @@
 ;; the loop's time it came at and `turn` the turn of the loop it came in
 ;; (THE TURNS); the loop's time at each of its writes, newest
 ;; first, which dates the write (ONE CLOCK); the bytes of its deliveries,
-;; collected as they arrive; whether its close has completed; and the
-;; loop's time the shell adopted it at.  One client plays at a time, so
-;; these are its connection's.
+;; collected as they arrive; whether its close has completed; the loop's
+;; time the shell adopted it at; and the addresses the shell read as it
+;; adopted it, which the fake is made with, so each request's are the same.
+;; One client plays at a time, so these are its connection's.
 (define traced '())
 (define received '())
 (define written-at '())
 (define delivered #f)
 (define closed #f)
 (define adopted-at #f)
+(define adopted-addresses #f)
 
 ;; trace! : Any Symbol Any -> Void — the libuv shells' trace.
 (define (trace! who kind datum)
   (cond ((connection? who)
+         (unless adopted-addresses (set! adopted-addresses (conn-addresses (connection-state who))))
          (set! traced (cons (list kind (render datum)) traced))
          (when (eq? kind 'event)
            (set! received (cons (cons* (uv-now loop) turn datum) received))
@@ -780,6 +787,7 @@
   (set! delivered (make-byte-collector))
   (set! closed #f)
   (set! adopted-at #f)
+  (set! adopted-addresses #f)
   (set! door-marks (lambda (what) (set! traced (cons (list 'taker (render what)) traced))))
   (let* ((cl (open-client loop port #f #t))
          (stopped? #f)
@@ -845,7 +853,8 @@
 ;; replay :
 ;;   Limits Boolean Boolean (Listof (List* Nat Nat Event)) (Listof Nat) -> (values FakeShell (Listof Entry))
 ;; The libuv shell's events given to a fake connection under the same
-;; limits, made on credit if the libuv shell was, its handler
+;; limits and the addresses the libuv shell's connection read, made on
+;; credit if the libuv shell was, its handler
 ;; waiting if the libuv shell's did (`waits?`, the coroutine shell's), and
 ;; at the instant the libuv shell adopted its own, its clock moved to each
 ;; event's instant before it is given: a delivery, the client's end, a
@@ -871,7 +880,9 @@
                                      (lambda (kind datum)
                                        (set! seen (cons (list kind (render datum)) seen)))
                                      (or adopted-at 0)
-                                     on-credit?)))
+                                     on-credit?
+                                     #f
+                                     (or adopted-addresses no-addresses))))
     (set! door-marks (lambda (what) (set! seen (cons (list 'taker (render what)) seen))))
     (fake-shell-date-writes! fake writes)
     (fake-shell-hold! fake #t)
@@ -1056,6 +1067,7 @@
       (test-equal "a client the libuv shell never adopted replays as nothing"
                   '(() ())
                   (begin (set! adopted-at #f)
+                         (set! adopted-addresses #f)
                          (let-values (((fake fake-trace) (replay default-limits #f #f '() '())))
                            (list (fake-shell-writes fake) fake-trace))))
       ;; A wait goes on when its connection closes, what it answers is

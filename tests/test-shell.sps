@@ -15,6 +15,11 @@
 ;;;     order, reading the clock fewer times than they are answered (once a
 ;;;     second), with no action but the parser's reply run at parser depth;
 ;;;     bodies, Expect: 100-continue, a handler that raises (500, logged);
+;;;   - addresses: a request reads both ends of its connection, the same on
+;;;     each request, from the one record the connection was adopted with; a
+;;;     connection its client reset before adoption is served, its peer's
+;;;     address and port #f; and over IPv6, on a listener of its own, which
+;;;     a host with no IPv6 loopback fails, naming why;
 ;;;   - dispatch: a handler is called after libuv's turn, from the scheduler's
 ;;;     drain, on no coroutine, never inside a libuv callback, and not at all
 ;;;     once its connection has closed before the drain reaches the call; a
@@ -108,9 +113,12 @@
 ;;; it), and each write began at, and the suite's own limits, and a hold of
 ;;; the loop timed by libuv's clock, read on a loop made for the hold
 ;;; (hold-until!); for a timer's stop, a firing traced after its
-;;; connection's deadline left the wheel; and for the drain, the loop's time
+;;; connection's deadline left the wheel; for the drain, the loop's time
 ;;; each shutdown was asked at, which the server is told, plus the suite's
-;;; drain timeout.
+;;; drain timeout; and for the addresses, the address a client connected
+;;; from, its handle's port, and a listener's address and bound port, as
+;;; libuv reads them, and RFC 9293 §3.6.1's reset of data that comes after a
+;;; close.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?
               current-time time-second time-nanosecond fork-thread)
@@ -130,8 +138,10 @@
         (only (http-server private waits) await sleep-ms with-deadline resolve)
         (only (http-server server) server-phase)
         (only (http-server connection) conn-phase conn-parser-callbacks conn-span-callbacks
-              conn-outstanding conn-outstanding-bytes)
+              conn-outstanding conn-outstanding-bytes conn-addresses)
         (http-server request) (http-server response) (http-server span) (http-server limits)
+        (only (http-server view) request-remote-address request-remote-port
+              request-local-address request-local-port)
         (only (http-server body) read-body read-whole-body)
         (http-server switch) (http-server transport)
         (response-reader) (shell-testing) (producers))
@@ -321,7 +331,9 @@
 ;; every call it makes into handler code, noting each coroutine it runs on
 ;; in `noted`, weakly: its thunk sleeps, looks localhost up and meets a
 ;; deadline of 0 ms; its reader's piece and end each sleep; and it streams
-;; two texts, its producer sleeping before each call.
+;; two texts, its producer sleeping before each call.  And `/addresses`
+;; answers the connection's addresses, as addresses-text writes them, and
+;; keeps in `addresses-seen`, newest first, the record the request holds.
 (define big-size (* 4 1024 1024))
 (define big-body #f)
 (define wide-size (* 1024 1024))
@@ -409,6 +421,7 @@
   (list (make-string 100 #\a) (make-string 5000 #\b) (make-string 100 #\c) (make-string 5000 #\d)))
 (define head-first-requests 0)
 (define head-first-seen 'not-called)
+(define addresses-seen '())
 (define (handler req)
   (let ((target (span->bytevector (request-target req))))
     (when (bytevector=? target (b "/slow"))
@@ -865,9 +878,37 @@
                         (awaiting (lambda ()
                                     (took! 'thunk-ended)
                                     (if (bytevector=? target (b "/door-wait-no-values")) (values) (values 1 2)))))))
+          ((bytevector=? target (b "/addresses"))
+           (set! addresses-seen (cons (request-addresses req) addresses-seen))
+           (make-response 200 #f '()
+                          (string->utf8 (addresses-text (request-remote-address req) (request-remote-port req)
+                                                        (request-local-address req) (request-local-port req)))))
           ((eq? (request-method req) 'POST)
            (read-body (lambda (bv start end) #t) (lambda () (make-response 200 #f '() target))))
           (else (make-response 200 #f '() target)))))
+
+;; addresses-text : (U String #f) (U Nat #f) (U String #f) (U Nat #f) -> String
+;; A connection's two ends, the remote address and port, then the local, a
+;; space between each, and #f as "#f": what `/addresses` answers.
+(define (addresses-text remote-address remote-port local-address local-port)
+  (spaced (map (lambda (x) (cond ((string? x) x) ((number? x) (number->string x)) (else "#f")))
+               (list remote-address remote-port local-address local-port))))
+
+;; end-of : UvTcp (UvTcp -> (values (U String #f) Nat)) -> (List (U String #f) (U Nat #f))
+;; One end of `tcp` as libuv reads it, `read` being uv-tcp-peer-address or
+;; uv-tcp-sockname-address, or (#f #f) if the read fails: the oracle the
+;; shell's addresses are held to.
+(define (end-of tcp read)
+  (guard (e ((uv-errno-error? e) (list #f #f)))
+    (let-values (((address port) (read tcp))) (list address port))))
+
+;; ends-text : UvTcp UvTcp -> String
+;; addresses-text of the client's own end, `client`'s, as the remote, and
+;; `server`'s end, a listener's, as the local: what a request on the
+;; connection between them reads.
+(define (ends-text client server)
+  (apply addresses-text (append (end-of client uv-tcp-sockname-address)
+                                (end-of server uv-tcp-sockname-address))))
 
 ;; with : Symbol Any -> Limits — the defaults, but one field.
 (define (with field value) (limits-with default-limits (list (cons field value))))
@@ -884,6 +925,8 @@
 (define small-send-buffer #f)
 (define pairing #f)                    ; adopt connections two at a time
 (define held #f)                       ; the first of a pair, accepted, not yet adopted
+(define withholding #f)                ; keep the next connection accepted, unadopted
+(define withheld #f)                   ; the connection so kept
 
 ;; open-server! : -> Void
 ;; The loop, the shell, and a listener on 127.0.0.1:0 that adopts each
@@ -891,8 +934,9 @@
 ;; connection's send buffer is asked to be that small first.  While
 ;; `pairing`, it holds each connection it accepts until it accepts another,
 ;; and adopts the two in one callback, so the shell arms both at one
-;; instant.  Made inside the suite, so a failure here is the harness's
-;; status, not a crash.
+;; instant.  While `withholding`, it keeps the next connection it accepts in
+;; `withheld`, for the suite to adopt.  Made inside the suite, so a failure
+;; here is the harness's status, not a crash.
 (define (open-server!)
   (set! loop (make-uv-loop))
   (set! shell (make-shell loop handler default-limits clock log! trace!))
@@ -905,7 +949,8 @@
                     (set! listen-error (err->symbol err))
                     (let ((tcp (uv-accept! listener)))
                       (when small-send-buffer (uv-send-buffer-size! tcp small-send-buffer))
-                      (cond ((and pairing (not held)) (set! held tcp))
+                      (cond (withholding (set! withholding #f) (set! withheld tcp))
+                            ((and pairing (not held)) (set! held tcp))
                             (else (when held (adopt! held) (set! held #f))
                                   (adopt! tcp))))))))
 
@@ -1418,6 +1463,93 @@
                         (list (phase c) (and (memq c (shell-connections shell)) #t))
                         '(no-connection #f))))
       (client-close! cl))
+
+    ;; A request reads both ends of the connection it came on: the client's,
+    ;; 127.0.0.1, where it connected from, and the port its handle reads, as
+    ;; the remote end, and the listener's address and bound port as the
+    ;; local.  Both are the connection's, read once, as it is adopted: a
+    ;; second request on it reads the same, and each holds the one record
+    ;; its connection was adopted with.
+    (set! addresses-seen '())
+    (let ((cl (open-client! (b "GET /addresses HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-eq "a client reads the answer of a handler that reads the connection's addresses" 'satisfied
+               (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))
+      (client-send! cl (b "GET /addresses HTTP/1.1\r\nHost: x\r\n\r\n"))
+      (test-eq "and a second request's, on the same connection" 'satisfied
+               (wait-for (lambda () (= 2 (length (responses (client-bytes cl)))))))
+      (test-equal "each request reads the client's address and port, its handle's, then the listener's address and port"
+                  (let ((text (addresses-text "127.0.0.1" (cadr (end-of (client-tcp cl) uv-tcp-sockname-address))
+                                              "127.0.0.1" port)))
+                    (list text text))
+                  (map body (responses (client-bytes cl))))
+      (test-eqv "each holds the one record of addresses its connection was adopted with" 2
+                (let ((c (newest)))
+                  (and (connection? c)
+                       (for-all (lambda (a) (eq? a (conn-addresses (connection-state c)))) addresses-seen)
+                       (length addresses-seen))))
+      (client-close! cl))
+
+    ;; A connection whose peer's address cannot be read, since its client
+    ;; reset it before the shell adopted it.  The client closes, and the
+    ;; server's end, kept unadopted, writes to it: data that comes after a
+    ;; close is answered with a reset (RFC 9293 §3.6.1), so libuv's read of
+    ;; the peer fails then.  Adopted, it is served all the same, the peer's
+    ;; address and port #f, its own end as libuv reads it, and it closes once
+    ;; it reads the reset.
+    (set! withholding #t)
+    (set! withheld #f)
+    (let* ((cl (open-client! #f #f))
+           (accepted (wait-for (lambda () (and withheld (eq? (client-connected cl) 'no-error))))))
+      (client-close! cl)
+      (when withheld (uv-write! withheld (b "x") (lambda (err) #f)))
+      (let* ((reset (wait-for (lambda () (and withheld (not (car (end-of withheld uv-tcp-peer-address)))))))
+             (local (if withheld (end-of withheld uv-tcp-sockname-address) '(no-connection #f)))
+             (before (newest))
+             (adoption (guard (e (#t 'raised)) (when withheld (adopt! withheld)) 'adopted))
+             (c (adopted-since before)))
+        (test-equal "a connection its client reset before the shell adopted it is adopted, its peer's address and port #f and its own end as libuv reads it"
+                    (list 'satisfied 'satisfied 'adopted (list #f #f (car local) (cadr local)))
+                    (list accepted reset adoption
+                          (if c
+                              (let ((a (conn-addresses (connection-state c))))
+                                (list (addresses-remote-address a) (addresses-remote-port a)
+                                      (addresses-local-address a) (addresses-local-port a)))
+                              'not-adopted)))
+        (test-eq "and it closes once it reads the reset" 'satisfied
+                 (wait-for (lambda () (closed-and-gone? shell c))))))
+
+    ;; Over IPv6, on a shell's own listener: a request reads the client's end
+    ;; and the listener's, each ::1, the client's port its handle's and the
+    ;; listener's the one it bound.  A host with no IPv6 loopback cannot
+    ;; listen on ::1, and fails the check with the errno it met.
+    (let* ((six (make-shell loop handler default-limits clock log! trace!))
+           (to (guard (e ((uv-errno-error? e) (uv-errno-error-errno e)))
+                 (shell-listen! six "::1" 0)))
+           (cl (and (number? to)
+                    (open-client loop to (b "GET /addresses HTTP/1.1\r\nHost: x\r\n\r\n") #t "::1")))
+           (answered (and cl (wait-for (lambda () (= 1 (length (responses (client-bytes cl)))))))))
+      (when cl (set! clients (cons cl clients)))
+      (unless cl
+        (let ((p (current-error-port)))
+          (put-string p (string-append "shell: listening on ::1 failed with "
+                                       (if (symbol? to) (symbol->string to) "an unknown error")
+                                       "; the IPv6 check fails"))
+          (put-char p #\newline)
+          (flush-output-port p)))
+      (test-equal "over IPv6, a request reads the client's address and port, its handle's, then the listener's address and port"
+                  (if cl
+                      (list 'satisfied
+                            (addresses-text "::1" (cadr (end-of (client-tcp cl) uv-tcp-sockname-address)) "::1" to))
+                      'listening-on-ipv6-loopback)
+                  (if cl
+                      (list answered (let ((rs (responses (client-bytes cl))))
+                                       (if (pair? rs) (body (car rs)) 'no-response)))
+                      (list 'not-listening-on-ipv6-loopback to)))
+      (when cl
+        (client-close! cl)
+        (shell-shutdown! six)
+        (wait-for (lambda () (and (null? (shell-connections six))
+                                  (eq? (uv-handle-state (shell-listener six)) 'closed))))))
 
     ;; Where a handler is called: from the scheduler's drain,
     ;; after libuv's turn, on no coroutine, its phase 'scheduling, never a
