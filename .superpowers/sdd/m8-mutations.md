@@ -3033,3 +3033,182 @@ alone, one at a time: green, 38 each. It holds no switch and no `awaiting`.
 only `HARNESS` lines are the clients suite's five before oha was fetched.
 
 **Each new check has a killer by value:** TW-1, TV-2 and TV-4; TW-2, TV-1 and TV-3.
+
+## A handler hears when its response is done (decision 0034), on `feat/request-on-done` (2026-10-25)
+
+New checks: 7 in the records suite (RC1-RC8, RC5 and RC6 one check), 10 table rows
+(O1-O10, 14 instances) and the vocabulary's eighteen actions, 16 in the new
+`tests/test-connection-done.sps` (D1-D16), 9 in the shell suite (S1-S8 and the
+precondition Spre), and the facade's export list (E1).
+
+**Red before the code** (Darwin arm64): the records suite stopped at load
+(`request-on-done!` unbound); the table, 13 FAIL (every O row expecting a
+`response-done`, and "eighteen actions"), O3 and O2's linger instance green; the done
+suite, 15 of 16 once `fake-shell-done-failures` existed (D16 green: the core marks the
+request done, so a late registration is called at once with no shell's help); the shell
+suite, 8 (Spre green: the stream's head); the serve suite, E1.
+
+**31 rows over 53 suites** (the clients suite left out: oha's load smoke, no
+`request-on-done!`; green in `make test`), predictions hashed before each run
+(22753461…, then 0e713905… for O2's change and DN-C13/C14), four at a time.
+
+| Row | Mutant | Red, by name |
+|---|---|---|
+| DN-0 | unmutated (a comment) | none |
+| DN-R1 | `request-done!` hands back oldest first | RC2; D2, D14; S4 |
+| DN-R2 | `request-done!` marks nothing | RC3, RC4, RC56; D15, D16 |
+| DN-R3 | a late registration kept, never called | RC4, RC56; D15, D16 |
+| DN-R4 | `request-on-done!` takes a non-procedure | RC7 |
+| DN-R5 | `request-done!` takes any ending | RC8 |
+| DN-R6 | a registration always called at once, with the slot | RC1, RC2; O1, O2, O4×2, O5, O6×2, O7, O8, O9, O10×2, the rows use all eighteen actions; D1-D15; S2, S3, S4, S5, S6, S8 and the end's three leak checks |
+| DN-C1 | `response-written` tells nothing | O1, O2, O6; D1, D2, D3, D4, D7, D8, D11, D12, D14, D16; S1, S2, S3, S4, S6, S8 |
+| DN-C2 | a failed ending not sticky in `told` | O6×2; D7, D8, D11, D12 |
+| DN-C3 | the core's own status does not mark failed | O6×2; D7, D8, D11, D12 |
+| DN-C4 | every close `client-closed` | O7, O8, O9; D9, D10 |
+| DN-C5 | every close `failed` | O4×2, O5; D5, D6, D15; S8 |
+| DN-C6 | `close` tells nothing | O4×2, O5, O6, O7, O8, O9; D5, D6, D9, D10, D15; S7, S8 |
+| DN-C7 | a close the core did not ask for tells nothing | O10×2; D13 |
+| DN-C8 | asking for the handler owes nothing | D1-D16; S1-S8 |
+| DN-C9 | a state made in handling owes nothing | O1, O2, O4×2, O5, O6×2, O7, O8, O9, O10×2, the rows use all eighteen actions |
+| DN-C10 | `response-done` asked for with nothing registered | D16, and 25 existing checks that compare a handled request's actions whole (below) |
+| DN-C11 | the ending told after the resume | O1 |
+| DN-C13 | the client's end in handling tells at once | O3; D4 |
+| DN-C14 | a handler's raise tells failed before its 500 | O6×3; D7 |
+| DN-V1 | the vocabulary leaves `response-done` out | eighteen actions, no row emits an action outside the vocabulary |
+| DN-F1 | the fake calls nothing | D1-D15 |
+| DN-F2 | the fake's one guard for every procedure | D14 |
+| DN-F3 | the fake records no raise | D14 |
+| DN-S1 | the shell calls nothing | S1-S8 |
+| DN-S2 | the shell's one guard for every procedure | S3, S4, S5, S6 |
+| DN-S3 | the shell logs no raise | S4, S6 |
+| DN-S4 | the shell calls each on a coroutine | S4, S6, S8 |
+| DN-E1 | the facade drops the export | E1 |
+| DN-T1 | the suite's endless stream never answers | Spre |
+| DN-T2 | O10 loses its instances | all 10 done rows have a test |
+| DN-D1 | docs/reference.md drops `request-on-done!` (on the rebased tree, the reference suite alone) | docs/reference.md names every name (http-server) exports |
+
+**The harness, not the mutants, in the first run.** The #216 session's `pkill -f "chez
+--program tests/test-"` (21:29:30Z, its message) killed four suites in flight: the shell
+suite under DN-C6, DN-C7 and DN-C8, the serve suite under DN-C9 (exit −15). And the
+examples suite writes `build/examples-root`, which every mutant root shares through its
+`build` symlink, so two at once delete each other's tree: DN-0's one red and DN-C2's,
+DN-C4's and DN-R2's ten file-server reds. Each of those eight suites ran again alone, one
+at a time: as predicted (the examples suite green in all four; DN-C6's S7 and S8, DN-C8's
+eight, DN-C7's and DN-C9's none).
+
+**Mismatches, each read by its values** (a `(testing)` shadow printing each failing
+check's actual and expected):
+- **DN-C1**, predicted O2's linger instance red, S5 red, S8 green; observed the reverse
+  for each. The linger instance: the staged close forgets the request, so the owed ending
+  marks nothing. S5 and S8: with `response-written` paying nothing, a keep-alive
+  connection still owes its last request's ending, and its client's close pays it,
+  `client-closed`, a turn later, inside the next check's wait: S5 was satisfied by
+  `(done-1 client-closed)`, and S8 read `((after client-closed) (leave client-closed))`.
+  The linger instance, which then no single mutant could redden (the request forgotten and
+  the ending paid both hold it), was taken out of O2.
+- **DN-R6**, S5 and the end's three leak checks red, unpredicted: a registration called at
+  once inside the handler made the handler itself raise (the raising procedure; the
+  waiting one's refused wait), and the suite's `wait-for` turns the loop with no guard, so
+  the raise came out of the wait into the check (actual `#f`), and the two connections
+  were never answered or closed: two TCP handles and their read buffers left.
+- **DN-S4**, S8 red, named in the prediction's notes as likely but left out of the set:
+  the waiting procedure, on a coroutine, slept and appended `(slept)` after the leave
+  check had emptied `done-heard`.
+- **DN-C13**, predicted S8 red as well; green: the shell check's client closes with bytes
+  unread, so its kernel resets the connection instead of ending it, and the server meets
+  a read or write error, never the end this mutant tells at.
+- **DN-C10** was predicted only by D16: its other reds are the existing checks that
+  already hold "no action without a procedure" by comparing a handled request's actions
+  whole: the table's T2×2, W2×4, S11, S12, N7×2; the linger suite's four staged closes;
+  the originated suite's 400, 408, 413, 431 and both 500s; the deadline suite's body and
+  write rows; the stream suite's write deadline; the switch suite's core part; the
+  message loop's happy path.
+
+**Each new check has a killer by value:** RC1 R6; RC2 R1, R6; RC3 R2; RC4 and RC56 R2,
+R3; RC7 R4; RC8 R5. O1 C1, C9, C11, R6; O2 C1, C9, R6; O3 C13; O4 and O5 C5, C6, C9, R6;
+O6 C2, C3, C6, C9, C14; O7 C4, C6, C9, R6; O8 and O9 C4, C6, C9; O10 C7, C9, R6; eighteen
+actions and "no row emits an action outside the vocabulary" V1; "the rows use all
+eighteen actions" C9, R6; the done rows' count T2. D1 C1, C8, F1, R6; D2 R1, C1; D3 C1,
+C8, F1; D4 C1, C8, F1, C13; D5 C5, C6, C8, F1; D6 C5, C6; D7 C1, C2, C3, C14; D8, D11,
+D12 C1, C2, C3; D9, D10 C4, C6; D13 C7; D14 R1, F2, F3; D15 R2, R3, C5, C6; D16 R2, R3,
+C1, C8, C10 (its first half C10 alone). S1 C1, C8, S1; S2 C1, C8, R6, S1; S3 C1, S2,
+R6; S4 R1, S2, S3, S4; S5 S2, C8, S1; S6 S2, S3, S4; Spre T1; S7 C6, C8, S1; S8 C5, C6,
+S1. E1 E1. #220's reference check, for this export, DN-D1.
+
+### The stack's review, on the owner's "fix them" (2026-10-25)
+
+An xhigh review of #224-#226 found nine things; the fixes add checks D17 (the fake: a
+reader of a waiting handler, inside a piece as its 413 is written) and, in the shell
+suite, S9 (a close the core did not ask for under a producer that waits), S10 (a log that
+raises before the procedures in the drain), S11 (D17 over loopback, on a shell capped at
+5 bytes), S12 (a switch: told before its take-over) and S13 (a connection the run loop
+drops); D13 and D15 change with the procedures put off while a call runs. Each new check
+folds its progress waits into its compared value, inside the check, so a raise fails the
+check, not the suite: under DN-R6 the first cut, with the waits outside, ended the shell
+suite at a harness error (exit 2) before its last checks.
+
+**Red before the fixes** (Darwin arm64), each by value: D17 `((start "abc") (done failed)
+(end "abc") (start "de"))`; S9 `((busy failed) (woke))`; S10 `(iterations-exhausted ())`;
+S11 `((start "abc") (reader failed) (end "abc") (start "de") (end "de"))`; S13 `((sleeps
+client-closed))`, told only by the dead handle's write failure. S12 was green: the core
+already tells before the hand-off, and DN-C15 holds it.
+
+**39 rows over 54 suites** (prediction 29757dc7…, hashed before the run), each root with a
+`build` of its own, so the examples suite's `build/examples-root` is no longer shared. The
+shell suite ran again for every row once its new checks held their waits inside.
+
+| Row | Mutant | Red, by name, beyond the table above |
+|---|---|---|
+| DN-S2 | the shell's one trap for every procedure (re-cut) | S3, S4, S5, S6 |
+| DN-S3 | the shell's trap logs nothing (re-cut) | S4, S6 |
+| DN-S4 | the shell tells each on a coroutine (re-cut) | S4, S6, S8, S11, S12, S13 |
+| DN-S5 | the shell never puts the endings off | S9, S11 |
+| DN-S6 | a reader let go is handed its queued pieces | S11 |
+| DN-S7 | an abandoned drain drops its endings | S10 |
+| DN-S8 | a reconciled connection is not told it closed | S13 |
+| DN-S9 | a reconciled connection is not marked closing | S13 (`logged`: its answer written to the handle gone) |
+| DN-F4 | the fake never puts the endings off | D13, D15, D17 |
+| DN-F5 | the fake hands a reader let go its queued pieces | D17 |
+| DN-C15 | the ending told after the hand-off | D3, S12 |
+
+The earlier rows ran again; the new checks joined their sets: DN-R6 D17, S9-S13 (and S5 and
+the end's three leak checks, as before); DN-C1 D17, S11, S12; DN-C2 and DN-C3 D17, S11;
+DN-C5 and DN-C6 S10; DN-C7 S9, S13; DN-C8 D17, S9-S13; DN-F1 D17; DN-S1 S9, S11, S12, S13
+(not S10: the rescue tells through `call-done!`, not the action's arm); DN-E1 also the
+examples suite, whose file server no longer loads, and #220's "names none it does not
+export"; DN-T1 S10, which reuses the never-answering route.
+
+**Mismatches, read by their values or rerun alone.** DN-S4's S11 and S13: each procedure,
+on a coroutine, ran after the check that caused it, so `(door written)` landed in S13's
+list and `(sleeps failed)` in S11's. DN-0, DN-C1, DN-C10 and DN-C11, the first four rows,
+started at once, reddened the serve suite's two child-process checks; each ran green
+alone. DN-S6 and DN-S8 reddened three four-MiB transfer checks under four shell suites at
+once; alone, each matched its prediction. DN-C13's S8 stayed green as the first run
+showed (the client resets, so no end comes); its set was stale.
+
+**The trap.** Measured on Darwin arm64 at depths 0, 50 and 200: a `guard` 332, 934 and
+2,733 B a call; a handler with a one-shot escape 209 B at each.
+
+**Each new or changed check has a killer by value:** D13 F4, C7, C8, F1; D15 F4, R2, R3,
+C5, C6, C8, F1; D17 F4, F5, C1, C2, C3, C8, F1, R6; S9 S5, C7, C8, S1, R6; S10 S7, C5, C6,
+C8, R6, T1; S11 S5, S6, S4, C1, C2, C3, C8, S1, R6; S12 C15, S4, C1, C8, S1, R6; S13 S8,
+S9, S4, C7, C8, S1, R6. Not checked: the file server's port closing, which a client cannot
+see; DN-E1 shows the example loads only with the export.
+
+**Re-run on the merged tree** (main at f4edc36 merged in: the sized body #221-#223 and
+`request-has-body?` #232; the sized body's mismatch wired to the ending): 41 rows over 54
+suites, three at a time, prediction 0284800a… hashed before the run, every cut preflighted
+against the merged tree. Two rows re-cut against code the merge moved: DN-C2 (the decided
+ending ignored, `(if (eq? ending 'owed) how ending)` to `how`) and DN-C3 (`respond`'s
+`cut-short!` dropped). Two new: DN-C16 (the mismatch decides nothing: the done suite's
+three sized-body checks, each reading `written`) and DN-C17 (always `failed`: the
+client-closed one). Every row as predicted, beyond DN-C10's existing full-action checks
+(deadlines 2, done 1, linger 4, originated 6, stream 2, switch 1, table 10, message loop
+1) and DN-E1's example that no longer loads. The sized-body checks' killers: long and
+short C16, C2, C1, C8, F1, R6; the client-closed one C16, C17, C2, C1, C8, F1, R6.
+
+**The trap, in its own context:** tell-done! runs on no coroutine, from the drain or a
+libuv callback. In a scheduler's drain, before any coroutine has waited and after one has
+waited and been woken, Darwin arm64: `guard` 351 and 354 B, the handler with a one-shot
+escape 211 and 208 B. #233's 3.4 KB for a `call/1cc` escape is inside a coroutine after
+its own wait, where tell-done! never runs.

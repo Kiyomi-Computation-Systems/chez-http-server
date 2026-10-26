@@ -5,7 +5,7 @@
 ;;; Every row is driven from a SYNTHETIC state by one synthetic event, with no
 ;;; parser, so a mutation that breaks one row turns that row red and no other.
 ;;;
-;;; Closed sets: ten states, sixteen events, eighteen actions and five
+;;; Closed sets: ten states, sixteen events, nineteen actions and five
 ;;; deadline kinds, each lasting one of the limits (idle 75 s; header, body
 ;;; and write 60 s; linger 30 s).  The rows emit every action and arm every
 ;;; kind; each deadline a row leaves armed has a tick row, and the state
@@ -26,6 +26,8 @@
 ;;;               §6.3), paced by the write water marks.
 ;;;   G K N       what the parser reads and hands no span of, or cuts off at
 ;;;               an error, held to limits; a client's close, noticed.
+;;;   O           how the response ended, told once to what the request's
+;;;               code registered: written, client-closed or failed.
 ;;;
 ;;; A parser-result event carries its error as the error's code, one of
 ;;; chez-httparse's, whose status never depends on where the parser refused.
@@ -2228,6 +2230,99 @@
         (i (state 'handling 'request req) `(handler-failed ,(make-client-closed))
            `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)) #f)))))
 
+;; ---------------------------------------------------------------------------
+;; How a response ended, told: the rows of `response-done`.  The core owes
+;; the request in flight an ending once its handler has been asked, as a
+;; state made in handling has, and pays it once: marking the request done,
+;; and, with a procedure registered, `(response-done how procs)` for the
+;; shell to call.  With none registered it says nothing, as every other row
+;; of the table shows.  Each instance has a request of its own, `told`
+;; registered on it.
+
+(define told (lambda (how) how))
+
+;; done-req : -> Request — a GET with `told` registered.
+(define (done-req)
+  (let ((r (make-request 'GET (b "/") 1 1 '() #f)))
+    (request-on-done! r told)
+    r))
+
+;; answering : Response [CloseAfter] -> ConnState
+;; handling, a done-req's handler asked, then its answer: responding, the
+;; response's write outstanding.
+(define (answering answer . close-after)
+  (let ((s (apply state 'handling 'request (done-req)
+                  (if (null? close-after) '() (list 'close-after (car close-after))))))
+    (conn-step s `(handler-responded ,answer))
+    s))
+
+;; failing : -> ConnState — the same, its handler raised: responding 500.
+(define (failing)
+  (let ((s (state 'handling 'request (done-req))))
+    (conn-step s '(handler-failed boom))
+    s))
+
+;; wrote : ConnState -> Event — the completion of every byte outstanding.
+(define (wrote s) `(write-completed ,(conn-outstanding-bytes s)))
+
+(define (done-rows)
+  (list
+   (row 'O1 "responding, the last write-completed, kept alive -> idle: response-done written, then resume"
+        (let ((s (answering resp)))
+          (i s (wrote s)
+             `(idle #f ((response-done written (,told)) (resume-parser) (read-start) (arm-deadline idle))))))
+
+   (row 'O2 "responding, the last write-completed, to close after -> lingering: response-done written, then the staged close"
+        (let ((s (answering resp 'not-keep-alive)))
+          (i s (wrote s)
+             `(lingering not-keep-alive ((response-done written (,told)) (shutdown) (read-start) (arm-deadline linger))))))
+
+   (row 'O3 "handling, eof -> handling: the response is still to come, nothing told yet"
+        (i (state 'handling 'request (done-req)) '(eof)
+           '(handling client-closed ((read-stop) (client-closed)))))
+
+   (row 'O4 "handling or responding, read-error -> closing: response-done client-closed"
+        (i (state 'handling 'request (done-req)) '(read-error ECONNRESET)
+           `(closing #f ((client-closed) (log read-error ECONNRESET) (response-done client-closed (,told))
+                         (disarm-deadline) (close read-error))))
+        (i (answering resp) '(read-error EPIPE)
+           `(closing #f ((client-closed) (log read-error EPIPE) (response-done client-closed (,told))
+                         (disarm-deadline) (close read-error)))))
+
+   (row 'O5 "handling, handler-failed with the close's raise, the client closed -> closing: response-done client-closed"
+        (i (state 'handling 'request (done-req) 'close-after 'client-closed) `(handler-failed ,(make-client-closed))
+           `(closing client-closed ((response-done client-closed (,told)) (disarm-deadline) (close client-closed)))))
+
+   (row 'O6 "handling, handler-failed -> responding 500, nothing told; its write completed -> response-done failed; a read error first -> failed still"
+        (i (state 'handling 'request (done-req)) '(handler-failed boom)
+           `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write))))
+        (let ((s (failing)))
+          (i s (wrote s)
+             `(lingering handler-failed ((response-done failed (,told)) (shutdown) (read-start) (arm-deadline linger)))))
+        (i (failing) '(read-error EPIPE)
+           `(closing handler-failed ((client-closed) (log read-error EPIPE) (response-done failed (,told))
+                                     (disarm-deadline) (close read-error)))))
+
+   (row 'O7 "responding, past the write deadline -> closing: response-done failed"
+        (let ((s (answering resp)))
+          (i s '(tick 0)
+             `(closing #f ((log write-timeout ,(conn-outstanding-bytes s)) (response-done failed (,told))
+                           (disarm-deadline) (close write-timeout))))))
+
+   (row 'O8 "responding, handler-failed with a piece asked for -> closing: response-done failed"
+        (i (answering streamed-resp) '(handler-failed boom)
+           `(closing #f ((response-done failed (,told)) (disarm-deadline) (close handler-failed)))))
+
+   (row 'O9 "handling, read-error ECANCELED, the shell's own close -> closing: response-done failed"
+        (i (state 'handling 'request (done-req)) '(read-error ECANCELED)
+           `(closing #f ((response-done failed (,told)) (disarm-deadline) (close cancelled)))))
+
+   (row 'O10 "handling or responding, closed, a close the core did not ask for -> the same: response-done failed"
+        (i (state 'handling 'request (done-req)) '(closed)
+           `(handling #f ((response-done failed (,told)))))
+        (i (answering resp) '(closed)
+           `(responding #f ((response-done failed (,told))))))))
+
 ;; run-row : Row [(ConnState Event -> Datum)] -> (U 0 1)
 ;; Run every instance of a row through `step` (default: outcome); 1 if the
 ;; row has a test, 0 if it has none.
@@ -2389,10 +2484,11 @@
                   tick parser-event parser-result handler-responded handler-body-chunk
                   handler-body-end handler-failed body-credit body-pulled shutdown-requested)
                 conn-events)
-    (test-equal "eighteen actions"
+    (test-equal "nineteen actions"
                 '(reply-parser feed-parser resume-parser write read-stop read-start
                   call-handler deliver-body deliver-body-end deliver-body-failed notify-producer
-                  arm-deadline disarm-deadline shutdown close log hand-off client-closed)
+                  arm-deadline disarm-deadline shutdown close log hand-off client-closed
+                  response-done)
                 conn-actions)
     (test-equal "five deadline kinds: idle, header, body, write and linger"
                 '(idle header body write linger)
@@ -2495,7 +2591,8 @@
            (framings (count-rows "framing" framing-rows asked-by))
            (paddings (count-rows "padding" padding-rows asked-by))
            (cut-offs (count-rows "cut-off" cut-off-rows asked-by))
-           (notices (count-rows "close-notice" notice-rows kept)))
+           (notices (count-rows "close-notice" notice-rows kept))
+           (dones (count-rows "done" done-rows outcome)))
       (test-eqv "all 10 happy-path rows have a test" 10 happy)
       (test-eqv "all 11 termination and error rows have a test" 11 term)
       (test-eqv "all 3 pause-protocol rows have a test" 3 pause)
@@ -2515,13 +2612,14 @@
       (test-eqv "all 7 trailer and extension rows have a test" 7 framings)
       (test-eqv "all 14 padding rows have a test" 14 paddings)
       (test-eqv "all 4 cut-off rows have a test" 4 cut-offs)
-      (test-eqv "all 11 close-notice rows have a test" 11 notices))
+      (test-eqv "all 11 close-notice rows have a test" 11 notices)
+      (test-eqv "all 10 done rows have a test" 10 dones))
 
     ;; Every action the table produced is in the vocabulary, and the table
     ;; uses all of it.
     (test-equal "no row emits an action outside the vocabulary" '()
                 (filter (lambda (k) (not (memq k conn-actions))) emitted))
-    (test-equal "the rows use all eighteen actions" conn-actions
+    (test-equal "the rows use all nineteen actions" conn-actions
                 (filter (lambda (k) (memq k emitted)) conn-actions))
     (test-equal "the rows arm all five deadline kinds, and no other"
                 (list conn-deadline-kinds '())
