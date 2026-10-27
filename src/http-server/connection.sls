@@ -167,9 +167,9 @@
 ;;; request hands back what its code registered, `request-on-done!`'s
 ;;; procedures, newest first, and only when there are any does the core emit
 ;;; `(response-done how procs)`, before the actions that follow the end: the
-;;; resume, the staged close or the hand-off.  So the shell calls them before
-;;; the next request is fed, and a request with none registered costs
-;;; nothing.
+;;; resume, the staged close or the hand-off.  So the shell can call them
+;;; before the next request's handler, and a request with none registered
+;;; costs nothing.
 ;;;
 ;;; AN UPGRADE IS SERVED, THEN THE CONNECTION CLOSES.  A request that asks
 ;;; to switch protocols, by llhttp's rule a CONNECT or `Connection: upgrade`

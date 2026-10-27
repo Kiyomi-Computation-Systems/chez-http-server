@@ -97,6 +97,11 @@
 ;;;     the stream's end, the stream lingers until the client closes or the
 ;;;     linger deadline passes, an abort closes it at once), the write timeout
 ;;;     each write a closing taker waits for gets, and the taker's drain call;
+;;;   - a response's end: what its request's code registered is told from the
+;;;     scheduler's drain, after libuv's turn, the first request's before
+;;;     the second's handler is called; a raise is taken by the run loop's
+;;;     guard, whichever shell's turns the drain, logged `on-done-failed`,
+;;;     the others still told; a switch's is told before its take-over;
 ;;;   - the shell's one timer: four connections add one timer to the loop; its
 ;;;     wheel empty, it stops, and the shell keeps it for its next deadline,
 ;;;     closing it once shut down with no connection left; when one firing's
@@ -721,6 +726,10 @@
            (set! done-at-second done-heard)
            (request-on-done! req (done-hearing 'done-2))
            (make-response 200 #f '() (b "two")))
+          ((bytevector=? target (b "/done-phase"))
+           (request-on-done! req (lambda (how)
+                                   (set! done-heard (append done-heard (list (list 'phase (scheduler-phase)))))))
+           (make-response 200 #f '() (b "phase")))
           ((bytevector=? target (b "/done-raise"))
            (request-on-done! req (done-hearing 'first))
            (request-on-done! req (lambda (how) (raise (make-message-condition "the done procedure failed"))))
@@ -2431,14 +2440,26 @@
                   '(((done-1 written)) ((done-1 written) (done-2 written)))
                   (list done-at-second done-heard))
       (client-close! cl))
+    ;; A procedure is told from the scheduler's drain, after libuv's turn,
+    ;; not inside the callback of the write that ended its response.
+    (set! done-heard '())
+    (let ((cl (open-client! (b "GET /done-phase HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a procedure is told from the scheduler's drain, after libuv's turn, not inside the write's callback"
+                  '(satisfied ((phase scheduling)))
+                  (list (wait-for (lambda () (pair? done-heard))) done-heard))
+      (client-close! cl))
     ;; A procedure that raises is logged, the others still told, and the
-    ;; connection goes on: the request behind it is answered.
+    ;; connection goes on: the request behind it is answered.  The raise is
+    ;; the run loop's guard's to take, so the loop is turned as `serve`
+    ;; turns it (run-turns-until).
     (set! done-heard '())
     (set! logged '())
     (let ((cl (open-client! (b "GET /done-raise HTTP/1.1\r\nHost: x\r\n\r\nGET /done-1 HTTP/1.1\r\nHost: x\r\n\r\n"))))
       (test-eq "a client reads both responses past a procedure that raises" 'satisfied
-               (wait-for (lambda () (and (= 2 (length (responses (client-bytes cl))))
-                                         (= 3 (length done-heard))))))
+               (run-turns-until loop shell
+                                (lambda () (and (= 2 (length (responses (client-bytes cl))))
+                                                (= 3 (length done-heard))))
+                                cap))
       (test-equal "the others told, newest first, the raise logged on-done-failed, and the next request answered"
                   '(((third written) (first written) (done-1 written))
                     (on-done-failed "the done procedure failed")
@@ -2450,14 +2471,16 @@
                               (list 'not-logged logged)))
                         (map status (responses (client-bytes cl)))))
       (client-close! cl))
-    ;; A procedure is called in place, on no coroutine, so its wait is
-    ;; refused, logged as its raise.
+    ;; A procedure is called on no coroutine, so its wait is refused, logged
+    ;; as its raise.
     (set! done-heard '())
     (set! logged '())
     (let ((cl (open-client! (b "GET /done-wait HTTP/1.1\r\nHost: x\r\n\r\n"))))
       (test-eq "a client reads the response whose procedure waits" 'satisfied
-               (wait-for (lambda () (and (= 1 (length (responses (client-bytes cl))))
-                                         (pair? done-heard)))))
+               (run-turns-until loop shell
+                                (lambda () (and (= 1 (length (responses (client-bytes cl))))
+                                                (pair? done-heard)))
+                                cap))
       (test-equal "a wait in a procedure is refused, logged on-done-failed, and the one before it still told"
                   '(((after written)) refused)
                   (list done-heard
@@ -2466,6 +2489,35 @@
                               'refused
                               (list 'not-refused logged)))))
       (client-close! cl))
+    ;; A second shell on the loop: its procedures are told from the loop's
+    ;; one drain, which the first shell's run loop turns, and a raise among
+    ;; them is still the procedure's, logged on-done-failed by the second
+    ;; shell, not a callback's error, the others still told.
+    (set! done-heard '())
+    (set! logged '())
+    (let* ((second-logged '())
+           (second (make-shell loop handler default-limits clock
+                               (lambda (what details)
+                                 (set! second-logged (cons (cons what details) second-logged)))
+                               trace!))
+           (to (shell-listen! second "127.0.0.1" 0))
+           (listening (shell-listener second))
+           (cl (open-client-to! to (b "GET /done-raise HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a second shell's procedure that raises, under the first shell's run loop: logged on-done-failed by the second shell, the others told"
+                  '(satisfied ((third written) (first written)) () (on-done-failed) (200))
+                  (let ((ran (run-turns-until loop shell
+                                              (lambda () (and (= 1 (length (responses (client-bytes cl))))
+                                                              (= 2 (length done-heard))))
+                                              cap))
+                        (kinds (lambda (entries)
+                                 (map car (filter (lambda (e) (memq (car e) '(on-done-failed callback-error)))
+                                                  entries)))))
+                    (list ran done-heard (kinds logged) (kinds second-logged)
+                          (map status (responses (client-bytes cl))))))
+      (client-close! cl)
+      (wait-for (lambda () (null? (shell-connections second))))
+      (shell-shutdown! second)
+      (wait-for (lambda () (eq? (uv-handle-state listening) 'closed))))
     ;; A client that leaves while a body streams: once its close reaches
     ;; the server's writes, the request is told client-closed, and its
     ;; producer is called no more.  A port the producer reads is closed

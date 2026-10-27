@@ -20,8 +20,8 @@ A client may send several requests without waiting for the answers
 sent.
 
 Once a response is done, the server calls whatever its request's code
-registered with `request-on-done!`, before it reads on to the next request
-([Handlers](handlers.md#when-the-response-is-done)).
+registered with `request-on-done!`, before it calls the next request's
+handler ([Handlers](handlers.md#when-the-response-is-done)).
 
 If the client closes the connection while your handler runs, a handler that
 waits is told ([Waiting](waiting.md)). A client that sent more requests

@@ -71,14 +71,18 @@
 ;;;                   transport, and a copy of the bytes handed over (THE
 ;;;                   DOOR, below)
 ;;;   response-done   each procedure the request's code registered told how
-;;;                   its response ended, in place, in the order the core
-;;;                   hands them, newest first: what each returns is dropped,
+;;;                   its response ended, in the order the core hands them,
+;;;                   newest first, from the scheduler's drain after libuv's
+;;;                   turn, through the shell's own queue, so a server that
+;;;                   stops first tells them as `serve` returns
+;;;                   (shell-call-deferred!): what each returns is dropped,
 ;;;                   and one that raises is logged `on-done-failed`, the rest
-;;;                   still told; a wait in one is refused, as anywhere no
-;;;                   coroutine runs.  While a call into the request's code
-;;;                   runs on a coroutine (A HANDLER THAT WAITS, below), they
-;;;                   are told once the connection's calls have ended, so
-;;;                   nothing they let go is still in use
+;;;                   still told (THE RUN LOOP, below); a wait in one is
+;;;                   refused, as anywhere no coroutine runs.  A switch's are
+;;;                   told in place, before its take-over.  While a call into
+;;;                   the request's code runs on a coroutine (A HANDLER THAT
+;;;                   WAITS, below), they are told once the connection's
+;;;                   calls have ended, so nothing they let go is still in use
 ;;; A shell made on credit answers with each handler's answer and `credit`,
 ;;; and a streaming reader's credit reaches the core through
 ;;; connection-body-credit!, which no action asks for.  The server never makes
@@ -264,7 +268,12 @@
 ;;;
 ;;; THE RUN LOOP.  chez-libuv catches whatever a callback raises, and raises
 ;;; it again from uv-run composed with `&uv-callback-error`; a raise out of
-;;; the drain, a handler call's dispatch, is taken as one.  A
+;;; the drain, a handler call's dispatch, is taken as one.  A raise out of a
+;;; procedure told a response's end is that procedure's failure, logged
+;;; `on-done-failed` by the shell telling it, whichever shell's run loop
+;;; takes it: the loop's teller, shared by every shell on the loop as its
+;;; scheduler is, names that shell and the procedures it has still to tell,
+;;; which are told then.  A
 ;;; `&byte-machine-contract` in it is a bug that has poisoned a parser:
 ;;; logged, the table reconciled, and raised again.  Any other callback error
 ;;; is logged, the table reconciled, and the loop runs on.
@@ -291,8 +300,8 @@
           (libuv)
           (byte-machine runtime)
           (only (byte-machine private conditions) byte-machine-contract-condition?)
-          (only (http-server connection) make-conn-state conn-body-reader conn-body-pulled? conn-producer
-                producer-event)
+          (only (http-server connection) make-conn-state conn-phase conn-body-reader conn-body-pulled?
+                conn-producer producer-event)
           (only (http-server request) make-addresses)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole?)
           (only (http-server awaiting) awaiting? awaiting-thunk client-closed? body-failed?)
@@ -356,6 +365,7 @@
   (define-record-type (shell %make-shell shell?)
     (fields loop handler limits clock log trace on-credit? table wheel scheduler
             waits-kept                         ; the box of its loop's waits' timer (loop-clock!)
+            teller                             ; its loop's teller (loop-teller)
             (mutable server)
             (mutable listener)
             (mutable signals)                   ; the signal handles it watches through
@@ -373,8 +383,21 @@
        (let* ((s (loop-scheduler loop log))
               (kept (hashtable-ref waits-timers loop #f)))
          (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
-                      (make-wheel (limits-tick-ms limits)) s kept
+                      (make-wheel (limits-tick-ms limits)) s kept (loop-teller loop)
                       (make-server-state 'listening 0 limits #f) #f '() #f #f #f #f #f #f '() '() #f)))))
+
+  ;; loop-teller : UvLoop -> (Vector (U #f (Listof (Symbol -> Any))) (U #f Symbol) (U #f Shell))
+  ;; The loop's teller, made the first time it is asked for and shared by
+  ;; every shell on the loop, as its scheduler is: while a shell tells how a
+  ;; response ended (tell!), the procedures it has still to tell, how the
+  ;; response ended, and the shell; otherwise #f first.  Kept in an
+  ;; ephemeron table, so a loop let go takes it with it.
+  (define tellers (make-ephemeron-eq-hashtable))
+  (define (loop-teller loop)
+    (or (hashtable-ref tellers loop #f)
+        (let ((t (vector #f #f #f)))
+          (hashtable-set! tellers loop t)
+          t)))
 
   ;; loop-scheduler : UvLoop [(Symbol (Listof Any) -> Any)] -> Scheduler
   ;; The loop's scheduler, made the first time it is asked for: its poll is
@@ -888,14 +911,52 @@
       (else (values))))
 
   ;; call-done! : Connection Symbol (Listof (Symbol -> Any)) -> Void
-  ;; Each procedure told `how` (tell-done!): at once, or, while a call into
-  ;; the request's code runs on a coroutine, once the connection's calls
-  ;; have ended (next-call!), so that nothing a procedure lets go is still in
-  ;; use by code that waits.
+  ;; Each procedure told `how`: from the scheduler's drain (tell-later!);
+  ;; while a call into the request's code runs on a coroutine, once the
+  ;; connection's calls have ended (next-call!), so that nothing a procedure
+  ;; lets go is still in use by code that waits; and a switch's in place
+  ;; (tell-done!), before its take-over is called.
   (define (call-done! c how procs)
-    (if (connection-calling? c)
-        (connection-done-later-set! c (append (connection-done-later c) (list (cons how procs))))
-        (tell-done! (connection-shell c) how procs)))
+    (cond ((connection-calling? c)
+           (connection-done-later-set! c (append (connection-done-later c) (list (cons how procs)))))
+          ((eq? (conn-phase (connection-state c)) 'handed-off)
+           (tell-done! (connection-shell c) how procs))
+          (else (tell-later! (connection-shell c) how procs))))
+
+  ;; tell-later! : Shell Symbol (Listof (Symbol -> Any)) -> Void
+  ;; Each procedure told `how` (tell!) from the scheduler's drain, after
+  ;; libuv's turn, through the shell's own queue (defer!).
+  (define (tell-later! sh how procs)
+    (defer! sh (lambda () (tell! sh how procs))))
+
+  ;; tell! : Shell Symbol (Listof (Symbol -> Any)) -> Void
+  ;; Each procedure told `how`, in order, on no coroutine, so it cannot
+  ;; wait, while the loop's teller names the shell and the procedures not
+  ;; yet told, so the run loop's guard takes a raise out of one as its
+  ;; failure (told-failed!): a guard of the telling's own, a one-shot
+  ;; continuation and a handler, would cost a request 0.5 KB or more.
+  (define (tell! sh how procs)
+    (let ((t (shell-teller sh)))
+      (vector-set! t 1 how)
+      (vector-set! t 2 sh)
+      (let each ((procs procs))
+        (if (null? procs)
+            (begin (vector-set! t 0 #f) (vector-set! t 2 #f))
+            (begin (vector-set! t 0 (cdr procs))
+                   ((car procs) how)
+                   (each (cdr procs)))))))
+
+  ;; told-failed! : Shell Any (Any -> Boolean) -> Boolean
+  ;; A procedure tell! called raised `e`, taken by `sh`'s run loop's guard:
+  ;; logged `on-done-failed` by the shell telling it, and the rest told,
+  ;; under the run loop's guard again (run-guarded), so a raise among them
+  ;; is taken so in turn.
+  (define (told-failed! sh e callback?)
+    (let* ((t (shell-teller sh)) (rest (vector-ref t 0)) (how (vector-ref t 1)) (teller (vector-ref t 2)))
+      (vector-set! t 0 #f)
+      (vector-set! t 2 #f)
+      (log-quietly! teller 'on-done-failed (list e))
+      (run-guarded sh (lambda () (tell! teller how rest) #t) callback?)))
 
   ;; tell-done! : Shell Symbol (Listof (Symbol -> Any)) -> Void
   ;; Each procedure told `how`, in order, in place, on no coroutine, so it
@@ -913,12 +974,13 @@
               procs))
 
   ;; told-later! : Connection -> Void
-  ;; The endings put off while a call ran (call-done!), told, oldest first.
+  ;; The endings put off while a call ran (call-done!), told from the
+  ;; scheduler's drain, oldest first.
   (define (told-later! c)
     (let ((later (connection-done-later c)))
       (unless (null? later)
         (connection-done-later-set! c '())
-        (for-each (lambda (d) (tell-done! (connection-shell c) (car d) (cdr d))) later))))
+        (for-each (lambda (d) (tell-later! (connection-shell c) (car d) (cdr d))) later))))
 
   ;; request-notice : Connection -> Notice
   ;; The notice of the request in flight, which tells its code the client has
@@ -1332,15 +1394,18 @@
 
   ;; taker-later! : Connection (-> Any) -> Void
   ;; Call into the taker's code after libuv's turn, from the scheduler's
-  ;; drain, guarded as taker-call! guards it.  The call waits in the shell's
-  ;; own queue, and each call the drain makes takes the oldest there, so one
-  ;; that no drain reaches, the server having stopped first, is still there
-  ;; for shell-call-deferred!.
+  ;; drain (defer!), guarded as taker-call! guards it.
   (define (taker-later! c thunk)
-    (let ((sh (connection-shell c)))
-      (shell-deferred-back-set! sh (cons (lambda () (taker-call! c thunk))
-                                         (shell-deferred-back sh)))
-      (scheduler-call! (shell-scheduler sh) (lambda () (call-deferred! sh)))))
+    (defer! (connection-shell c) (lambda () (taker-call! c thunk))))
+
+  ;; defer! : Shell (-> Any) -> Void
+  ;; Call `thunk` after libuv's turn, from the scheduler's drain.  The call
+  ;; waits in the shell's own queue, and each call the drain makes takes the
+  ;; oldest there, so one that no drain reaches, the server having stopped
+  ;; first, is still there for shell-call-deferred!.
+  (define (defer! sh thunk)
+    (shell-deferred-back-set! sh (cons thunk (shell-deferred-back sh)))
+    (scheduler-call! (shell-scheduler sh) (lambda () (call-deferred! sh))))
 
   ;; call-deferred! : Shell -> Void — the oldest call deferred, if one waits.
   (define (call-deferred! sh)
@@ -1353,16 +1418,19 @@
         ((car front)))))
 
   ;; shell-call-deferred! : Shell -> Void
-  ;; The taker's calls still deferred to a turn, made now, oldest first:
-  ;; those waiting as it is called, not those they defer in turn, so it
-  ;; ends.  `serve` calls it once its server has stopped, before its loop is
-  ;; torn down, so the `done` of a write refused as the server stops is told
-  ;; all the same.
+  ;; The calls still deferred to a turn (defer!), the taker's and the
+  ;; tellings of how a response ended, made now, oldest first, each under
+  ;; the run loop's guard (run-guarded), so a procedure told that raises is
+  ;; logged and the rest told: those waiting as it is called, not those they
+  ;; defer in turn, so it ends.  `serve` calls it once its server has
+  ;; stopped, before its loop is torn down, so the `done` of a write refused
+  ;; as the server stops, and the end of a response the stop cut short, are
+  ;; told all the same.  Any other raise is raised again.
   (define (shell-call-deferred! sh)
     (let each ((n (fx+ (length (shell-deferred-front sh))
                        (length (shell-deferred-back sh)))))
       (when (fx>? n 0)
-        (call-deferred! sh)
+        (run-guarded sh (lambda () (call-deferred! sh)) (lambda (e) #f))
         (each (fx- n 1)))))
 
   ;; connection-transport : Connection Taker -> Transport — the verbs (THE
@@ -1805,10 +1873,15 @@
   ;; table reconciled, and #t answered, so the caller runs again.  Either
   ;; way the scheduler's phase is set back first: a raise out of a turn's
   ;; poll left it 'in-uv-run (scheduler-turn!).  First of all, a raise out of
-  ;; a handler call-handler! called, whatever it is, is the handler's
-  ;; failure (handler-failed!), and #t answered, the caller running again.
+  ;; a procedure told how a response ended, while the loop's teller names
+  ;; the procedures still to tell, is that procedure's failure
+  ;; (told-failed!), and a raise out of a handler call-handler! called,
+  ;; whatever it is, the handler's (handler-failed!), and #t answered, the
+  ;; caller running again.
   (define (run-guarded sh thunk callback?)
-    (guard (e ((shell-calling sh)
+    (guard (e ((vector-ref (shell-teller sh) 0)
+               (told-failed! sh e callback?))
+              ((shell-calling sh)
                (handler-failed! sh e callback?))
               ((byte-machine-contract-condition? e)
                (scheduler-turn-abandoned!)

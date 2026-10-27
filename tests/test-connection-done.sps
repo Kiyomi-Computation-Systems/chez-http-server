@@ -5,9 +5,11 @@
 ;;; A handler, its reader or its producer registers a procedure with
 ;;; `request-on-done!`; the core tells the request once, as its response
 ;;; ends, with `written`, `client-closed` or `failed`, and the shell calls
-;;; what was registered, newest first, in place, from its drain.  The rows:
+;;; what was registered, newest first, from its scheduler's drain, a
+;;; switch's in place.  The rows:
 ;;;   - written: kept alive, before the next request's handler is called;
-;;;     newest first; a switch's 101, before its take-over; a client's end
+;;;     newest first; held, at the scheduler's drain after the write
+;;;     completed; a switch's 101, before its take-over; a client's end
 ;;;     while the handler waits, then its answer, written to the client that
 ;;;     only half-closed;
 ;;;   - client-closed: a read error while a producer streams, the producer
@@ -128,6 +130,21 @@
       (deliver sh (get-bytes "/"))
       (fake-shell-settle! sh)
       (test-equal "several registered are told newest first" '((inner written) (outer written)) (heard!)))
+
+    ;; Held, as the contract test holds it, the scheduler is drained only
+    ;; when asked, as the libuv shell drains its own once a turn: the
+    ;; procedure is told at the drain after the write completed, not in
+    ;; place as it completes.
+    (let ((sh (make-fake-connection default-limits (registering 'held resp))))
+      (fake-shell-hold! sh #t)
+      (deliver sh (get-bytes "/"))
+      (fake-shell-schedule! sh)
+      (fake-shell-settle! sh)
+      (let ((completed (heard!)))
+        (fake-shell-schedule! sh)
+        (test-equal "held: the response written, its procedure is told at the scheduler's next drain, not as its write completes"
+                    '(() ((held written)) (200))
+                    (list completed (heard!) (statuses sh)))))
 
     (let* ((at-take-over #f)
            (sh (make-fake-connection
