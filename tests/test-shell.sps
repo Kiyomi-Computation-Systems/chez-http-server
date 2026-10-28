@@ -14,7 +14,8 @@
 ;;;     connection stays open; three requests in one write are answered in
 ;;;     order, reading the clock fewer times than they are answered (once a
 ;;;     second), with no action but the parser's reply run at parser depth;
-;;;     bodies, Expect: 100-continue, a handler that raises (500, logged);
+;;;     bodies, Expect: 100-continue, a handler that raises (500, logged, by
+;;;     its own shell, even a second shell's under the first's run loop);
 ;;;   - addresses: a request reads both ends of its connection, the same on
 ;;;     each request, from the one record the connection was adopted with; a
 ;;;     connection its client reset before adoption is served, its peer's
@@ -2514,6 +2515,34 @@
                                                   entries)))))
                     (list ran done-heard (kinds logged) (kinds second-logged)
                           (map status (responses (client-bytes cl))))))
+      (client-close! cl)
+      (wait-for (lambda () (null? (shell-connections second))))
+      (shell-shutdown! second)
+      (wait-for (lambda () (eq? (uv-handle-state listening) 'closed))))
+    ;; A second shell's handler is called from the loop's one drain too, and
+    ;; its raise, under the first shell's run loop, is still the handler's
+    ;; failure: a 500, logged handler-failed by the second shell, and not a
+    ;; callback's error.
+    (set! logged '())
+    (let* ((second-logged '())
+           (second (make-shell loop handler default-limits clock
+                               (lambda (what details)
+                                 (set! second-logged (cons (cons what details) second-logged)))
+                               trace!))
+           (to (shell-listen! second "127.0.0.1" 0))
+           (listening (shell-listener second))
+           (cl (open-client-to! to (b "GET /raise HTTP/1.1\r\nHost: x\r\n\r\n"))))
+      (test-equal "a second shell's handler that raises, under the first shell's run loop: a 500, logged handler-failed by the second shell"
+                  '(satisfied (500) () ((handler-failed "the handler failed")))
+                  (let ((ran (run-turns-until loop shell (lambda () (eq? (client-end cl) 'eof)) cap))
+                        (kinds (lambda (entries)
+                                 (map (lambda (e)
+                                        (if (and (pair? (cdr e)) (message-condition? (cadr e)))
+                                            (list (car e) (condition-message (cadr e)))
+                                            (list (car e))))
+                                      (filter (lambda (e) (memq (car e) '(handler-failed callback-error)))
+                                              entries)))))
+                    (list ran (map status (responses (client-bytes cl))) (kinds logged) (kinds second-logged))))
       (client-close! cl)
       (wait-for (lambda () (null? (shell-connections second))))
       (shell-shutdown! second)

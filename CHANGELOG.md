@@ -34,6 +34,13 @@ All notable changes to chez-http-server are recorded here. The format follows
   logs. A `&body-failed` the handler makes and raises itself is still
   logged, by both. `docs/waiting.md` says the server logs nothing for it.
 
+- **A handler that raises is answered 500 and logged `handler-failed` when
+  two shells share a loop.** Every shell on a loop shares its scheduler, so
+  one shell's run loop can call another's handler. Its raise was logged
+  `callback-error` by the shell whose run loop took it, the request was never
+  answered, and its client waited. `serve` runs one shell a loop, so only code
+  that runs two on one loop met it.
+
 ## [0.9.0] - 2026-10-26
 
 The tenth release. A handler sees more of its request and of its connection:

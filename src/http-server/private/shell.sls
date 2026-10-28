@@ -273,7 +273,10 @@
 ;;; `on-done-failed` by the shell telling it, whichever shell's run loop
 ;;; takes it: the loop's teller, shared by every shell on the loop as its
 ;;; scheduler is, names that shell and the procedures it has still to tell,
-;;; which are told then.  A
+;;; which are told then.  So too a raise out of a handler is its failure,
+;;; logged `handler-failed` by the shell that called it, whichever shell's
+;;; run loop takes it: the loop's caller, shared alike, names the handler's
+;;; connection.  A
 ;;; `&byte-machine-contract` in it is a bug that has poisoned a parser:
 ;;; logged, the table reconciled, and raised again.  Any other callback error
 ;;; is logged, the table reconciled, and the loop runs on.
@@ -366,14 +369,14 @@
     (fields loop handler limits clock log trace on-credit? table wheel scheduler
             waits-kept                         ; the box of its loop's waits' timer (loop-clock!)
             teller                             ; its loop's teller (loop-teller)
+            caller                             ; its loop's caller (loop-caller)
             (mutable server)
             (mutable listener)
             (mutable signals)                   ; the signal handles it watches through
             (mutable timer) (mutable ticking?)  ; the timer, and whether it runs
             (mutable read-at) (mutable read-ms)       ; the clock's last reading, and when
             (mutable date-second) (mutable date-line)
-            (mutable deferred-front) (mutable deferred-back) ; a taker's calls deferred to a turn
-            (mutable calling)))                 ; the connection whose handler is called, or #f
+            (mutable deferred-front) (mutable deferred-back))) ; a taker's calls deferred to a turn
 
   (define make-shell
     (case-lambda
@@ -383,8 +386,8 @@
        (let* ((s (loop-scheduler loop log))
               (kept (hashtable-ref waits-timers loop #f)))
          (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
-                      (make-wheel (limits-tick-ms limits)) s kept (loop-teller loop)
-                      (make-server-state 'listening 0 limits #f) #f '() #f #f #f #f #f #f '() '() #f)))))
+                      (make-wheel (limits-tick-ms limits)) s kept (loop-teller loop) (loop-caller loop)
+                      (make-server-state 'listening 0 limits #f) #f '() #f #f #f #f #f #f '() '())))))
 
   ;; loop-teller : UvLoop -> (Vector (U #f (Listof (Symbol -> Any))) (U #f Symbol) (U #f Shell))
   ;; The loop's teller, made the first time it is asked for and shared by
@@ -398,6 +401,19 @@
         (let ((t (vector #f #f #f)))
           (hashtable-set! tellers loop t)
           t)))
+
+  ;; loop-caller : UvLoop -> (Vector (U #f Connection))
+  ;; The loop's caller, made the first time it is asked for and shared by
+  ;; every shell on the loop, as its scheduler is: while a shell's handler
+  ;; and its answer run (call-handler!), the connection it was called for,
+  ;; whose shell is the calling one; otherwise #f.  Kept in an ephemeron
+  ;; table, so a loop let go takes it with it.
+  (define callers (make-ephemeron-eq-hashtable))
+  (define (loop-caller loop)
+    (or (hashtable-ref callers loop #f)
+        (let ((c (vector #f)))
+          (hashtable-set! callers loop c)
+          c)))
 
   ;; loop-scheduler : UvLoop [(Symbol (Listof Any) -> Any)] -> Scheduler
   ;; The loop's scheduler, made the first time it is asked for: its poll is
@@ -1030,34 +1046,36 @@
   ;; answer, and `credit` after it on a shell made on credit, dispatched
   ;; there, the turn's guard taking a raise out of the dispatch as a
   ;; callback's (shell-turn!).  While the handler and its answer run, the
-  ;; shell's `calling` names the connection, so the run loop's guard takes a
-  ;; raise out of them as the handler's failure (handler-failed!): a guard of
-  ;; the call's own would cost every request 288 B and more.  A connection
-  ;; that has closed before the drain reaches the call has its handler called
-  ;; no more, as a waiting connection's calls are not made (next-call!).
+  ;; loop's caller names the connection, so the run loop's guard, whichever
+  ;; shell's turns the drain, takes a raise out of them as the handler's
+  ;; failure (handler-failed!): a guard of the call's own would cost every
+  ;; request 288 B and more.  A connection that has closed before the drain
+  ;; reaches the call has its handler called no more, as a waiting
+  ;; connection's calls are not made (next-call!).
   (define (call-handler! c request)
     (let ((sh (connection-shell c)))
       (connection-waits?-set! c #f)
       (scheduler-call! (shell-scheduler sh)
         (lambda ()
           (unless (connection-closing? c)
-            (shell-calling-set! sh c)
+            (vector-set! (shell-caller sh) 0 c)
             (let ((event (answered c ((shell-handler sh) request) #t)))
-              (shell-calling-set! sh #f)
+              (vector-set! (shell-caller sh) 0 #f)
               (when event (dispatch! c event))))))))
 
   ;; handler-failed! : Shell Any (Any -> Boolean) -> Void
-  ;; The handler call-handler! called, or its answer, raised `e`: logged
-  ;; `handler-failed` and dispatched to its connection as `(handler-failed
-  ;; e)`, under the run loop's guard again (run-guarded), so a raise from
-  ;; the log or the dispatch is taken as a callback's.  What the drain had
-  ;; still to run runs at the next turn.
+  ;; The handler call-handler! called, or its answer, raised `e`, taken by
+  ;; `sh`'s run loop's guard: logged `handler-failed` by the shell that
+  ;; called it and dispatched to its connection as `(handler-failed e)`,
+  ;; under the run loop's guard again (run-guarded), so a raise from the log
+  ;; or the dispatch is taken as a callback's.  What the drain had still to
+  ;; run runs at the next turn.
   (define (handler-failed! sh e callback?)
-    (let ((c (shell-calling sh)))
-      (shell-calling-set! sh #f)
+    (let* ((caller (shell-caller sh)) (c (vector-ref caller 0)))
+      (vector-set! caller 0 #f)
       (run-guarded sh
                    (lambda ()
-                     (log! sh 'handler-failed (list e))
+                     (log! (connection-shell c) 'handler-failed (list e))
                      (dispatch! c (list 'handler-failed e))
                      #t)
                    callback?)))
@@ -1876,12 +1894,12 @@
   ;; a procedure told how a response ended, while the loop's teller names
   ;; the procedures still to tell, is that procedure's failure
   ;; (told-failed!), and a raise out of a handler call-handler! called,
-  ;; whatever it is, the handler's (handler-failed!), and #t answered, the
-  ;; caller running again.
+  ;; while the loop's caller names its connection, whatever it is, the
+  ;; handler's (handler-failed!), and #t answered, the caller running again.
   (define (run-guarded sh thunk callback?)
     (guard (e ((vector-ref (shell-teller sh) 0)
                (told-failed! sh e callback?))
-              ((shell-calling sh)
+              ((vector-ref (shell-caller sh) 0)
                (handler-failed! sh e callback?))
               ((byte-machine-contract-condition? e)
                (scheduler-turn-abandoned!)
