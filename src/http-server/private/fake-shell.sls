@@ -96,11 +96,12 @@
 ;;;   hand-off        the switch's take-over called with a transport over the
 ;;;                   fake connection and the bytes handed over, copied
 ;;;                   (THE DOOR, below)
-;;;   response-done   each procedure told how the response ended, in place,
-;;;                   in order; one that raises is recorded
-;;;                   (fake-shell-done-failures), the rest still told; while
-;;;                   a call into the request's code runs on a coroutine, once
-;;;                   the connection's calls have ended
+;;;   response-done   each procedure told how the response ended, in order,
+;;;                   from the scheduler's drain, a stub's in place, and a
+;;;                   switch's in place, before its take-over; one that
+;;;                   raises is recorded (fake-shell-done-failures), the rest
+;;;                   still told; while a call into the request's code runs
+;;;                   on a coroutine, once the connection's calls have ended
 ;;;
 ;;; and records the rest (logs) without acting on them.  A fake connection made
 ;;; on credit answers with each handler's answer and `credit`,
@@ -221,8 +222,8 @@
           fake-shell-done-failures fake-waits-puller! fake-shell-pull-failure?)
   (import (rnrs)
           (byte-machine runtime)
-          (only (http-server connection) make-conn-state conn-body-reader conn-body-pulled? conn-producer
-                producer-event)
+          (only (http-server connection) make-conn-state conn-phase conn-body-reader conn-body-pulled?
+                conn-producer producer-event)
           (only (http-server request) no-addresses)
           (only (http-server body) body-reader-on-piece body-reader-on-end body-reader-whole? read-body)
           (only (http-server awaiting) awaiting? awaiting-thunk client-closed? body-failed?)
@@ -692,24 +693,36 @@
       (else (values))))
 
   ;; call-done! : FakeShell Symbol (Listof (Symbol -> Any)) -> Void
-  ;; Each procedure told `how` (tell-done!): at once, or, while a call into
-  ;; the request's code runs on a coroutine, once the connection's calls
-  ;; have ended (next-call!).
+  ;; Each procedure told `how`: from the scheduler's drain (tell-later!);
+  ;; while a call into the request's code runs on a coroutine, once the
+  ;; connection's calls have ended (next-call!); and a switch's in place
+  ;; (tell-done!), before its take-over is called.
   (define (call-done! s how procs)
-    (if (fake-shell-calling? s)
-        (fake-shell-done-later-set! s (append (fake-shell-done-later s) (list (cons how procs))))
-        (tell-done! s how procs)))
+    (cond ((fake-shell-calling? s)
+           (fake-shell-done-later-set! s (append (fake-shell-done-later s) (list (cons how procs)))))
+          ((eq? (conn-phase (fake-shell-conn-state s)) 'handed-off) (tell-done! s how procs))
+          (else (tell-later! s how procs))))
 
-  ;; told-later! : FakeShell -> Void — the endings put off while a call ran.
+  ;; tell-later! : FakeShell Symbol (Listof (Symbol -> Any)) -> Void
+  ;; Each procedure told `how` (tell-done!) from the scheduler's drain, or in
+  ;; place on a stub's shell, which has no scheduler.
+  (define (tell-later! s how procs)
+    (let ((sched (fake-shell-scheduler s)))
+      (if sched
+          (scheduler-call! sched (lambda () (tell-done! s how procs)))
+          (tell-done! s how procs))))
+
+  ;; told-later! : FakeShell -> Void — the endings put off while a call ran,
+  ;; told from the scheduler's drain.
   (define (told-later! s)
     (let ((later (fake-shell-done-later s)))
       (unless (null? later)
         (fake-shell-done-later-set! s '())
-        (for-each (lambda (d) (tell-done! s (car d) (cdr d))) later))))
+        (for-each (lambda (d) (tell-later! s (car d) (cdr d))) later))))
 
   ;; tell-done! : FakeShell Symbol (Listof (Symbol -> Any)) -> Void
-  ;; Each procedure told `how`, in order, in place; what one raises is
-  ;; recorded, and the rest are still told.
+  ;; Each procedure told `how`, in order, here; what one raises is recorded,
+  ;; and the rest are still told.
   (define (tell-done! s how procs)
     (for-each (lambda (p)
                 (guard (e (#t (fake-shell-done-failures-rev-set! s (cons e (fake-shell-done-failures-rev s)))))

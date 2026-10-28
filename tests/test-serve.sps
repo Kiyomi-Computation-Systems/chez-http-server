@@ -47,7 +47,9 @@
         (libuv) (uv-testing) (shell-testing) (response-reader)
         (http-server)
         (only (http-server request) make-request make-addresses)
-        (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-scheduler shell-signals)
+        (only (http-server private shell) shell-connections shell-listener shell-shutdown! shell-scheduler shell-signals
+              shell-server)
+        (only (http-server server) server-phase)
         (only (http-server private scheduler) scheduler-call!)
         (only (http-server private serve) start-server run-until-stopped! log-line))
 
@@ -203,6 +205,45 @@
       (run-shell-until loop sh (lambda () (for-all uv-timer? (uv-loop-live-handles loop))) cap)
       (uv-loop-teardown! loop)
       (list at-stop told other-at-stop))))
+
+;; told-at-stop : -> (List (Listof (List Symbol Symbol Symbol)) (Listof Any))
+;; A server whose drain lasts 1 s, whose handler registers three procedures,
+;; the middle one raising, the others each noting its name, how the
+;; response ended and the server's phase as it is told, and reads a body
+;; that never comes whole.  Once the handler has been called, the server is
+;; shut down and run as `serve` runs it (run-until-stopped!): the drain's
+;; deadline closes the connection, its request told failed in the turn the
+;; server stops in.  What the procedures were told when that run returned,
+;; and what the server logged `on-done-failed`.
+(define (told-at-stop)
+  (letrec* ((told '())
+            (failed '())
+            (called #f)
+            (loop (make-uv-loop))
+            (sh (start-server loop
+                              (lambda (r)
+                                (define (noting name)
+                                  (lambda (how)
+                                    (set! told (append told (list (list name how (server-phase (shell-server sh))))))))
+                                (set! called #t)
+                                (request-on-done! r (noting 'first))
+                                (request-on-done! r (lambda (how) (raise 'boom)))
+                                (request-on-done! r (noting 'third))
+                                (read-body (lambda (bv start end) #t) (lambda () (make-response 200 #f '() #f))))
+                              (env '("CHEZ_HTTP_PORT" . "0") '("CHEZ_HTTP_DRAIN_TIMEOUT" . "1"))
+                              (lambda (what details)
+                                (when (eq? what 'on-done-failed) (set! failed (append failed details))))))
+            (cl (open-client loop (uv-tcp-getsockname-port (shell-listener sh))
+                             (b "POST / HTTP/1.1\r\nHost: h\r\nContent-Length: 10\r\n\r\nabc")
+                             #t)))
+    (run-shell-until loop sh (lambda () called) cap)
+    (shell-shutdown! sh)
+    (run-until-stopped! sh)
+    (let ((at-stop (list told failed)))
+      (client-close! cl)
+      (run-shell-until loop sh (lambda () (for-all uv-timer? (uv-loop-live-handles loop))) cap)
+      (uv-loop-teardown! loop)
+      at-stop)))
 
 ;; with-child : (Listof String) (UvLoop (-> String) (-> (U #f List)) UvProcess -> Any) -> Any
 ;; Start tests/serve-child.sps with `args` as a process of its own, with the
@@ -539,6 +580,11 @@
     (test-equal "a done so told as serve's run returns that asks for a write: that write's done waits for a turn, which serve does not run"
                 '(((1 ECANCELED)) ((1 ECANCELED) (2 ECANCELED) (3 ECANCELED)) #f)
                 (dones-at-stop 1 #t))
+    ;; --- a request's end told as the server stops: its procedures wait for
+    ;; a turn too, and are told before serve's run returns.
+    (test-equal "procedures told a response's end in the turn the server stops in: told before serve's run returns, once the server has stopped, a raise among them logged on-done-failed, the others told"
+                '(((third failed stopped) (first failed stopped)) (boom))
+                (told-at-stop))
 
     ;; --- a start that fails ---
     (test-equal "a malformed setting raises an &http-server-config-error naming it, from serve"

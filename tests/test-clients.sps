@@ -418,6 +418,18 @@
 ;; takes a GET past it.
 (define get-ratchet 5376)
 
+;; What a procedure registered with `request-on-done!` adds to a GET, the
+;; same server's handler registering one that does nothing, then two, each
+;; told from the scheduler's drain with no guard of its own: one about
+;; 240 B, the telling deferred to the drain, a second 16 to 32 B.  The
+;; bounds are 384 B and 96 B.  Told in place in libuv's callbacks, each
+;; under a guard of its own, a one-shot continuation and a handler, one
+;; costs about 725 B and a second 280 B; told from the drain under such a
+;; guard each, 880 B and 315 B: either takes a GET past both.
+(define on-done-bound 384)
+(define second-on-done-bound 96)
+(define (no-op how) #f)
+
 ;; allocated-over : UvLoop Shell String Nat -> (List Nat (U (Listof (Pair String Nat)) #f))
 ;; oha's `n` GETs to `url` on one connection kept alive, the loop turned as
 ;; `serve` turns it until oha has ended, or for oha-cap turns: the bytes this
@@ -439,6 +451,26 @@
       (uv-close! (child-process c))
       (when (uv-handle-open? (child-pipe c)) (uv-close! (child-pipe c)))
       (list (- b1 b0) (oha-tally (utf8->string (collector-bytes (child-out c))) "statusCodeDistribution")))))
+
+;; measured-get : (Request -> Answer) -> (List Rational Tally Tally (Listof UvHandle))
+;;   Tally = (U (Listof (Pair String Nat)) #f)
+;; A server of its own, on a loop of its own, answering with `handler`, sent
+;; oha's 2,000 and then 7,000 GETs (allocated-over): what a GET costs, the
+;; two runs' responses by status, and what of the server is left on its
+;; loop once it has shut down.
+(define (measured-get handler)
+  (let* ((aloop (make-uv-loop))
+         (alogged '())
+         (ash (start-server aloop handler (env '("CHEZ_HTTP_PORT" . "0"))
+                            (lambda (what details) (set! alogged (append alogged (list (cons what details)))))))
+         (aurl (string-append "http://127.0.0.1:" (number->string (caddr (assq 'listening alogged))) "/"))
+         (small (allocated-over aloop ash aurl 2000))
+         (large (allocated-over aloop ash aurl 7000)))
+    (shell-shutdown! ash)
+    (run-until-drained aloop cap)
+    (let ((left (uv-loop-live-handles aloop)))
+      (uv-loop-teardown! aloop)
+      (list (/ (- (car large) (car small)) 5000) (cadr small) (cadr large) left))))
 
 ;; json-string : String Nat -> (Values String Nat)
 ;; The JSON string whose text begins at `i`, just past its opening quote,
@@ -733,27 +765,29 @@
          ("2,000 GETs, 10 at a time, each on a connection of its own" ("-n" "2000" "-c" "10" "--disable-keepalive") 2000)))
 
       ;; --- what a GET allocates through the whole server ---
-      (let* ((aloop (make-uv-loop))
-             (alogged '())
-             (ok (make-response 200 #f '() (b "ok")))
-             (ash (start-server aloop (lambda (r) ok) (env '("CHEZ_HTTP_PORT" . "0"))
-                                (lambda (what details) (set! alogged (append alogged (list (cons what details)))))))
-             (aurl (string-append "http://127.0.0.1:" (number->string (caddr (assq 'listening alogged))) "/"))
-             (small (allocated-over aloop ash aurl 2000))
-             (large (allocated-over aloop ash aurl 7000))
-             (per-get (/ (- (car large) (car small)) 5000)))
+      (let* ((ok (make-response 200 #f '() (b "ok")))
+             (plain (measured-get (lambda (r) ok)))
+             (one (measured-get (lambda (r) (request-on-done! r no-op) ok)))
+             (two (measured-get (lambda (r) (request-on-done! r no-op) (request-on-done! r no-op) ok)))
+             (per-get (car plain)))
         (let ((p (current-output-port)))
           (put-string p (string-append "clients: a GET through the whole server, one connection kept alive, allocates "
-                                       (number->string (exact (round per-get))) " B\n"))
+                                       (number->string (exact (round per-get))) " B; a procedure told its end adds "
+                                       (number->string (exact (round (- (car one) per-get)))) " B, a second "
+                                       (number->string (exact (round (- (car two) (car one))))) " B\n"))
           (flush-output-port p))
         (test-equal (string-append "a GET through the whole server allocates at most " (number->string get-ratchet)
                                    " B, one connection kept alive, every one answered 200")
                     (list #t '(("200" . 2000)) '(("200" . 7000)))
-                    (list (<= per-get get-ratchet) (cadr small) (cadr large)))
-        (shell-shutdown! ash)
-        (run-until-drained aloop cap)
-        (test-equal "shut down, nothing of the measured server is left on its loop" '() (uv-loop-live-handles aloop))
-        (uv-loop-teardown! aloop))
+                    (list (<= per-get get-ratchet) (cadr plain) (caddr plain)))
+        (test-equal (string-append "a procedure told a GET's end adds at most " (number->string on-done-bound)
+                                   " B to it, a second at most " (number->string second-on-done-bound)
+                                   " B more, every GET answered 200")
+                    (list #t #t '(("200" . 2000)) '(("200" . 7000)) '(("200" . 2000)) '(("200" . 7000)))
+                    (list (<= (- (car one) per-get) on-done-bound) (<= (- (car two) (car one)) second-on-done-bound)
+                          (cadr one) (caddr one) (cadr two) (caddr two)))
+        (test-equal "shut down, nothing of the measured servers is left on their loops" '(() () ())
+                    (map cadddr (list plain one two))))
 
       ;; --- the counters return to zero ---
       (test-eq "with every client gone, every connection leaves the table" 'satisfied

@@ -152,9 +152,10 @@ it once, when the response is done, with how it ended:
 - Any code that holds the request may register: the handler, its reader, its
   producer, a thunk it waits in. Register as many as you like: the newest is
   called first, so a middleware that registers first hears last.
-- The server calls them in place, the moment the response ends. Like a
-  handler, a procedure must be quick, and it cannot wait. On a kept-alive
-  connection they run before the next request's handler.
+- The server calls them just after the response ends, once the event loop's
+  turn is over, as it calls handlers. Like a handler, a procedure must be
+  quick, and it cannot wait. On a kept-alive connection they run before the
+  next request's handler, and for an upgrade, before your take-over.
 - If your code is still running when the response ends, such as a reader or
   producer that waits ([Waiting](waiting.md)), the server calls them once
   that code stops, so nothing they close is still in use.

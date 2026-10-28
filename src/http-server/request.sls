@@ -124,10 +124,10 @@
   ;; request-on-done! : Request (Symbol -> Any) -> Void
   ;; Register `proc` to be called once with how the request's response ended:
   ;; `written`, `client-closed` or `failed`.  The server calls the procedures
-  ;; registered in reverse order of registration, in place, so each must be
-  ;; quick and cannot wait.  Once the response is done, `proc` is called at
-  ;; once, here, and its raise is the caller's.  Anything but a procedure is
-  ;; an assertion violation.
+  ;; registered in reverse order of registration, on no coroutine, so each
+  ;; must be quick and cannot wait.  Once the response is done, `proc` is
+  ;; called at once, here, and its raise is the caller's.  Anything but a
+  ;; procedure is an assertion violation.
   (define (request-on-done! r proc)
     (unless (procedure? proc)
       (assertion-violation 'request-on-done! "not a procedure" proc))

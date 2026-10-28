@@ -6,6 +6,19 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A procedure registered with `request-on-done!` costs about 240 B a
+  request, down from about 725, and a second about 30 B, down from 280.**
+  Each was told in place, inside the write's callback, under a one-shot
+  continuation and an exception handler of its own, which cost 0.5 KB there.
+  The server now tells them from the scheduler's drain, just after libuv's
+  turn, still before the next request's handler, and the run loop's guard
+  takes a raise among them: `on-done-failed` is logged and the rest are told,
+  as before. A switch's are still told in place, before its take-over. A tell
+  the server's stop leaves waiting is told as `serve` returns. The test host
+  tells them from its drain too.
+
 ### Fixed
 
 - **`docs/waiting.md` names 431 among a pulled body's failures.** A chunked

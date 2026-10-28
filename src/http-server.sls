@@ -45,7 +45,7 @@
 ;;; and the bytes it read past the request (see (http-server switch) and
 ;;; (http-server transport)).  A taker's tests make a fake with
 ;;; `make-transport`.  Code that holds a request may register a procedure
-;;; with `request-on-done!`: the server calls it once, in place, when the
+;;; with `request-on-done!`: the server calls it once, just after the
 ;;; request's response is done, with how it ended, `written`,
 ;;; `client-closed` or `failed` (see (http-server request)).  A malformed setting raises &http-server-config-error
 ;;; at startup.
