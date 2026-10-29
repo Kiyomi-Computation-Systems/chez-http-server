@@ -6,6 +6,16 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-29
+
+The eleventh release, a patch. A procedure registered with `request-on-done!`
+costs about a third of what it did, told from the scheduler's drain rather than
+in place. The test host's log leaves out a pulled body's failure that the
+handler lets out, as `serve`'s does, and a handler that raises is answered 500
+when two shells share a loop. `docs/waiting.md` names 431 among a pulled body's
+failures. Nothing an embedder calls changes, so the release is 0.9.1. The
+dependencies are 0.9.0's.
+
 ### Changed
 
 - **A procedure registered with `request-on-done!` costs about 240 B a
@@ -714,7 +724,8 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.6.0...v0.7.0
