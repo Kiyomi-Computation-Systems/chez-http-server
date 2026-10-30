@@ -71,7 +71,8 @@
 ;;          -> Outcome
 ;; What the connection does with a status it originates: one write, read
 ;; back as `status` and `reason` with `fields`; from the core's response on,
-;; `before` (the log naming a refused response's fault), the write, `stop`
+;; `before` (the line naming a refusal, or the one naming a response's
+;; fault), the write, `stop`
 ;; (the read-stop of a connection still reading), the write deadline, then
 ;; the staged close, and nothing else; and it ends closed, for `why`.
 (define (closes status reason why fields before stop)
@@ -81,10 +82,27 @@
                       '(disarm-deadline) (list 'close why)))
         'closed why))
 
+;; logged : Nat Symbol -> (Listof Action)
+;; The line a refusal asks for before its response: `request-refused`, the
+;; status, what refused it, and the client's address, `-` on a fake
+;; connection, which has none.
+(define (logged status named) (list (list 'log 'request-refused status named "-")))
+
 ;; refused : Nat String Symbol (Listof Field) -> Outcome
-;; A status for a request the core refuses as it reads it: reading stops
-;; with the write.
-(define (refused status reason why fields) (closes status reason why fields '() '((read-stop))))
+;; A status for a request the core refuses as it reads it, logged: reading
+;; stops with the write.
+(define (refused status reason why fields)
+  (closes status reason why fields (logged status why) '((read-stop))))
+
+;; parsed : Nat String Symbol (Listof Field) -> Outcome
+;; A status for a parser error, refused as `refused` has it, the line naming
+;; the error's code; the connection closes for `parser-error`.
+(define (parsed status reason code fields)
+  (closes status reason 'parser-error fields (logged status code) '((read-stop))))
+
+;; redirected : Nat String Symbol (Listof Field) -> Outcome
+;; A redirect, which is no refusal: as `refused` has it, but with no line.
+(define (redirected status reason why fields) (closes status reason why fields '() '((read-stop))))
 
 ;; failed : Nat String Symbol (Listof Field) Action ... -> Outcome
 ;; A status in place of a handler's answer, after reading stopped at the
@@ -93,9 +111,9 @@
 
 ;; kept : Nat String Symbol (Listof Field) -> Outcome
 ;; A status for what the feed that completed the head met in the body, which
-;; waited for the handler's answer: reading stopped where it was met, before
-;; the handler was asked.
-(define (kept status reason why fields) (closes status reason why fields '() '()))
+;; waited for the handler's answer, logged: reading stopped where it was
+;; met, before the handler was asked.
+(define (kept status reason why fields) (closes status reason why fields (logged status why) '()))
 
 (define get "GET / HTTP/1.1\r\nHost: x\r\n\r\n")
 
@@ -162,7 +180,7 @@
    ;; is redirected to the target encoded.
    (row "301: bracket params in a GET, redirected to the target encoded"
         answers (sent (string-append "GET /s?ids[]=1 HTTP/1.1\r\nHost: x\r\n\r\n" get))
-        (refused 301 "Moved Permanently" 'target-redirect (at epoch '("Location" . "/s?ids%5B%5D=1"))))
+        (redirected 301 "Moved Permanently" 'target-redirect (at epoch '("Location" . "/s?ids%5B%5D=1"))))
    ;; 400: a target or a Host the core refuses, and a parser error.
    (row "400: a target with a fragment, which no request-target form allows"
         answers (sent (string-append "GET /a#b HTTP/1.1\r\nHost: x\r\n\r\n" get))
@@ -172,7 +190,7 @@
         (refused 400 "Bad Request" 'invalid-host (at epoch)))
    (row "400: a parser error, a space in a field name"
         answers (sent (string-append "GET / HTTP/1.1\r\nHo st: x\r\n\r\n" get))
-        (refused 400 "Bad Request" 'parser-error (at epoch)))
+        (parsed 400 "Bad Request" 'invalid-header-token (at epoch)))
    ;; HTTP/1.0 has no Transfer-Encoding, so a request below 1.1 that carries
    ;; it has faulty framing (RFC 9112 §6.1).
    (row "400: an HTTP/1.0 request with Transfer-Encoding"
@@ -182,7 +200,7 @@
    ;; §6.3), and the parser refuses the request.
    (row "400: a parser error, a Transfer-Encoding with no chunked"
         answers (sent (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: pigeons\r\n\r\n" get))
-        (refused 400 "Bad Request" 'parser-error (at epoch)))
+        (parsed 400 "Bad Request" 'invalid-transfer-encoding (at epoch)))
    ;; What the parser reads and hands no span of: three empty lines before a
    ;; request line, two spaces after its method, and a chunk size of 17
    ;; digits, zeros included.

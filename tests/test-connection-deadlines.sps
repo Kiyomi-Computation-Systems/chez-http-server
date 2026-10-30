@@ -91,11 +91,14 @@
             (list kind early (fake-shell-now sh) (map shown (list-tail (fake-shell-actions sh) n))
                   (conn-phase s) (conn-close-after s) (conn-outstanding s))))))))
 
-;; A 408, then the staged close: the write, reading stopped,
-;; the write deadline; once the write completes, the half-close, reading
-;; again to drop what arrives, and the linger deadline.
-(define answered-408
-  '((write 408) (read-stop) (arm-deadline write) (shutdown) (read-start) (arm-deadline linger)))
+;; answered-408 : Symbol -> (Listof Action)
+;; A 408 for `why`, then the staged close: the line naming the refusal, the
+;; write, reading stopped, the write deadline; once the write completes,
+;; the half-close, reading again to drop what arrives, and the linger
+;; deadline.  A fake connection has no address: `-`.
+(define (answered-408 why)
+  `((log request-refused 408 ,why "-") (write 408) (read-stop) (arm-deadline write) (shutdown)
+    (read-start) (arm-deadline linger)))
 
 ;; A row: what it shows; the client's moves; the outcome.
 (define (row text moves outcome) (list text moves outcome))
@@ -110,10 +113,10 @@
         '(idle () 76000 ((disarm-deadline) (close idle-timeout)) closed #f 0))
    (row "header: a head never finished is answered 408, then closed in stages"
         (lambda (sh) (send! sh "GET / HTTP/1.1\r\nHo"))
-        `(header () 61000 ,answered-408 lingering header-timeout 0))
+        `(header () 61000 ,(answered-408 'header-timeout) lingering header-timeout 0))
    (row "body: a body never finished is answered 408, then closed in stages"
         (lambda (sh) (send! sh "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nab"))
-        `(body () 61000 ,answered-408 lingering body-timeout 0))
+        `(body () 61000 ,(answered-408 'body-timeout) lingering body-timeout 0))
    (row "write: a response the client never reads: logged with its bytes, closed, with no response, its write settled"
         (lambda (sh) (unread! sh get))
         `(write () 61000 ((log write-timeout ,answer-bytes) (disarm-deadline) (close write-timeout))
