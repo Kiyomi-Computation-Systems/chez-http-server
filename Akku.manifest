@@ -19,7 +19,7 @@
 ;; (`make site`). A project that depends on chez-http-server does not get
 ;; it. Akku.lock is `akku lock`'s output for this file;
 ;; `make check-akku-lock` checks it still is.
-(akku-package ("chez-http-server" "0.9.1")
+(akku-package ("chez-http-server" "0.10.0")
   (synopsis "An HTTP/1.1 server for Chez Scheme, built on libuv")
   (description "An HTTP/1.1 and 1.0 server for Chez Scheme on libuv: a handler is a procedure from request to response; the server reads, checks and answers requests, keeps connections alive, bounds every timeout and size, and shuts down cleanly. Requires threaded Chez and a C compiler.")
   (authors "Kiyomi Computation Systems LLC")
