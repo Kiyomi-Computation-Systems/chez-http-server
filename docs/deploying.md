@@ -73,10 +73,11 @@ supervises your services:
 - **Raise the open-file limit** above `CHEZ_HTTP_MAX_CONNECTIONS` (10,000):
   each connection is a file descriptor. Under systemd, set `LimitNOFILE=`.
 - **Read the logs from standard output.** The server writes one line for
-  each thing that happens (`listening`, `handler-failed`, `draining`,
-  `stopped`, ...), and nothing to files. A line break or other control
-  character in what a handler raised is written as a space, and a record as
-  its type, never its fields, so each thing stays on one short line.
+  each thing that happens (`listening`, `request-refused`,
+  `handler-failed`, `draining`, `stopped`, ...), and nothing to files. A
+  line break or other control character in what a handler raised is written
+  as a space, and a record as its type, never its fields, so each thing
+  stays on one short line.
 - **Add a health route yourself.** The server has no built-in one; a
   `/health` branch in your handler that answers `200` is enough for a load
   balancer or a container health check.

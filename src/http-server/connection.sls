@@ -442,6 +442,16 @@
 ;;; after those pieces, or not at all if the handler answers with a
 ;;; response, since the body is then not read.
 ;;;
+;;; A REQUEST THE CORE REFUSES IS LOGGED.  No handler sees it, so a line is
+;;; all that tells of it: `(log request-refused status named address)`
+;;; just before the response's write, `named` the core's reason or, for a
+;;; parser error, the error's code, and `address` the client's, the
+;;; connection's peer, or "-" when it has none.  A 408 or a 413 partway
+;;; through a body, and a pulled body's failure a handler lets out, are
+;;; refusals too.  The 500s for a handler's failure and a fault in its
+;;; response have lines of their own, and a redirect refuses nothing, so
+;;; none of them logs one.
+;;;
 ;;; DEADLINES ARE KINDS, NOT INSTANTS.  `(arm-deadline kind)` names which of
 ;;; the connection's one deadline — idle, header, body, write or linger — to
 ;;; arm, and carries no time: no event but `tick` carries `now`, so the core
@@ -2106,7 +2116,7 @@
       => (lambda (reason)
            (respond-and-close s reason (refusal-headers (conn-head s)))))
      (else
-      (respond s (parser-error-status err) 'parser-error '()))))
+      (respond-refused s (parser-error-status err) 'parser-error err '()))))
 
   ;; fail-pull : ConnState (List Symbol Any) -> (values ConnState (Listof Action))
   ;; The pulled body has failed, `error` what it met: -> handling, its
@@ -2222,7 +2232,7 @@
   (define (answer-error s error)
     (if (eq? (car error) 'refused)
         (respond-and-close s (cadr error) '())
-        (respond s (parser-error-status (cadr error)) 'parser-error '())))
+        (respond-refused s (parser-error-status (cadr error)) 'parser-error (cadr error) '())))
 
   ;; rest-of : (List Bytevector Nat Nat) Nat -> Pending
   ;; The delivery's bytes from `next` on, or #f when the parser took them all.
@@ -2660,9 +2670,26 @@
   ;;   ConnState Symbol Headers -> (values ConnState (Listof Action))
   ;; Enter `responding` with a status the core originates, closing afterwards
   ;; for `reason`: every status the core originates closes.  The status is
-  ;; the reason's, from (http-server decisions).
+  ;; the reason's, from (http-server decisions).  A refusal is logged
+  ;; (refuse); a handler's failure and a fault in its response have lines
+  ;; of their own, and a redirect refuses nothing.
   (define (respond-and-close s reason headers)
-    (respond s (reason-status reason) reason headers))
+    (if (memq reason '(handler-failed invalid-response target-redirect))
+        (respond s (reason-status reason) reason headers)
+        (respond-refused s (reason-status reason) reason reason headers)))
+
+  ;; respond-refused :
+  ;;   ConnState Nat Symbol Symbol Headers -> (values ConnState (Listof Action))
+  ;; `respond`, with `(log request-refused status named address)` before
+  ;; it: `named` is what refused the request, the core's reason or the
+  ;; parser error's code, and `address` the client's, the connection's
+  ;; peer, or "-" when it has none.  No handler sees a request the core
+  ;; refuses, so the line is all that tells of it.
+  (define (respond-refused s status reason named headers)
+    (let-values (((s actions) (respond s status reason headers)))
+      (values s (cons (list 'log 'request-refused status named
+                            (or (addresses-remote-address (conn-addresses s)) "-"))
+                      actions))))
 
   ;; respond :
   ;;   ConnState Nat Symbol Headers -> (values ConnState (Listof Action))

@@ -107,10 +107,13 @@ Each name is in the [API reference](reference.md#testing-http-server-testing).
 
 `(test-host-log host)` lists what the server would log, in order, each as
 `(what . details)`: `(handler-failed e)` for a handler that raised,
-`(on-done-failed e)` for a procedure given to `request-on-done!` that
-raised, `(late-resume await)`, `(read-error ECONNRESET)` and the rest. As
-the server does, it leaves out a handler that lets out the `&client-closed`
-its client's close raised, or the `&body-failed` its pulled body raised.
+`(request-refused 400 invalid-host "-")` for a request the server refused
+itself, with `-` for the client's address, `(on-done-failed e)` for a
+procedure given to `request-on-done!` that raised, `(late-resume await)`,
+`(read-error ECONNRESET)` and the rest. As the server does, it logs no
+`handler-failed` for a handler that lets out the `&client-closed` its
+client's close raised, or the `&body-failed` its pulled body raised: the
+second is logged `request-refused`.
 
 ## A handler still waiting
 

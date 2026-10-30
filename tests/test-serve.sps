@@ -295,6 +295,28 @@
         (when cl (client-close! cl))
         (list (if (eq? listening 'satisfied) answered listening) response)))))
 
+;; refused-by-a-child : -> (List Symbol (U Nat #f) (Listof String))
+;; Start the child, waiting until it logs where it listens; then a client
+;; sends a request with no Host, which the server refuses itself, and reads
+;; until the child closes the stream; then the wait for the child's next
+;; line.  How the waits ended, the first that did not end 'satisfied; the
+;; status read, or #f; and the lines the child wrote after `listening`.
+(define (refused-by-a-child)
+  (with-child '()
+    (lambda (loop text exited process)
+      (let* ((port (lambda () (listening-port (text))))
+             (listening (run-loop-until loop (lambda () (and (port) #t)) cap))
+             (cl (and (port) (open-client loop (port) (b "GET / HTTP/1.1\r\n\r\n") #t)))
+             (answered (if cl (run-loop-until loop (lambda () (not (eq? (client-end cl) 'open))) cap) 'no-port))
+             (said (run-loop-until loop (lambda () (pair? (lines-after-listening (text)))) cap))
+             (status (and cl (pair? (responses-of (client-bytes cl)))
+                          (car (read-response (client-bytes cl) #f #t)))))
+        (when cl (client-close! cl))
+        (list (cond ((not (eq? listening 'satisfied)) listening)
+                    ((not (eq? answered 'satisfied)) answered)
+                    (else said))
+              status (lines-after-listening (text)))))))
+
 ;; drained-by-a-child : Symbol -> Datum
 ;; Start the child.  One client is served `/` and left idle on its
 ;; keep-alive connection; a second sends the head of `POST /wait`, in
@@ -550,6 +572,17 @@
                   '(413 "" complete)
                   (exchange loop sh port
                             (b "POST /u HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello")))
+      (test-equal "a request with no Host gets 400, and one the parser refuses too"
+                  '((400 "" complete) (400 "" complete))
+                  (list (exchange loop sh port (b "GET / HTTP/1.1\r\n\r\n"))
+                        (exchange loop sh port (b "GET / HTTP/1.1\r\nHo st: h\r\n\r\n"))))
+      (test-equal "each request the server refused is logged request-refused, with its status, what refused it, a parser error by its code, and the client's address"
+                  '((request-refused 414 target-too-large "127.0.0.1")
+                    (request-refused 414 target-too-large "127.0.0.1")
+                    (request-refused 413 body-too-large "127.0.0.1")
+                    (request-refused 400 invalid-host "127.0.0.1")
+                    (request-refused 400 invalid-header-token "127.0.0.1"))
+                  (filter (lambda (entry) (eq? (car entry) 'request-refused)) logged))
       ;; A client sends its handshake and, with it, the first bytes of the
       ;; new protocol: it reads the 101 and those bytes back; then it ends
       ;; its side, and reads the stream's end, which the taker closes at its
@@ -614,6 +647,11 @@
     (test-equal "serve, run as a program of its own, answers a request, calling its handler after libuv's turn"
                 '(satisfied (200 "served" complete))
                 (served-by-a-child))
+    ;; A request the server refuses itself reaches no handler, so the line
+    ;; is the only trace of it: what refused it, and who sent it.
+    (test-equal "serve, run as a program of its own, logs a request it refuses itself: request-refused, the status, what refused it and the client's address"
+                '(satisfied 400 ("request-refused 400 invalid-host 127.0.0.1"))
+                (refused-by-a-child))
     ;; The child's drain lasts 2 s: its idle client is closed at once, before
     ;; the request in flight is answered, and its `/long` is cut short at
     ;; the deadline, a minute's wait still armed, which `serve` does not

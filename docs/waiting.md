@@ -166,7 +166,8 @@ it arrives:
   `&body-failed` once it has given you the pieces before it, and so does
   every call after. `(body-failed-reason e)` says why, such as
   `body-too-large`, and `(body-failed-status e)` is the status the server
-  answers if you let the raise out, logging nothing: 413, 400, 408 or 431
+  answers if you let the raise out, logged `request-refused`, not
+  `handler-failed`: 413, 400, 408 or 431
   ([Responses](responses.md#what-the-server-answers-by-itself)).
   Catch it to answer yourself. Either way the connection closes after the
   answer.

@@ -360,9 +360,10 @@
                     '(() ((504 "")) ((late-resume await)))
                     (list before (seen c) (test-host-log host)))))
     ;; A chunked body of 10 bytes, past the server's cap of 4, read through a
-    ;; port: the pull's failure let out is answered 413, and `serve` logs
-    ;; nothing for it; one of the handler's own, alike but not the pull's,
-    ;; raised in its place, is answered the same, and logged.
+    ;; port: the pull's failure let out is answered 413, and `serve` logs it
+    ;; as a refusal, not as the handler's failure; one of the handler's own,
+    ;; alike but not the pull's, raised in its place, is answered the same,
+    ;; and logged handler-failed too.  The host has no addresses: `-`.
     (let ((own (make-body-failed 'body-too-large 413)))
       (for-each
        (lambda (raised expected)
@@ -378,8 +379,8 @@
            (test-client-send! c (b (string-append "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
                                                   "a\r\n0123456789\r\n0\r\n\r\n")))
            (test-equal (if raised
-                           "a &body-failed of the handler's own, raised in place of the pull's: 413, logged handler-failed with it"
-                           "a pulled body past the server's cap, the raise let out: 413, nothing logged, and the connection closes")
+                           "a &body-failed of the handler's own, raised in place of the pull's: 413, logged handler-failed with it, then request-refused"
+                           "a pulled body past the server's cap, the raise let out: 413, logged request-refused, not handler-failed, and the connection closes")
                        expected
                        (list (map test-response-status (test-client-responses c))
                              (map (lambda (entry) (if (and (pair? (cdr entry)) (eq? (cadr entry) own))
@@ -388,8 +389,8 @@
                                   (test-host-log host))
                              (test-client-connection-closed? c)))))
        (list #f own)
-       '(((413) () #t)
-         ((413) ((handler-failed own)) #t))))
+       '(((413) ((request-refused 413 body-too-large "-")) #t)
+         ((413) ((handler-failed own) (request-refused 413 body-too-large "-")) #t))))
 
     ;; --- a run that ends with a handler waiting -----------------------------------
     (let* ((host (make-test-host

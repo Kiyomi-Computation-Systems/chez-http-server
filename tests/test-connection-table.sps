@@ -53,8 +53,8 @@
 ;; state : Symbol . Plist -> ConnState
 ;; A synthetic state: the phase, plus any of deadline / close-after /
 ;; outstanding / outstanding-bytes / pending / request / target / host /
-;; fields / limits; every field not named takes its default, and the limits
-;; are default-limits unless given.  The head
+;; fields / limits / addresses; every field not named takes its default, the
+;; limits are default-limits and the addresses no-addresses unless given.  The head
 ;; is the core's own, so a target (a string) is read into it the way the
 ;; parser delivers one, in a request line `GET target HTTP/1.1`, each event
 ;; at the parser's position in it and each span at its bounds, and a host (a
@@ -70,7 +70,7 @@
   (let ((s (make-conn-state phase
                             (get 'deadline #f) (get 'close-after #f) (get 'outstanding 0)
                             (get 'outstanding-bytes 0) (get 'pending #f) (get 'request #f)
-                            (get 'limits default-limits)))
+                            (get 'limits default-limits) (get 'addresses no-addresses)))
         (target (get 'target #f))
         (host (get 'host #f)))
     (when target
@@ -288,7 +288,7 @@
            '(lingering headers-too-large ((shutdown) (read-start) (arm-deadline linger)))))))
 
 ;; ---------------------------------------------------------------------------
-;; Termination and error: eleven rows, T1 to T6 and T8 to T12.
+;; Termination and error: twelve rows, T1 to T6, T4a and T8 to T12.
 ;;
 ;; Every row that closes, and the hand-off (W2), disarms the deadline first,
 ;; armed or not.  The shell's wheel holds a connection whose deadline
@@ -323,11 +323,11 @@
    ;; connection stops reading, as `responding` does not read.
    (row 'T3 "head/body, parser-result status=error -> responding: write the status, read-stop, close-after"
         (i (state 'head 'deadline 'header) '(parser-result error 0 0 invalid-method #f)
-           `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
+           `(responding parser-error ((log request-refused 400 invalid-method "-") ,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
         (i (state 'body 'deadline 'body) '(parser-result error 47 47 invalid-chunk-size #f)
-           `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
+           `(responding parser-error ((log request-refused 400 invalid-chunk-size "-") ,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
         (i (state 'body 'deadline 'body) '(parser-result error 49 49 invalid-transfer-encoding #f)
-           `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write)))))
+           `(responding parser-error ((log request-refused 400 invalid-transfer-encoding "-") ,(status-write 400 "Bad Request") (read-stop) (arm-deadline write)))))
 
    ;; Deadlines are kinds, not instants: the shell's wheel ticks a connection
    ;; only once the deadline it armed has passed, so "past the header
@@ -335,9 +335,18 @@
    ;; second instance is the guard: a tick with nothing armed changes nothing.
    (row 'T4 "head, tick past the header deadline -> responding: write 408, read-stop, close-after"
         (i (state 'head 'deadline 'header) '(tick 60000)
-           `(responding header-timeout (,(status-write 408 "Request Timeout") (read-stop) (arm-deadline write))))
+           `(responding header-timeout ((log request-refused 408 header-timeout "-") ,(status-write 408 "Request Timeout") (read-stop) (arm-deadline write))))
         (i (state 'head) '(tick 60000)
            '(head #f ())))
+
+   ;; A refusal's line names the client's address, the connection's peer,
+   ;; not where it came in, and not its port.
+   (row 'T4a "head, tick past the header deadline, the connection's addresses known -> responding: the line names the client's address"
+        (i (state 'head 'deadline 'header
+                  'addresses (make-addresses "192.0.2.7" 54321 "198.51.100.1" 8080))
+           '(tick 60000)
+           `(responding header-timeout ((log request-refused 408 header-timeout "192.0.2.7")
+                                        ,(status-write 408 "Request Timeout") (read-stop) (arm-deadline write)))))
 
    (row 'T5 "idle, tick past the idle deadline -> closing: disarm, close, no response"
         (i (state 'idle 'deadline 'idle) '(tick 75000)
@@ -468,7 +477,7 @@
 
    (row 'U2 "head, parser-result hands off on the error channel (the HTTP/2 preface) -> responding 505, read-stop, close-after"
         (i (state 'head 'deadline 'header) '(parser-result error 24 24 paused-h2-upgrade #f)
-           `(responding http2-preface (,(status-write 505 "HTTP Version Not Supported") (read-stop)
+           `(responding http2-preface ((log request-refused 505 http2-preface "-") ,(status-write 505 "HTTP Version Not Supported") (read-stop)
                                        (arm-deadline write)))))))
 
 ;; ---------------------------------------------------------------------------
@@ -673,7 +682,7 @@
              `(responding #f (,w (arm-deadline write)) 1 ,(nbytes w))))
         (let ((w (status-write 408 "Request Timeout")))
           (i (state 'head 'deadline 'header) '(tick 60000)
-             `(responding header-timeout (,w (read-stop) (arm-deadline write)) 1 ,(nbytes w))))
+             `(responding header-timeout ((log request-refused 408 header-timeout "-") ,w (read-stop) (arm-deadline write)) 1 ,(nbytes w))))
         (let ((w (status-write 500 "Internal Server Error")))
           (i (state 'handling 'request req)
              `(handler-responded ,(make-response 200 #f (list (cons (b "Content-Length") (b "5"))) #f))
@@ -759,10 +768,10 @@
    ;; 408 shows the request in flight framing it.
    (row 'D1 "body, tick past the body deadline -> responding: write 408, read-stop, close-after"
         (i (state 'body 'deadline 'body 'request post) '(tick 60000)
-           `(responding body-timeout (,(status-write 408 "Request Timeout") (read-stop) (arm-deadline write))
+           `(responding body-timeout ((log request-refused 408 body-timeout "-") ,(status-write 408 "Request Timeout") (read-stop) (arm-deadline write))
                         write))
         (i (state 'body 'deadline 'body 'request head-req) '(tick 60000)
-           `(responding body-timeout (,(written "HTTP/1.1 408 Request Timeout\r\n" 'date
+           `(responding body-timeout ((log request-refused 408 body-timeout "-") ,(written "HTTP/1.1 408 Request Timeout\r\n" 'date
                                                 "Connection: close\r\n\r\n")
                                       (read-stop) (arm-deadline write))
                         write))
@@ -984,9 +993,9 @@
    ;; pieces met before it answered.
    (row 'B15 "handling, handler-responded with a reader whose cap the body passes -> responding 413, close-after"
         (i (asked 10) `(handler-responded ,(whole-reader 5))
-           `(responding body-too-large (,(status-write 413 "Content Too Large") (arm-deadline write))))
+           `(responding body-too-large ((log request-refused 413 body-too-large "-") ,(status-write 413 "Content Too Large") (arm-deadline write))))
         (i (asked 'chunked '(3 8)) `(handler-responded ,(whole-reader 4))
-           `(responding body-too-large (,(status-write 413 "Content Too Large") (arm-deadline write)))))
+           `(responding body-too-large ((log request-refused 413 body-too-large "-") ,(status-write 413 "Content Too Large") (arm-deadline write)))))
 
    ;; What the feed that completed the head met in the body before the
    ;; handler was asked waits for its answer, so the outcome does not depend
@@ -1001,13 +1010,13 @@
 
    (row 'B17 "handling, an error kept, handler-responded with a streaming reader -> responding: the pieces kept, then the error's status"
         (i (erred 'chunked '(3 8)) `(handler-responded ,streamer)
-           `(responding parser-error ((deliver-body ,bv 3 8) ,(status-write 400 "Bad Request") (arm-deadline write))))
+           `(responding parser-error ((deliver-body ,bv 3 8) (log request-refused 400 invalid-chunk-size "-") ,(status-write 400 "Bad Request") (arm-deadline write))))
         (let ((s (met (announced 'chunked (capped 4)) '((3 7)))))
           (conn-step s `(parser-event on-body-data ,bv 7 9))
           (conn-step s '(parser-result error 60 60 body-too-large #f))
           (i s `(handler-responded ,streamer)
              `(responding body-too-large ((deliver-body ,bv 3 7)
-                                          ,(status-write 413 "Content Too Large") (arm-deadline write))))))
+                                          (log request-refused 413 body-too-large "-") ,(status-write 413 "Content Too Large") (arm-deadline write))))))
 
    (row 'B18 "handling, an error kept, handler-responded with a response -> responding, close-after unread-body: the error not answered"
         (i (erred 'chunked '(3 8)) `(handler-responded ,resp)
@@ -1130,11 +1139,11 @@
    ;; status, as it is for any reader (T3, B14), though the reader owes credit.
    (row 'C10 "body, a feed that handed a reader on credit pieces ends in an error or past a cap -> responding: the status, not the wait"
         (i (met (on-credit 'chunked) '((3 8))) '(parser-result error 60 60 invalid-chunk-size #f)
-           `(responding parser-error (,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
+           `(responding parser-error ((log request-refused 400 invalid-chunk-size "-") ,(status-write 400 "Bad Request") (read-stop) (arm-deadline write))))
         (let ((s (on-credit 'chunked (capped 4))))
           (conn-step s `(parser-event on-body-data ,bv 3 8))
           (i s '(parser-result error 60 60 body-too-large #f)
-             `(responding body-too-large (,(status-write 413 "Content Too Large") (read-stop)
+             `(responding body-too-large ((log request-refused 413 body-too-large "-") ,(status-write 413 "Content Too Large") (read-stop)
                                           (arm-deadline write))))))
 
    ;; What follows the answer is `credit` or nothing.
@@ -1280,11 +1289,11 @@
 
    (row 'Q12 "handling, the body failed while pulled: the pull's raise let out -> responding, the failure's status; another raise -> 500"
         (i (failed-pull) `(handler-failed ,pull-raise)
-           `(responding parser-error (,(status-write 400 "Bad Request") (arm-deadline write))))
+           `(responding parser-error ((log request-refused 400 invalid-chunk-size "-") ,(status-write 400 "Bad Request") (arm-deadline write))))
         (let ((s (pulled 10)))
           (conn-step s '(tick 0))
           (i s `(handler-failed ,(make-body-failed 'body-timeout 408))
-             `(responding body-timeout (,(status-write 408 "Request Timeout") (arm-deadline write)))))
+             `(responding body-timeout ((log request-refused 408 body-timeout "-") ,(status-write 408 "Request Timeout") (arm-deadline write)))))
         (i (failed-pull) `(handler-failed ,other-raise)
            `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)))))
 
@@ -1664,22 +1673,22 @@
           (conn-step s '(parser-result error 60 60 invalid-chunk-size #f))
           (i s `(handler-responded ,streamer)
              `(responding parser-error (,continue-write (deliver-body ,bv 3 8)
-                                        ,(status-write 400 "Bad Request") (arm-deadline write)))))
+                                        (log request-refused 400 invalid-chunk-size "-") ,(status-write 400 "Bad Request") (arm-deadline write)))))
         (i (expected 'chunked '(3 8)) `(handler-responded ,(whole-reader 4))
-           `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
+           `(responding body-too-large (,continue-write (log request-refused 413 body-too-large "-") ,(status-write 413 "Content Too Large")
                                         (arm-deadline write))))
         (let ((s (met (expecting 'chunked "100-continue") '((3 8)))))
           (conn-step s '(parser-event on-message-complete 54))
           (conn-step s '(parser-result paused 54 54 #f #f))
           (i s `(handler-responded ,(whole-reader 4))
-             `(responding body-too-large (,continue-write ,(status-write 413 "Content Too Large")
+             `(responding body-too-large (,continue-write (log request-refused 413 body-too-large "-") ,(status-write 413 "Content Too Large")
                                           (arm-deadline write))))))
 
    (row 'E7 "handling, a response instead of a reader, a reader whose cap the declared length passes, or handler-failed -> responding: the final status, no 100"
         (i (expected 10) `(handler-responded ,resp)
            `(responding unread-body (,answered-closing (arm-deadline write))))
         (i (expected 10) `(handler-responded ,(whole-reader 5))
-           `(responding body-too-large (,(status-write 413 "Content Too Large") (arm-deadline write))))
+           `(responding body-too-large ((log request-refused 413 body-too-large "-") ,(status-write 413 "Content Too Large") (arm-deadline write))))
         (i (expected 10) '(handler-failed boom)
            `(responding handler-failed (,(status-write 500 "Internal Server Error") (arm-deadline write)))))))
 
@@ -1836,12 +1845,12 @@
           (conn-step s `(parser-event on-header-field-data ,big 0 5))
           (i s '(parser-result error 60 60 header-field-too-large #f)
              `(responding header-field-too-large
-                          (,(status-write 431 "Request Header Fields Too Large") (read-stop) (arm-deadline write)))))
+                          ((log request-refused 431 header-field-too-large "-") ,(status-write 431 "Request Header Fields Too Large") (read-stop) (arm-deadline write)))))
         (let ((s (extended)))
           (conn-step s `(parser-event on-chunk-extension-name-data ,big 0 ,(+ max-extensions 1)))
           (i s '(parser-result error 60 60 chunk-extensions-too-large #f)
              `(responding chunk-extensions-too-large
-                          (,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write))))))
+                          ((log request-refused 413 chunk-extensions-too-large "-") ,(status-write 413 "Content Too Large") (read-stop) (arm-deadline write))))))
 
    ;; What the feed that completed the head met of the body waits for the
    ;; handler's answer, a refusal among it, so the outcome does not depend on
@@ -1860,13 +1869,13 @@
           (conn-step s '(parser-result error 60 60 header-field-too-large #f))
           (i s `(handler-responded ,streamer)
              `(responding header-field-too-large
-                          (,(status-write 431 "Request Header Fields Too Large") (arm-deadline write)))))
+                          ((log request-refused 431 header-field-too-large "-") ,(status-write 431 "Request Header Fields Too Large") (arm-deadline write)))))
         (let ((s (announced 'chunked)))
           (conn-step s `(parser-event on-chunk-extension-name-data ,big 0 ,(+ max-extensions 1)))
           (conn-step s '(parser-result error 60 60 chunk-extensions-too-large #f))
           (i s `(handler-responded ,streamer)
              `(responding chunk-extensions-too-large
-                          (,(status-write 413 "Content Too Large") (arm-deadline write))))))
+                          ((log request-refused 413 chunk-extensions-too-large "-") ,(status-write 413 "Content Too Large") (arm-deadline write))))))
 
    ;; Refused as the pull reads, or in the head's feed after a piece, bv[3,
    ;; 8), and kept until the body is pulled, as Q11's error is.
@@ -2071,20 +2080,20 @@
 
    (row 'G10 "idle, head or body, a read's end inside a run past its limit -> responding: the run's status, read-stop, close-after"
         (i (state 'idle 'deadline 'idle) '(parser-result need-input 5 5 #f #f)
-           `(responding empty-lines (,status-400 (read-stop) (arm-deadline write))))
+           `(responding empty-lines ((log request-refused 400 empty-lines "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
            '(parser-result need-input 5 5 #f #f)
-           `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write))))
+           `(responding request-line-spaces ((log request-refused 400 request-line-spaces "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3)
                   `(parser-event on-url-data ,spaced 4 5) '(parser-event on-url-complete 6))
            '(parser-result need-input 8 8 #f #f)
-           `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write))))
+           `(responding request-line-spaces ((log request-refused 400 request-line-spaces "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result need-input 9 9 #f #f)
-           `(responding headers-too-large (,status-431 (read-stop) (arm-deadline write))))
+           `(responding headers-too-large ((log request-refused 431 headers-too-large "-") ,status-431 (read-stop) (arm-deadline write))))
         (i (reading-chunks) '(parser-result need-input 78 78 #f #f)
-           `(responding chunk-size-too-long (,status-400 (read-stop) (arm-deadline write)))))
+           `(responding chunk-size-too-long ((log request-refused 400 chunk-size-too-long "-") ,status-400 (read-stop) (arm-deadline write)))))
 
    ;; The feed that completed the head went on past the next size line's
    ;; 17th digit: the refusal waits for the handler's answer, as T3's does.
@@ -2100,16 +2109,16 @@
    (row 'G12 "head or body, the parser's error inside a run, no span cut off -> the run's status past its limit, as at a read's end, and the parser's within it"
         (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
            '(parser-result error 9 9 invalid-url #f)
-           `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write))))
+           `(responding request-line-spaces ((log request-refused 400 request-line-spaces "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (after (state 'head 'deadline 'header) '(parser-event on-method-complete 3))
            '(parser-result error 4 4 invalid-url #f)
-           `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
+           `(responding parser-error ((log request-refused 400 invalid-url "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (after (state 'head 'deadline 'header 'host "x" 'limits tight)
                   `(parser-event on-header-field-data ,big 0 1) '(parser-event on-header-field-complete 2))
            '(parser-result error 9 9 invalid-header-token #f)
-           `(responding headers-too-large (,status-431 (read-stop) (arm-deadline write))))
+           `(responding headers-too-large ((log request-refused 431 headers-too-large "-") ,status-431 (read-stop) (arm-deadline write))))
         (i (reading-chunks) '(parser-result error 78 78 invalid-chunk-size #f)
-           `(responding chunk-size-too-long (,status-400 (read-stop) (arm-deadline write)))))
+           `(responding chunk-size-too-long ((log request-refused 400 chunk-size-too-long "-") ,status-400 (read-stop) (arm-deadline write)))))
 
    ;; The parser ends a target at a space, a bare LF or a CRLF, and the run
    ;; after it opens at each; a request line with no version lets it go at
@@ -2457,37 +2466,37 @@
    ;; `GET /aaa`, and the control byte at 8: the target's 4 bytes from 4.
    (row 'K1 "head, the parser's error with the target cut off within its limit -> responding: the parser's status"
         (i (method-read four) '(parser-result error 8 8 invalid-url (url-span . 4))
-           `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
+           `(responding parser-error ((log request-refused 400 invalid-url "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (carried four) '(parser-result error 8 8 invalid-url (url-span . 6))
-           `(responding parser-error (,status-400 (read-stop) (arm-deadline write)))))
+           `(responding parser-error ((log request-refused 400 invalid-url "-") ,status-400 (read-stop) (arm-deadline write)))))
    (row 'K2 "head, the parser's error with the target cut off past its limit -> responding: 414"
         (i (method-read five) '(parser-result error 9 9 invalid-url (url-span . 4))
-           `(responding target-too-large (,status-414 (read-stop) (arm-deadline write))))
+           `(responding target-too-large ((log request-refused 414 target-too-large "-") ,status-414 (read-stop) (arm-deadline write))))
         (i (carried five) '(parser-result error 9 9 invalid-url (url-span . 6))
-           `(responding target-too-large (,status-414 (read-stop) (arm-deadline write)))))
+           `(responding target-too-large ((log request-refused 414 target-too-large "-") ,status-414 (read-stop) (arm-deadline write)))))
    ;; The spaces after the method come first: the 2nd, at 4, is past the one,
    ;; and the target, or the control byte where it would be, begins at 5.
    (row 'K3 "head, the parser's error with the target cut off after more than one space -> responding: the spaces' status"
         (i (method-read spaced-five) '(parser-result error 10 10 invalid-url (url-span . 5))
-           `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write))))
+           `(responding request-line-spaces ((log request-refused 400 request-line-spaces "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (method-read spaced-none) '(parser-result error 5 5 invalid-url (url-span . 5))
-           `(responding request-line-spaces (,status-400 (read-stop) (arm-deadline write)))))
+           `(responding request-line-spaces ((log request-refused 400 request-line-spaces "-") ,status-400 (read-stop) (arm-deadline write)))))
    ;; A name of 4 bytes is tight's limit, as 10 is its section's: Host: x
    ;; and its space, 6, and a name of 4; with Host: xx, 7, a name of 4 is
    ;; within its own limit but past the section's.
    (row 'K4 "head or body, the parser's error with a field name cut off -> responding: the parser's status within the limits; past one, 431 for the limit passed first"
         (i (request-line tight) '(parser-result error 20 20 invalid-header-token (header-field-span . 16))
-           `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
+           `(responding parser-error ((log request-refused 400 invalid-header-token "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (request-line tight) '(parser-result error 21 21 invalid-header-token (header-field-span . 16))
-           `(responding header-field-too-large (,status-431 (read-stop) (arm-deadline write))))
+           `(responding header-field-too-large ((log request-refused 431 header-field-too-large "-") ,status-431 (read-stop) (arm-deadline write))))
         (i (one-field "x") '(parser-result error 29 29 invalid-header-token (header-field-span . 25))
-           `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
+           `(responding parser-error ((log request-refused 400 invalid-header-token "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (one-field "xx") '(parser-result error 30 30 invalid-header-token (header-field-span . 26))
-           `(responding headers-too-large (,status-431 (read-stop) (arm-deadline write))))
+           `(responding headers-too-large ((log request-refused 431 headers-too-large "-") ,status-431 (read-stop) (arm-deadline write))))
         (i (last-chunk) '(parser-result error 59 59 invalid-header-token (header-field-span . 55))
-           `(responding parser-error (,status-400 (read-stop) (arm-deadline write))))
+           `(responding parser-error ((log request-refused 400 invalid-header-token "-") ,status-400 (read-stop) (arm-deadline write))))
         (i (last-chunk) '(parser-result error 60 60 invalid-header-token (header-field-span . 55))
-           `(responding header-field-too-large (,status-431 (read-stop) (arm-deadline write)))))))
+           `(responding header-field-too-large ((log request-refused 431 header-field-too-large "-") ,status-431 (read-stop) (arm-deadline write)))))))
 
 ;; count-rows : String (-> (Listof Row)) (ConnState Event -> Datum)
 ;;              -> (U Nat 'raised)
@@ -2642,7 +2651,7 @@
            (notices (count-rows "close-notice" notice-rows kept))
            (dones (count-rows "done" done-rows outcome)))
       (test-eqv "all 10 happy-path rows have a test" 10 happy)
-      (test-eqv "all 11 termination and error rows have a test" 11 term)
+      (test-eqv "all 12 termination and error rows have a test" 12 term)
       (test-eqv "all 3 pause-protocol rows have a test" 3 pause)
       (test-eqv "both upgrade rows have a test" 2 upgrade)
       (test-eqv "all 7 switch rows have a test" 7 switches)

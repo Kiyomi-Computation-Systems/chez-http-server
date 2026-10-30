@@ -6,6 +6,20 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A request the server refuses itself is logged.** A malformed head, a
+  missing `Host`, a timeout or a limit was answered and logged nowhere, and
+  no handler ran, so an app's own request log never saw it either. Each such
+  answer now logs one line: `request-refused`, the status, what refused the
+  request, and the client's address, such as `request-refused 400
+  invalid-host 127.0.0.1`. A parser error is named by its code, such as
+  `invalid-header-token`, and an address unknown is `-`. A 408 or a 413
+  partway through a body, and a pulled body's failure a handler lets out,
+  are logged too. The 301 for a redirected target is not, and a 500 keeps
+  its own `handler-failed` or `invalid-response` line. `(test-host-log
+  host)` lists the line, with `-` for the address.
+
 ### Fixed
 
 - **A raised string, symbol or character holding a line feed no longer

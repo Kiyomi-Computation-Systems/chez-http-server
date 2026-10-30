@@ -66,6 +66,17 @@ request cannot be read safely.
 | `501 Not Implemented` | another coding before `chunked`, as in `Transfer-Encoding: gzip, chunked` |
 | `505 HTTP Version Not Supported` | HTTP/2's opening line, `PRI * HTTP/2.0`, or a version not 1.x: HTTP/0.9 (`GET /` with no version) or `HTTP/2.0` |
 
+Each answer but the `301` and the `500` is logged as one line, what refused
+the request and who sent it, as the client's address (`-` if unknown):
+
+```text
+request-refused 400 invalid-host 127.0.0.1
+request-refused 400 invalid-header-token 127.0.0.1
+```
+
+A malformed request is named by the parser's error. A `500` is logged
+`handler-failed` or `invalid-response` instead.
+
 When a request breaks more than one rule, the rule its bytes break first
 decides the answer, however the bytes arrived: a target over its limit and
 then a byte no target may hold is a `414`, not a `400`.

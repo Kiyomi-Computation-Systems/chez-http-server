@@ -515,6 +515,16 @@
 
 (define curl-out "%{http_code} %{num_connects} %{size_download}\\n")
 
+;; refusals-sorted : (Listof (List 'request-refused Nat Symbol String))
+;;                    -> (Listof (List 'request-refused Nat Symbol String))
+;; Request-refused entries in one order: by status, then by what refused.
+(define (refusals-sorted entries)
+  (list-sort (lambda (a b)
+               (or (< (cadr a) (cadr b))
+                   (and (= (cadr a) (cadr b))
+                        (string<? (symbol->string (caddr a)) (symbol->string (caddr b))))))
+             entries))
+
 (run-suite "clients"
   (lambda ()
     (let* ((loop (make-uv-loop))
@@ -581,9 +591,26 @@
                  (run-shell-until vloop vsh (lambda () (null? (shell-connections vsh))) cap))
         (shell-shutdown! vsh)
         (run-until-drained vloop cap)
-        (test-equal "the lane's server logged where it listens, then a drain with no connection open, and nothing else"
+        ;; Each refusal the scripts provoke: framing.vtc's five, limits.vtc's
+        ;; three, redirect.vtc's POST (its 301 refuses nothing),
+        ;; timeouts.vtc's two 408s (its idle close answers nothing), and
+        ;; version.vtc's five.  The scripts' order, and that of the two
+        ;; 408s, is not the lane's to promise, so they are compared sorted.
+        (test-equal "the lane's server logged where it listens, then a drain with no connection open, and nothing else but the requests it refused"
                     '(listening (draining 0) (stopped))
-                    (map (lambda (e) (if (eq? (car e) 'listening) 'listening e)) vlogged))
+                    (map (lambda (e) (if (eq? (car e) 'listening) 'listening e))
+                         (filter (lambda (e) (not (eq? (car e) 'request-refused))) vlogged)))
+        (test-equal "each request the lane's server refused is logged request-refused, with its status, what refused it and the client's address"
+                    (refusals-sorted
+                     (map (lambda (r) (append '(request-refused) r '("127.0.0.1")))
+                          '((400 invalid-transfer-encoding) (400 unexpected-content-length)
+                            (501 unsupported-transfer-coding) (400 faulty-framing) (400 invalid-host)
+                            (414 target-too-large) (431 header-value-too-large) (413 body-too-large)
+                            (400 invalid-target)
+                            (408 header-timeout) (408 body-timeout)
+                            (505 version-not-supported) (505 version-not-supported) (505 http2-preface)
+                            (505 version-not-supported) (400 invalid-version))))
+                    (refusals-sorted (filter (lambda (e) (eq? (car e) 'request-refused)) vlogged)))
         (test-equal "shut down, nothing of the lane's server is left on its loop" '() (uv-loop-live-handles vloop))
         (uv-loop-teardown! vloop))
 
