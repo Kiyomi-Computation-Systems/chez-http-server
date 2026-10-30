@@ -12,8 +12,8 @@ All notable changes to chez-http-server are recorded here. The format follows
   breaks its log line.** Only a condition's text had its line feeds made
   spaces, so `(raise "first\nsecond")` wrote two lines, the second naming no
   event, and a raise quoting a client's bytes could write a line that read
-  as the server's own. Every line feed and carriage return in a detail is
-  now a space.
+  as the server's own. Every control character in a detail, a line feed, a
+  carriage return or an escape, is now a space.
 - **A record inside a raised condition is logged as its type, not whole.**
   Chez writes a record's fields and the records in them, so the server's
   own "only a handler's awaiting thunk may pull its body" line spelled out

@@ -668,6 +668,13 @@
                     (log-line 'handler-failed (list (string->symbol "first\nsecond")))
                     (log-line 'handler-failed '("a\rb"))
                     (log-line 'handler-failed (list #\return)))))
+    ;; An escape lets what follows rewrite a terminal, as a carriage return
+    ;; does; every other control character goes the same way.
+    (test-equal "every other control character reads as a space too, the delete character with them"
+                "handler-failed a [2Jb c d e f\n"
+                (with-output-to-string
+                  (lambda ()
+                    (log-line 'handler-failed '("a\x1b;[2Jb\tc\x0;d\x1f;e\x7f;f")))))
     (test-equal "so does a carriage return in a condition"
                 "handler-failed Exception in handler: it failed\n"
                 (with-output-to-string

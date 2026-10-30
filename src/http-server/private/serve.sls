@@ -34,9 +34,10 @@
 ;;; record reads as its kind, `#<connection>`, and one inside a condition or
 ;;; a written value as `#<record of type connection>`, so a line never
 ;;; spells out a connection's state; a string, a symbol, a number, a boolean
-;;; or a character is displayed; anything else is written.  Every line feed
-;;; and carriage return in a detail is made a space, so one thing is one
-;;; line, whatever a raised string quotes.
+;;; or a character is displayed; anything else is written.  Every control
+;;; character in a detail, a line feed, a carriage return or an escape, is
+;;; made a space, so one thing is one line, and no detail moves a terminal's
+;;; cursor, whatever a raised string quotes.
 (library (http-server private serve)
   (export serve start-server run-until-stopped! log-line settings
           &http-server-error http-server-error?
@@ -145,9 +146,8 @@
       (flush-output-port out)))
 
   ;; put-detail : OutputPort Any -> Void
-  ;; `d` as the library's header says, its line feeds and carriage returns
-  ;; made spaces, wherever they come from: a raised string may quote a
-  ;; client's bytes.
+  ;; `d` as the library's header says, its control characters made spaces,
+  ;; wherever they come from: a raised string may quote a client's bytes.
   (define (put-detail out d)
     (put-string out (one-line (call-with-string-output-port (lambda (p) (show-detail p d))))))
 
@@ -164,8 +164,9 @@
              (put-string out ">"))
             (else (write d out)))))
 
-  ;; one-line : String -> String — its line feeds and carriage returns made
-  ;; spaces.
+  ;; one-line : String -> String — its control characters made spaces:
+  ;; each below U+0020, line feed and carriage return among them, and
+  ;; delete.
   (define (one-line s)
-    (list->string (map (lambda (c) (if (or (char=? c #\newline) (char=? c #\return)) #\space c))
+    (list->string (map (lambda (c) (if (or (char<? c #\space) (char=? c #\delete)) #\space c))
                        (string->list s)))))
