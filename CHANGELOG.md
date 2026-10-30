@@ -6,6 +6,16 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-30
+
+The twelfth release. A request the server refuses itself, such as a malformed
+head, a missing `Host`, a timeout or a limit, is now logged: one
+`request-refused` line with its status, what refused it and the client's
+address. `(test-host-log host)` lists it too, so a test that compares the
+host's whole log sees new entries, and the release is 0.10.0. Every log line
+stays one line, whatever a raised value holds, and a record inside one reads
+as its type. No name joins or leaves a library. The dependencies are 0.9.1's.
+
 ### Added
 
 - **A request the server refuses itself is logged.** A malformed head, a
@@ -753,7 +763,8 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.7.0...v0.8.0
