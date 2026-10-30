@@ -30,16 +30,19 @@
 ;;;
 ;;; THE LOG (`log-line`) writes each thing that happens as one line on
 ;;; standard output, flushed at once: what happened, then each detail after
-;;; a space.  A condition reads as Chez's `display-condition` shows it, its
-;;; line breaks made spaces; a record reads as its kind, `#<connection>`, so
-;;; a line never spells out a connection's state; a string, a symbol, a
-;;; number, a boolean or a character is displayed; anything else is written.
+;;; a space.  A condition reads as Chez's `display-condition` shows it; a
+;;; record reads as its kind, `#<connection>`, and one inside a condition or
+;;; a written value as `#<record of type connection>`, so a line never
+;;; spells out a connection's state; a string, a symbol, a number, a boolean
+;;; or a character is displayed; anything else is written.  Every line feed
+;;; and carriage return in a detail is made a space, so one thing is one
+;;; line, whatever a raised string quotes.
 (library (http-server private serve)
   (export serve start-server run-until-stopped! log-line settings
           &http-server-error http-server-error?
           &http-server-config-error http-server-config-error?)
   (import (rnrs)
-          (only (chezscheme) getenv display-condition)
+          (only (chezscheme) getenv display-condition print-record parameterize)
           (libuv)
           (only (http-server limits) limits-from-environment address-from-environment)
           (only (http-server server) server-phase)
@@ -142,19 +145,27 @@
       (flush-output-port out)))
 
   ;; put-detail : OutputPort Any -> Void
+  ;; `d` as the library's header says, its line feeds and carriage returns
+  ;; made spaces, wherever they come from: a raised string may quote a
+  ;; client's bytes.
   (define (put-detail out d)
-    (cond ((condition? d) (put-string out (one-line (condition-text d))))
-          ((or (string? d) (symbol? d) (number? d) (boolean? d) (char? d)) (display d out))
-          ((record? d)
-           (put-string out "#<")
-           (display (record-type-name (record-rtd d)) out)
-           (put-string out ">"))
-          (else (write d out))))
+    (put-string out (one-line (call-with-string-output-port (lambda (p) (show-detail p d))))))
 
-  ;; condition-text : Condition -> String — as `display-condition` shows it.
-  (define (condition-text c)
-    (call-with-string-output-port (lambda (p) (display-condition c p))))
+  ;; show-detail : OutputPort Any -> Void
+  ;; A record inside a condition or a written value shows as
+  ;; `#<record of type name>`, not its fields, as `print-record` #f has it.
+  (define (show-detail out d)
+    (parameterize ((print-record #f))
+      (cond ((condition? d) (display-condition d out))
+            ((or (string? d) (symbol? d) (number? d) (boolean? d) (char? d)) (display d out))
+            ((record? d)
+             (put-string out "#<")
+             (display (record-type-name (record-rtd d)) out)
+             (put-string out ">"))
+            (else (write d out)))))
 
-  ;; one-line : String -> String — its line breaks made spaces.
+  ;; one-line : String -> String — its line feeds and carriage returns made
+  ;; spaces.
   (define (one-line s)
-    (list->string (map (lambda (c) (if (char=? c #\newline) #\space c)) (string->list s)))))
+    (list->string (map (lambda (c) (if (or (char=? c #\newline) (char=? c #\return)) #\space c))
+                       (string->list s)))))

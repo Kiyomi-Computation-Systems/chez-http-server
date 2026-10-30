@@ -655,4 +655,35 @@
                     (log-line 'handler-failed
                               (list (condition (make-error) (make-who-condition 'handler)
                                                (make-message-condition "it failed"))))
-                    (log-line 'callback-error (list (make-error))))))))
+                    (log-line 'callback-error (list (make-error))))))
+    ;; A raised string may quote a client's bytes: a line feed in it would
+    ;; start a line that reads as the server's own, and a carriage return
+    ;; lets what follows overwrite the line at a terminal.
+    (test-equal "a string, a symbol or a character holding a line feed or a carriage return reads on one line, each a space"
+                "handler-failed first line second line\nhandler-failed  \nhandler-failed first second\nhandler-failed a b\nhandler-failed  \n"
+                (with-output-to-string
+                  (lambda ()
+                    (log-line 'handler-failed '("first line\nsecond line"))
+                    (log-line 'handler-failed (list #\newline))
+                    (log-line 'handler-failed (list (string->symbol "first\nsecond")))
+                    (log-line 'handler-failed '("a\rb"))
+                    (log-line 'handler-failed (list #\return)))))
+    (test-equal "so does a carriage return in a condition"
+                "handler-failed Exception in handler: it failed\n"
+                (with-output-to-string
+                  (lambda ()
+                    (log-line 'handler-failed
+                              (list (condition (make-error) (make-who-condition 'handler)
+                                               (make-message-condition "it\rfailed")))))))
+    ;; Chez writes a record whole, its fields and the records in them: a
+    ;; request's would spell out its head and its client's address.
+    (test-equal "a record inside a condition or a list reads as its kind, not its fields"
+                "handler-failed Exception in app: unexpected with irritant #<record of type response>\ntaker-failed (oops #<record of type response>)\n"
+                (with-output-to-string
+                  (lambda ()
+                    (log-line 'handler-failed
+                              (list (condition (make-error) (make-who-condition 'app)
+                                               (make-message-condition "unexpected")
+                                               (make-irritants-condition
+                                                (list (make-response 200 #f '() #f))))))
+                    (log-line 'taker-failed (list (list 'oops (make-response 200 #f '() #f)))))))))
