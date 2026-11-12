@@ -18,6 +18,11 @@ All notable changes to chez-http-server are recorded here. The format follows
   each space becomes a hyphen. A repeated heading is numbered as GitHub
   numbers it, so headings `echo`, `echo`, `echo 1` are `echo`, `echo-1`,
   `echo-1-1`, where the site gave `echo-1` twice. No anchor in docs/ changes.
+- **`docs/installing.md` says chez-http-server is on the Akku index.** It
+  said an install needs a release there and to look with `akku list`; the
+  index lists the server now. The page links it, says the index can trail
+  the newest release, names `akku show chez-http-server` for the version it
+  has, and starts the commands with `akku update`.
 
 ## [0.10.0] - 2026-10-30
 

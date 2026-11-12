@@ -77,13 +77,14 @@ submodule, pinned to a release tag, and set the path in your `Makefile`.
 
 ## With Akku
 
-In a project that uses [Akku](https://akkuscm.org), one command fetches the
-server and its four dependencies (chez-libuv, chez-httparse, chez-uri and
-byte-machine), and builds the shim into your project's `.akku/ffi`. It needs
-a release of chez-http-server on the Akku index;
-`akku list | grep chez-http-server` shows whether there is one.
+In a project that uses [Akku](https://akkuscm.org), `akku install` fetches
+the server and its four dependencies (chez-libuv, chez-httparse, chez-uri and
+byte-machine), and builds the shim into your project's `.akku/ffi`. The
+[Akku index](https://akkuscm.org/packages/chez-http-server/) can trail the
+newest release; `akku show chez-http-server` names the version it has.
 
 ```sh
+akku update             # fetches the index
 akku install chez-http-server
 . .akku/bin/activate    # puts .akku/lib on Chez's library path
 chez --program my-server.sps
