@@ -22,7 +22,10 @@ All notable changes to chez-http-server are recorded here. The format follows
   said an install needs a release there and to look with `akku list`; the
   index lists the server now. The page links it, says the index can trail
   the newest release, names `akku show chez-http-server` for the version it
-  has, and starts the commands with `akku update`.
+  has, and starts the commands with `akku update`. It also says to run Akku
+  in a UTF-8 locale: with `LANG` unset, Akku writes each non-ASCII character
+  of the files it installs as question marks, which here touches only
+  comments.
 
 ## [0.10.0] - 2026-10-30
 

@@ -94,7 +94,14 @@ It needs what the list above does, but not CMake: libuv must be 1.48 or
 newer where `pkg-config` sees it, since an Akku install has no copy of its
 own to fall back on. Your project's path may hold no spaces, nor any of
 `$ : % ' " \`. If the shim does not build, `.akku/ffi/chez-libuv-install.log`
-says why. [chez-libuv's own page](https://github.com/Kiyomi-Computation-Systems/chez-libuv/blob/main/docs/installing.md#akku)
+says why.
+
+Run Akku in a UTF-8 locale, such as `LANG=en_US.UTF-8`. With `LANG` unset,
+it writes each non-ASCII character of the files it installs as question
+marks. In these packages that only touches comments, so the server still
+runs.
+
+[chez-libuv's own page](https://github.com/Kiyomi-Computation-Systems/chez-libuv/blob/main/docs/installing.md#akku)
 has the rest.
 
 ## Check the pins
