@@ -77,13 +77,14 @@ submodule, pinned to a release tag, and set the path in your `Makefile`.
 
 ## With Akku
 
-In a project that uses [Akku](https://akkuscm.org), one command fetches the
-server and its four dependencies (chez-libuv, chez-httparse, chez-uri and
-byte-machine), and builds the shim into your project's `.akku/ffi`. It needs
-a release of chez-http-server on the Akku index;
-`akku list | grep chez-http-server` shows whether there is one.
+In a project that uses [Akku](https://akkuscm.org), `akku install` fetches
+the server and its four dependencies (chez-libuv, chez-httparse, chez-uri and
+byte-machine), and builds the shim into your project's `.akku/ffi`. The
+[Akku index](https://akkuscm.org/packages/chez-http-server/) can trail the
+newest release; `akku show chez-http-server` names the version it has.
 
 ```sh
+akku update             # fetches the index
 akku install chez-http-server
 . .akku/bin/activate    # puts .akku/lib on Chez's library path
 chez --program my-server.sps
@@ -93,7 +94,14 @@ It needs what the list above does, but not CMake: libuv must be 1.48 or
 newer where `pkg-config` sees it, since an Akku install has no copy of its
 own to fall back on. Your project's path may hold no spaces, nor any of
 `$ : % ' " \`. If the shim does not build, `.akku/ffi/chez-libuv-install.log`
-says why. [chez-libuv's own page](https://github.com/Kiyomi-Computation-Systems/chez-libuv/blob/main/docs/installing.md#akku)
+says why.
+
+Run Akku in a UTF-8 locale, such as `LANG=en_US.UTF-8`. With `LANG` unset,
+it writes each non-ASCII character of the files it installs as question
+marks. In these packages that only touches comments, so the server still
+runs.
+
+[chez-libuv's own page](https://github.com/Kiyomi-Computation-Systems/chez-libuv/blob/main/docs/installing.md#akku)
 has the rest.
 
 ## Check the pins
