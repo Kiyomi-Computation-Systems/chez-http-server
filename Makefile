@@ -33,10 +33,10 @@ BYTE_MACHINE_DIR := $(HTTPARSE_DIR)/vendor/byte-machine
 VTEST_DIR        := vendor/vtest2
 
 LIBUV_PIN        := afe79a538b708be60b83cb567236bc6e6390a7db  # v0.11.0
-HTTPARSE_PIN     := 52a62e5cf8995c1ba2e3fa5162ba174939d8d87b  # v0.5.0
-URIPARSE_PIN     := 94162999e7b91568a0925bd95a9d5ff2b6353476  # v0.8.0
+HTTPARSE_PIN     := 46a38cb3d2cf81c7ec159d29c0d5f16e71e057b3  # v0.6.0
+URIPARSE_PIN     := 335b0babdfc30c1562634cb2ed149155fb3918f1  # v0.9.0
 SRFI_PIN         := 7879b527f267f067416552fb989135ad1b4ea436
-BYTE_MACHINE_PIN := c1f77911efb55030df0b2cd811903d74d2ba3d64  # v0.8.0
+BYTE_MACHINE_PIN := fdd4da0b4d150fac80251b012120d760e4b5016a  # v0.9.0
 VTEST_PIN        := 803dcd000b1328f6e766774e23aedbd7f53e7d97  # last
 
 # The packages Akku.manifest's depends names, each with the vendored copy on
