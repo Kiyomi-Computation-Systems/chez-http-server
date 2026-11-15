@@ -6,6 +6,18 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **chez-httparse is pinned at v0.6.0 and uriparse at v0.9.0, both with
+  byte-machine v0.9.0,** and the Akku package depends on `^0.6.0`, `^0.9.0`
+  and `^0.9.0`. Akku reads `^0.8.0` as below 0.9.0, so the server could not
+  be installed beside a library that needs byte-machine 0.9, such as
+  jsonparse; now it can. byte-machine 0.9.0 reads a run of bytes that a state
+  loops on in a tight loop of its own, and the two generated parsers the
+  server loads, chez-httparse's message parser and uriparse's scanner, are
+  regenerated with it. Their exports are unchanged, and no other library the
+  server loads changes.
+
 ### Fixed
 
 - **A heading's anchor on the docs site is GitHub's.** The site dropped `_`,
