@@ -6,6 +6,16 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-15
+
+The thirteenth release. chez-httparse moves to 0.6.0 and chez-uri to 0.9.0,
+both on byte-machine 0.9.0, so the server installs with Akku beside a library
+that needs byte-machine 0.9, such as jsonparse. The dependency floors rise, so
+the release is 0.11.0, as each of those libraries took a minor for the same
+move. No code under `src/` changes and no name joins or leaves a library. The
+docs site's heading anchors are GitHub's, and the install guide says the
+server is on the Akku index.
+
 ### Changed
 
 - **chez-httparse is pinned at v0.6.0 and uriparse at v0.9.0, both with
@@ -796,7 +806,8 @@ two runs of three rounds (`.plans/research/spike/m8-load.sh`):
   | a JSON POST, body read whole | 2,624 B |
   | a browser's GET with eleven fields | 3,312 B |
 
-[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/Kiyomi-Computation-Systems/chez-http-server/compare/v0.8.0...v0.9.0
