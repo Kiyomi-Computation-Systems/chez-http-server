@@ -19,7 +19,8 @@
 ;;; deadline is closed at it, the drain is logged, and `serve` returns once
 ;;; its last connection has closed, so the child exits 0.  It drains even
 ;;; when the SIGTERM comes as it logs `listening`.  Once `serve` has
-;;; returned, a SIGINT ends the process at once.
+;;; returned, a SIGINT ends the process at once, and a resume an outside
+;;; wait kept answers #f, raising nothing.
 ;;;
 ;;; Oracles:
 ;;;   - the documented configuration and handler reading (docs/handlers.md,
@@ -387,6 +388,30 @@
       (let ((ended (run-loop-until loop exited cap)))
         (list ended (and (listening-port (text)) #t) (lines-after-listening (text)) (exited))))))
 
+;; kept-after-serve : -> Datum
+;; Start the child; a client asks it for `/outside` and reads its answer,
+;; then idles on its keep-alive connection, which the drain closes at once;
+;; then the child is sent SIGTERM, and once `serve` has returned it calls
+;; the resume `/outside` kept and writes what it answered.  How the waits
+;; ended, the response's status and body, the lines the child wrote after
+;; `listening`, and how it exited.
+(define (kept-after-serve)
+  (with-child '()
+    (lambda (loop text exited process)
+      (let* ((port (lambda () (listening-port (text))))
+             (listening (run-loop-until loop (lambda () (and (port) #t)) cap))
+             (cl (and (port) (open-client loop (port)
+                                          (b "GET /outside HTTP/1.1\r\nHost: h\r\n\r\n") #t)))
+             (answered (if cl (run-loop-until loop (lambda () (pair? (responses-of (client-bytes cl)))) cap)
+                           'no-port))
+             (signalled (begin (uv-process-kill! process 'sigterm) 'signalled))
+             (ended (run-loop-until loop exited cap))
+             (response (and cl (pair? (responses-of (client-bytes cl)))
+                            (let ((r (read-response (client-bytes cl) #f #t)))
+                              (list (car r) (cadddr r))))))
+        (when cl (client-close! cl))
+        (list (list listening answered ended) response (lines-after-listening (text)) (exited))))))
+
 ;; lines-after-listening : String -> (Listof String)
 ;; The whole lines of `text` after the first that starts `listening `.
 (define (lines-after-listening text)
@@ -444,7 +469,7 @@
     ;; --- what the facade exports ---
     (test-equal "the facade exports the handler's names, the procedure told how a response ended, the verbs it waits with and what they raise, its body's pull and port, a switch and the transport's verbs, the server's start, and its errors"
                 '(&body-failed &client-closed &deadline-passed &http-server-config-error &http-server-error &resolve-error
-                  await awaiting body-failed-reason body-failed-status body-failed? body-input-port
+                  await await-outside awaiting body-failed-reason body-failed-status body-failed? body-input-port
                   client-closed? deadline-passed? http-server-config-error? http-server-error?
                   make-response
                   make-transport next-body-piece read-body read-whole-body request-has-body? request-header
@@ -678,6 +703,11 @@
     (test-equal "once serve has returned, a SIGINT ends the process at once"
                 '(satisfied satisfied ("draining 0" "stopped") (0 sigint))
                 (returned-then-interrupted))
+    ;; A resume kept past the stop is refused: the shell closed its inbox as
+    ;; it served no more, and the loop's teardown closed the handle.
+    (test-equal "a resume an outside wait kept answers #f once serve has returned, raising nothing"
+                '((satisfied satisfied satisfied) (200 "kept") ("draining 1" "stopped" "kept-resume #f") (0 #f))
+                (kept-after-serve))
 
     ;; --- the log ---
     (test-equal "the log writes a line for each thing: what happened, then each detail"

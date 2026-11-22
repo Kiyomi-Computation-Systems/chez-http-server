@@ -41,7 +41,16 @@
 ;;;   - R1: a callback that parks, and a drain inside a callback, are
 ;;;     refused as R1;
 ;;;   - R2: a park on no coroutine, from a call the drain makes or from
-;;;     outside any turn, is refused as R2;
+;;;     outside any turn, is refused as R2; before any drain or feed, when
+;;;     no thread is the loop's, as one on no coroutine;
+;;;   - R2 off the loop's thread: a wait from another thread is refused as
+;;;     R2, naming the thread, while the loop's thread runs a coroutine,
+;;;     which would park on the wrong stack, and while it polls, before the
+;;;     poll's R1, whose phase is the loop's thread's; a feed begun, before
+;;;     any drain, makes its thread the loop's, and so does a drain, on
+;;;     another thread too; on the loop's own thread the refusals and their
+;;;     order are as they were, and the coroutine parks and is woken as
+;;;     before;
 ;;;   - R5: a park inside a feed is refused as R5, and the phase is the one
 ;;;     before the feed once it is over;
 ;;;   - a call is made in the drain, on no coroutine;
@@ -74,7 +83,7 @@
 ;;;     or its end procedure.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) make-parameter parameterize statistics sstats-bytes call/1cc
-              collect collect-maximum-generation weak-cons bwp-object?)
+              collect collect-maximum-generation weak-cons bwp-object? fork-thread thread-join)
         (http-server private scheduler))
 
 ;; scripted : (Listof (Listof (-> Any))) -> (values (Symbol -> Boolean) (-> (Listof Symbol)))
@@ -118,6 +127,30 @@
             ((assertion-violation? e) 'assertion)
             (#t 'other))
     (list 'returned (thunk))))
+
+;; said : (-> Any) -> Any
+;; As refusal, a scheduler refusal with its message: `(refused r2 "a wait
+;; on no coroutine")` and so on.
+(define (said thunk)
+  (guard (e ((scheduler-invariant? e)
+             (list 'refused (scheduler-invariant-name e) (condition-message e)))
+            ((assertion-violation? e) 'assertion)
+            (#t 'other))
+    (list 'returned (thunk))))
+
+;; elsewhere : (-> Any) -> Any
+;; What `thunk` answers on a thread of its own, which this one waits for.
+(define (elsewhere thunk)
+  (let* ((v 'never-ran) (t (fork-thread (lambda () (set! v (thunk))))))
+    (thread-join t)
+    v))
+
+;; What a wait off the loop's thread, one on no coroutine, one inside the
+;; poll and one inside a feed are refused with.
+(define off-thread '(refused r2 "a wait off the loop's thread"))
+(define on-none '(refused r2 "a wait on no coroutine"))
+(define in-poll '(refused r1 "a wait inside a libuv callback"))
+(define in-feed '(refused r5 "a wait inside a feed"))
 
 ;; ender : (Any -> Void) -> (Symbol Any -> Void)
 ;; An end procedure that records `(end kind value)`, a raise's condition as
@@ -394,6 +427,17 @@
 
 (run-suite "scheduler"
   (lambda ()
+    ;; Before any drain or feed, in this process: no thread is the loop's.
+    ;; Neither runs a coroutine, so R3's row may come after them.
+    (test-equal "before any drain or feed, no thread is the loop's: a park is refused as R2, as one on no coroutine"
+      on-none (said (lambda () (coroutine-park!))))
+    (let* ((before (scheduler-feed-begin!))
+           (from-elsewhere (elsewhere (lambda () (said (lambda () (waiting-coroutine 'elsewhere))))))
+           (here (said (lambda () (waiting-coroutine 'here)))))
+      (scheduler-feed-end! before)
+      (test-equal "a feed begun before any drain makes its thread the loop's: a wait from another thread is refused as R2, off the loop's thread, and one on its own as R5"
+        (list off-thread in-feed) (list from-elsewhere here)))
+
     ;; R3's row first: once a coroutine returns normally, no drain after it
     ;; runs (the header).
     (let*-values (((note! seen) (recorder))
@@ -546,6 +590,52 @@
         (note! (refusal (lambda () (coroutine-park!))))
         (test-equal "R2: a park on no coroutine, in a call the drain makes and outside any turn, is refused as R2"
           '((refused r2) (refused r2)) (seen))))
+
+    ;; A drain on another thread makes that thread the loop's, while this one
+    ;; was the loop's until then; a drain here makes it the loop's again.
+    (let-values (((note! seen) (recorder))
+                 ((poll! modes) (scripted '())))
+      (let ((s (make-scheduler poll!)))
+        (scheduler-spawn! s
+          (lambda () (note! (said (lambda () (eq? (waiting-coroutine 'there) (current-coroutine))))))
+          (lambda (kind v) #f))
+        (elsewhere (lambda () (scheduler-drain! s)))
+        (let ((here (said (lambda () (coroutine-park!)))))
+          (scheduler-drain! s)
+          (test-equal "a drain makes the thread it runs on the loop's: a coroutine drained on another thread may wait there, and this thread's wait is refused as R2, off the loop's thread, until it drains again"
+            (list '((returned #t)) off-thread on-none)
+            (list (seen) here (said (lambda () (coroutine-park!))))))))
+
+    ;; A wait from another thread, while the loop's thread runs a coroutine,
+    ;; which waits for it, and while the loop's thread polls, its callback
+    ;; waiting for it; then the same on the loop's own thread, where the
+    ;; coroutine is the one running, and the poll refuses as R1.
+    (let*-values (((note! seen) (recorder))
+                  ((c) #f)
+                  ((poll! modes)
+                   (scripted (list (list (lambda ()
+                                           (note! (list 'in-poll
+                                                        (elsewhere (lambda () (said (lambda () (coroutine-park!)))))
+                                                        (elsewhere (lambda () (said coroutine-yield!)))
+                                                        (said (lambda () (coroutine-park!)))))
+                                           (coroutine-wake! c 'woken)))))))
+      (let ((s (make-scheduler poll!)))
+        (set! c (scheduler-spawn! s
+                  (lambda ()
+                    (note! (list 'on-coroutine
+                                 (elsewhere (lambda () (said (lambda () (waiting-coroutine 'elsewhere)))))
+                                 (said (lambda () (eq? (waiting-coroutine 'here) (current-coroutine))))))
+                    (note! (list 'parked (coroutine-park!)))
+                    'done)
+                  (ender note!)))
+        (let ((taken (refusal (lambda () (turns! s 4)))))
+          (test-equal "R2 off the loop's thread: a wait from another thread is refused as R2, off the loop's thread, while the loop's thread runs a coroutine and while it polls, before R1; on the loop's own thread, the coroutine is the one running and the poll refuses as R1; the coroutine parks and is woken as before"
+            (list '(returned 2)
+                  (list (list 'on-coroutine off-thread '(returned #t))
+                        (list 'in-poll off-thread off-thread in-poll)
+                        '(parked woken)
+                        '(end returned done)))
+            (list taken (seen))))))
 
     (let-values (((note! seen) (recorder))
                  ((poll! modes) (scripted '())))

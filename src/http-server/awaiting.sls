@@ -8,7 +8,7 @@
 ;;; producer it answers with is called on coroutines too, so it may wait as
 ;;; well.  Only code a coroutine runs may wait: anywhere else, inside a libuv
 ;;; callback or where no coroutine runs, a wait is refused, and the handler
-;;; has failed.
+;;; has failed; on another thread, a worker's, it is refused there.
 ;;;
 ;;; What a wait raises is here too, so that a handler can catch it: once a
 ;;; deadline has passed, a wait inside it raises `&deadline-passed`; and a

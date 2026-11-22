@@ -34,6 +34,31 @@
 ;;;   - a wait's park entered a second time ends the coroutine by an
 ;;;     assertion naming the wait, `await`, and nothing is logged.
 ;;;
+;;; The checks for `await-outside`, whose waits' opener the suite gives:
+;;;   - it is refused where `await` is, before `register` runs: on no
+;;;     coroutine as R2, inside a callback as R1, inside a feed as R5;
+;;;   - on waits with no inbox opener it is an assertion violation, its own,
+;;;     before `register` runs, and only once R2 and R5 have been asked;
+;;;   - on a loop that keeps no waits it is an assertion violation;
+;;;   - threads that post at once, while the loop's thread delivers: each
+;;;     post answers #t and sends one wake, and each value is handed over
+;;;     once, to its own wait, with nothing left queued and nothing logged;
+;;;   - a post made inside an engine that expires at any fuel level leaves
+;;;     the inbox's mutex free: another thread reads what is posted after
+;;;     it, at every level from the first until the engine completes, and
+;;;     at one at least the engine expired.  The post is the one section
+;;;     under the mutex that calls code an interrupt can come at, the
+;;;     waits' own and the wake; the others call only Chez's own
+;;;     procedures and accessors, so no engine stops them there.  The
+;;;     engine's thread lives until the read is over: a thread made once it
+;;;     has gone may be taken for it, as a Chez mutex knows its owner, and
+;;;     acquire the mutex it left held.  A reader still blocked after ten
+;;;     seconds reads it as held, a bound of the check's own.  A thread
+;;;     blocked on the mutex with interrupts disabled, as every reader is,
+;;;     holds up every collection until it has the mutex, so the check comes
+;;;     last: a mutex left held fails it before a collection can wait on
+;;;     the reader.
+;;;
 ;;; The checks for `sleep-ms` and `with-deadline`, on a clock the suite sets,
 ;;; the loop's timer standing in as a recorder of each start and stop, and
 ;;; fired from a poll, as libuv fires it:
@@ -91,7 +116,9 @@
 ;;;     nothing;
 ;;;   - R4: a resume after a close ended its wait is logged as `late-resume`.
 (import (rnrs) (srfi :64) (testing)
-        (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?)
+        (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?
+              fork-thread thread-join make-mutex with-mutex iota make-condition condition-wait
+              condition-signal condition-broadcast make-time make-engine)
         (only (http-server awaiting) deadline-passed? client-closed? resolve-error? resolve-error-reason)
         (http-server private scheduler)
         (http-server private waits))
@@ -274,6 +301,10 @@
           (if (bwp-object? (car seen)) 'let-go 'held)
           (if (procedure? kept) 'resume-kept 'resume-gone))))
 
+;; opened : Waits -> Void — given an inbox opener whose wake is always sent,
+;; its deliveries never run.
+(define (opened w) (waits-outside! w (lambda (deliver!) (lambda () #t))))
+
 ;; waiting : (Listof (Listof (-> Any))) -> (values Scheduler (-> (Listof Any)))
 ;; A scheduler polling `batches`, with waits that log, and the log.
 (define (waiting batches)
@@ -282,6 +313,73 @@
     (let ((s (make-scheduler poll!)))
       (make-waits s log!)
       (values s logged))))
+
+;; read-elsewhere : (-> Any) -> (U (List 'read Any) 'held)
+;; What `read` answers on a thread of its own, which this one waits for up
+;; to ten seconds; `held` if it has not answered by then, blocked on a mutex
+;; another thread left held.  A thread so blocked is left behind.
+(define (read-elsewhere read)
+  (let ((m (make-mutex)) (changed (make-condition)) (got 'held))
+    (fork-thread (lambda ()
+                   (let ((v (read)))
+                     (with-mutex m (set! got (list 'read v)) (condition-signal changed)))))
+    (with-mutex m
+      (let wait ()
+        (cond ((pair? got) got)
+              ((condition-wait changed m (make-time 'time-duration 0 10)) (wait))
+              (else got))))))
+
+;; parked-outside : -> (values Waits (Any -> Boolean) (-> Void))
+;; Waits of their own, whose opener's wake is always sent, with one outside
+;; wait parked: the waits, the wait's resume, and the inbox's delivery.
+(define (parked-outside)
+  (let-values (((s logged) (waiting '())))
+    (let ((w (scheduler-waits s)) (kept #f) (deliver #f))
+      (waits-outside! w (lambda (d) (set! deliver d) (lambda () #t)))
+      (scheduler-spawn! s (lambda () (await-outside (lambda (r) (set! kept r)))) (lambda (kind v) #f))
+      (scheduler-drain! s)
+      (values w kept deliver))))
+
+;; posting : Waits (Any -> Boolean) (-> Void) -> (-> Any)
+;; A post, as the thunk an engine runs, made from fresh waits with a wait
+;; parked.
+(define (posting w resume deliver) (lambda () (resume 'v)))
+
+;; engine-run : ((Waits (Any -> Boolean) (-> Void)) -> (-> Any)) Nat -> (List Symbol Any)
+;; The section's thunk, made from fresh waits, run by a thread of its own
+;; inside an engine of `fuel` ticks: how the engine ended, `expired` or
+;; `completed`, and what another thread then reads of what is posted, while
+;; the engine's thread still lives.
+(define (engine-run section fuel)
+  (let-values (((w resume deliver) (parked-outside)))
+    (let ((thunk (section w resume deliver)) (how 'never-ran)
+          (m (make-mutex)) (changed (make-condition)) (stage 'running))
+      (define (stage! next) (with-mutex m (set! stage next) (condition-broadcast changed)))
+      (define (reached! s) (with-mutex m (let wait () (unless (eq? stage s) (condition-wait changed m) (wait)))))
+      (let ((worker (fork-thread (lambda ()
+                                   ((make-engine thunk) fuel
+                                    (lambda (left . vs) (set! how 'completed))
+                                    (lambda (k) (set! how 'expired)))
+                                   (stage! 'ran)
+                                   (reached! 'read)))))
+        (reached! 'ran)
+        (let ((read (read-elsewhere (lambda () (waits-posted w)))))
+          (stage! 'read)
+          (thread-join worker)
+          (list how read))))))
+
+;; engine-sweep : ((Waits (Any -> Boolean) (-> Void)) -> (-> Any)) -> Any
+;; The section run inside an engine of 1 tick, 2, and so on, until the
+;; engine completes, up to 10,000: `free` if the mutex was free after each,
+;; and the engine expired at one at least; else `(held fuel)` for the first
+;; that left it held, `never-expired`, or `never-completed`.
+(define (engine-sweep section)
+  (let loop ((fuel 1) (expired? #f))
+    (let ((r (engine-run section fuel)))
+      (cond ((not (pair? (cadr r))) (list 'held fuel))
+            ((eq? (car r) 'completed) (if expired? 'free 'never-expired))
+            ((= fuel 10000) 'never-completed)
+            (else (loop (+ fuel 1) #t))))))
 
 (run-suite "waits"
   (lambda ()
@@ -412,6 +510,100 @@
     (test-equal "a wait's park entered a second time ends the coroutine by an assertion naming the wait, await, and nothing is logged"
       '((landed (raised await)) ())
       (await-entered-twice))
+
+    ;; --- await-outside -------------------------------------------------------
+    ;; Waits whose opener answers a wake that is always sent, as the suite's
+    ;; own `opened` gives them.
+    (let*-values (((registered) '())
+                  ((s logged)
+                   (waiting (list (list (lambda ()
+                                          (set! registered
+                                                (cons (refusal (lambda () (await-outside (lambda (r) (set! registered (cons 'r1 registered))))))
+                                                      registered))))))))
+      (opened (scheduler-waits s))
+      (let ((on-none (refusal (lambda () (await-outside (lambda (r) (set! registered (cons 'r2 registered))))))))
+        (scheduler-spawn! s
+          (lambda ()
+            (let* ((before (scheduler-feed-begin!))
+                   (in-feed (refusal (lambda () (await-outside (lambda (r) (set! registered (cons 'r5 registered))))))))
+              (scheduler-feed-end! before)
+              (set! registered (cons in-feed registered))))
+          (lambda (kind v) #f))
+        (let ((t (taken s 4)))
+          (test-equal "await-outside on no coroutine is refused as R2, in a callback as R1, in a feed as R5, each before register runs"
+            '((returned 1) (refused r2) (refused r5) (refused r1))
+            (cons* t on-none (reverse registered))))))
+
+    (let*-values (((registered) '())
+                  ((s logged) (waiting '()))
+                  ((note! seen) (recorder)))
+      (let ((on-none (refusal (lambda () (await-outside (lambda (r) (set! registered (cons 'r2 registered))))))))
+        (scheduler-spawn! s
+          (lambda ()
+            (let* ((before (scheduler-feed-begin!))
+                   (in-feed (refusal (lambda () (await-outside (lambda (r) (set! registered (cons 'r5 registered))))))))
+              (scheduler-feed-end! before)
+              (note! in-feed))
+            (note! (refused-by (lambda () (await-outside (lambda (r) (set! registered (cons 'ran registered))))))))
+          (lambda (kind v) #f))
+        (let ((t (taken s 4)))
+          (test-equal "await-outside on waits with no inbox opener is an assertion violation, its own, before register runs, and asked after R2 and R5"
+            '((returned 1) (refused r2) ((refused r5) (assertion await-outside)) () ())
+            (list t on-none (seen) registered (logged))))))
+
+    (let-values (((poll! modes) (scripted '())))
+      (let ((s (make-scheduler poll!)) (outcome #f) (ran #f))
+        (scheduler-spawn! s
+          (lambda () (await-outside (lambda (r) (set! ran #t))))
+          (lambda (kind v) (set! outcome (list kind (if (assertion-violation? v) 'assertion v)))))
+        (let ((t (taken s 4)))
+          (test-equal "await-outside on a loop that keeps no waits is an assertion violation, before register runs"
+            '((returned 1) (raised assertion) #f) (list t outcome ran)))))
+
+    ;; Threads post at once while the loop's thread delivers, until each has
+    ;; posted all it was given; then the loop delivers once more.  The wake
+    ;; counts its calls, which the inbox's mutex keeps one at a time.
+    (let* ((threads 4) (each 500) (total (* threads each)) (cap 10000000)
+           (resumes (make-vector total #f))
+           (got (make-vector total '()))
+           (wakes 0) (deliver #f) (log '())
+           (s (make-scheduler (lambda (mode) (assertion-violation 'threads "the loop never polls" mode))))
+           (w (make-waits s (lambda (what details) (set! log (cons (cons what details) log))))))
+      (waits-outside! w (lambda (d) (set! deliver d) (lambda () (set! wakes (+ wakes 1)) #t)))
+      (for-each (lambda (i)
+                  (scheduler-spawn! s
+                    (lambda ()
+                      (let ((v (await-outside (lambda (r) (vector-set! resumes i r)))))
+                        (vector-set! got i (cons v (vector-ref got i)))))
+                    (lambda (kind v) #f)))
+                (iota total))
+      (scheduler-drain! s)
+      (let* ((m (make-mutex)) (done 0) (posted (make-vector threads 0))
+             (workers
+              (map (lambda (k)
+                     (fork-thread
+                      (lambda ()
+                        (for-each (lambda (j)
+                                    (let ((i (+ (* k each) j)))
+                                      (when (eq? ((vector-ref resumes i) i) #t)
+                                        (vector-set! posted k (+ 1 (vector-ref posted k))))))
+                                  (iota each))
+                        (with-mutex m (set! done (+ done 1))))))
+                   (iota threads))))
+        (let spin ((n 0))
+          (deliver)
+          (scheduler-drain! s)
+          (when (and (< n cap) (< (with-mutex m done) threads)) (spin (+ n 1))))
+        (for-each thread-join workers)
+        (deliver)
+        (scheduler-drain! s)
+        (test-equal "threads that post at once while the loop delivers: each post answers #t and sends one wake, each value is handed over once, to its own wait, and nothing is left or logged"
+          (list total total total 0 #f '())
+          (list (apply + (vector->list posted))
+                wakes
+                (length (filter (lambda (i) (equal? (vector-ref got i) (list i))) (iota total)))
+                (waits-posted w) (waits-queued? w) log))))
+
 
     ;; --- sleep-ms and with-deadline ------------------------------------------
     ;; Each check keeps time in `clock`, which its batches set before they
@@ -914,4 +1106,9 @@
         (let ((t (taken s 8)))
           (test-equal "R4: a resume after a close ended its wait is logged as late-resume"
             '((returned 2) (closed) ((late-resume await)))
-            (list t (seen) (logged))))))))
+            (list t (seen) (logged))))))
+
+    ;; --- an engine's expiry, mid-post: last (the header) ----------------------
+    (test-equal "a post inside an engine that expires at any fuel level leaves the inbox's mutex free: another thread reads what is posted after each, and the engine expired at one level at least"
+      'free
+      (engine-sweep posting))))

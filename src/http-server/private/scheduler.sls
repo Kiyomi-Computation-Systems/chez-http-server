@@ -37,17 +37,24 @@
 ;;; THE PHASE is 'scheduling outside the poll, 'in-uv-run inside it, where
 ;;; libuv's callbacks run, and 'in-parser through a feed, whatever the phase
 ;;; around it (`scheduler-feed-begin!` and `scheduler-feed-end!`, which
-;;; allocate nothing, so a shell may set it at every read).  It and the
-;;; running coroutine are the process's, not a scheduler's: the server is one
-;;; thread, one turn runs at a time, and a waiting verb, which has no
-;;; scheduler to name, finds both here.
+;;; allocate nothing, so a shell may set it at every read).  It, the running
+;;; coroutine and THE LOOP'S THREAD, the one the drain and the turn run on,
+;;; are the process's, not a scheduler's: the server is one thread, one turn
+;;; runs at a time, and a waiting verb, which has no scheduler to name, finds
+;;; all three here.  The loop's thread is noted, by its id (`get-thread-id`,
+;;; which allocates nothing), as a drain or a feed begins: a turn begins
+;;; with its drain, and a coroutine is entered only from one, so it is known
+;;; while the loop polls too.  Another thread reads the phase and the
+;;; coroutine of the loop's thread, not its own: a wait asks which thread it
+;;; is on first.
 ;;;
 ;;; THE INVARIANTS ARE CHECKS, each a refusal raised as
 ;;; `&scheduler-invariant`, an `&assertion` naming it:
 ;;;   R1  a callback captures no continuation: a park, or a drain, inside the
 ;;;       poll is refused as 'r1;
 ;;;   R2  a continuation is captured only on a coroutine's stack, entered
-;;;       from the drain: a park on no coroutine is refused as 'r2;
+;;;       from the drain: a park on no coroutine, or on a thread other than
+;;;       the loop's, is refused as 'r2;
 ;;;   R3  a coroutine never returns normally: it ends by jumping to the
 ;;;       drain's current continuation, the one that entered or resumed it
 ;;;       last, since the one that first entered it was used as it parked,
@@ -73,7 +80,7 @@
           coroutine-park! coroutine-wake! coroutine-yield!
           scheduler-phase scheduler-feed-begin! scheduler-feed-end!
           &scheduler-invariant scheduler-invariant? scheduler-invariant-name)
-  (import (rnrs))
+  (import (rnrs) (only (chezscheme) get-thread-id))
 
   ;; &scheduler-invariant : R1, R2 or R5 refused (the header).
   ;; scheduler-invariant? : Any -> Boolean
@@ -130,9 +137,12 @@
   (define (coroutine-suspending? c)
     (and (memq (coroutine-state c) '(parked yielded)) #t))
 
-  ;; The process's phase, and the coroutine running, if one is.
+  ;; The process's phase, the coroutine running, if one is, and the id of
+  ;; the loop's thread, once a drain or a feed has begun (THE PHASE, the
+  ;; header).
   (define phase 'scheduling)
   (define running #f)
+  (define loop-thread #f)
 
   ;; scheduler-phase : -> (U 'scheduling 'in-uv-run 'in-parser)
   (define (scheduler-phase) phase)
@@ -148,6 +158,7 @@
   ;; raises sets it back on the way out, as the libuv shell's drain does.
   (define (scheduler-feed-begin!)
     (let ((before phase))
+      (set! loop-thread (get-thread-id))
       (set! phase 'in-parser)
       before))
   (define (scheduler-feed-end! before)
@@ -197,10 +208,10 @@
 
   ;; coroutine-park! : [Symbol] -> Any
   ;; Park the coroutine running until a wake, and answer what it gave.
-  ;; Inside the poll it is refused as R1, inside a feed as R5, and on no
-  ;; coroutine as R2.  Its park entered a second time is refused naming
-  ;; `who`: a waiting verb names itself, and coroutine-park! is named
-  ;; otherwise.
+  ;; Off the loop's thread it is refused as R2, inside the poll as R1,
+  ;; inside a feed as R5, and on no coroutine as R2.  Its park entered a
+  ;; second time is refused naming `who`: a waiting verb names itself, and
+  ;; coroutine-park! is named otherwise.
   (define coroutine-park!
     (case-lambda
       (() (suspend! 'coroutine-park! 'parked))
@@ -214,10 +225,15 @@
     (values))
 
   ;; waiting-coroutine : Symbol -> Coroutine
-  ;; The coroutine running, where it may park: inside the poll a wait is
-  ;; refused as R1, inside a feed as R5, and on no coroutine as R2, each
-  ;; naming `who`.  A wait asks before it begins.
+  ;; The coroutine running, where it may park: on a thread other than the
+  ;; loop's a wait is refused as R2, first, since the phase and the
+  ;; coroutine it would read are the loop's thread's; then inside the poll
+  ;; as R1, inside a feed as R5, and on no coroutine as R2, each naming
+  ;; `who`.  Before any drain or feed has begun no thread is the loop's,
+  ;; and no coroutine runs.  A wait asks before it begins.
   (define (waiting-coroutine who)
+    (when (and loop-thread (not (fx=? (get-thread-id) loop-thread)))
+      (refuse 'r2 who "a wait off the loop's thread"))
     (case phase
       ((in-uv-run) (refuse 'r1 who "a wait inside a libuv callback"))
       ((in-parser) (refuse 'r5 who "a wait inside a feed")))
@@ -267,6 +283,7 @@
   (define (scheduler-drain! s)
     (when (eq? phase 'in-uv-run) (refuse 'r1 'scheduler-drain! "a drain inside a libuv callback"))
     (when running (assertion-violation 'scheduler-drain! "a drain from a coroutine" running))
+    (set! loop-thread (get-thread-id))
     (let loop ()
       (let ((item (dequeue! s)))
         (when item

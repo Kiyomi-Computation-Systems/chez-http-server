@@ -38,8 +38,8 @@ Press Ctrl-C and the server finishes what it is doing, then stops.
 - **One request at a time per connection.** A connection's next request
   waits until your handler has answered this one. Other connections go on.
 - **Your handler runs on the event loop.** Answer quickly. To wait for
-  something (another request, a timer, a DNS lookup), answer with
-  `awaiting` and the server runs your code where it may wait.
+  something (another request, a timer, a DNS lookup, a thread of your own),
+  answer with `awaiting` and the server runs your code where it may wait.
 - **Nothing is decoded for you.** You get the path and headers as they
   arrived: `/a%20b` stays `/a%20b`. Bodies arrive as bytes.
 - **Everything is bounded.** Every timeout and size has a safe default you

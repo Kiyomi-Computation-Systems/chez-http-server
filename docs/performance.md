@@ -189,6 +189,23 @@ A 512 MiB file, downloaded with curl over one connection:
 - **A slow reader of a streamed response** costs at most about 256 KiB and
   one piece (`CHEZ_HTTP_WRITE_HIGH_WATER`).
 
+## Waiting for another thread
+
+`await-outside` ([Waiting](waiting.md#waiting-for-another-thread-await-outside)),
+measured on Linux x86_64 instead (Chez Scheme 10.4.1 `ta6le`, libuv
+1.52.1), over four runs:
+
+| What | Measured |
+|:--|:--|
+| 10,000 waits, all ended in one turn | `await` 1,256 B and 0.39 µs each; `await-outside` 1,624 B and 0.57 µs |
+| 10,000 waits, one at a time | `await` 1,256 B and 0.2–0.3 µs; `await-outside` 2,527 B and 1.4 µs, a turn of the loop each |
+| The same, each `resume` called by a worker thread | 2,236 B and 5.8–6.3 µs of CPU, both threads together |
+| The first outside wait on a loop, which makes its async handle | 3,168 B |
+| A worker's `resume` to its handler running, at rest | median 9.5–11.5 µs, 99th percentile 37–132 µs |
+| The same, 8 workers answering 256 waits | median 0.27–0.31 ms, 99th percentile 0.76–1.1 ms, about 250 answers a turn |
+| An async handle open, nothing posted | nothing measurable: the same turns, bytes and CPU as none |
+| A GET with that handle open | 5,139–5,154 B, as without |
+
 ## Allocation per request
 
 Allocation is what makes Chez's garbage collector run, so the test suite

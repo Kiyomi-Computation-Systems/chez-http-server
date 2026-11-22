@@ -29,7 +29,9 @@
 ;;; that waits answers `(awaiting thunk)`: the server runs `thunk` on a
 ;;; coroutine of its own, and what it returns is the answer.  There it may
 ;;; wait with `await`, which hands a one-shot `resume` to whatever ends the
-;;; wait, another handler's code among them; with `sleep-ms`; inside
+;;; wait, another handler's code among them; with `await-outside`, whose
+;;; `resume` any thread may call, posting the value for the loop to hand
+;;; over; with `sleep-ms`; inside
 ;;; `with-deadline`, whose wait raises &deadline-passed once its time has
 ;;; passed; and with `resolve`, which looks a name up, or raises
 ;;; &resolve-error (see (http-server private waits)).  Once its client has
@@ -93,6 +95,7 @@
 ;;;     body-failed-status : BodyFailed -> Nat
 ;;;   (http-server private waits)
 ;;;     await : ((Any -> Void) -> Any) -> Any
+;;;     await-outside : ((Any -> Boolean) -> Any) -> Any
 ;;;     sleep-ms : Nat -> Void
 ;;;     with-deadline : Nat (-> (Values Any ...)) -> (Values Any ...)
 ;;;     resolve : String -> (Listof String)
@@ -132,7 +135,7 @@
     make-transport transport? transport-write! transport-read-start! transport-read-stop!
     transport-close! transport-abort! transport-deadline! transport-on-drain! transport-on-close!
     ;; what a handler that waits waits with, and what a wait raises
-    await sleep-ms with-deadline resolve
+    await await-outside sleep-ms with-deadline resolve
     &deadline-passed deadline-passed? &client-closed client-closed?
     &resolve-error resolve-error? resolve-error-reason
     ;; the body pulled by a handler that waits, and what a failed one raises
@@ -153,7 +156,7 @@
           (only (http-server awaiting) awaiting &deadline-passed deadline-passed?
                 &client-closed client-closed? &resolve-error resolve-error? resolve-error-reason
                 &body-failed body-failed? body-failed-reason body-failed-status)
-          (only (http-server private waits) await sleep-ms with-deadline resolve
+          (only (http-server private waits) await await-outside sleep-ms with-deadline resolve
                 next-body-piece body-input-port)
           (only (http-server private serve)
                 serve

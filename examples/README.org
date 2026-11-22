@@ -16,6 +16,7 @@ say otherwise, and stops on Ctrl-C.
 | [[file:echo.sps][echo.sps]]          | reading the request and its body                         | ~curl --data hi 127.0.0.1:8080/~                      |
 | [[file:stream.sps][stream.sps]]        | streaming a response, and server-sent events             | ~curl -N '127.0.0.1:8080/ticks?n=5&ms=1000'~          |
 | [[file:long-poll.sps][long-poll.sps]]     | a handler that waits for another request, with a timeout | ~curl 127.0.0.1:8080/wait~, then ~curl --data hi 127.0.0.1:8080/send~ |
+| [[file:worker.sps][worker.sps]]        | slow work on a thread of its own, while the server goes on | ~curl '127.0.0.1:8080/sum?n=1000000000'~, and ~curl 127.0.0.1:8080/~ meanwhile |
 | [[file:file-server.sps][file-server.sps]]   | serving a directory, like ~python3 -m http.server~        | ~make run PROGRAM=examples/file-server.sps ARGS="8000 --directory docs"~ |
 
 ** The file server
