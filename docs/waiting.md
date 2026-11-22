@@ -1,7 +1,8 @@
 # Waiting
 
 Sometimes a handler cannot answer yet: it waits for another request, for a
-moment to pass, or for a DNS lookup. A plain handler cannot wait, because it
+moment to pass, for a DNS lookup, or for work another thread does. A plain
+handler cannot wait, because it
 runs on the event loop and would stop every other connection. Instead it
 answers `(awaiting thunk)`. The server runs `thunk` on a coroutine of its
 own, and what `thunk` returns is the answer: a response or a reader. Inside
@@ -113,10 +114,102 @@ If the client closes or resets the connection while your handler waits:
 - A lookup a deadline ends is cancelled if it has not begun yet. Either
   way it still answers later, and the server logs `late-resume resolve`.
 
+## Waiting for another thread: `await-outside`
+
+Some work can only block: a database query through a C library, or a
+password hash that is slow on purpose. Done in a handler, it stops every
+connection. Hand it to a thread of your own instead, and wait for the answer
+with `await-outside`. The loop serves everyone else meanwhile.
+
+```scheme
+;; one worker thread runs each job in turn
+(define lock (make-mutex))
+(define ready (make-condition))
+(define jobs '())
+
+(define (put-job! job)
+  (with-mutex lock
+    (set! jobs (append jobs (list job)))
+    (condition-signal ready)))
+
+(define (take-job!)
+  (with-mutex lock
+    (let wait () (when (null? jobs) (condition-wait ready lock) (wait)))
+    (let ((job (car jobs))) (set! jobs (cdr jobs)) job)))
+
+(fork-thread
+ (lambda ()
+   (let loop ()
+     (let* ((job (take-job!)) (work (car job)) (resume (cdr job)))
+       (resume (guard (e (#t (cons 'raised e))) (cons 'ok (work))))
+       (loop)))))
+
+;; in a handler that waits: run `work` on the worker, and give back its answer
+(define (on-worker work)
+  (let ((answer (await-outside (lambda (resume) (put-job! (cons work resume))))))
+    (if (eq? (car answer) 'ok) (cdr answer) (raise (cdr answer)))))
+```
+
+- `(await-outside register)` calls `register` with `resume`, then waits
+  until a value `resume` was called with reaches the loop, and gives it back.
+- **`resume` may be called from any thread**, the loop's own too. It
+  answers `#t` if the value was posted, or `#f` if not: it was called
+  before, or the server has stopped.
+- `#t` means posted, not seen. If a deadline or the client's close ends the
+  wait first, the wait raises as any wait does, and the value that comes
+  later is dropped. That is normal for a worker, so nothing is logged.
+- A second call of the same `resume` answers `#f`, and the server logs
+  `late-resume await-outside`.
+- The handler always waits for the loop's next turn, even if `register`
+  calls `resume` itself.
+- A value and a deadline that come in the same turn: the value wins. The
+  server hands values over before it fires that turn's timers.
+- Everything else stays on the loop's thread: only this `resume` may be
+  called from another.
+
+### Traps
+
+- **Bind a worker's blocking C call `__collect_safe`.** Chez stops every
+  thread to collect garbage. A thread stuck in an ordinary C call can't
+  stop, so the loop waits for it at its next collection, and the whole
+  server freezes. chez-sqlite3 binds its calls this way. Plain Scheme code
+  on a worker is fine, and so is a worker waiting in Chez's own `sleep`,
+  `condition-wait` or `mutex-acquire`.
+- **Don't call `(collect)` yourself** once you have workers: Chez refuses
+  it while another thread is computing. Its automatic collections still
+  happen.
+- **`register` runs on the loop's thread.** It should only hand the work
+  over. Work done in it blocks the server.
+- **Catch on the worker.** A worker that raises never calls `resume`, and
+  the handler waits forever. Catch, post the condition, and raise it on the
+  handler's side, as above. Put a deadline around every outside wait.
+- **A deadline doesn't stop the worker.** The handler gets
+  `&deadline-passed` at once; the worker runs on, and its answer is
+  dropped. Cancel what you can, and bound your queue, or abandoned jobs
+  pile up.
+- **Don't act on `#t`.** Don't commit anything because `resume` said `#t`:
+  the client may never get the answer.
+- **Hand over plain data.** A worker must not touch the request, its body,
+  a transport, or a plain `await`'s `resume`. Take what it needs out of the
+  request first.
+- **Log from the handler.** A worker has its own current ports and its own
+  values of Chez's thread parameters.
+- **Use a Chez thread,** one made by `fork-thread`. A thread a C library
+  made can't call `resume`.
+- **Don't hold a lock of your own over the wait.** A wait leaves every
+  `with-mutex` around it.
+- **Order holds per thread.** Values one thread posts arrive in the order it
+  posted them. Across threads there is no order.
+- **After the server stops, `resume` answers `#f`.** That is not an error
+  to retry. A handler still waiting then is never woken.
+
+[worker.sps](../examples/worker.sps) runs a slow job on a worker, with a
+deadline.
+
 ## Testing a handler that waits
 
 `(http-server testing)` runs one with no socket, on a clock your test
-moves, and your test answers its lookups: see
+moves, and your test answers its lookups and plays its worker threads: see
 [Testing handlers](testing.md).
 
 ## Reading the body: `next-body-piece` and `body-input-port`

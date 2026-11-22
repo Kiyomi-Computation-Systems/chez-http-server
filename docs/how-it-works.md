@@ -72,6 +72,11 @@ built on Chez's `call/cc`. When the thunk calls `await`, `sleep-ms` or
 the event comes, the coroutine is made ready, and the scheduler resumes it
 between two turns of libuv. A parked handler holds under 1 KB.
 
+A handler that waits with `await-outside` is woken by another thread. That
+thread's `resume` puts the value in a locked inbox and wakes the loop
+through a libuv async handle. On the loop's thread, the handle's callback
+empties the inbox and makes each coroutine ready.
+
 ## Timers
 
 The server keeps one timer, which fires every `CHEZ_HTTP_TICK_MS` (250 ms).

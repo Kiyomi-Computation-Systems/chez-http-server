@@ -1,8 +1,8 @@
 # Testing handlers
 
-A test can't hand your handler a request and wait: `await`, `sleep-ms`,
-`with-deadline`, `resolve` and `next-body-piece` only work where the server
-runs them.
+A test can't hand your handler a request and wait: `await`,
+`await-outside`, `sleep-ms`, `with-deadline`, `resolve` and
+`next-body-piece` only work where the server runs them.
 `(http-server testing)` runs your handler as the server does, with no socket
 and a clock your test moves. You send bytes, and read back what a client
 would.
@@ -39,8 +39,8 @@ Each name is in the [API reference](reference.md#testing-http-server-testing).
   on one scheduler and one clock, as in the server, so what is woken first
   runs first.
 - Each call that does something (a connect, a send, a close, an advance, an
-  answer) runs all that follows from it, then returns. Nothing runs between
-  calls, so a test never sleeps.
+  answer, a stop of posts) runs all that follows from it, then returns.
+  Nothing runs between calls, so a test never sleeps.
 - A `resume` your test calls itself only makes its handler ready to go on.
   `(test-host-advance! host 0)` runs it.
 - Call the host from your test, not from the code it runs: a call that does
@@ -90,6 +90,20 @@ Each name is in the [API reference](reference.md#testing-http-server-testing).
 - A lookup a deadline ends is cancelled, and leaves the list. It still
   answers, later, and the host logs `late-resume resolve`, as the server
   does.
+
+## Another thread's answers
+
+- Your test plays the worker, so no thread is needed: keep the `resume` a
+  handler gave `await-outside`, and call it between the host's calls.
+- The host's next call hands the value over, at the current time, before
+  it moves the clock: `(test-host-advance! host 0)` hands it over and runs
+  what it wakes. So a value posted before an advance beats a deadline that
+  passes during it, as in the server.
+- `(test-host-posted host)` says how many values wait to be handed over.
+- `(test-host-stop-posts! host)` stops taking posts, as the server does
+  when it stops: every `resume` given out so far then answers `#f`. Values
+  posted before it are still handed over. The next `await-outside` takes
+  posts again.
 
 ## What the client read
 

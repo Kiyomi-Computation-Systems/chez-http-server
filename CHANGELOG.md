@@ -6,6 +6,22 @@ All notable changes to chez-http-server are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A handler can wait for another thread.** Some work can only block, such
+  as a database query through a C library or a slow password hash, and done
+  in a handler it stops every connection. `(await-outside register)` gives
+  `register` a `resume` that any thread may call. A handler hands the work
+  to a thread of its own and waits, while the loop serves everyone else.
+  `resume` answers `#t` once it has posted the value, or `#f` if it was
+  called before or the server has stopped. A value that comes after a
+  deadline or the client's close ended the wait is dropped, and nothing is
+  logged; a second call of one `resume` logs `late-resume await-outside`.
+  A loop makes one libuv async handle, at its first such wait.
+  `(http-server testing)` adds `test-host-posted` and
+  `test-host-stop-posts!`, and a test plays the worker itself.
+  `examples/worker.sps` runs a slow job on a worker, with a deadline.
+
 ## [0.11.0] - 2026-11-15
 
 The thirteenth release. chez-httparse moves to 0.6.0 and chez-uri to 0.9.0,

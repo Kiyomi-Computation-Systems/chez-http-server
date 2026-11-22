@@ -180,7 +180,9 @@ bytes, and reads back what a client would: see
 Your handler runs on the server's event loop. While it runs, no other
 connection is served. Do quick work in place: build a page, read a small
 file. To wait for something, such as another request, a timer or a DNS
-lookup, answer with `awaiting` ([Waiting](waiting.md)).
+lookup, answer with `awaiting` ([Waiting](waiting.md)). Work that can only
+block, such as a database query through a C library, goes to a thread of
+your own, which a handler waits for with `await-outside`.
 
 ## When the server will not start
 

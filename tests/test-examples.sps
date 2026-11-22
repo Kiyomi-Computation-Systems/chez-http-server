@@ -235,6 +235,29 @@
                         '("woke 1\n" 200 "hi")
                         (list woke (and r (car r)) (and r (cadddr r))))))))
 
+    ;; The sums' oracle is n(n+1)/2.  The long one is sent first, and GET /
+    ;; only once its client has connected and written it, so the server
+    ;; reads it first: / is answered while the worker sums, and the sum
+    ;; after, where a sum worked out on the loop's thread would answer / last.
+    (with-example "worker" '()
+      (lambda (loop port listening)
+        (test-eq "worker: it listens" 'satisfied listening)
+        (when port
+          (let ((r (get loop port "/sum?n=1000")))
+            (test-equal "worker: GET /sum?n=1000 is 1 + 2 + ... + 1000, worked out on the worker"
+                        '(200 "500500\n") (list (status-of r) (body-of r))))
+          (let* ((summing (open-client loop port (b "GET /sum?n=300000000 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n") #t))
+                 (sent (run-loop-until loop (lambda () (client-connected summing)) cap))
+                 (r (get loop port "/"))
+                 (summed-first? (not (eq? (client-end summing) 'open)))
+                 (ended (run-loop-until loop (lambda () (not (eq? (client-end summing) 'open))) cap))
+                 (s (and (eq? ended 'satisfied) (read-response (client-bytes summing) #f #t))))
+            (client-close! summing)
+            (test-equal "worker: GET / is answered while the worker sums 1 to 300,000,000, and the sum after"
+                        (list 'satisfied 'no-error 200 "Hello\n" #f 200 "45000000150000000\n")
+                        (list sent (client-connected summing) (status-of r) (body-of r) summed-first?
+                              (and s (car s)) (and s (cadddr s))))))))
+
     (make-root!)
     (with-example "file-server" (list "--directory" root)
       (lambda (loop port listening)

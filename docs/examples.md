@@ -18,6 +18,7 @@ every one of them and checks what it answers, so they stay working.
 | [echo.sps](../examples/echo.sps) | reading a request and its body | `curl --data hi 127.0.0.1:8080/` |
 | [stream.sps](../examples/stream.sps) | streaming a response, and server-sent events | `curl -N '127.0.0.1:8080/ticks?n=5&ms=1000'` |
 | [long-poll.sps](../examples/long-poll.sps) | a handler that waits for another request | `curl 127.0.0.1:8080/wait`, then `curl --data hi 127.0.0.1:8080/send` |
+| [worker.sps](../examples/worker.sps) | slow work on a thread of its own, while the server goes on | `curl '127.0.0.1:8080/sum?n=1000000000'`, and `curl 127.0.0.1:8080/` meanwhile |
 | [file-server.sps](../examples/file-server.sps) | serving a folder, like `python3 -m http.server` | see below |
 
 ## A file server, like Python's
@@ -71,6 +72,7 @@ compares the two.
 
 Start with `hello.sps`, then `echo.sps`. `stream.sps` and `long-poll.sps`
 introduce producers and `awaiting`, explained in
-[Bodies and streaming](bodies.md) and [Waiting](waiting.md).
+[Bodies and streaming](bodies.md) and [Waiting](waiting.md). `worker.sps`
+hands slow work to a thread of its own with `await-outside`.
 `file-server.sps` puts the pieces together: routing on the path, reading
 files, streaming big ones, and building an HTML page.

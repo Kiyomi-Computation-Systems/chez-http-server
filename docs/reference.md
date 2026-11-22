@@ -134,6 +134,7 @@ See [Waiting](waiting.md). The waits below work only inside a thunk given to
 |:--|:--|:--|
 | `awaiting` | `(-> Answer) -> Awaiting` | an answer that runs the thunk where it may wait |
 | `await` | `((Any -> Void) -> Any) -> Any` | gives `register` a `resume`, waits for it, returns what it was called with |
+| `await-outside` | `((Any -> Boolean) -> Any) -> Any` | as `await`, but any thread may call `resume`, which answers whether it posted the value |
 | `sleep-ms` | `Nat -> Void` | waits that many milliseconds |
 | `with-deadline` | `Nat (-> (Values Any ...)) -> (Values Any ...)` | runs the thunk; its waits raise `&deadline-passed` after that many milliseconds |
 | `resolve` | `String -> (Listof String)` | the host's addresses, as strings |
@@ -200,8 +201,9 @@ is the procedure the matching call above ends up in. Without `abort`,
 
 A host that runs a handler for a scripted client, its waits included, with
 no socket and a clock the test moves. Each call that does something, a
-connect, a send, a close, a reset, an advance or an answer, runs all that
-follows from it before it returns. See [Testing handlers](testing.md).
+connect, a send, a close, a reset, an advance, an answer or a stop of posts,
+runs all that follows from it before it returns. See
+[Testing handlers](testing.md).
 
 ```scheme
 (import (rnrs) (http-server) (http-server testing))
@@ -229,6 +231,8 @@ an IP address is not refused: only `serve` refuses it, as it listens.
 | `test-host-advance!` | `TestHost Nat -> Void` | moves the clock on, firing each sleep, deadline and timeout as its time comes |
 | `test-host-lookups` | `TestHost -> (Listof String)` | the names `resolve` waits on, oldest first |
 | `test-host-answer!` | `TestHost String (U (Listof String) Symbol) -> Void` | answers the oldest lookup of the name: its addresses, or why it fails, such as `EAI_NONAME` |
+| `test-host-posted` | `TestHost -> Nat` | how many values `await-outside`'s `resume` posted wait to be handed over |
+| `test-host-stop-posts!` | `TestHost -> Void` | stops taking posts, as a server that stops: each `resume` given out so far answers `#f` |
 | `test-host-log` | `TestHost -> (Listof (Pair Symbol (Listof Any)))` | what the server logged, in order, each `(what . details)` |
 | `test-host-waiting` | `TestHost -> (Listof TestClient)` | the clients whose handler still waits |
 
