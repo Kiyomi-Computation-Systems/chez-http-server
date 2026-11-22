@@ -233,6 +233,20 @@ One per loop.
   - Two cases no code reaches, since a send on an open handle can't fail: a wake that
     fails on an open handle, followed by a fresh inbox, would leave the old handle
     unclosed; and values queued before such a wake are not delivered again at the stop.
+- **The costs** (the proposal's §8.4), on the final tree, Linux x86_64, Chez 10.4.1
+  `ta6le`, four runs of `.plans/research/spike/outside-waits.sps`, load 1.1–1.4:
+  - 10,000 waits ended in one turn: an outside wait 1,624 B and 0.56–0.57 µs, against
+    `await`'s 1,256 B and 0.38–0.39 µs. One at a time, 2,527 B and 1.4 µs, against
+    1,256 B and 0.2–0.3 µs: each takes a turn of the loop.
+  - Each `resume` called by one worker, one at a time: 2,236 B, 5.8–6.3 µs of CPU, the
+    two threads together.
+  - The first outside wait on a fresh loop: 3,168 B, and one async handle. Every other
+    fresh loop reads 68,688 B, as after `await` waits and in a window with no inbox:
+    the runtime's, not the inbox's.
+  - Resume to run: median 9.5–11.5 µs at rest; 0.27–0.31 ms, 99th percentile up to
+    1.1 ms, with 8 workers answering 256 waits, about 250 values a turn.
+  - An idle open inbox: one turn a second asleep and 6.4–14 µs a turn ticking, either
+    way. A GET: 5,139–5,154 B, either way.
 - **The review** (read-only, Opus) found seven things on the branch's first build. Four
   it reproduced and three it reasoned; all are fixed above or in the docs. The other
   three: a check of a post made during the drain was missing; the idle-window check

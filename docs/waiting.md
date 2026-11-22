@@ -287,3 +287,10 @@ costs about 0.15 KB, or 0.3 KB once the code inside it waits. Don't escape
 from a raise by `call/1cc`: once the code inside it waits, or raises with
 `error`, the escape costs 3.4 KB or more. One by `call/cc` costs a little
 less than `guard`.
+
+`await-outside` costs about 0.4 KB and 0.2 µs more than `await` when many
+end in one turn, and about 1.3 KB and 1.2 µs more one at a time, since each
+takes a turn of the loop. A worker's `resume` reaches its handler in about
+10 µs, or about 0.3 ms with 256 waits answered at once. A loop that never
+waits outside makes no async handle, and an open one costs nothing while
+idle ([Performance](performance.md#waiting-for-another-thread)).
