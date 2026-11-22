@@ -3,11 +3,15 @@
 ;;; own: `serve` itself, its loop and all, which no suite can run in place,
 ;;; since it returns only when the server stops.  It listens on 127.0.0.1,
 ;;; the kernel's choice of port, which `serve` logs on standard output, and
-;;; answers every request 200, "served", but two.  `/wait` writes the line
+;;; answers every request 200, "served", but three.  `/wait` writes the line
 ;;; `handling` on standard output and reads the request's body, answering
 ;;; "waited" at its end: the request stays in flight until the suite sends
 ;;; the body.  `/long` writes `holding`, then waits a minute, which the
-;;; drain's deadline, 2 s, cuts short.  It serves until it is killed, or
+;;; drain's deadline, 2 s, cuts short.  `/outside` waits outside, its
+;;; `register` keeping the resume and raising, and answers "kept"; once
+;;; `serve` has returned, the child calls the kept resume from a thread of
+;;; its own and writes what it answered, `kept-resume #f` or `#t`, or
+;;; `kept-resume raised`.  It serves until it is killed, or
 ;;; until a signal's drain ends and `serve` returns, when it exits 0;
 ;;; started with the argument `sigint-after`, it first sends itself SIGINT,
 ;;; and runs on a while, so that were a keyboard interrupt handled, it would
@@ -17,7 +21,7 @@
 ;;; lookup is its own, so the environment the suite runs in sets nothing
 ;;; here.  Run on the project's library path.
 (import (rnrs) (http-server) (only (libuv) uv-kill! uv-os-getpid)
-        (only (chezscheme) parameterize)
+        (only (chezscheme) parameterize fork-thread thread-join)
         (rename (only (chezscheme) current-output-port) (current-output-port output-port-parameter)))
 
 ;; said : String -> Void — the line, on standard output, at once.
@@ -46,6 +50,9 @@
         count)
       #f #f #f)))
 
+;; The resume `/outside` kept, or #f.
+(define kept #f)
+
 ;; serving : -> Void — `serve`, as the header says.
 (define (serving)
   (serve (lambda (request)
@@ -56,6 +63,10 @@
                  ((string=? (request-path request) "/long")
                   (said "holding")
                   (awaiting (lambda () (sleep-ms 60000) (make-response 200 #f '() (string->utf8 "late")))))
+                 ((string=? (request-path request) "/outside")
+                  (awaiting (lambda ()
+                              (guard (e ((eq? e 'kept) (make-response 200 #f '() (string->utf8 "kept"))))
+                                (await-outside (lambda (resume) (set! kept resume) (raise 'kept)))))))
                  (else (make-response 200 #f '() (string->utf8 "served")))))
          (lambda (name)
            (cond ((string=? name "CHEZ_HTTP_HOST") "127.0.0.1")
@@ -67,6 +78,11 @@
     (parameterize ((output-port-parameter (signalling-at-listening (current-output-port))))
       (serving))
     (serving))
+(when kept
+  (let* ((answer 'never-called)
+         (t (fork-thread (lambda () (set! answer (guard (e (#t 'raised)) (kept "after")))))))
+    (thread-join t)
+    (said (string-append "kept-resume " (cond ((eq? answer #f) "#f") ((eq? answer #t) "#t") (else "raised"))))))
 (when (member "sigint-after" (command-line))
   (uv-kill! (uv-os-getpid) 'sigint)
   (let spin ((i 0)) (when (< i 50000000) (spin (+ i 1)))))

@@ -246,8 +246,16 @@
 ;;; loop's waits, made with the log of the first shell on the loop, which
 ;;; records a late resume as `late-resume` (R4), and given the loop's clock
 ;;; and a timer of their own for the sleeps and deadlines, one a loop, closed
-;;; with the tick timer by a shell that serves no more (loop-clock!), and the
-;;; loop's resolver (loop-resolver!).  A wait goes on when its connection
+;;; with the tick timer by a shell that serves no more (loop-clock!), the
+;;; loop's resolver (loop-resolver!), and its inbox opener (loop-outside!).
+;;; An outside wait's resume, which any thread may call, posts to the waits'
+;;; inbox and sends its wake, on an async handle, one an inbox, made by the
+;;; outside wait that opens it; the handle's callback, in the poll, hands
+;;; over what was posted, which only wakes.  A send that meets the handle
+;;; closed answers #f, never raising.  A shell that serves no more closes
+;;; the inbox, and its handle through handle-close! (release-timer!): every
+;;; resume of it answers #f from then on, as one does whose send met a
+;;; handle a teardown closed.  A wait goes on when its connection
 ;;; closes: what it then answers is dropped, and the connection makes no more
 ;;; calls.  But a close the client makes, its end or a reset, the core tells
 ;;; as `client-closed`: the request's notice, given to each coroutine its code
@@ -315,8 +323,8 @@
                 make-scheduler scheduler-turn! scheduler-turn-abandoned! scheduler-call! scheduler-spawn!
                 scheduler-phase scheduler-feed-begin! scheduler-feed-end! scheduler-waits)
           (only (http-server private waits)
-                make-waits waits-clock! waits-fire! waits-timed waits-resolver!
-                make-notice notice-attach! notice-close! notice-closed?
+                make-waits waits-clock! waits-fire! waits-timed waits-resolver! waits-outside!
+                waits-outside-close! make-notice notice-attach! notice-close! notice-closed?
                 notice-puller! notice-closing! notice-body-failure
                 waits-puller! pull-piece! pull-end! pull-fail!)
           (only (http-server server) make-server-state server-step server-phase)
@@ -368,6 +376,7 @@
   (define-record-type (shell %make-shell shell?)
     (fields loop handler limits clock log trace on-credit? table wheel scheduler
             waits-kept                         ; the box of its loop's waits' timer (loop-clock!)
+            outside-kept                       ; the box of its loop's inbox's handle (loop-outside!)
             teller                             ; its loop's teller (loop-teller)
             caller                             ; its loop's caller (loop-caller)
             (mutable server)
@@ -384,9 +393,10 @@
       ((loop handler limits clock log trace) (make-shell loop handler limits clock log trace #f))
       ((loop handler limits clock log trace on-credit?)
        (let* ((s (loop-scheduler loop log))
-              (kept (hashtable-ref waits-timers loop #f)))
+              (kept (hashtable-ref waits-timers loop #f))
+              (outside (hashtable-ref outside-wakes loop #f)))
          (%make-shell loop handler limits clock log trace (and on-credit? #t) (make-eq-hashtable)
-                      (make-wheel (limits-tick-ms limits)) s kept (loop-teller loop) (loop-caller loop)
+                      (make-wheel (limits-tick-ms limits)) s kept outside (loop-teller loop) (loop-caller loop)
                       (make-server-state 'listening 0 limits #f) #f '() #f #f #f #f #f #f '() '())))))
 
   ;; loop-teller : UvLoop -> (Vector (U #f (Listof (Symbol -> Any))) (U #f Symbol) (U #f Shell))
@@ -435,6 +445,7 @@
            (let ((w (make-waits s log)))
              (loop-clock! loop w)
              (loop-resolver! loop w)
+             (loop-outside! loop w)
              (waits-puller! w pull-begun! pull-credited!)))
          s))))
 
@@ -517,6 +528,46 @@
   (define (refused-name? e)
     (or (uv-invalid-argument? e)
         (and (uv-errno-error? e) (eq? (uv-errno-error-errno e) 'EINVAL))))
+
+  ;; loop-outside! : UvLoop Waits -> Void
+  ;; Give the loop's waits the loop's inbox opener (A HANDLER THAT WAITS, the
+  ;; header).  An outside wait that finds no inbox open calls it, on the
+  ;; loop's thread, and it makes the inbox's wake: an async handle of its
+  ;; own, whose callback, in the poll, delivers what the inbox queued, which
+  ;; only wakes coroutines and logs late resumes (R1); a raise from it
+  ;; reaches the run loop as any callback's does.  It answers `wake!`, a
+  ;; send on that handle (async-sent?), which any thread may call.  The
+  ;; handle is kept in `outside-wakes`, the loop's, as `#(async)`, the last
+  ;; one made, since only the latest inbox can be open, or `#(#f)` once a
+  ;; shell on the loop has closed it (release-outside!).
+  (define outside-wakes (make-ephemeron-eq-hashtable))
+  (define (loop-outside! loop w)
+    (let ((kept (vector #f)))
+      (hashtable-set! outside-wakes loop kept)
+      (waits-outside! w
+                      (lambda (deliver!)
+                        (let ((a (make-uv-async loop (lambda (handle) (deliver!)))))
+                          (vector-set! kept 0 a)
+                          (lambda () (async-sent? a)))))))
+
+  ;; async-sent? : UvAsync -> Boolean
+  ;; Send on `a`, from any thread: #t once sent, or #f if the send raised, as
+  ;; it does once `a` has closed (`&uv-handle-closed`), a teardown's close
+  ;; among them.  Its other refusals, of a handle whose pointer is gone or a
+  ;; failure of libuv's own, mean no wake was sent as well.  It never
+  ;; raises: the waits call it holding the inbox's mutex, which a raise
+  ;; would leave held, so every post after it would wait for ever.  The
+  ;; raise is caught by a handler that jumps out on a one-shot continuation,
+  ;; as loop-resolver!'s refusal is, not by a `guard`, which captures two
+  ;; and makes a thunk of the body's values: this runs under the mutex that
+  ;; every post and the delivery take, and on a coroutine when `register`
+  ;; itself calls `resume`.
+  (define (async-sent? a)
+    (call/1cc
+     (lambda (k)
+       (with-exception-handler
+        (lambda (e) (k #f))
+        (lambda () (uv-async-send! a) #t)))))
 
   ;; shell-waits-timed : Shell -> Nat — how many sleeps and deadlines the
   ;; waits of its loop have armed.
@@ -1732,7 +1783,8 @@
   ;; Close the timer once the shell has stopped listening and no connection
   ;; is left: a shell that serves no more holds none.  The timer of its
   ;; loop's waits goes with it, once they have nothing armed, and so do the
-  ;; signal handles it watches through.
+  ;; signal handles it watches through, and last the inbox its loop's waits
+  ;; have open, whose delivery may log.
   (define (release-timer! sh)
     (when (and (fxzero? (hashtable-size (shell-table sh)))
                (not (eq? (server-phase (shell-server sh)) 'listening)))
@@ -1742,7 +1794,8 @@
           (shell-ticking?-set! sh #f)
           (handle-close! sh timer)))
       (release-waits-timer! sh)
-      (for-each (lambda (h) (handle-close! sh h)) (shell-signals sh))))
+      (for-each (lambda (h) (handle-close! sh h)) (shell-signals sh))
+      (release-outside! sh)))
 
   ;; release-waits-timer! : Shell -> Void
   ;; Close the timer of its loop's waits, if it has one and they have
@@ -1761,6 +1814,25 @@
           (vector-set! kept 0 #f)
           (handle-close! sh timer)))))
 
+  ;; release-outside! : Shell -> Void
+  ;; Close the inbox of its loop's waits, if one is open
+  ;; (waits-outside-close!): its flag cleared under its mutex, its async
+  ;; handle closed through handle-close!, then what it queued delivered once
+  ;; more.  A shell that serves no more leaves no handle of theirs behind,
+  ;; and every resume of that inbox answers #f from then on; the next
+  ;; outside wait opens a fresh one (loop-outside!).  An inbox a wake closed,
+  ;; having met a handle a teardown closed, is closed already, and its
+  ;; handle is not closed again.  The box is emptied before the close, so
+  ;; it never names a handle closed, even when the delivery raises.  As
+  ;; release-waits-timer! does, this reads nothing of the library's own but
+  ;; what the shell holds.
+  (define (release-outside! sh)
+    (let* ((kept (shell-outside-kept sh)) (a (vector-ref kept 0)))
+      (when a
+        (vector-set! kept 0 #f)
+        (waits-outside-close! (scheduler-waits (shell-scheduler sh))
+                              (lambda () (handle-close! sh a))))))
+
   ;; connection-close! : Connection -> Void — close the connection's handle.
   (define (connection-close! c)
     (handle-close! (connection-shell c) (connection-tcp c)))
@@ -1778,15 +1850,15 @@
     (dispatch! c (list 'body-credit n)))
 
   ;; handle-close! : Shell UvHandle -> Void
-  ;; Close a handle: a connection's, the listener, the timer, or one the
-  ;; server refused.  This is the one uv-close! call
-  ;; (tests/test-close-ownership.sps holds it).  chez-libuv runs the callback
-  ;; of a handle's first close alone, and a later close does nothing, so every
-  ;; close passes the same callback, and what it does follows the handle: a
-  ;; connection's handle stops reading at once and leaves the wheel, and its
-  ;; close takes the connection out of the table and reports `closed`, whoever
-  ;; asked for it.  Its request's notice is told the connection is closing, so
-  ;; a pull not ended raises.
+  ;; Close a handle: a connection's, the listener, a timer, a signal handle,
+  ;; an inbox's async handle, or one the server refused.  This is the one
+  ;; uv-close! call (tests/test-close-ownership.sps holds it).  chez-libuv
+  ;; runs the callback of a handle's first close alone, and a later close
+  ;; does nothing, so every close passes the same callback, and what it does
+  ;; follows the handle: a connection's handle stops reading at once and
+  ;; leaves the wheel, and its close takes the connection out of the table
+  ;; and reports `closed`, whoever asked for it.  Its request's notice is
+  ;; told the connection is closing, so a pull not ended raises.
   (define (handle-close! sh h)
     (let ((c (hashtable-ref (shell-table sh) h #f)))
       (when c
