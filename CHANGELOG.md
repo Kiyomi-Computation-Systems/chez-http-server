@@ -17,10 +17,18 @@ All notable changes to chez-http-server are recorded here. The format follows
   called before or the server has stopped. A value that comes after a
   deadline or the client's close ended the wait is dropped, and nothing is
   logged; a second call of one `resume` logs `late-resume await-outside`.
-  A loop makes one libuv async handle, at its first such wait.
-  `(http-server testing)` adds `test-host-posted` and
-  `test-host-stop-posts!`, and a test plays the worker itself.
+  A loop makes a libuv async handle at its first such wait, and closes it
+  once it serves no more. `(http-server testing)` adds `test-host-posted`
+  and `test-host-stop-posts!`, and a test plays the worker itself.
   `examples/worker.sps` runs a slow job on a worker, with a deadline.
+
+### Fixed
+
+- **A wait begun on another thread is refused.** `await`, `sleep-ms` and
+  the other waits read the loop thread's state, so one called on a thread
+  of your own could run its `register` there, or crash the process with
+  "attempt to return to stale foreign context". Each now raises an
+  assertion violation on the thread that called it, and the loop goes on.
 
 ## [0.11.0] - 2026-11-15
 

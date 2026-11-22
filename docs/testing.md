@@ -98,12 +98,15 @@ Each name is in the [API reference](reference.md#testing-http-server-testing).
 - The host's next call hands the value over, at the current time, before
   it moves the clock: `(test-host-advance! host 0)` hands it over and runs
   what it wakes. So a value posted before an advance beats a deadline that
-  passes during it, as in the server.
+  passes during it, and the code it wakes runs before the deadline: the
+  host shows a value that came in time. In the server a value can come in
+  the same turn as its deadline: the wait answers it, but the next wait
+  inside that deadline raises.
 - `(test-host-posted host)` says how many values wait to be handed over.
 - `(test-host-stop-posts! host)` stops taking posts, as the server does
   when it stops: every `resume` given out so far then answers `#f`. Values
   posted before it are still handed over. The next `await-outside` takes
-  posts again.
+  posts again, which a stopped server doesn't.
 
 ## What the client read
 

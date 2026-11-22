@@ -42,7 +42,22 @@
 ;;;   - on a loop that keeps no waits it is an assertion violation;
 ;;;   - threads that post at once, while the loop's thread delivers: each
 ;;;     post answers #t and sends one wake, and each value is handed over
-;;;     once, to its own wait, with nothing left queued and nothing logged.
+;;;     once, to its own wait, with nothing left queued and nothing logged;
+;;;   - a post made inside an engine that expires at any fuel level leaves
+;;;     the inbox's mutex free: another thread reads what is posted after
+;;;     it, at every level from the first until the engine completes, and
+;;;     at one at least the engine expired.  The post is the one section
+;;;     under the mutex that calls code an interrupt can come at, the
+;;;     waits' own and the wake; the others call only Chez's own
+;;;     procedures and accessors, so no engine stops them there.  The
+;;;     engine's thread lives until the read is over: a thread made once it
+;;;     has gone may be taken for it, as a Chez mutex knows its owner, and
+;;;     acquire the mutex it left held.  A reader still blocked after ten
+;;;     seconds reads it as held, a bound of the check's own.  A thread
+;;;     blocked on the mutex with interrupts disabled, as every reader is,
+;;;     holds up every collection until it has the mutex, so the check comes
+;;;     last: a mutex left held fails it before a collection can wait on
+;;;     the reader.
 ;;;
 ;;; The checks for `sleep-ms` and `with-deadline`, on a clock the suite sets,
 ;;; the loop's timer standing in as a recorder of each start and stop, and
@@ -102,7 +117,8 @@
 ;;;   - R4: a resume after a close ended its wait is logged as `late-resume`.
 (import (rnrs) (srfi :64) (testing)
         (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?
-              fork-thread thread-join make-mutex with-mutex iota)
+              fork-thread thread-join make-mutex with-mutex iota make-condition condition-wait
+              condition-signal condition-broadcast make-time make-engine)
         (only (http-server awaiting) deadline-passed? client-closed? resolve-error? resolve-error-reason)
         (http-server private scheduler)
         (http-server private waits))
@@ -297,6 +313,73 @@
     (let ((s (make-scheduler poll!)))
       (make-waits s log!)
       (values s logged))))
+
+;; read-elsewhere : (-> Any) -> (U (List 'read Any) 'held)
+;; What `read` answers on a thread of its own, which this one waits for up
+;; to ten seconds; `held` if it has not answered by then, blocked on a mutex
+;; another thread left held.  A thread so blocked is left behind.
+(define (read-elsewhere read)
+  (let ((m (make-mutex)) (changed (make-condition)) (got 'held))
+    (fork-thread (lambda ()
+                   (let ((v (read)))
+                     (with-mutex m (set! got (list 'read v)) (condition-signal changed)))))
+    (with-mutex m
+      (let wait ()
+        (cond ((pair? got) got)
+              ((condition-wait changed m (make-time 'time-duration 0 10)) (wait))
+              (else got))))))
+
+;; parked-outside : -> (values Waits (Any -> Boolean) (-> Void))
+;; Waits of their own, whose opener's wake is always sent, with one outside
+;; wait parked: the waits, the wait's resume, and the inbox's delivery.
+(define (parked-outside)
+  (let-values (((s logged) (waiting '())))
+    (let ((w (scheduler-waits s)) (kept #f) (deliver #f))
+      (waits-outside! w (lambda (d) (set! deliver d) (lambda () #t)))
+      (scheduler-spawn! s (lambda () (await-outside (lambda (r) (set! kept r)))) (lambda (kind v) #f))
+      (scheduler-drain! s)
+      (values w kept deliver))))
+
+;; posting : Waits (Any -> Boolean) (-> Void) -> (-> Any)
+;; A post, as the thunk an engine runs, made from fresh waits with a wait
+;; parked.
+(define (posting w resume deliver) (lambda () (resume 'v)))
+
+;; engine-run : ((Waits (Any -> Boolean) (-> Void)) -> (-> Any)) Nat -> (List Symbol Any)
+;; The section's thunk, made from fresh waits, run by a thread of its own
+;; inside an engine of `fuel` ticks: how the engine ended, `expired` or
+;; `completed`, and what another thread then reads of what is posted, while
+;; the engine's thread still lives.
+(define (engine-run section fuel)
+  (let-values (((w resume deliver) (parked-outside)))
+    (let ((thunk (section w resume deliver)) (how 'never-ran)
+          (m (make-mutex)) (changed (make-condition)) (stage 'running))
+      (define (stage! next) (with-mutex m (set! stage next) (condition-broadcast changed)))
+      (define (reached! s) (with-mutex m (let wait () (unless (eq? stage s) (condition-wait changed m) (wait)))))
+      (let ((worker (fork-thread (lambda ()
+                                   ((make-engine thunk) fuel
+                                    (lambda (left . vs) (set! how 'completed))
+                                    (lambda (k) (set! how 'expired)))
+                                   (stage! 'ran)
+                                   (reached! 'read)))))
+        (reached! 'ran)
+        (let ((read (read-elsewhere (lambda () (waits-posted w)))))
+          (stage! 'read)
+          (thread-join worker)
+          (list how read))))))
+
+;; engine-sweep : ((Waits (Any -> Boolean) (-> Void)) -> (-> Any)) -> Any
+;; The section run inside an engine of 1 tick, 2, and so on, until the
+;; engine completes, up to 10,000: `free` if the mutex was free after each,
+;; and the engine expired at one at least; else `(held fuel)` for the first
+;; that left it held, `never-expired`, or `never-completed`.
+(define (engine-sweep section)
+  (let loop ((fuel 1) (expired? #f))
+    (let ((r (engine-run section fuel)))
+      (cond ((not (pair? (cadr r))) (list 'held fuel))
+            ((eq? (car r) 'completed) (if expired? 'free 'never-expired))
+            ((= fuel 10000) 'never-completed)
+            (else (loop (+ fuel 1) #t))))))
 
 (run-suite "waits"
   (lambda ()
@@ -520,6 +603,7 @@
                 wakes
                 (length (filter (lambda (i) (equal? (vector-ref got i) (list i))) (iota total)))
                 (waits-posted w) (waits-queued? w) log))))
+
 
     ;; --- sleep-ms and with-deadline ------------------------------------------
     ;; Each check keeps time in `clock`, which its batches set before they
@@ -1022,4 +1106,9 @@
         (let ((t (taken s 8)))
           (test-equal "R4: a resume after a close ended its wait is logged as late-resume"
             '((returned 2) (closed) ((late-resume await)))
-            (list t (seen) (logged))))))))
+            (list t (seen) (logged))))))
+
+    ;; --- an engine's expiry, mid-post: last (the header) ----------------------
+    (test-equal "a post inside an engine that expires at any fuel level leaves the inbox's mutex free: another thread reads what is posted after each, and the engine expired at one level at least"
+      'free
+      (engine-sweep posting))))

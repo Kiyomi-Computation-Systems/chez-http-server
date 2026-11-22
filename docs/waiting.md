@@ -163,9 +163,11 @@ with `await-outside`. The loop serves everyone else meanwhile.
 - The handler always waits for the loop's next turn, even if `register`
   calls `resume` itself.
 - A value and a deadline that come in the same turn: the value wins. The
-  server hands values over before it fires that turn's timers.
+  server hands values over before it fires that turn's timers. The
+  deadline has still passed, though, so the next wait inside it raises.
 - Everything else stays on the loop's thread: only this `resume` may be
-  called from another.
+  called from another. A wait begun on another thread, `await-outside` or
+  any other, raises there.
 
 ### Traps
 
@@ -197,7 +199,8 @@ with `await-outside`. The loop serves everyone else meanwhile.
 - **Use a Chez thread,** one made by `fork-thread`. A thread a C library
   made can't call `resume`.
 - **Don't hold a lock of your own over the wait.** A wait leaves every
-  `with-mutex` around it.
+  `with-mutex` around it, and takes the lock again as it resumes, on the
+  loop's thread: if a worker holds it then, the whole server waits.
 - **Order holds per thread.** Values one thread posts arrive in the order it
   posted them. Across threads there is no order.
 - **After the server stops, `resume` answers `#f`.** That is not an error

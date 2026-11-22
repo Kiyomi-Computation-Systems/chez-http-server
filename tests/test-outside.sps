@@ -23,8 +23,9 @@
 ;;; makes of it, then again for the state it leaves, which must do what the
 ;;; table says that state does.  The inbox's rows are driven against a
 ;;; loop's waits, (http-server private waits), whose opener records each
-;;; open, wake and close the waits ask of it, since a host's wake is never
-;;; refused, and its opener is not seen from outside.
+;;; open, wake and close the waits ask of it, and answers no wake while the
+;;; loop takes no posts, since a host's wake is never refused, its opener
+;;; always answers one, and it is not seen from outside.
 ;;;
 ;;; The scripts after the rows: a resume called and handed over; a
 ;;; `register` that raises; one that calls `resume` itself, after which the
@@ -39,6 +40,14 @@
 ;;; inbox's delivery hands values over in the order they were posted, and
 ;;; every value before any notice is logged.
 ;;;
+;;; A waiting verb called from another thread, a worker's, is refused as R2,
+;;; off the loop's thread, on that thread, before any register runs: while
+;;; the loop's thread runs a handler's coroutine, which waits for the worker
+;;; (`await-outside` and `await` with a register that raises, then
+;;; `sleep-ms` and `await-outside` with one that returns, which would park
+;;; on the worker), and between the host's calls; the coroutine answers as
+;;; before.
+;;;
 ;;; A `register` that itself waits leaves its outside wait registering while
 ;;; it is parked in the other: a value delivered meanwhile is kept, EARLY,
 ;;; and answered as `register` returns, the outside wait never parking.
@@ -52,10 +61,12 @@
 ;;; a queue and an open flag, its wake the shell's, closed by the shell.
 (import (rnrs) (srfi :64) (testing)
         (http-server) (http-server testing)
-        (only (http-server private scheduler) make-scheduler scheduler-spawn! scheduler-drain!)
+        (only (http-server private scheduler) make-scheduler scheduler-spawn! scheduler-drain!
+              scheduler-invariant? scheduler-invariant-name)
         (only (http-server private waits) make-waits waits-outside! waits-outside-close!
               waits-posted waits-queued?)
-        (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object?))
+        (only (chezscheme) collect collect-maximum-generation weak-cons bwp-object? fork-thread thread-join
+              make-list))
 
 (define (b s) (string->utf8 s))
 
@@ -127,9 +138,10 @@
      "a resume is refused only once the inbox it posts to has closed, and an inbox once closed stays closed: a later outside wait opens a fresh one, which a resume made before it never posts to")))
 
 (define inbox-states '(absent open closed))
-(define inbox-events '(outside-wait post delivery serves-no-more wake-meets-closed-handle))
+(define inbox-events '(outside-wait outside-wait-no-posts post delivery serves-no-more wake-meets-closed-handle))
 (define inbox-rows
   '((absent outside-wait open opened)
+    (absent outside-wait-no-posts closed refused)
     (absent serves-no-more absent nothing)
     (open outside-wait open shared)
     (open post open queued-and-woken)
@@ -138,10 +150,13 @@
     (open wake-meets-closed-handle closed taken-back)
     (closed post closed refused)
     (closed outside-wait open fresh-inbox)
+    (closed outside-wait-no-posts closed refused)
     (closed serves-no-more closed nothing)))
 (define inbox-impossible
   '(((absent) (post delivery wake-meets-closed-handle)
      "a resume is made by an outside wait, which opens an inbox: with none, nothing posts and no wake is made")
+    ((open) (outside-wait-no-posts)
+     "the loop takes no posts only once no shell on it serves, and the last to serve no more closed the inbox")
     ((closed) (delivery wake-meets-closed-handle)
      "a closed inbox's wake is closed, so it fires no more, and a post to it is refused under the mutex before any wake")))
 
@@ -402,26 +417,31 @@
 ;; --- the inbox's rows, driven against a loop's waits ---------------------------
 
 ;; A rig: a loop's scheduler, never polled, and its waits, whose opener
-;; records each call the waits make of it, in order: `open`, `wake`, its
-;; answer the rig's wake-answer, and `close-wake`; the deliveries it was
-;; given, newest first; each outside wait's resume, by name; what each wait
-;; answered, `(name value)`, in the order they answered; and the log.
+;; records each call the waits make of it, in order: `open`, or
+;; `no-posts`, answering no wake, while the rig's loop takes no posts;
+;; `wake`, its answer the rig's wake-answer; and `close-wake`; the
+;; deliveries it was given, newest first; each outside wait's resume, by
+;; name; what each wait answered, `(name value)`, in the order they
+;; answered; and the log.
 (define-record-type rig
   (fields scheduler (mutable waits) (mutable calls) (mutable deliveries) (mutable wake-answer)
-          (mutable resumes) (mutable answers) (mutable log)))
+          (mutable resumes) (mutable answers) (mutable log) (mutable takes-posts?)))
 
 (define (rig-call! r what) (rig-calls-set! r (append (rig-calls r) (list what))))
 
 ;; new-rig : -> Rig
 (define (new-rig)
   (let ((r (make-rig (make-scheduler (lambda (mode) (assertion-violation 'rig "the rig never polls" mode)))
-                     #f '() '() #t '() '() '())))
+                     #f '() '() #t '() '() '() #t)))
     (let ((w (make-waits (rig-scheduler r)
                          (lambda (what details) (rig-log-set! r (append (rig-log r) (list (cons what details))))))))
       (waits-outside! w (lambda (deliver!)
-                          (rig-call! r 'open)
-                          (rig-deliveries-set! r (cons deliver! (rig-deliveries r)))
-                          (lambda () (rig-call! r 'wake) (rig-wake-answer r))))
+                          (if (rig-takes-posts? r)
+                              (begin
+                                (rig-call! r 'open)
+                                (rig-deliveries-set! r (cons deliver! (rig-deliveries r)))
+                                (lambda () (rig-call! r 'wake) (rig-wake-answer r)))
+                              (begin (rig-call! r 'no-posts) #f))))
       (rig-waits-set! r w)
       r)))
 
@@ -458,6 +478,25 @@
              (let* ((after (rig-calls r)) (posted (rig-post! r 'a 7)))
                (let ((o (list before after posted)))
                  (if (equal? o '(() (open) #t)) '(open opened) o))))))
+;; While the loop takes no posts, the wait's resume is refused, its inbox
+   ;; closed: once the loop takes posts again, the next wait opens a fresh
+   ;; inbox, and that resume stays refused.
+   (list 'absent 'outside-wait-no-posts
+         (lambda ()
+           (let ((r (new-rig)))
+             (rig-takes-posts?-set! r #f)
+             (rig-wait! r 'a)
+             (let* ((pa (rig-post! r 'a 7))
+                    (o (list pa (rig-calls r) (waits-posted (rig-waits r)) (waits-queued? (rig-waits r))
+                             (rig-answers r))))
+               (rig-takes-posts?-set! r #t)
+               (rig-wait! r 'b)
+               (let* ((pb (rig-post! r 'b 8)) (pa-again (rig-post! r 'a 9)))
+                 (rig-deliver! r)
+                 (let ((o (append o (list (rig-calls r) pb pa-again (rig-answers r)))))
+                   (if (equal? o '(#f (no-posts) 0 #f () (no-posts open wake) #t #f ((b 8))))
+                       '(closed refused)
+                       o)))))))
    (list 'absent 'serves-no-more
          (lambda ()
            (let ((r (new-rig)))
@@ -553,6 +592,25 @@
                (rig-deliver! r)
                (let ((o (list calls pb pa (length (rig-deliveries r)) (rig-answers r))))
                  (if (equal? o '((open close-wake open) #t #f 2 ((b 8)))) '(open fresh-inbox) o))))))
+   (list 'closed 'outside-wait-no-posts
+         (lambda ()
+           (let ((r (new-rig)))
+             (rig-wait! r 'a)
+             (rig-close! r)
+             (rig-takes-posts?-set! r #f)
+             (rig-wait! r 'b)
+             (let* ((pb (rig-post! r 'b 8))
+                    (o (list pb (rig-calls r) (waits-posted (rig-waits r)) (waits-queued? (rig-waits r))
+                             (rig-answers r))))
+               (rig-takes-posts?-set! r #t)
+               (rig-wait! r 'c)
+               (let* ((pc (rig-post! r 'c 9)) (pb-again (rig-post! r 'b 10)))
+                 (rig-deliver! r)
+                 (let ((o (append o (list (rig-calls r) pc pb-again (rig-answers r)))))
+                   (if (equal? o '(#f (open close-wake no-posts) 0 #f ()
+                                   (open close-wake no-posts open wake) #t #f ((c 9))))
+                       '(closed refused)
+                       o)))))))
    (list 'closed 'serves-no-more
          (lambda ()
            (let ((r (new-rig)))
@@ -575,6 +633,75 @@
   (string-append table ": " (symbol->string (car row)) ", " (symbol->string (cadr row))
                  " -> " (symbol->string (caddr row))))
 
+;; --- a waiting verb off the loop's thread -------------------------------------
+
+;; What a wait off the loop's thread is refused with.
+(define off-thread '(refused r2 "a wait off the loop's thread"))
+
+;; elsewhere : (-> Any) -> Any
+;; What `thunk` comes to on a thread of its own, which this one waits for:
+;; `(refused name message)` for a scheduler's refusal, `(raised x)` for any
+;; other raise, a condition as `condition`, or `(returned v)`.
+(define (elsewhere thunk)
+  (let* ((v 'never-ran)
+         (t (fork-thread
+             (lambda ()
+               (set! v (guard (e ((scheduler-invariant? e)
+                                  (list 'refused (scheduler-invariant-name e) (condition-message e)))
+                                 (#t (list 'raised (if (condition? e) 'condition e))))
+                         (list 'returned (thunk))))))))
+    (thread-join t)
+    v))
+
+;; raising-verbs : (Symbol -> Void) -> (Listof (-> Any))
+;; Calls of await-outside and of await, each register noting that it ran,
+;; through `ran!`, then raising.
+(define (raising-verbs ran!)
+  (list (lambda () (await-outside (lambda (r) (ran! 'await-outside) (raise 'register-ran))))
+        (lambda () (await (lambda (r) (ran! 'await) (raise 'register-ran))))))
+
+;; parking-verbs : (Symbol -> Void) -> (Listof (-> Any))
+;; Calls of sleep-ms, and of await-outside with a register that notes it
+;; ran and returns: each parks wherever it is not refused.
+(define (parking-verbs ran!)
+  (list (lambda () (sleep-ms 1))
+        (lambda () (await-outside (lambda (r) (ran! 'await-outside))))))
+
+;; mid-coroutine : ((Symbol -> Void) -> (Listof (-> Any))) -> (List Any ...)
+;; A host whose handler's coroutine makes each of `verbs`' calls on a
+;; thread of its own, waiting for each, then answers 200 "ok": what each
+;; call came to, the registers that ran, what the client saw, and the log.
+(define (mid-coroutine verbs)
+  (let* ((ran '()) (outcomes 'never-called)
+         (h (make-test-host
+             (lambda (request)
+               (awaiting
+                (lambda ()
+                  (set! outcomes (map elsewhere (verbs (lambda (who) (set! ran (cons who ran))))))
+                  (text 200 "ok"))))))
+         (c (test-host-connect! h)))
+    (test-client-send! c (get "/"))
+    (list outcomes ran (seen c) (test-host-log h))))
+
+;; between-calls : -> (List Any ...)
+;; A host whose handler waits outside, its resume kept; between the host's
+;; calls, each verb's call, raising and parking, on a thread of its own;
+;; then the kept resume, called with 7, and an advance of 0.  What each call
+;; came to, the registers that ran, what the resume answered, what the
+;; client saw, and the log.
+(define (between-calls)
+  (let* ((ran '()) (kept #f)
+         (h (make-test-host
+             (lambda (request)
+               (awaiting (lambda () (text 200 (show (await-outside (lambda (r) (set! kept r))))))))))
+         (c (test-host-connect! h)))
+    (test-client-send! c (get "/"))
+    (let* ((ran! (lambda (who) (set! ran (cons who ran))))
+           (outcomes (map elsewhere (append (raising-verbs ran!) (parking-verbs ran!))))
+           (answer (kept 7)))
+      (test-host-advance! h 0)
+      (list outcomes ran answer (seen c) (test-host-log h)))))
+
 (run-suite "outside"
   (lambda ()
     ;; --- the tables are sound -------------------------------------------------------
@@ -593,7 +720,7 @@
       '() (table-faults wait-states wait-events wait-rows wait-impossible))
     (test-equal "the resume's table is sound: deterministic, complete over its three states and two events, every state reached"
       '() (table-faults resume-states resume-events resume-rows resume-impossible))
-    (test-equal "the inbox's table is sound: deterministic, complete over its three states and five events, every state reached"
+    (test-equal "the inbox's table is sound: deterministic, complete over its three states and six events, every state reached"
       '() (table-faults inbox-states inbox-events inbox-rows inbox-impossible))
     (test-equal "each table's rows are driven, each once, and nothing else is"
       (list (map row-pair wait-rows) (map row-pair resume-rows) (map row-pair inbox-rows))
@@ -830,6 +957,19 @@
       (test-equal "a stop of posts made from the host's own code is refused there, as every call that acts is"
         '((200 "refused"))
         (seen c)))
+
+    ;; --- a waiting verb off the loop's thread -------------------------------------
+    ;; The calls that would park on the worker come last: a park there
+    ;; would jump into the loop's thread's drain from the worker.
+    (test-equal "while the loop's thread runs a handler's coroutine, which waits for a worker: await-outside and await from the worker are each refused there as R2, off the loop's thread, no register runs, and the coroutine answers as before"
+      (list (list off-thread off-thread) '() '((200 "ok")) '())
+      (mid-coroutine raising-verbs))
+    (test-equal "between the host's calls, a handler parked outside: await-outside, await and sleep-ms from a worker are each refused there as R2, off the loop's thread, no register runs, and the handler's own resume is handed over as before"
+      (list (make-list 4 off-thread) '() #t '((200 "7")) '())
+      (between-calls))
+    (test-equal "while the loop's thread runs a handler's coroutine, which waits for a worker: sleep-ms, and await-outside with a register that returns, from the worker are each refused there as R2, off the loop's thread, no register runs, and the coroutine answers as before"
+      (list (list off-thread off-thread) '() '((200 "ok")) '())
+      (mid-coroutine parking-verbs))
 
     ;; --- the inbox's delivery --------------------------------------------------------
     (let ((r (new-rig)))

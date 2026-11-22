@@ -24,10 +24,17 @@
 ;;;     watchdog of the suite's, a thread, wakes the loop through an async
 ;;;     handle of the suite's own if no answer has come after ten seconds,
 ;;;     and records it: the check is that the answer came, and not by it;
-;;;   - an idle server stays idle: over that window, with the inbox open and
-;;;     nothing posted, the loop takes no turn but the one under way as the
-;;;     window opens, which the shell's tick timer may end, as its last
-;;;     firing stops it;
+;;;   - an idle server stays idle: the window opens only once the shell's
+;;;     tick timer has stopped, which the loop's thread reads from the
+;;;     shell's trace, a tick told to the server with the wheel empty while
+;;;     the server listens, whose firing stops it; over that window, with the
+;;;     inbox open and nothing posted, the loop takes no turn;
+;;;   - a waiting verb off the loop's thread: `await-outside`, `await` and
+;;;     `sleep-ms`, called from a worker while the loop's thread runs a
+;;;     handler's coroutine that waits for the worker, and while the loop's
+;;;     thread is asleep in its poll, a handler parked outside, are each
+;;;     refused on the worker as R2, off the loop's thread; no register
+;;;     runs, no async handle is made, and the handler answers as before;
 ;;;   - a post races a deadline: values posted after the deadline passed, at
 ;;;     about its time, and well before it; each request is answered once, its
 ;;;     value or 504, and a value that comes after its deadline is dropped,
@@ -43,6 +50,19 @@
 ;;;     makes one async handle, and none before; once its shell has stopped, a
 ;;;     second shell on the loop waits outside again and is answered, while
 ;;;     the first inbox's resume answers #f;
+;;;   - an outside wait once no shell on the loop serves, by a coroutine that
+;;;     outlived its connection, makes no async handle: its resume answers
+;;;     #f, nothing is handed over, and the loop drains;
+;;;   - two shells on one loop: the first stops, and is shut down again, so
+;;;     it finds itself serving no more twice, while the second's outside
+;;;     wait is parked, and the second's resume is still handed over; the
+;;;     second's stop then closes the inbox's handle;
+;;;   - a post while the server drains is handed over: a handler parked
+;;;     outside keeps its connection through the shutdown, the resume
+;;;     answers #t, and the client is answered before the drain's deadline;
+;;;   - an inbox closed while its handle is open, as a wake that failed on
+;;;     it leaves it, the waits closing it alone: the shell's stop still
+;;;     closes the handle;
 ;;;   - per-thread order: one thread posts 1 to 16 to 16 waits, at once
 ;;;     while the loop polls nothing, and again a post at a time while it
 ;;;     polls; the handlers resume in that order;
@@ -72,9 +92,9 @@
         (libuv) (uv-testing) (shell-testing)
         (http-server)
         (only (http-server private shell) make-shell shell-listen! shell-shutdown! shell-turn! shell-server
-              shell-scheduler wall-clock)
-        (only (http-server private scheduler) scheduler-waits)
-        (only (http-server private waits) waits-queued?)
+              shell-scheduler shell-deadlines shell-waits-timed wall-clock)
+        (only (http-server private scheduler) scheduler-waits scheduler-invariant? scheduler-invariant-name)
+        (only (http-server private waits) waits-queued? waits-outside-close!)
         (only (http-server server) server-phase)
         (only (http-server limits) limits-with default-limits))
 
@@ -197,14 +217,19 @@
 ;; and what the shell logged, newest first, as (what . details).
 (define-record-type rig (fields loop shell port logged))
 
-;; open-rig : (Request -> Answer) Limits -> Rig
-(define (open-rig handler limits)
-  (let* ((loop (make-uv-loop))
-         (logged (vector '()))
-         (sh (make-shell loop handler limits wall-clock
-                         (lambda (what details) (vector-set! logged 0 (cons (cons what details) (vector-ref logged 0))))))
-         (port (shell-listen! sh "127.0.0.1" 0)))
-    (make-rig loop sh port logged)))
+;; open-rig : (Request -> Answer) Limits [Trace] -> Rig — the shell traced
+;; by `trace`, if given (make-shell's).
+(define open-rig
+  (case-lambda
+    ((handler limits) (open-rig handler limits #f))
+    ((handler limits trace)
+     (let* ((loop (make-uv-loop))
+            (logged (vector '()))
+            (sh (make-shell loop handler limits wall-clock
+                            (lambda (what details) (vector-set! logged 0 (cons (cons what details) (vector-ref logged 0))))
+                            trace))
+            (port (shell-listen! sh "127.0.0.1" 0)))
+       (make-rig loop sh port logged)))))
 
 ;; rig-log : Rig -> (Listof (Pair Symbol (Listof Any))) — oldest first.
 (define (rig-log r) (reverse (vector-ref (rig-logged r) 0)))
@@ -229,6 +254,27 @@
     (cond ((pred) 'satisfied)
           ((= i n) 'iterations-exhausted)
           (else (shell-turn! (rig-shell r)) (counter-bump! turns) (step (+ i 1))))))
+
+;; watched-turns : Rig (-> Boolean) Counter -> (List Symbol Boolean)
+;; bare-turns-until `pred`, up to `cap` turns, with a watchdog: a thread
+;; that waits ten seconds for the turns to end, and if they have not, wakes
+;; the loop through an async handle of the suite's own and records it, so
+;; a loop no post wakes ends the check, failing it, where it would hang.
+;; What the turns came to, and whether the watchdog woke the loop.
+(define (watched-turns r pred turns)
+  (let* ((over (make-latch))
+         (rescued (make-latch))
+         (rescue (make-uv-async (rig-loop r) (lambda (a) #f)))
+         (watchdog (fork-thread
+                    (lambda ()
+                      (unless (latch-wait over 10)
+                        (latch-set! rescued)
+                        (uv-async-send! rescue)))))
+         (outcome (bare-turns-until r (lambda () (or (latch-on? rescued) (pred))) cap turns)))
+    (latch-set! over)
+    (thread-join watchdog)
+    (uv-close! rescue)
+    (list outcome (latch-on? rescued))))
 
 ;; What each client has read, parsed once for each length it has had.
 (define parsed (make-eq-hashtable))
@@ -349,52 +395,126 @@
 
 ;; sleeping-loop : -> (List Symbol List Any Boolean Any)
 ;; One outside wait, nothing else armed, the loop turned with no ticker.
-;; The worker, given the resume, waits 100 ms, enough for the shell's tick
-;; timer to find its wheel empty and stop, then reads how many turns the
-;; loop has taken, waits 300 ms, reads again, and posts.  A watchdog
-;; thread waits ten seconds for the answer; if none has come, it records
-;; that, and wakes the loop through an async handle of the suite's own.
-;; What the run came to: whether the answer came or the watchdog woke the
-;; loop first, what the client read, what the resume answered, whether the
+;; The loop's thread sets `quiet` once the shell's tick timer has stopped:
+;; the trace saw a tick told to the server with the wheel empty while the
+;; server listens, so that firing stopped it (tick!), and nothing but the
+;; inbox and the client's connection is left armed.  The worker, given the
+;; resume, waits for `quiet`, then reads how many turns the loop has taken,
+;; waits 300 ms, reads again, and posts.  What the run came to: whether the
+;; answer came, what the client read, what the resume answered, whether the
 ;; watchdog woke the loop, and the turns taken over the worker's window.
 (define (sleeping-loop)
   (let* ((jobs (make-mailbox))
-         (r (open-rig (outside-handler (lambda (i resume) (mailbox-put! jobs resume))) quick-ticks))
+         (stopped? #f)
+         (quiet (make-latch))
+         (r (open-rig (outside-handler (lambda (i resume) (mailbox-put! jobs resume))) quick-ticks
+                      (lambda (who kind datum)
+                        (when (and (eq? kind 'server-event) (pair? datum) (eq? (car datum) 'tick)
+                                   (zero? (shell-deadlines who))
+                                   (eq? (server-phase (shell-server who)) 'listening))
+                          (set! stopped? #t)))))
          (turns (make-counter))
-         (answered (make-latch))
-         (rescued (make-latch))
-         (rescue (make-uv-async (rig-loop r) (lambda (a) #f)))
          (answer 'never-called)
          (window 'never-measured)
          (worker (fork-thread
                   (lambda ()
                     (let ((resume (mailbox-take! jobs)))
-                      (when resume
-                        (nap 100)
+                      (when (and resume (latch-wait quiet 10))
                         (let ((t0 (counter-read turns)))
                           (nap 300)
-                          (set! window (- (counter-read turns) t0))
-                          (set! answer (guarded resume (value-of 0)))))))))
-         (watchdog (fork-thread
-                    (lambda ()
-                      (unless (latch-wait answered 10)
-                        (latch-set! rescued)
-                        (uv-async-send! rescue)))))
+                          (set! window (- (counter-read turns) t0))))
+                      (when resume (set! answer (guarded resume (value-of 0))))))))
          (cl (client! r (get 0)))
-         (outcome (bare-turns-until r (lambda () (or (latch-on? rescued) (answered? cl))) cap turns)))
-    (latch-set! answered)
+         (watched (watched-turns r
+                                 (lambda ()
+                                   (when stopped? (latch-set! quiet))
+                                   (answered? cl))
+                                 turns)))
     (mailbox-close! jobs)
     (thread-join worker)
-    (thread-join watchdog)
-    (uv-close! rescue)
-    (let ((result (list outcome (read-back cl) answer (latch-on? rescued)
+    (let ((result (list (car watched) (read-back cl) answer (cadr watched)
                         (cond ((not (integer? window)) window)
-                              ((<= window 1) 'idle)
+                              ((zero? window) 'idle)
                               (else (list 'turned window))))))
       (put-string (current-output-port)
                   (string-append "outside-shell: the idle loop took " (if (integer? window) (number->string window) "?")
                                  " turns over the worker's 300 ms window\n"))
       (close-rig! r "a sleeping loop" (list cl))
+      result)))
+
+;; --- a waiting verb off the loop's thread ----------------------------------------------
+
+;; What a wait off the loop's thread is refused with.
+(define off-thread '(refused r2 "a wait off the loop's thread"))
+
+;; refusal-of : (-> Any) -> Any
+;; What `thunk` comes to: `(refused name message)` for a scheduler's
+;; refusal, `(raised x)` for any other raise, a condition as `condition`, or
+;; `(returned v)`.
+(define (refusal-of thunk)
+  (guard (e ((scheduler-invariant? e) (list 'refused (scheduler-invariant-name e) (condition-message e)))
+            (#t (list 'raised (if (condition? e) 'condition e))))
+    (list 'returned (thunk))))
+
+;; on-thread : (-> Any) -> Any — what `thunk` answers on a thread of its own,
+;; which this one waits for.
+(define (on-thread thunk)
+  (let* ((v 'never-called) (t (fork-thread (lambda () (set! v (thunk))))))
+    (thread-join t)
+    v))
+
+;; verbs : (Symbol -> Void) -> (Listof (-> Any))
+;; Calls of await-outside and of await, each register noting that it ran,
+;; through `ran!`, then raising; of sleep-ms; and of await-outside with a
+;; register that notes it ran and returns.
+(define (verbs ran!)
+  (list (lambda () (await-outside (lambda (r) (ran! 'await-outside) (raise 'register-ran))))
+        (lambda () (await (lambda (r) (ran! 'await) (raise 'register-ran))))
+        (lambda () (sleep-ms 1))
+        (lambda () (await-outside (lambda (r) (ran! 'await-outside-returns))))))
+
+;; off-thread-mid-coroutine : -> (List Any ...)
+;; A handler whose coroutine makes each verb's call on a thread of its own,
+;; waiting for each, then answers 200 "ok".  Whether the client was
+;; answered, what each call came to, the registers that ran, what the client
+;; read, the async handles live, and what was logged.
+(define (off-thread-mid-coroutine)
+  (let* ((ran '()) (outcomes 'never-called)
+         (r (open-rig (lambda (req)
+                        (awaiting (lambda ()
+                                    (set! outcomes (map (lambda (call) (on-thread (lambda () (refusal-of call))))
+                                                        (verbs (lambda (who) (set! ran (cons who ran))))))
+                                    (text 200 "ok"))))
+                      default-limits))
+         (cl (client! r (get-path "/")))
+         (done (turn-until r (lambda () (answered? cl)) cap))
+         (result (list done outcomes ran (read-back cl) (asyncs r) (rig-log r))))
+    (close-rig! r "a wait off the loop's thread, mid-coroutine" (list cl))
+    result))
+
+;; off-thread-in-poll : -> (List Any ...)
+;; A handler parked outside, the loop turned with no ticker, so its turn
+;; blocks in the poll; a worker, given the resume, waits 50 ms, makes each
+;; verb's call, then posts the resume.  Whether the client was answered,
+;; whether the watchdog woke the loop, what each call came to, the
+;; registers that ran, what the resume answered, what the client read, and
+;; what was logged.
+(define (off-thread-in-poll)
+  (let* ((jobs (make-mailbox)) (ran '()) (outcomes 'never-called) (answer 'never-called)
+         (r (open-rig (outside-handler (lambda (i resume) (mailbox-put! jobs resume))) quick-ticks))
+         (worker (fork-thread
+                  (lambda ()
+                    (let ((resume (mailbox-take! jobs)))
+                      (when resume
+                        (nap 50)
+                        (set! outcomes (map refusal-of (verbs (lambda (who) (set! ran (cons who ran))))))
+                        (set! answer (guarded resume (value-of 0))))))))
+         (cl (client! r (get 0)))
+         (watched (watched-turns r (lambda () (answered? cl)) (make-counter))))
+    (mailbox-close! jobs)
+    (thread-join worker)
+    (let ((result (list (car watched) (cadr watched) outcomes ran answer (read-back cl) (rig-log r))))
+      (close-rig! r "a wait off the loop's thread, in the poll" (list cl))
       result)))
 
 ;; --- a post races a deadline ---------------------------------------------------------
@@ -611,6 +731,135 @@
       (close-rig! second "a fresh inbox" (list b2))
       result)))
 
+;; --- no shell serves ----------------------------------------------------------------------
+
+;; outlived : -> (List Any ...)
+;; A handler waits for a resume of the check's own, then outside.  The shell
+;; is shut down, and the drain's 50 ms deadline closes the connection the
+;; handler still waits on, so its coroutine outlives it; once the server
+;; has stopped, the check's resume wakes it, and it waits outside, no shell
+;; on the loop serving.  Whether the first wait parked, whether the server
+;; stopped, the async handles live then, whether the outside wait began,
+;; the async handles live after, what its resume answers from another
+;; thread, whether a value was handed over in 200 turns, and whether the
+;; loop then drains, nothing but a timer left, and the async handles live
+;; at the end.
+(define (outlived)
+  (let* ((go #f) (kept (make-mailbox)) (resumed 'never)
+         (r (open-rig (lambda (req)
+                        (awaiting (lambda ()
+                                    (await (lambda (resume) (set! go resume)))
+                                    (let ((v (await-outside (lambda (resume) (mailbox-put! kept resume)))))
+                                      (set! resumed v)
+                                      (text 200 v)))))
+                      (limits-with default-limits '((drain-timeout-ms . 50) (tick-ms . 10)))))
+         (sh (rig-shell r))
+         (cl (client! r (get-path "/")))
+         (parked (turn-until r (lambda () (and go #t)) cap)))
+    (shell-shutdown! sh)
+    (let* ((stopped (turn-until r (lambda () (eq? (server-phase (shell-server sh)) 'stopped)) cap))
+           (at-stop (asyncs r)))
+      (when go (go #t))
+      (let* ((waited (turn-until r (lambda () (= 1 (mailbox-count kept))) cap))
+             (after (asyncs r))
+             (answer (if (= 1 (mailbox-count kept))
+                         (let ((resume (mailbox-take! kept))) (on-thread (lambda () (guarded resume "late"))))
+                         'never-called))
+             (handed (turn-until r (lambda () (not (eq? resumed 'never))) 200)))
+        (client-close! cl)
+        (let* ((drained (run-until-drained (rig-loop r) cap))
+               (result (list parked stopped at-stop waited after answer handed resumed drained (asyncs r))))
+          (uv-loop-teardown! (rig-loop r))
+          result)))))
+
+;; two-shells : -> (List Any ...)
+;; Two shells on one loop, each listening; the second's handler waits
+;; outside, its resume kept.  The first is shut down and stops, and is shut
+;; down again, as a second signal would, so it finds itself serving no more
+;; twice; then the resume is called from another thread, and the second's
+;; client is answered; then the second is shut down and stops.  Whether the
+;; wait
+;; parked, whether the first stopped, the async handles live then, what the
+;; resume answered, whether the second's client was answered, with what,
+;; whether the second stopped, and whether its async handle was closed.
+(define (two-shells)
+  (let* ((kept (make-mailbox))
+         (first (open-rig (lambda (req) (text 200 "first")) default-limits))
+         (loop (rig-loop first))
+         (sh2 (make-shell loop (outside-handler (lambda (i resume) (mailbox-put! kept resume)))
+                          default-limits wall-clock (lambda (what details) #f)))
+         (second (make-rig loop sh2 (shell-listen! sh2 "127.0.0.1" 0) (vector '())))
+         (cl (client! second (get 1)))
+         (parked (turn-until second (lambda () (= 1 (mailbox-count kept))) cap)))
+    (shell-shutdown! (rig-shell first))
+    (let* ((first-stopped (turn-until first (lambda () (eq? (server-phase (shell-server (rig-shell first))) 'stopped)) cap))
+           (again (begin (shell-shutdown! (rig-shell first)) (turn-until first (lambda () #f) 8)))
+           (live (asyncs first))
+           (answer (if (= 1 (mailbox-count kept))
+                       (let ((resume (mailbox-take! kept))) (on-thread (lambda () (guarded resume (value-of 1)))))
+                       'never-called))
+           (done (turn-until second (lambda () (answered? cl)) cap)))
+      (client-close! cl)
+      (shell-shutdown! sh2)
+      (let* ((second-stopped (turn-until second (lambda () (eq? (server-phase (shell-server sh2)) 'stopped)) cap))
+             (closed (turn-until second (lambda () (zero? (asyncs second))) 64))
+             (result (list parked first-stopped live answer done (read-back cl) second-stopped closed)))
+        (close-rig! second "two shells on one loop" '())
+        result))))
+
+;; drained-post : -> (List Any ...)
+;; A handler parked outside keeps its connection; the shell is shut down,
+;; and while the server drains, the resume is called from another thread.
+;; Once answered, the client closes, as the drain's lingering close waits
+;; for.  Whether the wait parked, the server's phase as the resume was
+;; called, what it answered, whether the client was answered, with what,
+;; whether the server stopped, and whether the drain's deadline was logged.
+(define (drained-post)
+  (let* ((kept (make-mailbox))
+         (r (open-rig (outside-handler (lambda (i resume) (mailbox-put! kept resume))) default-limits))
+         (sh (rig-shell r))
+         (cl (client! r (get 1)))
+         (parked (turn-until r (lambda () (= 1 (mailbox-count kept))) cap)))
+    (shell-shutdown! sh)
+    (let* ((phase (server-phase (shell-server sh)))
+           (answer (if (= 1 (mailbox-count kept))
+                       (let ((resume (mailbox-take! kept))) (on-thread (lambda () (guarded resume (value-of 1)))))
+                       'never-called))
+           (done (turn-until r (lambda () (answered? cl)) cap))
+           (read (read-back cl)))
+      (client-close! cl)
+      (let* ((stopped (turn-until r (lambda () (eq? (server-phase (shell-server sh)) 'stopped)) cap))
+             (result (list parked phase answer done read stopped
+                           (and (assq 'drain-timeout (rig-log r)) #t))))
+        (close-rig! r "a post while the server drains" (list cl))
+        result))))
+
+;; closed-under-open-handle : -> (List Any ...)
+;; An outside wait parked; the loop's waits close their inbox alone, its
+;; handle left open, as a wake that failed on it leaves them; then the
+;; client closes and the shell stops.  Whether the wait parked, the async
+;; handles live once the inbox is closed, what its resume then answers from
+;; another thread, whether the server stopped, and whether the handle was
+;; closed.
+(define (closed-under-open-handle)
+  (let* ((kept (make-mailbox))
+         (r (open-rig (outside-handler (lambda (i resume) (mailbox-put! kept resume))) default-limits))
+         (sh (rig-shell r))
+         (cl (client! r (get 1)))
+         (parked (turn-until r (lambda () (= 1 (mailbox-count kept))) cap)))
+    (waits-outside-close! (rig-waits r) (lambda () #f))
+    (let* ((live (asyncs r))
+           (answer (if (= 1 (mailbox-count kept))
+                       (let ((resume (mailbox-take! kept))) (on-thread (lambda () (guarded resume "after"))))
+                       'never-called)))
+      (client-close! cl)
+      (shell-shutdown! sh)
+      (let* ((stopped (turn-until r (lambda () (eq? (server-phase (shell-server sh)) 'stopped)) cap))
+             (closed (turn-until r (lambda () (zero? (asyncs r))) 64))
+             (result (list parked live answer stopped closed)))
+        (close-rig! r "an inbox closed under its open handle" '())
+        result))))
+
 ;; --- per-thread order ------------------------------------------------------------------
 
 ;; ordered : Boolean -> (List Symbol Symbol Any)
@@ -735,7 +984,7 @@
         (test-equal "a loop asleep in its poll, nothing armed but the inbox, wakes for a post from another thread: the answer comes, and not by the watchdog's wake"
                     '(satisfied ((200 "v0")) #t #f)
                     (list-head sleeping 4))
-        (test-equal "an idle server stays idle: over the worker's window, an inbox open and nothing posted, the loop takes at most the one turn under way as it opens"
+        (test-equal "an idle server stays idle: over the worker's window, opened once the shell's tick timer has stopped, an inbox open and nothing posted, the loop takes no turn"
                     'idle
                     (list-ref sleeping 4)))
 
@@ -759,6 +1008,13 @@
                     (make-list rounds '(satisfied satisfied () () () ()))
                     (map (lambda (stop) (list-head stop 6)) stops))))
 
+    (test-equal "await-outside, await and sleep-ms from a worker, while the loop's thread runs a handler's coroutine that waits for it, are each refused there as R2, off the loop's thread: no register runs, no async handle is made, and the handler answers as before"
+                (list 'satisfied (make-list 4 off-thread) '() '((200 "ok")) 0 '())
+                (off-thread-mid-coroutine))
+    (test-equal "await-outside, await and sleep-ms from a worker, while the loop's thread is asleep in its poll, a handler parked outside, are each refused there as R2, off the loop's thread, not as R1: no register runs, and the handler's resume, posted after, is handed over"
+                (list 'satisfied #f (make-list 4 off-thread) '() #t '((200 "v0")) '())
+                (off-thread-in-poll))
+
     (test-equal "a loop torn down under an open inbox closes its handle: each kept resume then answers #f, from another thread, raising nothing"
                 '(satisfied 1 (#f #f))
                 (torn-down))
@@ -767,6 +1023,19 @@
                 '(satisfied ((200 "plain")) 0 satisfied 1 #t satisfied ((200 "v1"))
                   satisfied satisfied #f satisfied #f #t satisfied ((200 "v2")))
                 (reopened))
+
+    (test-equal "an outside wait once no shell on the loop serves, by a coroutine that outlived its connection, makes no async handle: its resume answers #f, nothing is handed over, and the loop drains"
+                '(satisfied satisfied 0 satisfied 0 #f iterations-exhausted never satisfied 0)
+                (outlived))
+    (test-equal "two shells on one loop: the first stops, and is shut down again, while the second's outside wait is parked, and the second's resume is still handed over; the second's stop closes the inbox's handle"
+                '(satisfied satisfied 1 #t satisfied ((200 "v1")) satisfied satisfied)
+                (two-shells))
+    (test-equal "a post while the server drains is handed over: the resume answers #t, and the client is answered before the drain's deadline"
+                '(satisfied draining #t satisfied ((200 "v1")) satisfied #f)
+                (drained-post))
+    (test-equal "an inbox closed while its async handle is open, by its waits alone: its resume answers #f, and the shell's stop still closes the handle"
+                '(satisfied 1 #f satisfied satisfied)
+                (closed-under-open-handle))
 
     (test-equal "one thread posts 1 to 16 to sixteen waits while the loop polls nothing: the handlers resume in that order"
                 (list 'satisfied 'satisfied (map (lambda (i) (+ i 1)) (iota 16)))
