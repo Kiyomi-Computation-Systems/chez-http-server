@@ -18,20 +18,21 @@
 ;;; ready, whichever connection it is for; and every wait is in the host's
 ;;; waits, made with make-waits as the libuv shell makes its loop's: their
 ;;; log is the host's, their clock the host's, their timer one whose instant
-;;; the host keeps, and their resolver the host's.
+;;; the host keeps, their resolver the host's, and their inbox opener the
+;;; host's, whose wake is the host's next call that acts.
 ;;;
 ;;; NOTHING RUNS BUT WHAT THE TEST DOES.  Each call that acts, a connect, a
-;;; send, a close, a reset, an advance or an answer, runs the host until it
-;;; is quiet, and then returns: every event that follows is dispatched, every
-;;; write is read by the client at once, and every coroutine made ready runs.
-;;; Nothing runs between calls: a resume the test calls itself runs at the
-;;; host's next call, as an advance of 0 ms.  Nothing hangs: a handler that
-;;; waits for what never comes stays parked, and is reported
-;;; (test-client-waiting?), and a run that takes more than `turn-cap` turns
-;;; to go quiet, as a producer that never ends or a handler that sleeps 0 ms
-;;; forever makes it, is an assertion violation.  A call that acts, made
-;;; from the host's own code, a handler's, a coroutine's or a taker's, is
-;;; refused as an assertion violation, raised in that code.
+;;; send, a close, a reset, an advance, an answer or a stop of posts, runs
+;;; the host until it is quiet, and then returns: every event that follows
+;;; is dispatched, every write is read by the client at once, and every
+;;; coroutine made ready runs.  Nothing runs between calls: a resume the test
+;;; calls itself runs at the host's next call, as an advance of 0 ms.
+;;; Nothing hangs: a handler that waits for what never comes stays parked,
+;;; and is reported (test-client-waiting?), and a run that takes more than
+;;; `turn-cap` turns to go quiet, as a producer that never ends or a handler
+;;; that sleeps 0 ms forever makes it, is an assertion violation.  A call
+;;; that acts, made from the host's own code, a handler's, a coroutine's or a
+;;; taker's, is refused as an assertion violation, raised in that code.
 ;;;
 ;;; THE CLOCK is the host's: milliseconds from 0, which the Date field reads
 ;;; as seconds since the Unix epoch.  It moves only when the test advances
@@ -40,6 +41,18 @@
 ;;; order, and what it wakes runs there.  A connection's timeout fires at its
 ;;; earliest instant, where the server's tick fires it as much as
 ;;; CHEZ_HTTP_TICK_MS later.
+;;;
+;;; A POSTED VALUE, one an `await-outside`'s resume posted, whatever thread
+;;; called it, is handed over by the host's next call that acts, at the
+;;; host's now, before that call moves the clock or fires anything, as the
+;;; server's loop hands posted values over in its turn's poll, before the
+;;; turn's timers: so a value posted before an advance beats a deadline that
+;;; passes during it.  One posted while the host runs, by a `register` or a
+;;; handler, is handed over in the next round of that run.  A stop of posts
+;;; closes the inbox, as the server's shell does once it serves no more:
+;;; what was posted before it is handed over, every resume given out since
+;;; the inbox opened answers #f from then on, and the next outside wait
+;;; opens a fresh inbox.
 ;;;
 ;;; A CLIENT SENDS bytes as they go on the wire, so a request may be
 ;;; malformed, pipelined, or have its body sent in pieces, now or after an
@@ -89,6 +102,7 @@
 (library (http-server testing)
   (export make-test-host test-host? test-host-now test-host-advance! test-host-log
           test-host-lookups test-host-answer! test-host-waiting test-host-connect!
+          test-host-posted test-host-stop-posts!
           test-client? test-client-send! test-client-close! test-client-reset!
           test-client-received test-client-responses test-client-connection-closed?
           test-client-waiting?
@@ -102,7 +116,8 @@
           (only (http-server awaiting) client-closed?)
           (only (http-server private adapter) request-parser-inits)
           (only (http-server private scheduler) make-scheduler scheduler-ready? scheduler-drain!)
-          (only (http-server private waits) make-waits waits-clock! waits-resolver! waits-fire!)
+          (only (http-server private waits) make-waits waits-clock! waits-resolver! waits-fire!
+                waits-outside! waits-outside-close! waits-posted waits-queued?)
           (only (http-server private serve) settings)
           (only (http-server private fake-shell)
                 make-fake-connection fake-shell-advance! fake-shell-fire! fake-shell-armed
@@ -119,12 +134,13 @@
   ;; waits, and when their timer is due, or #f; its clients in the order
   ;; they connected; what it has logged, newest first; the lookups that wait
   ;; for an answer, oldest first, and those a deadline cancelled, which
-  ;; answer at the next turn; whether a call that acts runs; and the turns
-  ;; its run to quiet has taken.
+  ;; answer at the next turn; whether a call that acts runs; the turns its
+  ;; run to quiet has taken; and the delivery of the inbox its waits opened
+  ;; last, or #f.
   (define-record-type (test-host %make-test-host test-host?)
     (fields handler limits (mutable now) (mutable scheduler) (mutable waits) (mutable due)
             (mutable clients) (mutable log-rev) (mutable asked) (mutable cancelled)
-            (mutable running?) (mutable turns))
+            (mutable running?) (mutable turns) (mutable deliver))
     (sealed #t))
 
   ;; A lookup `resolve` asked for: the name, and how it is answered.
@@ -144,14 +160,17 @@
        (unless (procedure? handler) (assertion-violation 'make-test-host "the handler is not a procedure" handler))
        (unless (procedure? lookup) (assertion-violation 'make-test-host "the lookup is not a procedure" lookup))
        (let-values (((limits host port) (settings lookup)))
-         (let ((h (%make-test-host handler limits 0 #f #f #f '() '() '() '() #f 0)))
+         (let ((h (%make-test-host handler limits 0 #f #f #f '() '() '() '() #f 0 #f)))
            (host-waits! h)
            h)))))
 
   ;; host-waits! : TestHost -> Void
   ;; The host's scheduler, which never polls, and its waits (ONE SCHEDULER
   ;; AND ONE WAITS), given the fake's puller, so a handler may pull its body.
-  ;; A lookup a deadline cancels answers at the next turn, as cancelled.
+  ;; A lookup a deadline cancels answers at the next turn, as cancelled.  The
+  ;; waits' opener keeps the inbox's delivery, for the host's rounds to run
+  ;; (deliver-posted!), and its wake is always sent: the host has no handle
+  ;; to close.
   (define (host-waits! host)
     (let* ((s (make-scheduler (lambda (mode) (assertion-violation 'test-host "the host never polls" mode))))
            (w (make-waits s (lambda (what details) (log! host what details)))))
@@ -168,6 +187,7 @@
                          (when (memq l (test-host-asked host))
                            (test-host-asked-set! host (remq l (test-host-asked host)))
                            (test-host-cancelled-set! host (append (test-host-cancelled host) (list l))))))
+      (waits-outside! w (lambda (deliver!) (test-host-deliver-set! host deliver!) (lambda () #t)))
       (fake-waits-puller! w)
       (test-host-scheduler-set! host s)
       (test-host-waits-set! host w)))
@@ -228,6 +248,21 @@
           ((asked-answer! l) #f answer))
       (quiesce! host)))
 
+  ;; test-host-posted : TestHost -> Nat
+  ;; How many values `await-outside`'s resumes have posted that the host has
+  ;; not yet handed over (A POSTED VALUE).
+  (define (test-host-posted host) (waits-posted (test-host-waits host)))
+
+  ;; test-host-stop-posts! : TestHost -> Void
+  ;; Close the inbox, as the server's shell does once it serves no more:
+  ;; what was posted is handed over, every resume of the inbox answers #f
+  ;; from then on, and the next outside wait opens a fresh one.  Then run
+  ;; the host until it is quiet.  With no inbox open, it only runs the host.
+  (define (test-host-stop-posts! host)
+    (acting! host 'test-host-stop-posts!)
+    (waits-outside-close! (test-host-waits host) (lambda () (values)))
+    (quiesce! host))
+
   ;; test-host-waiting : TestHost -> (Listof TestClient)
   ;; The clients whose handler's code still waits, in the order they
   ;; connected (test-client-waiting?).
@@ -237,11 +272,14 @@
   ;; Move the clock `ms` milliseconds on, stopping at each instant something
   ;; is due by then, a sleep's end, a deadline or a connection's timeout,
   ;; for it to fire there and for what it wakes to run, until the host is
-  ;; quiet; then on to the end.  An advance of 0 runs what is ready.
+  ;; quiet; then on to the end.  An advance of 0 runs what is ready.  What
+  ;; was posted is handed over first, at the host's now, and run until the
+  ;; host is quiet, before the clock moves (A POSTED VALUE).
   (define (test-host-advance! host ms)
     (acting! host 'test-host-advance!)
     (unless (and (integer? ms) (exact? ms) (>= ms 0))
       (assertion-violation 'test-host-advance! "expected a whole number of milliseconds" ms))
+    (when (waits-queued? (test-host-waits host)) (quiesce! host))
     (let ((target (+ (test-host-now host) ms)))
       (let loop ()
         (let ((next (next-due host)))
@@ -289,11 +327,12 @@
       (assertion-violation 'test-host "no progress: the host did not go quiet" turn-cap)))
 
   ;; quiesce! : TestHost -> Void
-  ;; Run the host until nothing has anything to do: what is due by the
-  ;; clock fires, what is ready runs, each connection's later turns come and
-  ;; the client's bytes are read while the server reads, and the lookups a
-  ;; deadline cancelled answer; and again, while any of that is left.  While
-  ;; it runs, a call that acts is refused (acting!).
+  ;; Run the host until nothing has anything to do: what was posted is
+  ;; handed over, then what is due by the clock fires, what is ready runs,
+  ;; each connection's later turns come and the client's bytes are read
+  ;; while the server reads, and the lookups a deadline cancelled answer;
+  ;; and again, while any of that is left.  While it runs, a call that acts
+  ;; is refused (acting!).
   (define (quiesce! host)
     (test-host-turns-set! host 0)
     (dynamic-wind
@@ -301,6 +340,7 @@
      (lambda ()
        (let loop ()
          (turn! host)
+         (deliver-posted! host)
          (fire! host)
          (for-each (lambda (c) (settle! c) (pump! c) (taker-failed! host c)) (test-host-clients host))
          (on-done-failed! host)
@@ -309,18 +349,29 @@
      (lambda () (test-host-running?-set! host #f))))
 
   ;; busy? : TestHost -> Boolean
-  ;; Whether something is left to do: a coroutine or a call ready, the
-  ;; waits' timer or a connection's deadline due, a cancelled lookup to
-  ;; answer, or bytes or an end to read while the server reads.
+  ;; Whether something is left to do: a coroutine or a call ready, a posted
+  ;; value or notice to hand over, the waits' timer or a connection's
+  ;; deadline due, a cancelled lookup to answer, or bytes or an end to read
+  ;; while the server reads.
   (define (busy? host)
     (let ((now (test-host-now host)))
       (or (scheduler-ready? (test-host-scheduler host))
+          (waits-queued? (test-host-waits host))
           (let ((due (test-host-due host))) (and due (<= due now)))
           (pair? (test-host-cancelled host))
           (exists (lambda (c)
                     (or (let ((armed (fake-shell-armed (test-client-shell c)))) (and armed (<= armed now)))
                         (and (reads? c) (or (unread? c) (test-client-end c)) #t)))
                   (test-host-clients host)))))
+
+  ;; deliver-posted! : TestHost -> Void
+  ;; What the inbox has queued, values and notices, handed over by its
+  ;; delivery, which only wakes: what it wakes runs at the round's next
+  ;; drain, after what is due fires, as the server's loop runs it after its
+  ;; turn's timers.
+  (define (deliver-posted! host)
+    (when (waits-queued? (test-host-waits host))
+      ((test-host-deliver host))))
 
   ;; fire! : TestHost -> Void
   ;; What is due by the clock fires: the waits' timer, and what it wakes

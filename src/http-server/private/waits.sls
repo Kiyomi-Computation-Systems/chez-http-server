@@ -15,7 +15,40 @@
 ;;; is refused before `register` runs anywhere else, as R1, R2 or R5 (the
 ;;; scheduler's `waiting-coroutine`): so a handler that waits without
 ;;; answering `awaiting` has failed.  The log line names the verb the late
-;;; resume came for: `late-resume await`, `late-resume resolve`.
+;;; resume came for: `late-resume await`, `late-resume resolve`,
+;;; `late-resume await-outside`.
+;;;
+;;; AN OUTSIDE WAIT.  `(await-outside register)` is a wait whose `resume`
+;;; any thread may call, the loop's own included: it never wakes the
+;;; coroutine itself, but POSTS the value to the loop's INBOX, a mutex, a
+;;; queue and an open flag, and answers #t; the inbox's DELIVERY, on the
+;;; loop's thread, hands it over.  Every transition of a `resume` is under
+;;; the inbox's mutex.  A fresh resume, its inbox open, queues `(cell .
+;;; value)`, is used, and calls the inbox's `wake!`, the shell's: one that
+;;; answers #f has met a closed handle, so the post takes its item back,
+;;; closes the inbox, and the resume is refused, answering #f.  A fresh
+;;; resume, its inbox closed, is refused.  A used one, called again while
+;;; its inbox is open, queues a NOTICE, which the delivery logs as
+;;; `late-resume await-outside`, and answers #f; the caller's thread never
+;;; writes the log.  Every other call answers #f and does nothing.  A resume
+;;; posts to the inbox open as its `register` ran, so one whose inbox has
+;;; closed stays refused, once a fresh inbox has opened too.  The delivery
+;;; takes the whole queue under the mutex, then, the mutex released, hands
+;;; each value to its wait if that wait is parked or still registering, and
+;;; drops it otherwise, unlogged: a deadline or a client's close ended the
+;;; wait; then it logs each notice, so a log that raises loses no value.  A
+;;; delivery is a step of the loop's thread, which comes while `register`
+;;; runs only if `register` itself waits: so an outside wait parks, even
+;;; when `register` calls `resume` itself, unless `register` waits, when a
+;;; value delivered meanwhile is kept, as a resume called while `await`'s
+;;; `register` runs keeps its value, and answered as `register` returns,
+;;; with no park.  A value delivered once `register` has raised is kept as
+;;; well, by the wait's cell, until its resume is let go.  The first
+;;; outside wait that finds no inbox open opens one, through the loop's
+;;; OPENER, given by the shell (`waits-outside!`), with the delivery to run
+;;; each time the wake it makes fires; the shell closes it
+;;; (`waits-outside-close!`), which delivers what was queued once more.  It
+;;; is refused where `await` is, and on waits with no opener.
 ;;;
 ;;; TIMED WAITS.  `(sleep-ms n)` parks the coroutine until the loop's clock
 ;;; reads `n` milliseconds on.  `(with-deadline ms thunk)` bounds the waits
@@ -70,26 +103,31 @@
 ;;; THE LOOP'S WAITS are one a loop, kept by the loop's scheduler
 ;;; (`make-waits`), which a waiting verb finds through the coroutine running:
 ;;; the log a late resume is recorded in; and, given by the libuv shell, the
-;;; loop's clock and a timer of their own (`waits-clock!`), and its resolver
-;;; (`waits-resolver!`).  The waits keep each sleep's time and each deadline
+;;; loop's clock and a timer of their own (`waits-clock!`), its resolver
+;;; (`waits-resolver!`), and its inbox opener (`waits-outside!`), with the
+;;; inbox it opened last.  The waits keep each sleep's time and each deadline
 ;;; in a heap, (http-server heap), with the timer armed for the earliest; each
 ;;; time it fires, `waits-fire!` ends what is due and arms it for the earliest
 ;;; left, or stops it when none is, so an idle loop sleeps.  A wait on a loop
 ;;; that keeps no waits, or a timed one on waits with no clock, is an
-;;; assertion violation, and so is a lookup on waits with no resolver.  What a
+;;; assertion violation, and so is a lookup on waits with no resolver, and an
+;;; outside wait on waits with no opener.  What a
 ;;; coroutine's deadlines need of it, the wait it is parked on and how many of
 ;;; its deadlines in force have passed, it keeps (`coroutine-waits`), from its
 ;;; first deadline on.
 ;;;
 ;;; Nothing here catches with `guard`, which on a coroutine costs about twice
-;;; what an exception handler does.
+;;; what an exception handler does; and nothing raises while it holds an
+;;; inbox's mutex, since `wake!` never raises.
 (library (http-server private waits)
   (export make-waits waits? waits-clock! waits-fire! waits-timed waits-resolver!
+          waits-outside! waits-outside-close! waits-posted waits-queued?
           make-notice notice? notice-attach! notice-close! notice-closed?
           notice-puller! notice-closing! notice-body-failure
           waits-puller! pull-piece! pull-end! pull-fail!
-          await sleep-ms with-deadline resolve next-body-piece body-input-port)
+          await await-outside sleep-ms with-deadline resolve next-body-piece body-input-port)
   (import (rnrs)
+          (only (chezscheme) make-mutex mutex-acquire mutex-release)
           (http-server heap)
           (only (http-server awaiting) make-deadline-passed make-client-closed make-resolve-error
                 make-body-failed)
@@ -108,11 +146,12 @@
     (fields log heap
             (mutable now) (mutable start) (mutable stop)   ; the loop's clock and timer, or #f
             (mutable lookup) (mutable cancel)              ; its resolver, or #f
-            (mutable pull) (mutable credit))               ; its puller, or #f
+            (mutable pull) (mutable credit)                ; its puller, or #f
+            (mutable open) (mutable inbox))                ; its inbox opener and inbox, or #f
     (sealed #t))
 
   (define (make-waits s log!)
-    (let ((w (%make-waits log! (make-heap) #f #f #f #f #f #f #f)))
+    (let ((w (%make-waits log! (make-heap) #f #f #f #f #f #f #f #f #f)))
       (scheduler-waits-set! s w)
       w))
 
@@ -148,6 +187,52 @@
     (waits-pull-set! w pull!)
     (waits-credit-set! w credit!))
 
+  ;; waits-outside! : Waits ((-> Void) -> (-> Boolean)) -> Void
+  ;; The loop's inbox opener (AN OUTSIDE WAIT, the header): `(open!
+  ;; deliver!)`, called on the loop's thread by the outside wait that finds
+  ;; no inbox open, makes the loop's wake, whose firing calls `(deliver!)` on
+  ;; the loop's thread, and answers `wake!`, which any thread may call: #t if
+  ;; the wake was sent, #f if it met a closed handle.  `wake!` never raises.
+  (define (waits-outside! w open!) (waits-open-set! w open!))
+
+  ;; waits-outside-close! : Waits (-> Any) -> Void
+  ;; The shell serves no more: the inbox open, if one is, closed, its flag
+  ;; cleared under its mutex, then `(close-wake!)` called, to close the wake
+  ;; its opener made, then what it queued delivered once more.  Every resume
+  ;; of it answers #f from then on, and the next outside wait opens a fresh
+  ;; inbox.  With no inbox open, nothing, and `close-wake!` is not called.
+  (define (waits-outside-close! w close-wake!)
+    (let ((box (waits-inbox w)))
+      (when (and box (inbox-close! box))
+        (close-wake!)
+        (deliver! box))))
+
+  ;; waits-posted : Waits -> Nat
+  ;; How many values resumes have posted to the waits' inbox and its
+  ;; delivery has not yet handed over; 0 with no inbox.  Its notices are not
+  ;; counted.
+  (define (waits-posted w)
+    (let ((box (waits-inbox w)))
+      (if box
+          (let ((m (inbox-mutex box)))
+            (mutex-acquire m)
+            (let ((n (inbox-posted box)))
+              (mutex-release m)
+              n))
+          0)))
+
+  ;; waits-queued? : Waits -> Boolean
+  ;; Whether the waits' inbox holds anything its delivery has not taken
+  ;; yet: a value or a notice.
+  (define (waits-queued? w)
+    (let ((box (waits-inbox w)))
+      (and box
+           (let ((m (inbox-mutex box)))
+             (mutex-acquire m)
+             (let ((queued? (pair? (inbox-queue box))))
+               (mutex-release m)
+               queued?)))))
+
   ;; waits-timed : Waits -> Nat — how many sleeps and deadlines are armed.
   ;; At 0 the timer is stopped, or stops the next time it fires.
   (define (waits-timed w) (heap-count (waits-heap w)))
@@ -159,9 +244,12 @@
   ;; lookup's request, or #f.  Whoever registered may keep the resume, and so
   ;; the cell, after the wait: it then keeps neither the coroutine nor a
   ;; value.
-  ;;   registering  `register` runs: a resume keeps its value, 'early
+  ;;   registering  `register` runs: a resume keeps its value, 'early, and
+  ;;                so does an outside wait's value delivered while
+  ;;                `register` itself waits, or once it has raised
   ;;   parked       the coroutine has parked: a resume wakes it, 'resumed
-  ;;   early, resumed  the wait is over: a resume is late (R4)
+  ;;   early, resumed  the wait is over: a resume is late (R4), and an
+  ;;                outside wait's value is dropped
   (define-record-type cell
     (fields who (mutable coroutine) waits (mutable state) (mutable value) (mutable pending))
     (sealed #t))
@@ -403,7 +491,124 @@
          (cell-coroutine-set! cell #f)
          (cell-state-set! cell 'resumed)
          (coroutine-wake! c v)))
-      (else ((waits-log (cell-waits cell)) 'late-resume (list (cell-who cell))))))
+      (else (late! cell))))
+
+  ;; late! : Cell -> Void — a late resume of the wait, logged (R4).
+  (define (late! cell)
+    ((waits-log (cell-waits cell)) 'late-resume (list (cell-who cell))))
+
+  ;; await-outside : ((Any -> Boolean) -> Any) -> Any
+  ;; Call `register` with `resume`, which any thread may call, then park
+  ;; until a value it posted is delivered: that value (AN OUTSIDE WAIT, the
+  ;; header).  `resume` answers #t if it posted the value, and #f if it did
+  ;; not: it was called before, or its inbox has closed.  Refused, before
+  ;; `register` runs, where no coroutine may park, and on waits with no
+  ;; inbox opener.
+  (define (await-outside register)
+    (let* ((c (waiting-coroutine 'await-outside))
+           (w (loop-waits 'await-outside c)))
+      (unless (waits-open w)
+        (assertion-violation 'await-outside "the loop's waits keep no inbox opener" c))
+      (wait! 'await-outside w c
+             (lambda (cell) (register (outside-resume (outside-inbox! w) cell))))))
+
+  ;; An inbox: its mutex; whether it is open; what is queued, newest first,
+  ;; each a value, `(cell . value)`, or a notice, the cell of a wait whose
+  ;; resume was called again; how many of those are values; and the wake
+  ;; its opener made.  Every field but the mutex is read and set under the
+  ;; mutex, once the inbox is open.
+  (define-record-type inbox
+    (fields mutex (mutable open?) (mutable queue) (mutable posted) (mutable wake))
+    (sealed #t))
+
+  ;; outside-inbox! : Waits -> Inbox
+  ;; The waits' inbox, open: the one open, or else a fresh one, opened by
+  ;; the loop's opener, on the loop's thread.
+  (define (outside-inbox! w)
+    (let ((box (waits-inbox w)))
+      (if (and box (inbox-open-now? box))
+          box
+          (let ((fresh (make-inbox (make-mutex) #f '() 0 #f)))
+            (inbox-wake-set! fresh ((waits-open w) (lambda () (deliver! fresh))))
+            (inbox-open?-set! fresh #t)
+            (waits-inbox-set! w fresh)
+            fresh))))
+
+  ;; inbox-open-now? : Inbox -> Boolean — its flag, read under its mutex.
+  (define (inbox-open-now? box)
+    (let ((m (inbox-mutex box)))
+      (mutex-acquire m)
+      (let ((open? (inbox-open? box)))
+        (mutex-release m)
+        open?)))
+
+  ;; inbox-close! : Inbox -> Boolean
+  ;; Its flag cleared, under its mutex: whether it was set.
+  (define (inbox-close! box)
+    (let ((m (inbox-mutex box)))
+      (mutex-acquire m)
+      (let ((open? (inbox-open? box)))
+        (inbox-open?-set! box #f)
+        (mutex-release m)
+        open?)))
+
+  ;; outside-resume : Inbox Cell -> (Any -> Boolean)
+  ;; The wait `cell` is, its resume, posting to `box`: fresh, then used once
+  ;; it has posted, or refused once it has found `box` closed.  Any thread
+  ;; may call it; it never raises, and blocks only on the mutex.
+  (define (outside-resume box cell)
+    (let ((state 'fresh))
+      (lambda (v)
+        (let ((m (inbox-mutex box)))
+          (mutex-acquire m)
+          (let ((posted?
+                 (case state
+                   ((fresh)
+                    (if (and (inbox-open? box) (post! box (cons cell v) 1))
+                        (begin (set! state 'used) #t)
+                        (begin (set! state 'refused) #f)))
+                   ((used)
+                    (when (inbox-open? box) (post! box cell 0))
+                    #f)
+                   (else #f))))
+            (mutex-release m)
+            posted?)))))
+
+  ;; post! : Inbox Any Nat -> Boolean
+  ;; Under the mutex, the inbox open: `item` queued, `n` more values
+  ;; counted, and the wake sent, #t; or, the wake having met a closed
+  ;; handle, the item taken back and the inbox closed, #f.
+  (define (post! box item n)
+    (inbox-queue-set! box (cons item (inbox-queue box)))
+    (inbox-posted-set! box (fx+ (inbox-posted box) n))
+    (or ((inbox-wake box))
+        (begin
+          (inbox-queue-set! box (cdr (inbox-queue box)))
+          (inbox-posted-set! box (fx- (inbox-posted box) n))
+          (inbox-open?-set! box #f)
+          #f)))
+
+  ;; deliver! : Inbox -> Void
+  ;; On the loop's thread: what the inbox queued, taken under its mutex, and
+  ;; then, the mutex released, each value in the order posted handed to its
+  ;; wait if that is parked or registering, and dropped otherwise; then each
+  ;; notice logged as a late resume.  It only wakes coroutines, so a libuv callback may
+  ;; run it (R1).
+  (define (deliver! box)
+    (let ((m (inbox-mutex box)))
+      (mutex-acquire m)
+      (let ((items (inbox-queue box)))
+        (inbox-queue-set! box '())
+        (inbox-posted-set! box 0)
+        (mutex-release m)
+        (let ((items (reverse items)))
+          (for-each (lambda (item)
+                      (when (pair? item)
+                        (let ((cell (car item)))
+                          (case (cell-state cell)
+                            ((registering parked) (resume! cell (cdr item)))))))
+                    items)
+          (for-each (lambda (item) (unless (pair? item) (late! item))) items)))))
 
   ;; sleep-ms : Nat -> Void
   ;; Park until the loop's clock reads `ms` milliseconds on: the first time

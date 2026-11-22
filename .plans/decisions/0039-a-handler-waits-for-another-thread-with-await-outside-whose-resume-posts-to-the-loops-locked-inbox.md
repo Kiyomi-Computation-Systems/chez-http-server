@@ -58,9 +58,16 @@ Plan: none; the issue is the design, as the answers below amend it
      notice instead, and the loop's thread logs `late-resume await-outside`. The caller's
      thread never writes the log.
    - No third answer, such as `'abandoned` (the owner: "#t or #f only").
-3. **A value never arrives while `register` runs.** Delivery is on the loop's thread,
-   after the turn's poll, so a wait always parks, even when `register` calls `resume`
-   itself. An outside wait has no `'early` state.
+3. **A value is handed over at a delivery, a later step of the loop's thread,** so a
+   wait parks even when `register` calls `resume` itself.
+   - The one exception is a `register` that itself waits, such as for room in a
+     bounded job queue. A value delivered while it waits is kept, as `await`'s early
+     resume is, and `await-outside` answers it as `register` returns, without parking.
+   - Dropping that value would be wrong. The first build dropped it, and `resume`
+     answered `#t` while the handler waited for ever. A probe found it: `register`
+     sleeping 10 ms, a value posted meanwhile.
+   - A `register` that raised keeps a value posted to it, beside the coroutine it
+     already keeps, until its `resume` is let go, as `await`'s does.
 4. **A value posted to a wait already ended is dropped, and not logged** (the owner:
    "Drop it silently"). That covers a deadline, a client's close and a `register` that
    raised. A worker can't be stopped mid-call, so for an outside wait this is the normal
@@ -116,25 +123,33 @@ Every transition is on the loop's thread.
 |---|---|---|---|
 | registering | `register` returns | parked | The coroutine parks. |
 | registering | `register` raises | dead | The raise leaves `await-outside`. No wait began. |
+| registering | a posted value is delivered | early | Only while `register` itself waits: the value is kept (item 3). |
+| early | `register` returns | resumed | `await-outside` answers the value without parking. |
+| early | `register` raises | dead | The raise leaves `await-outside`; the value is kept, unseen (item 3). |
 | parked | a posted value is delivered | resumed | The coroutine is ready; `await-outside` answers the value. |
 | parked | a deadline passes | abandoned | `await-outside` raises `&deadline-passed`. |
 | parked | the client closes | abandoned | `await-outside` raises `&client-closed`. |
 | abandoned | a posted value is delivered | abandoned | Dropped, not logged (item 4). |
-| dead | a posted value is delivered | dead | Dropped, not logged. |
+| dead | a posted value is delivered | dead | Not handed to anyone, not logged. |
 
-A second delivery to a resumed wait can't happen, since a `resume` posts once (below).
+A second delivery to a resumed or early wait can't happen, since a `resume` posts
+once (below).
 
 ### The `resume`
 
-Each transition is under the inbox's mutex, on whichever thread calls it.
+Each transition is under the inbox's mutex, on whichever thread calls it. A `resume`
+posts to the inbox open as its `register` ran, its own, whatever inbox is open since.
 
-| State | Called while the inbox is | Next | Answer | What happens |
+| State | Called while its inbox is | Next | Answer | What happens |
 |---|---|---|---|---|
 | fresh | open | used | `#t` | The value is queued; the loop is woken. |
 | fresh | closed | refused | `#f` | Nothing. |
 | used | open | used | `#f` | A notice is queued; the loop logs `late-resume await-outside`. |
 | used | closed | used | `#f` | Nothing. |
-| refused | open or closed | refused | `#f` | Nothing. |
+| refused | closed | refused | `#f` | Nothing. |
+
+A refused `resume` can't find its inbox open: it is refused only once its inbox has
+closed, and a closed inbox never opens again.
 
 ### The inbox
 
@@ -143,11 +158,14 @@ One per loop.
 | State | Event | Next | What happens |
 |---|---|---|---|
 | absent | an outside wait | open | The opener makes the handle; the flag is set. |
+| absent | the shell serves no more | absent | Nothing: no handle to close. |
+| open | an outside wait | open | The wait's `resume` posts to it. |
 | open | a post | open | Queued; the wake is sent. |
 | open | the handle's callback | open | The queue is emptied; each item is delivered. It may find the queue empty. |
 | open | the shell serves no more | closed | The flag is cleared under the mutex; the handle is closed; the queue is emptied once more. |
 | open | a wake meets a closed handle | closed | The post takes its item back; its `resume` answers `#f`. |
 | closed | a post | closed | Refused: `resume` answers `#f`. |
+| closed | the shell serves no more | closed | Nothing: its handle is closed already, or a teardown closed it. |
 | closed | an outside wait | open | A fresh inbox, with a handle of its own. |
 
 ## Consequences

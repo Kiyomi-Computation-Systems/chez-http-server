@@ -444,7 +444,7 @@
     ;; --- what the facade exports ---
     (test-equal "the facade exports the handler's names, the procedure told how a response ended, the verbs it waits with and what they raise, its body's pull and port, a switch and the transport's verbs, the server's start, and its errors"
                 '(&body-failed &client-closed &deadline-passed &http-server-config-error &http-server-error &resolve-error
-                  await awaiting body-failed-reason body-failed-status body-failed? body-input-port
+                  await await-outside awaiting body-failed-reason body-failed-status body-failed? body-input-port
                   client-closed? deadline-passed? http-server-config-error? http-server-error?
                   make-response
                   make-transport next-body-piece read-body read-whole-body request-has-body? request-header
